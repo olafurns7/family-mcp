@@ -1,0 +1,41 @@
+{
+  "name": "@family-mcp/session-store",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared file lock and private session-file storage for the family MCP servers",
+  "license": "MIT",
+  "author": "Ólafur Nils Sigurðsson",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings --report-unused-disable-directives-severity error .",
+    "lint:fix": "bun run lint --fix",
+    "format": "oxfmt -c ../../.oxfmtrc.json --write .",
+    "format:check": "oxfmt -c ../../.oxfmtrc.json --check ."
+  },
+  "devDependencies": {
+    "@family-mcp/oxlint-anti-slop": "workspace:*",
+    "@family-mcp/tsconfig": "workspace:*",
+    "@types/bun": "^1.2.19"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "bun@1.4.2"
+}
