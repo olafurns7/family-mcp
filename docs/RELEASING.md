@@ -1,72 +1,51 @@
-# Release procedure
+# Release process
 
-GitHub releases distribute prebuilt commands and an npm-compatible tarball. npm
-publication is a separate, explicit step. No workflow publishes to npm.
+GitHub releases contain prebuilt npm packages and Bun single-file executables.
+Do not publish to npm unless that action is explicitly authorized.
 
-## Before a release
+1. Update `package.json`, the default version in `install.sh`, and versioned links
+   in `README.md`. Use a new version; never rewrite a published tag.
+2. With the pinned Bun version, run:
 
-1. Update `package.json` and the default `INFOMENTOR_VERSION` in `install.sh`.
-   Update version-pinned README links, then refresh `bun.lock` with Bun.
-2. Read the full change and verify account/session boundaries. Run
-   `bun run release:check`, `bun audit`, `bun run build:binary`, and
-   `bun run test:installer`. Install the test browser first. On Linux, use a
-   virtual display for interactive-login tests.
-3. Verify CI at the exact commit being released. Browser tests cover Chromium,
-   Firefox, and WebKit; binary jobs build on native macOS/Linux x64/arm64 runners.
-   Do not describe synthetic fixtures as live InfoMentor acceptance.
-4. Keep preview limitations in the release notes until an actual parent account
-   has verified login, restoration after restart, and the returned overview.
+   ```sh
+   bun install --frozen-lockfile
+   bun run release:check
+   bun run build:binary
+   bun run test:installer
+   ```
 
-## GitHub release
+3. Review the complete diff and package contents, commit, and push `main` and a
+   matching tag such as `v0.2.0`.
+4. Run the **Release** workflow on that tag. It verifies the version, runs the
+   Node 22/24 checks, validates the npm tarball, and builds/tests native macOS and
+   Linux executables on arm64 and x64 runners. It creates a **draft preview**
+   release only after the checks pass.
+5. Inspect the draft's four platform archives and checksums, npm tarball and
+   checksum, and `install.sh`. Verify that asset digests match the checksums and
+   that the release notes describe the actual version.
+6. Publish the authorized GitHub release and test its public installer in an
+   isolated prefix. Use the installed executable to complete an MCP handshake.
 
-Create and push a version tag only after reviewing the commit. Run the Release
-workflow against that existing tag. The workflow checks that the tag matches
-`package.json`, runs the checks, and creates a **draft** with:
+The executable is compiled directly from `src/cli.ts` using Bun 1.4.2. It embeds
+its runtime and dependencies; the archive includes its license notices and
+README. The npm artifact still runs on Node 22+ and exports TypeScript types.
+Do not include session files, credentials files, investigation captures, browser
+profiles, or environment files in any artifact.
 
-- The prebuilt npm tarball and its SHA-256 checksum.
-- Bundled-runtime archives for macOS/Linux, x64/arm64, and their checksums.
-- The shell installer and release notes with copyable install commands.
+The build script checks the pinned Bun version. If upgrading Bun, update
+`packageManager`, the CI setup version, and `licenses/Bun.txt` from the same
+upstream tag. Test the native builds before release.
 
-Review the draft assets and validation results, then publish the draft. Release
-URLs are not public while the release is a draft. Keep version tags and released
-assets immutable; use a new version for changes. The shell installer references
-an explicit version and verifies the archive before changing the command link.
+## npm publication, only when requested
 
-After publishing, run the README command against the real download in an isolated
-prefix, check `--version`, and perform an MCP handshake. This proves the public
-installation path as well as the locally built artifact.
-
-## Optional npm publication
-
-The package is named `infomentor-mcp` with public access, an MIT license, repository
-metadata, an executable entry point, and TypeScript exports. A registry lookup on
-2026-09-11 returned 404 for the name; that is not a reservation or a guarantee of
-future availability.
-
-Only publish after explicit approval. Use a current npm client and an account
-allowed to publish the package. Complete npm's account/authentication requirements
-outside an agent conversation. Never commit or paste npm tokens.
-
-Publish the exact tarball already validated in the GitHub release:
+The package already has MIT licensing, repository metadata, an executable,
+prebuilt exports, and a restricted files list. `test:package` performs a dry-run
+publication, which does not publish anything. Once npm publication is explicitly
+authorized, publish the reviewed release tarball:
 
 ```sh
-npm publish ./infomentor-mcp-0.1.3.tgz --dry-run --ignore-scripts --access public
-# Only after deciding to publish:
-npm publish ./infomentor-mcp-0.1.3.tgz --ignore-scripts --access public
+npm publish ./infomentor-mcp-0.2.0.tgz --access public
 ```
 
-The validation script already ran package-content checks, a clean npm install
-with build scripts disabled, CLI/API/MCP smoke checks, strict consumer type checks,
-and npm's publication dry-run. `--ignore-scripts` prevents rebuilding the reviewed
-artifact during publication. npm does not allow replacing an already published
-name/version; bump the version for a new artifact.
-
-For later automated publication, configure npm trusted publishing for this exact
-repository and a dedicated workflow. Trusted publishing uses OIDC and can attach
-provenance; it requires npm 11.5.1+ and Node 22.14+. This is not configured by the
-GitHub-release workflow and should not be implied by a successful GitHub release.
-
-References: [npm tarball installation](https://docs.npmjs.com/cli/install/),
-[npm publishing](https://docs.npmjs.com/cli/commands/npm-publish/),
-[npm trusted publishing](https://docs.npmjs.com/trusted-publishers/),
-[GitHub release CLI](https://cli.github.com/manual/gh_release_create).
+Never treat a dry-run, a GitHub release, or passing CI as permission to publish
+to the npm registry.

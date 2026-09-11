@@ -57,7 +57,7 @@ try {
   assert.equal(installed.scripts?.postinstall, undefined);
   const bin = join(directory, 'node_modules/.bin/infomentor-mcp');
   assert.equal(run(bin, ['--version']).trim(), manifest.version);
-  assert.match(run(bin, ['--help']), /--executable-path/);
+  assert.match(run(bin, ['--help']), /--credentials/);
   await writeFile(
     join(directory, 'check.mjs'),
     `
@@ -76,7 +76,7 @@ try {
     try {
       await client.connect(transport);
       const { tools } = await client.listTools();
-      assert.equal(tools.length, 7);
+      assert.equal(tools.length, 6);
       assert.ok(tools.every((tool) => tool.outputSchema));
       const status = await client.callTool({ name: 'infomentor_setup_status', arguments: {} });
       assert.equal(setupStatusSchema.parse(status.structuredContent).state, 'idle');
@@ -88,15 +88,14 @@ try {
   await writeFile(
     join(directory, 'check.ts'),
     `
-    import { InfoMentorClient, loginRequestSchema, installBrowser } from 'infomentor-mcp';
-    import type { SessionOptions, Overview, SetupStatus, LoginRequest, InstallBrowserOptions } from 'infomentor-mcp';
-    const options: SessionOptions = { browser: 'firefox' };
+    import { InfoMentorClient, loginRequestSchema } from 'infomentor-mcp';
+    import type { SessionOptions, Overview, SetupStatus, LoginRequest } from 'infomentor-mcp';
+    const options: SessionOptions = { sessionFile: '/tmp/infomentor-consumer-session.json' };
     const client = new InfoMentorClient(options);
     const request: LoginRequest = { timeoutSeconds: 300 };
     const status: SetupStatus = client.startLogin(loginRequestSchema.parse(request));
     const overview: Promise<Overview> = client.getOverview();
-    const browser: InstallBrowserOptions = { browser: 'firefox' };
-    void [status, overview, installBrowser(browser), client.logout(), client.cancelSetup()];
+    void [status, overview, client.logout(), client.cancelSetup()];
   `,
   );
   run(process.execPath, [

@@ -1,1090 +1,443 @@
 import assert from 'node:assert/strict';
-import childProcess, { spawn } from 'node:child_process';
-import type { SpawnOptions } from 'node:child_process';
-import fs, { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import childProcess from 'node:child_process';
+import fs from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { test, mock } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import test, { mock } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
-import { chromium, firefox, webkit } from 'playwright';
-import type { Browser, BrowserContext } from 'playwright';
-import type { LoginRequest } from '../src/client.js';
+import { CookieJar } from 'tough-cookie';
 import { InfoMentorClient, setupStatusSchema } from '../src/client.js';
-import { installBrowser } from '../src/browser-install.js';
+import { promptCredentials } from '../src/credentials.js';
+import { InfoMentorHttp, parseForms } from '../src/http.js';
+import { authenticate, importSession, login } from '../src/login.js';
 import { createServer } from '../src/server.js';
-import { importSession, login, waitForLoginPage } from '../src/login.js';
 import {
   captureSession,
-  inspectPage,
-  launchBrowser,
-  LOGIN_REQUIRED,
   LOGIN_URL,
-  openAuthenticatedPage,
+  overviewSchema,
+  PARENT_URL,
   readSession,
-  savedSessionSchema,
   sessionStatusSchema,
-  trustedUrl,
-  validateCdpUrl,
   writeSession,
 } from '../src/session.js';
-import type { SessionOptions } from '../src/session.js';
 
-const overviewUrl = new URL('/parent/overview', LOGIN_URL).href;
+const nativeFetch = globalThis.fetch;
 
-const testEngine =
-  process.env['INFOMENTOR_BROWSER'] === 'firefox'
-    ? firefox
-    : process.env['INFOMENTOR_BROWSER'] === 'webkit'
-      ? webkit
-      : chromium;
+const credentials = { username: 'synthetic-user', password: 'synthetic-password' };
 
-/** All school pages/data below are synthetic; no parent account is used. */
-async function intercept(context: BrowserContext): Promise<void> {
-  await context.route('**/*', async (route) => {
-    const authenticated = (await context.cookies(route.request().url())).some(
-      ({ name, value }) => name === 'test-session' && value === 'synthetic',
-    );
+const parent = {
+  account: { pupils: [{ id: 'child-1', name: 'Synthetic child', selected: true }] },
+  apps: [{ codeName: 'timetable' }],
+};
 
-    const body = authenticated
-      ? '<title>Test overview</title><h1>Vikuáætlun</h1><a href="/logout">Útskrá</a><iframe src="/school"></iframe>'
-      : '<title>Sign in</title><input type="password"><button>Innskrá</button>';
+const entry = {
+  start: '2026-09-11T09:00:00',
+  end: '2026-09-11T10:00:00',
+  title: 'Íslenska',
+  startTime: '09:00',
+  endTime: '10:00',
+  notes: { roomInfo: '', timetableNotes: '', tutors: '' },
+  allDay: false,
+  establishmentName: 'Synthetic school',
+};
 
-    await route.fulfill({
-      contentType: 'text/html; charset=utf-8',
-      body:
-        '<meta charset="utf-8">' +
-        (new URL(route.request().url()).pathname === '/school'
-          ? '<p>Synthetic homework only</p>'
-          : body),
-    });
-  });
+const parentHtml = `<script>IMHome.home.homeData = ${JSON.stringify(parent)}; IMHome.home.init(IMHome.home.homeData);</script>`;
+
+const loginHtml =
+  '<form method="POST" action="./"><input type="hidden" name="__VIEWSTATE" value="fresh&amp;state"><input type="hidden" name="__EVENTVALIDATION" value="fresh-validation"><input type="hidden" name="__VIEWSTATEGENERATOR" value="generator"></form>';
+
+const relayHtml =
+  '<form id="openid_message" method="post" action="https://im1.infomentor.is/Production/Mentor/"><input type="hidden" name="oauth_token" value="synthetic&amp;token"></form>';
+
+function fixture() {
+  const requests: { url: string; method: string; body: string; cookies: string }[] = [];
+
+  const fetcher = mock.method(
+    globalThis,
+    'fetch',
+    async (input: string | URL | Request, init?: RequestInit) => {
+      assert.ok(input instanceof URL);
+      const headers = new Headers(init?.headers);
+      const method = init?.method ?? 'GET';
+      const body = String(init?.body ?? '');
+      const cookies = headers.get('cookie') ?? '';
+      requests.push({ url: input.href, method, body, cookies });
+      assert.equal(init?.redirect, 'manual');
+
+      if (input.href === LOGIN_URL && method === 'GET')
+        return new Response(loginHtml, {
+          headers: { 'Set-Cookie': 'preflight=synthetic; Secure; HttpOnly; Path=/' },
+        });
+
+      if (input.href === LOGIN_URL && method === 'POST') {
+        const fields = new URLSearchParams(body);
+        assert.equal(fields.get('__VIEWSTATE'), 'fresh&state');
+        assert.equal(fields.get('__EVENTVALIDATION'), 'fresh-validation');
+        assert.equal(fields.get('login_ascx$txtNotandanafn'), credentials.username);
+        assert.equal(fields.get('login_ascx$txtLykilord'), credentials.password);
+        assert.equal(fields.get('login_ascx$btnLogin'), 'Innskrá');
+        assert.match(cookies, /preflight=synthetic/);
+        assert.equal(headers.get('origin'), new URL(LOGIN_URL).origin);
+
+        return new Response(null, {
+          status: 302,
+          headers: { Location: PARENT_URL + 'authentication/authentication/login' },
+        });
+      }
+
+      if (input.pathname === '/authentication/authentication/login') {
+        assert.equal(method, 'GET');
+        assert.equal(cookies, ''); // Host-only cookies cannot leak across the parent/login hosts.
+
+        return new Response(relayHtml);
+      }
+
+      if (input.pathname === '/Production/Mentor/') {
+        assert.equal(new URLSearchParams(body).get('oauth_token'), 'synthetic&token');
+        assert.equal(headers.get('origin'), new URL(PARENT_URL).origin);
+
+        return new Response(null, {
+          status: 303,
+          headers: {
+            Location: PARENT_URL + 'Authentication/Authentication/LoginCallback?token=synthetic',
+          },
+        });
+      }
+
+      if (input.pathname.includes('LoginCallback'))
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: PARENT_URL,
+            'Set-Cookie': 'IMHome=synthetic; Secure; HttpOnly; Path=/',
+          },
+        });
+
+      if (input.pathname.endsWith('/isauthenticated/')) {
+        assert.equal(method, 'POST');
+
+        return Response.json(cookies.includes('IMHome=synthetic'));
+      }
+
+      if (input.href === PARENT_URL) return new Response(parentHtml);
+
+      if (input.pathname === '/timetable/timetable/appData') {
+        assert.equal(method, 'POST');
+        assert.match(cookies, /IMHome=synthetic/);
+
+        return Response.json({ items: [entry] });
+      }
+
+      throw new Error('Unexpected synthetic endpoint');
+    },
+  );
+
+  return { requests, restore: () => fetcher.mock.restore() };
 }
 
-test('HTTPS/session and remote-browser boundaries reject lookalikes and insecure remote endpoints', () => {
-  assert.equal(trustedUrl(LOGIN_URL).hostname, 'im1.infomentor.is');
-  assert.equal(trustedUrl('https://parents.infomentor.is/').hostname, 'parents.infomentor.is');
+async function savedSession() {
+  const jar = new CookieJar();
+  await jar.setCookie('IMHome=synthetic; Secure; HttpOnly; Path=/', PARENT_URL);
 
-  for (const url of [
-    'http://im1.infomentor.is/',
-    'https://im1.infomentor.is.evil.test/',
-    'https://im1.infomentor.is@evil.test/',
-    'https://im1.infomentor.is:8443/',
-    'file:///etc/passwd',
-    'https://evilinfomentor.is/',
-  ])
-    assert.throws(() => trustedUrl(url));
+  return captureSession(jar);
+}
 
-  for (const url of [
-    'http://localhost:9222',
-    'http://127.0.0.1:9222',
-    'ws://[::1]:9222/devtools/browser/test',
-    'wss://browser.example/session?token=synthetic',
-  ]) {
-    assert.equal(validateCdpUrl(url), url);
-  }
-
-  for (const url of [
-    'http://browser.example:9222',
-    'ws://localhost.evil.test',
-    'file:///tmp/socket',
-    'http://name:password@localhost',
-  ]) {
-    assert.throws(() => validateCdpUrl(url));
-  }
-});
-
-test(
-  'headless session transfer restores HttpOnly cookies, local storage and IndexedDB; expired sessions fail closed',
-  { timeout: 30_000 },
-  async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'infomentor-state-'));
-    const file = join(directory, 'private', 'session.json');
-    const browser = await launchBrowser();
-
-    try {
-      const context = await browser.newContext();
-      await intercept(context);
-      const page = await context.newPage();
-      await page.goto(LOGIN_URL);
-      assert.equal(await inspectPage(page), 'login');
-      await page.setContent('<h1>A public page without a login form</h1>');
-      assert.equal(await inspectPage(page), 'loading');
-      await context.addCookies([
-        {
-          name: 'test-session',
-          value: 'synthetic',
-          domain: 'im1.infomentor.is',
-          path: '/',
-          httpOnly: true,
-          secure: true,
-          sameSite: 'Lax',
-        },
-        { name: 'unrelated', value: 'must-not-save', domain: 'unrelated.example', path: '/' },
-      ]);
-      await page.goto(overviewUrl);
-      await page.evaluate(async () => {
-        localStorage.setItem('synthetic-token', 'test-token');
-        await new Promise<void>((resolveDb, reject) => {
-          const request = indexedDB.open('test-auth', 1);
-          request.addEventListener('upgradeneeded', () =>
-            request.result.createObjectStore('tokens'),
-          );
-          request.addEventListener('error', () =>
-            reject(new Error('Could not create synthetic database')),
-          );
-          request.addEventListener('success', () => {
-            const db = request.result;
-            const transaction = db.transaction('tokens', 'readwrite');
-            transaction.objectStore('tokens').put('test-idb-token', 'token');
-            transaction.addEventListener('complete', () => {
-              db.close();
-              resolveDb();
-            });
-
-            transaction.addEventListener('error', () =>
-              reject(new Error('Could not write synthetic database')),
-            );
-          });
-        });
-      });
-      const saved = await captureSession(context, page.url());
-      await writeSession(saved, file);
-      assert.equal(saved.storageState.cookies.length, 1);
-      assert.equal((await stat(file)).mode & 0o777, 0o600);
-      assert.equal((await stat(join(directory, 'private'))).mode & 0o777, 0o700);
-      assert.ok(!(await readFile(file, 'utf8')).includes('must-not-save'));
-      const reloaded = await readSession(file);
-      const restored = await browser.newContext({ storageState: reloaded.storageState });
-      await intercept(restored);
-      const restoredPage = await openAuthenticatedPage(restored, reloaded.url);
-      assert.equal(await inspectPage(restoredPage), 'authenticated');
-      assert.equal((await restored.cookies(LOGIN_URL))[0]?.value, 'synthetic');
-      assert.equal(await restoredPage.evaluate(() => document.cookie), '');
-      assert.equal(
-        await restoredPage.evaluate(() => localStorage.getItem('synthetic-token')),
-        'test-token',
-      );
-      assert.equal(
-        await restoredPage.evaluate(
-          () =>
-            new Promise<string>((resolveDb, reject) => {
-              const request = indexedDB.open('test-auth');
-              request.addEventListener('error', () => reject(new Error('Database missing')));
-              request.addEventListener('success', () => {
-                const db = request.result;
-                const transaction = db.transaction('tokens');
-                const value = transaction.objectStore('tokens').get('token');
-                value.addEventListener('success', () => resolveDb(String(value.result)));
-                transaction.addEventListener('complete', () => db.close());
-              });
-            }),
-        ),
-        'test-idb-token',
-      );
-      await restored.clearCookies();
-      await assert.rejects(openAuthenticatedPage(restored, reloaded.url), {
-        code: 'LOGIN_REQUIRED',
-      });
-
-      const before = await readFile(file, 'utf8');
-      const corrupt = join(directory, 'corrupt.json');
-      await writeFile(corrupt, '{broken');
-      await assert.rejects(importSession(corrupt, { sessionFile: file }), {
-        code: 'INVALID_SESSION',
-      });
-      assert.equal(await readFile(file, 'utf8'), before);
-      assert.equal(savedSessionSchema.safeParse({ ...saved, version: 2 }).success, false);
-    } finally {
-      await browser.close();
-      await rm(directory, { recursive: true, force: true });
-    }
-  },
-);
-
-test(
-  'login detects a signed-in popup automatically and supports cancellation and timeout without a terminal',
-  { timeout: 30_000 },
-  async () => {
-    const browser = await launchBrowser();
-
-    try {
-      const context = await browser.newContext();
-      await intercept(context);
-      const loginPage = await context.newPage();
-      await loginPage.goto(LOGIN_URL);
-      const waiting = waitForLoginPage(context, Date.now() + 5_000);
-      await context.addCookies([
-        {
-          name: 'test-session',
-          value: 'synthetic',
-          domain: 'im1.infomentor.is',
-          path: '/',
-          httpOnly: true,
-          secure: true,
-        },
-      ]);
-      const popup = await context.newPage();
-      await popup.goto(overviewUrl);
-      assert.equal(await waiting, popup);
-      await popup.close();
-      const controller = new AbortController();
-      const cancelled = waitForLoginPage(context, Date.now() + 5_000, controller.signal);
-      controller.abort();
-      await assert.rejects(cancelled, { code: 'CANCELLED' });
-      await assert.rejects(waitForLoginPage(context, Date.now() + 1), { code: 'LOGIN_TIMEOUT' });
-
-      const closingPopup = await context.newPage();
-      await closingPopup.goto(LOGIN_URL);
-
-      const title = mock.method(closingPopup, 'title', async () => {
-        await loginPage.goto(overviewUrl);
-        await closingPopup.close();
-        throw new Error('Target page has been closed');
-      });
-
-      try {
-        assert.equal(await waitForLoginPage(context, Date.now() + 5_000), loginPage);
-        assert.equal(closingPopup.isClosed(), true);
-      } finally {
-        title.mock.restore();
-      }
-    } finally {
-      await browser.close();
-    }
-  },
-);
-
-test(
-  'cancelled login and import preserve the old account while a session write is pending',
-  { timeout: 20_000 },
-  async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'infomentor-save-cancel-'));
-    const file = join(directory, 'session.json');
-    const transfer = join(directory, 'transfer.json');
-
-    const saved = savedSessionSchema.parse({
-      version: 1,
-      url: overviewUrl,
-      savedAt: new Date(0).toISOString(),
-      storageState: { cookies: [], origins: [] },
-    });
-
-    await writeSession(saved, file);
-    await writeSession(saved, transfer);
-    const before = await readFile(file, 'utf8');
-    const launch = testEngine.launch.bind(testEngine);
-
-    const launcher = mock.method(
-      testEngine,
-      'launch',
-      async (...args: Parameters<typeof testEngine.launch>) => {
-        const browser = await launch({ ...args[0], headless: true });
-        const newContext = browser.newContext.bind(browser);
-        mock.method(
-          browser,
-          'newContext',
-          async (...contextArgs: Parameters<Browser['newContext']>) => {
-            const context = await newContext(...contextArgs);
-            await intercept(context);
-            await context.addCookies([
-              { name: 'test-session', value: 'synthetic', domain: 'im1.infomentor.is', path: '/' },
-            ]);
-
-            return context;
-          },
-        );
-
-        return browser;
-      },
-    );
-
-    const originalWrite = fs.writeFile.bind(fs);
-
-    try {
-      for (const request of [{}, { importFile: transfer }]) {
-        const written = Promise.withResolvers<void>();
-        const finishWrite = Promise.withResolvers<void>();
-
-        const writer = mock.method(
-          fs,
-          'writeFile',
-          async (...args: Parameters<typeof fs.writeFile>) => {
-            await originalWrite(...args);
-
-            if (String(args[0]).startsWith(file + '.')) {
-              written.resolve();
-              await finishWrite.promise;
-            }
-          },
-        );
-
-        syncBuiltinESMExports();
-        const client = new InfoMentorClient({ sessionFile: file });
-
-        try {
-          client.startLogin(request);
-          await written.promise;
-          const cancelled = client.cancelSetup();
-          finishWrite.resolve();
-          assert.equal((await cancelled).state, 'cancelled');
-          assert.equal(await readFile(file, 'utf8'), before);
-          assert.deepEqual((await readdir(directory)).toSorted(), [
-            'session.json',
-            'transfer.json',
-          ]);
-        } finally {
-          finishWrite.resolve();
-          await client.close();
-          writer.mock.restore();
-          syncBuiltinESMExports();
-        }
-      }
-    } finally {
-      launcher.mock.restore();
-      await rm(directory, { recursive: true, force: true });
-    }
-  },
-);
-
-test(
-  'browser acquisition obeys cancellation and login deadlines and closes late browsers',
-  { timeout: 15_000 },
-  async () => {
-    for (const connection of ['local', 'cdp']) {
-      for (const timeout of [false, true]) {
-        const browser = await launchBrowser();
-        const acquired = Promise.withResolvers<Browser>();
-        const started = Promise.withResolvers<void>();
-        const closed = Promise.withResolvers<void>();
-        const close = browser.close.bind(browser);
-
-        const closer = mock.method(browser, 'close', async () => {
-          await close();
-          closed.resolve();
-        });
-
-        const acquire = async () => {
-          started.resolve();
-
-          return acquired.promise;
-        };
-
-        const launcher =
-          connection === 'cdp'
-            ? mock.method(chromium, 'connectOverCDP', acquire)
-            : mock.method(testEngine, 'launch', acquire);
-
-        const controller = new AbortController();
-
-        const options: SessionOptions =
-          connection === 'cdp' ? { cdpUrl: 'http://127.0.0.1:9222', browser: 'chromium' } : {};
-
-        const client = new InfoMentorClient(options);
-
-        try {
-          const failed = timeout
-            ? assert.rejects(login({ ...options, signal: controller.signal, timeoutMs: 50 }), {
-                code: 'LOGIN_TIMEOUT',
-              })
-            : undefined;
-
-          if (!timeout) client.startLogin();
-          await started.promise;
-
-          await Promise.race([
-            failed ??
-              client.cancelSetup().then((status) => assert.equal(status.state, 'cancelled')),
-            delay(2_000).then(() =>
-              assert.fail('Cancellation/deadline must interrupt acquisition'),
-            ),
-          ]);
-          assert.equal(
-            browser.isConnected(),
-            true,
-            'Acquisition is still pending when cancellation completes',
-          );
-          assert.equal(launcher.mock.callCount(), 1, 'Cancellation must not try another browser');
-          acquired.resolve(browser);
-          await closed.promise;
-          assert.equal(browser.isConnected(), false);
-        } finally {
-          controller.abort();
-          acquired.resolve(browser);
-          await client.close();
-          launcher.mock.restore();
-          closer.mock.restore();
-          await close();
-        }
-      }
-    }
-  },
-);
-
-test(
-  'installer cancellation stops its owned process tree before setup completes',
-  { timeout: 15_000, skip: process.platform === 'win32' },
-  async () => {
-    const realSpawn = childProcess.spawn.bind(childProcess);
-    const ready = Promise.withResolvers<void>();
-
-    // A real grandchild ignores SIGTERM and inherits the installer streams, like a subprocess
-    // that outlives its CLI parent. No browser download or system package manager runs here.
-    const descendant =
-      "process.on('SIGTERM', () => {}); console.log('descendant ready'); setInterval(() => {}, 1000);";
-
-    const parent = `const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'inherit' }); setInterval(() => {}, 1000);`;
-    const children: ReturnType<typeof spawn>[] = [];
-
-    const spawner = mock.method(
-      childProcess,
-      'spawn',
-      (_command: string, _args: readonly string[], options: SpawnOptions) => {
-        const child = realSpawn(process.execPath, ['-e', parent], options);
-        children.push(child);
-        child.stdout?.on('data', (chunk: Buffer) => {
-          if (chunk.toString().includes('descendant ready')) ready.resolve();
-        });
-
-        return child;
-      },
-    );
-
-    syncBuiltinESMExports();
-    const client = new InfoMentorClient();
-
-    try {
-      client.startBrowserInstall({ withDeps: true });
-      await ready.promise;
-      const child = children[0];
-      assert.ok(child?.pid);
-      let outputClosed = false;
-      child.once('close', () => {
-        outputClosed = true;
-      });
-      const cancelled = client.cancelSetup();
-      await delay(100);
-      assert.equal(client.getSetupStatus().state, 'running');
-      assert.equal(
-        outputClosed,
-        false,
-        'The grandchild must keep the inherited pipe open until killed',
-      );
-      assert.throws(() => client.startBrowserInstall(), { code: 'OPERATION_IN_PROGRESS' });
-      assert.equal((await cancelled).state, 'cancelled');
-      assert.equal(outputClosed, true);
-      assert.equal(child.signalCode, 'SIGTERM');
-    } finally {
-      for (const child of children) {
-        if (child.pid) {
-          try {
-            process.kill(-child.pid, 'SIGKILL');
-          } catch {
-            /* Already stopped. */
-          }
-        }
-      }
-
-      await client.close();
-      spawner.mock.restore();
-      syncBuiltinESMExports();
-    }
-
-    const controller = new AbortController();
-    controller.abort();
-    await assert.rejects(installBrowser({}, controller.signal), { code: 'CANCELLED' });
-  },
-);
-
-test('login keeps an initial HTTP 403 challenge open for a human without retrying', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'infomentor-challenge-'));
-  const file = join(directory, 'session.json');
-  const browser = await launchBrowser();
-  const context = await browser.newContext();
-  let requests = 0;
-  await context.route('**/*', async (route) => {
-    requests++;
-    await route.fulfill({
-      status: 403,
-      contentType: 'text/html',
-      body: '<title>Just a moment...</title><div id="challenge-running">Verify you are human</div>',
-    });
-  });
-  // Keep this interactive-login check headless and use only synthetic pages.
-  const launcher = mock.method(testEngine, 'launch', async () => browser);
-  mock.method(browser, 'newContext', async () => context);
-  const { promise: challenge, resolve: showChallenge } = Promise.withResolvers<void>();
-
-  const stages: string[] = [];
+test('HTTP login relays fresh forms, reuses cookies, and exposes all six MCP operations', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-http-'));
+  const file = join(directory, 'private/session.json');
+  const credentialsFile = join(directory, 'credentials.json');
+  const routes = fixture();
+  const server = createServer({ sessionFile: file });
+  const client = new Client({ name: 'http-test', version: '1.0.0' });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
 
   try {
-    await Promise.all([
-      login({
-        sessionFile: file,
-        timeoutMs: 5_000,
-        onProgress(stage) {
-          stages.push(stage);
+    await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const tools = (await client.listTools()).tools;
+    assert.equal(tools.length, 6);
+    assert.ok(tools.every((tool) => tool.outputSchema));
+    assert.ok(!tools.some((tool) => tool.name.includes('browser')));
 
-          if (stage === 'challenge') showChallenge();
-        },
-      }),
-      (async () => {
-        await challenge;
-        assert.equal(requests, 1);
-        await context.addCookies([
-          { name: 'test-session', value: 'synthetic', domain: 'im1.infomentor.is', path: '/' },
-        ]);
-        const page = context.pages()[0];
-        assert.ok(page);
-        await page.setContent('<meta charset="utf-8"><a href="/logout">Útskrá</a>');
-      })(),
-    ]);
-    assert.equal(stages[0], 'waiting');
-    assert.ok(stages.includes('challenge'));
-    assert.equal(stages.at(-1), 'saved');
-    assert.equal(requests, 1);
-    assert.equal((await readSession(file)).storageState.cookies[0]?.value, 'synthetic');
+    const started = await client.callTool({
+      name: 'infomentor_login',
+      arguments: { credentialsFile },
+    });
+
+    assert.equal(setupStatusSchema.parse(started.structuredContent).state, 'running');
+    let state = 'running';
+
+    for (let step = 0; step < 200 && state === 'running'; step++) {
+      await delay(10);
+      const status = await client.callTool({ name: 'infomentor_setup_status', arguments: {} });
+      state = setupStatusSchema.parse(status.structuredContent).state;
+    }
+
+    assert.equal(state, 'succeeded');
+    const stored = await readSession(file);
+    assert.equal(stored.version, 2);
+    assert.equal((await readFile(file, 'utf8')).includes(credentials.password), false);
+
+    if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o600);
+    const result = await client.callTool({ name: 'infomentor_get_overview', arguments: {} });
+    const overview = overviewSchema.parse(result.structuredContent);
+    assert.deepEqual(overview.children, parent.account.pupils);
+    assert.deepEqual(overview.timetable, [entry]);
+    assert.match(overview.text, /Íslenska/);
+    const freshClient = new InfoMentorClient({ sessionFile: file });
+
+    try {
+      assert.equal((await freshClient.getSessionStatus()).authenticated, true);
+    } finally {
+      await freshClient.close();
+    }
+
+    await client.callTool({ name: 'infomentor_logout', arguments: {} });
+    assert.equal(
+      sessionStatusSchema.parse(
+        (await client.callTool({ name: 'infomentor_session_status', arguments: {} }))
+          .structuredContent,
+      ).authenticated,
+      false,
+    );
+    assert.equal(
+      routes.requests.filter((request) => request.body.includes('txtLykilord')).length,
+      1,
+    );
   } finally {
-    launcher.mock.restore();
-    await browser.close();
+    await client.close();
+    await server.close();
+    routes.restore();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test(
-  'CDP login contexts are isolated and disconnect leaves the remote browser and existing tabs open',
-  {
-    timeout: 20_000,
-    skip: ['firefox', 'webkit'].includes(process.env['INFOMENTOR_BROWSER'] ?? ''),
-  },
-  async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'infomentor-cdp-'));
+test('rejected login, unsafe redirects, challenges, rate limits and malformed authentication fail closed', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-rejected-'));
+  const file = join(directory, 'session.json');
+  await writeSession(await savedSession(), file);
+  const before = await readFile(file, 'utf8');
 
-    const executable =
-      process.env['INFOMENTOR_BROWSER'] === 'chromium'
-        ? chromium.executablePath()
-        : process.platform === 'darwin'
-          ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-          : chromium.executablePath();
+  try {
+    for (const mode of ['rejected', 'redirect', 'challenge', 'rate', 'malformed']) {
+      let calls = 0;
 
-    const child = spawn(
-      executable,
-      [
-        '--headless=new',
-        '--no-sandbox',
-        '--remote-debugging-address=127.0.0.1',
-        '--remote-debugging-port=0',
-        '--user-data-dir=' + directory,
-      ],
-      { stdio: 'ignore' },
-    );
+      const fetcher = mock.method(globalThis, 'fetch', async () => {
+        calls++;
 
-    let processError: Error | undefined;
-    child.on('error', (error) => {
-      processError = error;
-    });
+        if (mode === 'redirect')
+          return new Response(null, {
+            status: 307,
+            headers: { Location: 'https://evil.test/?private=synthetic' },
+          });
 
-    try {
-      let port: string | undefined;
+        if (mode === 'challenge')
+          return new Response('<title>Just a moment</title>', { status: 403 });
 
-      for (let tries = 0; tries < 100; tries++) {
-        if (processError) throw processError;
+        if (mode === 'rate')
+          return new Response('', { status: 429, headers: { 'Retry-After': '120' } });
 
-        try {
-          port = (await readFile(join(directory, 'DevToolsActivePort'), 'utf8')).split('\n')[0];
-        } catch {
-          /* Browser is starting. */
-        }
-
-        if (port) break;
-        await delay(100);
-      }
-
-      assert.ok(port, 'Chrome should expose a loopback debugging port');
-      const cdpUrl = 'http://127.0.0.1:' + port;
-      const remote = await launchBrowser({ cdpUrl });
-      const defaultContext = remote.contexts()[0];
-      assert.ok(defaultContext);
-      const existingPage = await defaultContext.newPage();
-      await existingPage.goto('data:text/html,Existing tab');
-      const isolated = await remote.newContext();
-      await isolated.addCookies([
-        { name: 'test-session', value: 'synthetic', domain: 'im1.infomentor.is', path: '/' },
-      ]);
-      assert.equal((await defaultContext.cookies(LOGIN_URL)).length, 0);
-      await isolated.close();
-      await remote.close();
-      const reconnected = await launchBrowser({ cdpUrl });
+        return new Response(mode === 'malformed' ? '{bad-json}' : 'false');
+      });
 
       try {
-        assert.ok(
-          reconnected
-            .contexts()[0]
-            ?.pages()
-            .some((page) => page.url().includes('Existing')),
-        );
-      } finally {
-        await reconnected.close();
-      }
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) {
-        const exited = new Promise<void>((resolveExit) => child.once('exit', () => resolveExit()));
-        child.kill('SIGTERM');
-        await exited;
-      }
+        const http = new InfoMentorHttp();
 
-      await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    }
-  },
-);
-
-test(
-  'compiled Node CLI speaks typed MCP over stdio; missing auth cannot return school data',
-  { timeout: 10_000 },
-  async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'infomentor-mcp-'));
-    const client = new Client({ name: 'infomentor-test', version: '1.0.0' });
-
-    const transport = new StdioClientTransport({
-      command: 'node',
-      args: [resolve('dist/cli.js'), '--session', join(directory, 'missing.json')],
-      stderr: 'pipe',
-    });
-
-    let stderr = '';
-    transport.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-
-    try {
-      await client.connect(transport);
-      const { tools } = await client.listTools();
-      assert.deepEqual(
-        tools.map(({ name }) => name),
-        [
-          'infomentor_session_status',
-          'infomentor_get_overview',
-          'infomentor_login',
-          'infomentor_setup_status',
-          'infomentor_cancel_setup',
-          'infomentor_logout',
-          'infomentor_install_browser',
-        ],
-      );
-      assert.ok(
-        tools
-          .filter(({ name }) =>
-            [
-              'infomentor_session_status',
-              'infomentor_get_overview',
-              'infomentor_setup_status',
-            ].includes(name),
-          )
-          .every(
-            ({ annotations, outputSchema }) =>
-              annotations?.readOnlyHint && !annotations.destructiveHint && outputSchema,
-          ),
-      );
-
-      const status = CallToolResultSchema.parse(
-        await client.callTool({ name: 'infomentor_session_status', arguments: {} }),
-      );
-
-      assert.equal(sessionStatusSchema.parse(status.structuredContent).authenticated, false);
-
-      const overview = CallToolResultSchema.parse(
-        await client.callTool({ name: 'infomentor_get_overview', arguments: {} }),
-      );
-
-      assert.equal(overview.isError, true);
-      const content = overview.content[0];
-      assert.equal(content?.type === 'text' ? content.text : undefined, LOGIN_REQUIRED);
-
-      const invalid = CallToolResultSchema.parse(
-        await client.callTool({
-          name: 'infomentor_get_overview',
-          arguments: { password: 'never-accept-a-password' },
-        }),
-      );
-
-      assert.equal(invalid.isError, true);
-      assert.ok(!JSON.stringify(invalid).includes('never-accept-a-password'));
-
-      const setup = CallToolResultSchema.parse(
-        await client.callTool({ name: 'infomentor_setup_status', arguments: {} }),
-      );
-
-      assert.equal(setupStatusSchema.parse(setup.structuredContent).state, 'idle');
-      assert.equal(
-        tools.find(({ name }) => name === 'infomentor_logout')?.annotations?.destructiveHint,
-        true,
-      );
-      assert.equal(
-        tools.find(({ name }) => name === 'infomentor_login')?.annotations?.readOnlyHint,
-        false,
-      );
-      // CI installs this exact engine first; do not download another browser in ordinary tests.
-      const browser = process.env['INFOMENTOR_BROWSER'];
-
-      if (browser && ['chromium', 'firefox', 'webkit'].includes(browser)) {
-        const install = CallToolResultSchema.parse(
-          await client.callTool({ name: 'infomentor_install_browser', arguments: { browser } }),
-        );
-
-        assert.equal(setupStatusSchema.parse(install.structuredContent).state, 'running');
-        let state = 'running';
-
-        for (let tries = 0; tries < 100 && state === 'running'; tries++) {
-          await delay(50);
-
-          const progress = CallToolResultSchema.parse(
-            await client.callTool({ name: 'infomentor_setup_status', arguments: {} }),
+        if (mode === 'rejected') assert.equal(await http.isAuthenticated(), false);
+        else
+          await assert.rejects(
+            http.isAuthenticated(),
+            (error: Error) => !error.message.includes('private=synthetic'),
           );
 
-          state = setupStatusSchema.parse(progress.structuredContent).state;
+        if (mode === 'rate') {
+          await assert.rejects(http.isAuthenticated(), { code: 'RATE_LIMITED' });
+          assert.equal(calls, 1);
         }
 
-        assert.equal(state, 'succeeded');
+        await assert.rejects(importSession(file, { sessionFile: file }));
+        assert.equal(await readFile(file, 'utf8'), before);
+      } finally {
+        fetcher.mock.restore();
       }
-
-      assert.equal(stderr, '');
-    } finally {
-      await client.close();
-      await rm(directory, { recursive: true, force: true });
     }
-  },
-);
 
-test(
-  'MCP client reuses one browser and rotating cookies, serializes reads, and stops on challenges or rate limits',
-  { timeout: 20_000 },
-  async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'infomentor-client-'));
-    const file = join(directory, 'session.json');
-    await writeSession(
-      {
-        version: 1,
-        savedAt: new Date().toISOString(),
-        url: overviewUrl,
-        storageState: {
-          cookies: [
-            {
-              name: 'test-session',
-              value: 'synthetic',
-              domain: 'im1.infomentor.is',
-              path: '/',
-              expires: -1,
-              httpOnly: true,
-              secure: true,
-              sameSite: 'Lax',
-            },
-          ],
-          origins: [],
+    const fetcher = mock.method(
+      globalThis,
+      'fetch',
+      async () =>
+        new Response(
+          loginHtml.replace('action="./"', 'action="https://other.infomentor.is/password"'),
+        ),
+    );
+
+    try {
+      await assert.rejects(authenticate(new InfoMentorHttp(), { ...credentials }), {
+        code: 'UNEXPECTED_PAGE',
+      });
+    } finally {
+      fetcher.mock.restore();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('cancelled login/import cannot replace the previous account at the atomic commit', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-commit-'));
+  const file = join(directory, 'session.json');
+  const transfer = join(directory, 'transfer.json');
+  const credentialsFile = join(directory, 'credentials.json');
+  const routes = fixture();
+  await writeSession(await savedSession(), file);
+  await writeSession(await savedSession(), transfer);
+  await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
+  const before = await readFile(file, 'utf8');
+  const originalWrite = fs.writeFile.bind(fs);
+
+  try {
+    for (const request of [{ credentialsFile }, { importFile: transfer }]) {
+      const written = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+
+      const writer = mock.method(
+        fs,
+        'writeFile',
+        async (...args: Parameters<typeof fs.writeFile>) => {
+          await originalWrite(...args);
+
+          if (String(args[0]).startsWith(file + '.')) {
+            written.resolve();
+            await finish.promise;
+          }
         },
-      },
-      file,
-    );
-    let launches = 0;
-    let contexts = 0;
-    let requests = 0;
-    let concurrent = 0;
-    let maximumConcurrent = 0;
-    let mode: 'ready' | 'limited' | 'challenge' | 'slow' | 'loading' = 'ready';
-    let contextForHuman: BrowserContext | undefined;
-    const launch = testEngine.launch.bind(testEngine);
+      );
 
-    // Only intercept network traffic; exercise the actual browser and client lifecycle.
-    const launcher = mock.method(
-      testEngine,
-      'launch',
-      async (...args: Parameters<typeof testEngine.launch>): Promise<Browser> => {
-        launches++;
-        const browser = await launch(...args);
-        const newContext = browser.newContext.bind(browser);
-        mock.method(
-          browser,
-          'newContext',
-          async (...contextArgs: Parameters<Browser['newContext']>): Promise<BrowserContext> => {
-            contexts++;
-            const context = await newContext(...contextArgs);
-            contextForHuman = context;
-            await context.route('**/*', async (route) => {
-              requests++;
-              concurrent++;
-              maximumConcurrent = Math.max(maximumConcurrent, concurrent);
-              await delay(40);
-              concurrent--;
+      syncBuiltinESMExports();
+      const client = new InfoMentorClient({ sessionFile: file });
 
-              if (mode === 'slow') {
-                await delay(1000);
-                await route.abort().catch(() => {});
+      try {
+        client.startLogin(request);
+        await written.promise;
+        const cancelled = client.cancelSetup();
+        finish.resolve();
+        assert.equal((await cancelled).state, 'cancelled');
+        assert.equal(await readFile(file, 'utf8'), before);
+        assert.deepEqual((await readdir(directory)).toSorted(), [
+          'credentials.json',
+          'session.json',
+          'transfer.json',
+        ]);
+      } finally {
+        finish.resolve();
+        await client.close();
+        writer.mock.restore();
+        syncBuiltinESMExports();
+      }
+    }
+  } finally {
+    routes.restore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
-                return;
-              }
+test('HTTP cancellation and login deadlines abort in-flight requests; closing a client drains reads', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-cancel-'));
+  const file = join(directory, 'session.json');
+  const credentialsFile = join(directory, 'credentials.json');
+  await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
+  await writeSession(await savedSession(), file);
+  let active = 0;
 
-              if (mode === 'loading') {
-                await route.fulfill({
-                  contentType: 'text/html',
-                  body: '<title>Still loading</title>',
-                });
-              } else if (mode === 'limited') {
-                await route.fulfill({
-                  status: 429,
-                  headers: { 'retry-after': '1' },
-                  body: 'Slow down',
-                });
-              } else if (mode === 'challenge') {
-                await route.fulfill({
-                  status: 403,
-                  contentType: 'text/html; charset=utf-8',
-                  body: '<title>Just a moment...</title><div id="challenge-running">Verify you are human</div>',
-                });
-              } else {
-                await route.fulfill({
-                  contentType: 'text/html; charset=utf-8',
-                  headers: {
-                    'set-cookie': 'test-session=rotated; Path=/; HttpOnly; Secure; SameSite=Lax',
-                  },
-                  body: '<meta charset="utf-8"><title>Synthetic school</title><h1>Vikuáætlun</h1><a href="/logout">Útskrá</a>',
-                });
-              }
-            });
+  const fetcher = mock.method(
+    globalThis,
+    'fetch',
+    async (_input: string | URL | Request, init?: RequestInit) => {
+      active++;
 
-            return context;
-          },
-        );
+      try {
+        await delay(60_000, undefined, { signal: init?.signal ?? undefined });
 
-        return browser;
-      },
-    );
+        return new Response('true');
+      } finally {
+        active--;
+      }
+    },
+  );
 
+  try {
+    await assert.rejects(login({ credentialsFile, sessionFile: file, timeoutMs: 30 }), {
+      code: 'LOGIN_TIMEOUT',
+    });
+    assert.equal(active, 0);
     const client = new InfoMentorClient({ sessionFile: file });
 
     try {
-      const results = await Promise.all([client.getOverview(), client.getOverview()]);
-      assert.ok(results.every((result) => result.text.includes('Vikuáætlun')));
-      assert.equal(launches, 1);
-      assert.equal(contexts, 1);
-      assert.equal(maximumConcurrent, 1);
-      assert.ok(contextForHuman);
-      assert.equal((await contextForHuman.cookies(LOGIN_URL))[0]?.value, 'rotated');
-      assert.equal((await readSession(file)).storageState.cookies[0]?.value, 'synthetic');
-
-      // Hold the real page's close operation open: cancellation must drain it
-      // before another read can inspect or reuse the page.
-      const closingPage = contextForHuman.pages()[0];
-      assert.ok(closingPage);
-      const closePage = closingPage.close.bind(closingPage);
-      const closeStarted = Promise.withResolvers<void>();
-      const finishClose = Promise.withResolvers<void>();
-
-      const pageClose = mock.method(closingPage, 'close', async () => {
-        closeStarted.resolve();
-        await finishClose.promise;
-        await closePage();
-      });
-
-      const loadingCancellation = new AbortController();
-      mode = 'loading';
-      let settled = false;
-
-      const loadingRead = assert.rejects(
-        client.getOverview(loadingCancellation.signal).finally(() => {
-          settled = true;
-        }),
-        { code: 'CANCELLED' },
-      );
-
-      try {
-        await closingPage.waitForFunction(() => document.title === 'Still loading');
-        loadingCancellation.abort();
-        await closeStarted.promise;
-        await delay(100);
-        assert.equal(settled, false, 'Cancellation must await page closure before settling');
-      } finally {
-        finishClose.resolve();
-        await loadingRead;
-        pageClose.mock.restore();
-      }
-
-      mode = 'ready';
-      assert.equal((await client.getSessionStatus()).authenticated, true);
-
-      mode = 'slow';
-      const cancellation = new AbortController();
-      const cancelledRead = client.getOverview(cancellation.signal);
-      await delay(100);
-      cancellation.abort();
-      await assert.rejects(cancelledRead, { code: 'CANCELLED' });
-      mode = 'ready';
-      assert.equal((await client.getSessionStatus()).authenticated, true);
-      assert.equal(launches, 1);
-
-      mode = 'limited';
-      await assert.rejects(client.getOverview(), { code: 'RATE_LIMITED', retryAfterMs: 1000 });
-      const limitedRequests = requests;
-      mode = 'ready';
-      await assert.rejects(client.getOverview(), { code: 'RATE_LIMITED' });
-      assert.equal(requests, limitedRequests);
-      await delay(1050);
-      assert.equal((await client.getSessionStatus()).authenticated, true);
-
-      mode = 'challenge';
-      await assert.rejects(client.getOverview(), { code: 'CHALLENGE_REQUIRED' });
-      const challengedRequests = requests;
-      await assert.rejects(client.getOverview(), { code: 'CHALLENGE_REQUIRED' });
-      assert.equal(requests, challengedRequests);
-      assert.ok(contextForHuman);
-      const page = contextForHuman.pages()[0];
-      assert.ok(page);
-      // Simulate a human finishing our synthetic challenge; never solve real challenges.
-      await page.setContent('<a href="/logout">Útskrá</a>');
-      mode = 'ready';
-      assert.equal((await client.getSessionStatus()).authenticated, true);
-      assert.equal(launches, 1);
+      const reading = assert.rejects(client.getOverview(), { code: 'CANCELLED' });
+      await delay(10);
       await client.close();
-      await assert.rejects(client.getOverview(), { code: 'CANCELLED' });
+      await reading;
+      assert.equal(active, 0);
     } finally {
       await client.close();
-      launcher.mock.restore();
-      await rm(directory, { recursive: true, force: true });
     }
-  },
-);
+  } finally {
+    fetcher.mock.restore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
-test(
-  'MCP manages login, import, cancellation and logout through real browser contexts',
-  { timeout: 25_000 },
-  async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'infomentor-mcp-setup-'));
-    const file = join(directory, 'session.json');
-    const browsers: Browser[] = [];
-    let latestContext: BrowserContext | undefined;
-    const launch = testEngine.launch.bind(testEngine);
+test('private loopback login form rejects cross-origin submissions and closes after use or cancellation', async () => {
+  const spawn = childProcess.spawn.bind(childProcess);
 
-    const launcher = mock.method(
-      testEngine,
-      'launch',
-      async (...args: Parameters<typeof testEngine.launch>): Promise<Browser> => {
-        const browser = await launch({ ...args[0], headless: true });
-        browsers.push(browser);
-        const newContext = browser.newContext.bind(browser);
-        mock.method(
-          browser,
-          'newContext',
-          async (...contextArgs: Parameters<Browser['newContext']>): Promise<BrowserContext> => {
-            const context = await newContext(...contextArgs);
-            latestContext = context;
-            await intercept(context);
+  const opener = mock.method(childProcess, 'spawn', () =>
+    spawn(process.execPath, ['-e', ''], { stdio: 'ignore' }),
+  );
 
-            return context;
-          },
-        );
+  syncBuiltinESMExports();
+  const controller = new AbortController();
+  const ready = Promise.withResolvers<string>();
+  const pending = promptCredentials(controller.signal, (url) => ready.resolve(url));
 
-        return browser;
-      },
-    );
+  try {
+    const url = await ready.promise;
+    const page = await nativeFetch(url);
+    assert.equal(page.headers.get('cache-control'), 'no-store');
+    const form = parseForms(await page.text())[0];
+    assert.ok(form);
+    form.fields.set('username', credentials.username);
+    form.fields.set('password', credentials.password);
 
-    const server = createServer({ sessionFile: file });
-    const client = new Client({ name: 'setup-test', version: '1.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const wrongOrigin = await nativeFetch(url, {
+      method: 'POST',
+      headers: { Origin: 'https://evil.test' },
+      body: form.fields,
+    });
 
-    const call = async (name: string, args: LoginRequest = {}) =>
-      CallToolResultSchema.parse(await client.callTool({ name, arguments: args }));
+    assert.equal(wrongOrigin.status, 403);
 
-    const waitFor = async (expected: string) => {
-      for (let tries = 0; tries < 100; tries++) {
-        const result = await call('infomentor_setup_status');
-        const status = setupStatusSchema.parse(result.structuredContent);
+    const posted = await nativeFetch(url, {
+      method: 'POST',
+      headers: { Origin: new URL(url).origin },
+      body: form.fields,
+    });
 
-        if (status.state === expected) return status;
-        assert.ok(!['failed', 'cancelled'].includes(status.state), status.message);
-        await delay(50);
-      }
-
-      assert.fail('Setup should reach ' + expected);
-    };
-
-    try {
-      await server.connect(serverTransport);
-      await client.connect(clientTransport);
-      const started = await call('infomentor_login');
-      assert.equal(setupStatusSchema.parse(started.structuredContent).state, 'running');
-      assert.equal((await call('infomentor_login')).isError, true);
-      assert.equal((await call('infomentor_get_overview')).isError, true);
-      await waitFor('waiting');
-      assert.ok(latestContext);
-      await latestContext.addCookies([
-        {
-          name: 'test-session',
-          value: 'synthetic',
-          domain: 'im1.infomentor.is',
-          path: '/',
-          httpOnly: true,
-          secure: true,
-        },
-      ]);
-      const page = latestContext.pages()[0];
-      assert.ok(page);
-      await page.goto(overviewUrl);
-      await waitFor('succeeded');
-      assert.equal(
-        (await call('infomentor_session_status')).structuredContent?.['authenticated'],
-        true,
-      );
-      const overview = await call('infomentor_get_overview');
-      assert.ok(JSON.stringify(overview).includes('Vikuáætlun'));
-      assert.ok(!JSON.stringify(overview).includes('test-session'));
-
-      const before = await readFile(file, 'utf8');
-      const transfer = join(directory, 'transfer.json');
-      await writeFile(transfer, before);
-      await call('infomentor_logout');
-      assert.equal(
-        (await call('infomentor_session_status')).structuredContent?.['authenticated'],
-        false,
-      );
-      assert.ok(browsers.every((browser) => !browser.isConnected()));
-      await call('infomentor_login', { importFile: transfer });
-      await waitFor('succeeded');
-      assert.equal(
-        (await call('infomentor_session_status')).structuredContent?.['authenticated'],
-        true,
-      );
-
-      const imported = await readFile(file, 'utf8');
-      await call('infomentor_login');
-      await waitFor('waiting');
-      const cancelled = await call('infomentor_cancel_setup');
-      assert.equal(setupStatusSchema.parse(cancelled.structuredContent).state, 'cancelled');
-      assert.equal(await readFile(file, 'utf8'), imported);
-      await call('infomentor_login', { timeoutSeconds: 1 });
-      await waitFor('failed');
-      assert.equal(await readFile(file, 'utf8'), imported);
-
-      await call('infomentor_login');
-      const loggedOut = await call('infomentor_logout');
-      assert.equal(loggedOut.structuredContent?.['authenticated'], false);
-      await assert.rejects(readSession(file), { code: 'LOGIN_REQUIRED' });
-      assert.ok(browsers.every((browser) => !browser.isConnected()));
-      await call('infomentor_login');
-      await waitFor('waiting');
-      await client.close();
-
-      for (let tries = 0; tries < 50 && browsers.some((browser) => browser.isConnected()); tries++)
-        await delay(50);
-      assert.ok(browsers.every((browser) => !browser.isConnected()));
-    } finally {
-      await client.close();
-      await server.close();
-      launcher.mock.restore();
-
-      for (const browser of browsers) await browser.close();
-      await rm(directory, { recursive: true, force: true });
-    }
-  },
-);
+    assert.equal(posted.status, 200);
+    assert.deepEqual(await pending, credentials);
+    await assert.rejects(nativeFetch(url));
+    const cancelled = new AbortController();
+    const waiting = assert.rejects(promptCredentials(cancelled.signal), { code: 'CANCELLED' });
+    cancelled.abort();
+    await waiting;
+  } finally {
+    controller.abort();
+    await pending.catch(() => {});
+    opener.mock.restore();
+    syncBuiltinESMExports();
+  }
+});

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install a verified prebuilt release into a user-owned prefix. No sudo or Node required.
 set -eu
-version=${INFOMENTOR_VERSION:-0.1.3}
+version=${INFOMENTOR_VERSION:-0.2.0}
 prefix=${INFOMENTOR_PREFIX:-${HOME:?HOME must be set}/.local}
 case "$version" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid INFOMENTOR_VERSION.' >&2; exit 1 ;; esac
 case "$prefix" in /*) ;; *) echo 'INFOMENTOR_PREFIX must be an absolute path.' >&2; exit 1 ;; esac
@@ -42,5 +42,5 @@ if [ -d "$prefix/bin/infomentor-mcp" ]; then echo 'The command path is a directo
 ln -s "$install_dir/bin/infomentor-mcp" "$temporary/command"
 mv -f "$temporary/command" "$prefix/bin/infomentor-mcp"
 printf 'Installed infomentor-mcp %s at %s/bin/infomentor-mcp\n' "$version" "$prefix"
-printf 'Use that absolute command path in your MCP client. Browser setup and login are available through MCP.\n'
+printf 'Use that absolute command path in your MCP client. Direct HTTP login is available through MCP.\n'
 case ":${PATH:-}:" in *":$prefix/bin:"*) ;; *) printf 'For terminal use, add %s/bin to PATH.\n' "$prefix" ;; esac

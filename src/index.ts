@@ -4,10 +4,6 @@ export { InfoMentorClient, loginRequestSchema, setupStatusSchema } from './clien
 
 export type { LoginRequest, SetupStatus } from './client.js';
 
-export { installBrowser, installBrowserSchema } from './browser-install.js';
-
-export type { InstallBrowserOptions } from './browser-install.js';
-
 export { login, importSession } from './login.js';
 
 export type { LoginOptions } from './login.js';
@@ -22,8 +18,6 @@ export {
 } from './session.js';
 
 export type {
-  BrowserChoice,
-  BrowserStorageState,
   ErrorCode,
   Overview,
   SavedSession,

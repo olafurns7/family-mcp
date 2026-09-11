@@ -1,34 +1,26 @@
 import { rm } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import type { Browser, BrowserContext, Page } from 'playwright';
 import { z } from 'zod';
 import { login, importSession } from './login.js';
-import { installBrowser, installBrowserSchema } from './browser-install.js';
-import type { InstallBrowserOptions } from './browser-install.js';
+import { InfoMentorHttp, parseParent, timetableSchema } from './http.js';
 import {
-  browserChoiceSchema,
-  CHALLENGE_REQUIRED,
-  inspectPage,
   InfoMentorError,
-  launchBrowser,
   LOGIN_REQUIRED,
-  openAuthenticatedPage,
+  PARENT_URL,
   readSession,
+  restoreCookies,
   sessionPath,
   throwIfAborted,
-  trustedUrl,
 } from './session.js';
 import type { Overview, SessionOptions, SessionStatus } from './session.js';
 
 export const loginRequestSchema = z
   .object({
     importFile: z.string().refine(isAbsolute, 'Use an absolute path on the MCP host.').optional(),
-    browser: browserChoiceSchema.optional(),
-    executablePath: z
+    credentialsFile: z
       .string()
-      .refine(isAbsolute, 'Use an absolute browser executable path.')
+      .refine(isAbsolute, 'Use an absolute path on the MCP host.')
       .optional(),
-    cdpUrl: z.string().optional(),
     timeoutSeconds: z.number().int().min(1).max(3600).default(300),
   })
   .strict();
@@ -36,35 +28,39 @@ export const loginRequestSchema = z
 export type LoginRequest = z.input<typeof loginRequestSchema>;
 
 export const setupStatusSchema = z.object({
-  state: z.enum(['idle', 'running', 'waiting', 'challenge', 'succeeded', 'failed', 'cancelled']),
-  operation: z.enum(['login', 'import', 'install']).optional(),
+  state: z.enum(['idle', 'running', 'waiting', 'succeeded', 'failed', 'cancelled']),
+  operation: z.enum(['login', 'import']).optional(),
   message: z.string(),
+  loginUrl: z.string().optional(),
 });
 
 export type SetupStatus = z.infer<typeof setupStatusSchema>;
 
-/** Reuses a browser and serializes reads for the lifetime of an MCP connection. */
+/** Reuses cookies and serializes account reads for one MCP connection. */
 export class InfoMentorClient {
-  private active:
-    | { browser: Browser; context: BrowserContext; page: Page; savedAt: string }
-    | undefined;
+  private active: { http: InfoMentorHttp; savedAt: string } | undefined;
   private pending: Promise<void> = Promise.resolve();
-  private cooldownUntil = 0;
+  private readonly lifetime = new AbortController();
   private closed = false;
   private loggingOut = false;
   private setup: { controller: AbortController; promise: Promise<void> } | undefined;
   private setupStatus: SetupStatus = { state: 'idle', message: 'No setup operation has started.' };
-
   private readonly options: SessionOptions;
-
   constructor(options: SessionOptions = {}) {
     this.options = { ...options };
   }
 
-  private read<T>(read: (page: Page) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  private read<T>(
+    read: (http: InfoMentorHttp, signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const combined = signal
+      ? AbortSignal.any([signal, this.lifetime.signal])
+      : this.lifetime.signal;
+
     // ponytail: one queue per account/client; separate clients if multi-account use is added.
     const result = this.pending.then(async () => {
-      throwIfAborted(signal);
+      throwIfAborted(combined);
 
       if (this.closed)
         throw new InfoMentorError('CANCELLED', 'This InfoMentor client has been closed.');
@@ -72,77 +68,19 @@ export class InfoMentorClient {
       if (this.setup || this.loggingOut)
         throw new InfoMentorError(
           'OPERATION_IN_PROGRESS',
-          'Account setup is in progress. Call infomentor_setup_status before reading school data.',
+          'Account setup is in progress. Check infomentor_setup_status before reading school data.',
         );
+      const saved = await readSession(sessionPath(this.options.sessionFile));
 
-      if (Date.now() < this.cooldownUntil) {
-        throw new InfoMentorError(
-          'RATE_LIMITED',
-          'InfoMentor requested a pause. Wait before retrying.',
-          this.cooldownUntil - Date.now(),
-        );
-      }
+      if (this.active?.savedAt !== saved.savedAt)
+        this.active = { http: new InfoMentorHttp(restoreCookies(saved)), savedAt: saved.savedAt };
+      const http = this.active.http;
+      await http.requireAuthentication(combined);
+      const output = await read(http, combined);
+      throwIfAborted(combined);
 
-      const file = sessionPath(this.options.sessionFile);
-      const saved = await readSession(file);
-
-      if (this.active?.savedAt !== saved.savedAt || !this.active.browser.isConnected()) {
-        await this.closeBrowser();
-        const browser = await launchBrowser(this.options, true, signal);
-
-        try {
-          const context = await browser.newContext({
-            storageState: saved.storageState,
-            viewport: null,
-          });
-
-          this.active = { browser, context, page: await context.newPage(), savedAt: saved.savedAt };
-        } catch (error) {
-          await browser.close();
-          throw error;
-        }
-      }
-
-      const active = this.active;
-
-      if (!active)
-        throw new InfoMentorError('BROWSER_UNAVAILABLE', 'Browser session could not be created.');
-
-      let closingPage: Promise<void> | undefined;
-
-      const cancel = (): void => {
-        closingPage = active.page.close().catch(() => {});
-      };
-
-      signal?.addEventListener('abort', cancel, { once: true });
-
-      try {
-        if (active.page.isClosed()) active.page = await active.context.newPage();
-
-        if ((await inspectPage(active.page)) === 'challenge') {
-          throw new InfoMentorError('CHALLENGE_REQUIRED', CHALLENGE_REQUIRED);
-        }
-
-        await openAuthenticatedPage(active.context, saved.url, signal, active.page);
-        const output = await read(active.page);
-        throwIfAborted(signal);
-
-        // Keep refreshed cookies in this context. Background writes could undo
-        // a concurrent logout or overwrite a newly imported account session.
-        return output;
-      } catch (error) {
-        throwIfAborted(signal);
-
-        if (error instanceof InfoMentorError && error.code === 'RATE_LIMITED') {
-          this.cooldownUntil = Date.now() + (error.retryAfterMs ?? 60_000);
-        }
-
-        throw error;
-      } finally {
-        signal?.removeEventListener('abort', cancel);
-        // Drain cancellation before the next queued read can reuse this context.
-        await closingPage;
-      }
+      // Rotated cookies stay in memory; a background disk write could undo logout or a new login.
+      return output;
     });
 
     this.pending = result.then(
@@ -154,27 +92,44 @@ export class InfoMentorClient {
   }
 
   getOverview(signal?: AbortSignal): Promise<Overview> {
-    return this.read(async (page) => {
-      const texts: string[] = [];
+    return this.read(async (http, activeSignal) => {
+      const page = await http.request(PARENT_URL, undefined, activeSignal);
+      const parent = parseParent(page.text);
+      const hasTimetable = parent.apps.some((app) => app.codeName === 'timetable');
+      let timetable: Overview['timetable'] = null;
 
-      for (const frame of page.frames()) {
+      if (hasTimetable) {
+        const response = await http.request(
+          new URL('timetable/timetable/appData', PARENT_URL).href,
+          new URLSearchParams(),
+          activeSignal,
+        );
+
         try {
-          trustedUrl(frame.url());
+          timetable = timetableSchema.parse(JSON.parse(response.text)).items;
         } catch {
-          continue;
+          throw new InfoMentorError(
+            'UNEXPECTED_PAGE',
+            'InfoMentor timetable data is unavailable or its format has changed.',
+          );
         }
-
-        texts.push((await frame.locator('body').innerText({ timeout: 5_000 })).trim());
       }
 
-      const text = texts.filter(Boolean).join('\n\n');
+      const lines = parent.account.pupils.map(
+        (pupil) => `${pupil.name}${pupil.selected ? ' (selected)' : ''}`,
+      );
 
-      if (!text) throw new InfoMentorError('UNEXPECTED_PAGE', 'InfoMentor returned an empty page.');
+      if (timetable)
+        for (const item of timetable)
+          lines.push(`${item.start}: ${item.title} (${item.startTime}–${item.endTime})`);
+      const text = lines.join('\n');
 
       return {
-        title: await page.title(),
+        title: 'InfoMentor parent overview',
         text: text.slice(0, 40_000),
         truncated: text.length > 40_000,
+        children: parent.account.pupils,
+        timetable,
         retrievedAt: new Date().toISOString(),
       };
     }, signal);
@@ -184,27 +139,30 @@ export class InfoMentorClient {
     try {
       return await this.read(async () => ({ authenticated: true }), signal);
     } catch (error) {
-      if (error instanceof InfoMentorError && error.code === 'LOGIN_REQUIRED') {
+      if (error instanceof InfoMentorError && error.code === 'LOGIN_REQUIRED')
         return { authenticated: false, nextStep: LOGIN_REQUIRED };
-      }
-
       throw error;
     }
   }
 
-  /** Starts a bounded background operation so MCP calls do not wait for human login. */
-  private startSetup(
-    operation: 'login' | 'import' | 'install',
-    run: (signal: AbortSignal) => Promise<void>,
-  ): SetupStatus {
+  startLogin(request: LoginRequest = {}): SetupStatus {
+    const parsed = loginRequestSchema.parse(request);
+
+    if (parsed.importFile && parsed.credentialsFile)
+      throw new InfoMentorError(
+        'INVALID_CONFIGURATION',
+        'Choose session import or a credentials file, not both.',
+      );
+
     if (this.closed)
       throw new InfoMentorError('CANCELLED', 'This InfoMentor client has been closed.');
 
     if (this.setup || this.loggingOut)
       throw new InfoMentorError(
         'OPERATION_IN_PROGRESS',
-        'Another setup operation is active. Check infomentor_setup_status or call infomentor_cancel_setup first.',
+        'Another setup operation is active. Check its status or cancel it first.',
       );
+    const operation = parsed.importFile ? 'import' : 'login';
     const controller = new AbortController();
     this.setupStatus = {
       operation,
@@ -216,15 +174,39 @@ export class InfoMentorClient {
       .then(async () => {
         await this.pending;
         throwIfAborted(controller.signal);
-        await this.closeBrowser();
-        await run(controller.signal);
+        this.active = undefined;
+
+        if (parsed.importFile)
+          await importSession(parsed.importFile, this.options, controller.signal);
+        else {
+          const options = {
+            ...this.options,
+            signal: controller.signal,
+            timeoutMs: parsed.timeoutSeconds * 1000,
+            onProgress: (stage: 'waiting' | 'saved', loginUrl?: string): void => {
+              if (stage === 'saved') return;
+              this.setupStatus = {
+                operation,
+                state: 'waiting',
+                message:
+                  'Open the private local sign-in form. Never send passwords or session cookies to the agent.',
+              };
+
+              if (loginUrl) this.setupStatus.loginUrl = loginUrl;
+            },
+          };
+
+          await login(
+            parsed.credentialsFile
+              ? { ...options, credentialsFile: parsed.credentialsFile }
+              : options,
+          );
+        }
+
         this.setupStatus = {
           operation,
           state: 'succeeded',
-          message:
-            operation === 'install'
-              ? 'Browser installed. Call infomentor_login to sign in.'
-              : 'Session saved. Call infomentor_session_status to verify access.',
+          message: 'Session saved. Call infomentor_session_status to verify access.',
         };
       })
       .catch((cause: unknown) => {
@@ -235,7 +217,7 @@ export class InfoMentorClient {
             ? 'Setup cancelled. The previously saved session was kept.'
             : cause instanceof InfoMentorError
               ? cause.message
-              : 'Setup failed. Check the browser, network, and session-file permissions.',
+              : 'Setup failed. Check the network and session-file permissions.',
         };
       })
       .finally(() => {
@@ -247,57 +229,15 @@ export class InfoMentorClient {
     return this.getSetupStatus();
   }
 
-  startLogin(request: LoginRequest = {}): SetupStatus {
-    const parsed = loginRequestSchema.parse(request);
-    const options = { ...this.options };
-
-    if (parsed.browser !== undefined) options.browser = parsed.browser;
-
-    if (parsed.executablePath !== undefined) options.executablePath = parsed.executablePath;
-
-    if (parsed.cdpUrl !== undefined) options.cdpUrl = parsed.cdpUrl;
-
-    return this.startSetup(parsed.importFile ? 'import' : 'login', async (signal) => {
-      if (parsed.importFile) await importSession(parsed.importFile, options, signal);
-      else
-        await login({
-          ...options,
-          signal,
-          timeoutMs: parsed.timeoutSeconds * 1000,
-          onProgress: (stage) => {
-            if (stage === 'saved') return;
-            this.setupStatus = {
-              operation: 'login',
-              state: stage,
-              message:
-                stage === 'challenge'
-                  ? 'Complete the security check in the browser. The login window stays open.'
-                  : 'Sign in directly in the browser on the MCP host or connected desktop. Then check infomentor_setup_status. Never send passwords or cookies to the agent.',
-            };
-          },
-        });
-      Object.assign(this.options, options);
-      this.cooldownUntil = 0;
-    });
-  }
-
-  startBrowserInstall(request: InstallBrowserOptions = {}): SetupStatus {
-    const options = installBrowserSchema.parse(request);
-
-    return this.startSetup('install', (signal) => installBrowser(options, signal));
-  }
-
   getSetupStatus(): SetupStatus {
     return { ...this.setupStatus };
   }
-
   async cancelSetup(): Promise<SetupStatus> {
     this.setup?.controller.abort();
     await this.setup?.promise;
 
     return this.getSetupStatus();
   }
-
   async logout(): Promise<void> {
     if (this.loggingOut)
       throw new InfoMentorError('OPERATION_IN_PROGRESS', 'Logout is already in progress.');
@@ -306,14 +246,8 @@ export class InfoMentorClient {
     try {
       await this.cancelSetup();
       await this.pending;
-
-      try {
-        await this.closeBrowser();
-      } finally {
-        await rm(sessionPath(this.options.sessionFile), { force: true });
-      }
-
-      this.cooldownUntil = 0;
+      this.active = undefined;
+      await rm(sessionPath(this.options.sessionFile), { force: true });
       this.setupStatus = {
         state: 'idle',
         message: 'Local session removed. Call infomentor_login to sign in again.',
@@ -322,24 +256,11 @@ export class InfoMentorClient {
       this.loggingOut = false;
     }
   }
-
-  private async closeBrowser(): Promise<void> {
-    const active = this.active;
-    this.active = undefined;
-
-    if (!active) return;
-
-    try {
-      await active.context.close();
-    } finally {
-      await active.browser.close();
-    }
-  }
-
   async close(): Promise<void> {
     this.closed = true;
+    this.lifetime.abort();
     await this.cancelSetup();
     await this.pending;
-    await this.closeBrowser();
+    this.active = undefined;
   }
 }

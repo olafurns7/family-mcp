@@ -4,34 +4,29 @@ import { parseArgs } from 'node:util';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { importSession, login } from './login.js';
-import { installBrowser } from './browser-install.js';
 import { InfoMentorClient } from './client.js';
 import { createServer, packageInfo } from './server.js';
-import { browserChoiceSchema, InfoMentorError, sessionPath } from './session.js';
+import { InfoMentorError, sessionPath } from './session.js';
 import type { SessionOptions } from './session.js';
 
 const help = [
   'Usage: infomentor-mcp [command] [options]',
   '',
   'Commands:',
-  '  login              Open a browser; save automatically after sign-in verifies',
+  '  login              Sign in over HTTPS using a private local form or credentials file',
   '  status             Verify the saved session without opening a window',
   '  logout             Delete the local session (does not revoke it on InfoMentor)',
   '  serve              Start the stdio MCP server (default)',
-  '  install-browser    Install Chromium, Firefox, or WebKit (default: Chromium)',
   '',
   'Options:',
   '  --session FILE     Session file (default: ~/.infomentor-mcp/session.json)',
-  '  --browser NAME     chrome, msedge, chromium, firefox, or webkit; auto-detected by default',
-  '  --executable-path FILE  Path to Brave, Vivaldi, or another Chromium-based browser',
-  '  --cdp-url URL      Connect to a remote browser via loopback/SSH or TLS',
+  '  --credentials FILE Private JSON file with username/password (headless login)',
   '  --import FILE      login: validate and import a session on a headless machine',
   '  --timeout SECONDS  login: maximum wait (default: 300)',
-  '  --with-deps        install-browser: also install Linux system dependencies',
   '  -h, --help         Show help',
   '  -v, --version      Show version',
   '',
-  'Environment: INFOMENTOR_SESSION_PATH, INFOMENTOR_BROWSER, INFOMENTOR_EXECUTABLE_PATH, INFOMENTOR_CDP_URL',
+  'Environment: INFOMENTOR_SESSION_PATH, INFOMENTOR_CREDENTIALS_FILE',
 ].join('\n');
 
 async function main(): Promise<void> {
@@ -42,12 +37,9 @@ async function main(): Promise<void> {
       allowPositionals: true,
       options: {
         session: { type: 'string' },
-        browser: { type: 'string' },
-        'cdp-url': { type: 'string' },
-        'executable-path': { type: 'string' },
+        credentials: { type: 'string' },
         import: { type: 'string' },
         timeout: { type: 'string' },
-        'with-deps': { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -80,34 +72,19 @@ async function main(): Promise<void> {
     );
   const command = positionals[0] ?? 'serve';
 
-  if (
-    (command !== 'login' && (values.import || values.timeout)) ||
-    (command !== 'install-browser' && values['with-deps'])
-  ) {
+  if (command !== 'login' && (values.import || values.timeout || values.credentials)) {
+    throw new InfoMentorError('INVALID_CONFIGURATION', 'Login options only apply to login.');
+  }
+
+  if (values.import && values.credentials)
     throw new InfoMentorError(
       'INVALID_CONFIGURATION',
-      'An option does not apply to this command. Run infomentor-mcp --help.',
+      'Choose session import or credentials, not both.',
     );
-  }
 
   const options: SessionOptions = {};
 
   if (values.session) options.sessionFile = resolve(values.session);
-
-  if (values['cdp-url']) options.cdpUrl = values['cdp-url'];
-
-  if (values['executable-path']) options.executablePath = resolve(values['executable-path']);
-
-  if (values.browser) {
-    const browser = browserChoiceSchema.safeParse(values.browser);
-
-    if (!browser.success)
-      throw new InfoMentorError(
-        'INVALID_CONFIGURATION',
-        'Browser must be chrome, msedge, chromium, firefox, or webkit.',
-      );
-    options.browser = browser.data;
-  }
 
   if (command === 'serve') {
     const server = createServer(options);
@@ -118,7 +95,7 @@ async function main(): Promise<void> {
       });
     };
 
-    // Stdio EOF and process termination must also close remote browser contexts.
+    // Stdio EOF and process termination cancel network requests and local login setup.
     process.stdin.once('end', stop);
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
@@ -133,29 +110,6 @@ async function main(): Promise<void> {
   process.once('SIGTERM', cancel);
 
   try {
-    if (command === 'install-browser') {
-      const browser = options.browser ?? 'chromium';
-
-      if (
-        (browser !== 'chromium' && browser !== 'firefox' && browser !== 'webkit') ||
-        options.cdpUrl ||
-        options.executablePath
-      ) {
-        throw new InfoMentorError(
-          'INVALID_CONFIGURATION',
-          'Install chromium, firefox, or webkit. System Chrome, Edge, and custom executables are selected when running the package.',
-        );
-      }
-
-      await installBrowser(
-        { browser, withDeps: values['with-deps'] ?? false },
-        controller.signal,
-        (text) => process.stderr.write(text),
-      );
-
-      return;
-    }
-
     switch (command) {
       case 'login': {
         if (values.import) {
@@ -177,25 +131,25 @@ async function main(): Promise<void> {
             'INVALID_CONFIGURATION',
             'Timeout must be between 0 and 3600 seconds, excluding 0.',
           );
-        let lastStage = '';
-        await login({
+
+        const loginOptions = {
           ...options,
           signal: controller.signal,
           timeoutMs: timeout.data * 1000,
-          onProgress(stage) {
-            if (lastStage === stage) return;
-            lastStage = stage;
-
-            const messages = {
-              waiting:
-                'Sign in directly in the browser. This command will save the session automatically. Ctrl+C cancels.',
-              challenge: 'Complete the security check in the browser. This command will wait.',
-              saved: 'Signed in. Session saved to ' + sessionPath(options.sessionFile),
-            };
-
-            console.error(messages[stage]);
+          onProgress(stage: 'waiting' | 'saved', url?: string): void {
+            console.error(
+              stage === 'saved'
+                ? 'Signed in. Session saved to ' + sessionPath(options.sessionFile)
+                : 'Open the private sign-in form: ' + url,
+            );
           },
-        });
+        };
+
+        await login(
+          values.credentials
+            ? { ...loginOptions, credentialsFile: resolve(values.credentials) }
+            : loginOptions,
+        );
 
         return;
       }
@@ -245,7 +199,7 @@ void main().catch((cause: unknown) => {
   console.error(
     cause instanceof InfoMentorError
       ? cause.message
-      : 'InfoMentor operation failed. Check the browser, network, and session-file permissions.',
+      : 'InfoMentor operation failed. Check the network and session-file permissions.',
   );
   process.exitCode = cause instanceof InfoMentorError && cause.code === 'CANCELLED' ? 130 : 1;
 });

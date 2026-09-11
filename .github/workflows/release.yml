@@ -44,14 +44,14 @@ jobs:
           const repository = process.env.GITHUB_REPOSITORY;
           writeFileSync('release-notes.md', [
             `InfoMentor MCP ${version} (preview)`, '',
-            'Login, session import, browser installation, progress, cancellation, logout, session checks, and the parent-page overview are available through MCP.', '',
-            'Install the prebuilt command on macOS/Linux (Node.js included):', '',
+            'Playwright removed. Login, session import, progress, cancellation, logout, session checks, and a child/timetable overview are available through MCP using direct HTTPS.', '',
+            'Install the single-file executable on macOS/Linux (Bun embedded; no Node, Bun, or browser installation required):', '',
             '```sh', `curl -fsSL https://raw.githubusercontent.com/${repository}/v${version}/install.sh | sh`, '```', '',
             'Or install the npm tarball using an existing Node.js 22+ runtime:', '',
             '```sh', `npm install --global --ignore-scripts https://github.com/${repository}/releases/download/v${version}/infomentor-mcp-${version}.tgz`, '```', '',
-            'Browser checks passed in Chromium, Firefox, and WebKit on Node 22 and 24. Native macOS/Linux x64/arm64 installers passed CLI and MCP checks, including checksum failure and reinstalls.', '',
-            '**Preview limitation:** real parent-account compatibility has not yet been verified. Only session status and visible landing-page data are currently provided; structured child/schedule/homework/attendance/grades tools are not implemented.', '',
-            'The npm registry has not been published to. Each archive has a SHA-256 checksum. Browser binaries are installed separately through MCP.', '',
+            'Five focused HTTP/login checks passed on Node 22 and 24. Native macOS/Linux x64/arm64 installers passed standalone executable and MCP checks, including checksum failure and reinstalls.', '',
+            '**Compatibility:** direct HTTP sign-in, saved-session reuse, child lists, and timetable retrieval were verified with a real parent account. Other SSO/MFA paths and the Grok VM remain unverified. **Upgrade:** 0.1.x browser options and session snapshots are removed; sign in again to create an HTTP session.', '',
+            'The npm registry has not been published to. Each archive has a SHA-256 checksum. The archives contain one executable plus documentation and license notices.', '',
             `Setup guide: https://github.com/${repository}/blob/v${version}/README.md`,
           ].join('\n'));
           NODE

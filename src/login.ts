@@ -1,144 +1,124 @@
 import { resolve } from 'node:path';
-import type { Browser, BrowserContext, Page } from 'playwright';
+import { InfoMentorHttp, parseForms } from './http.js';
+import { credentialsSchema, promptCredentials, readCredentials } from './credentials.js';
+import type { Credentials } from './credentials.js';
 import {
   captureSession,
-  inspectPage,
   InfoMentorError,
-  launchBrowser,
   LOGIN_URL,
-  pause,
   readSession,
+  restoreCookies,
   sessionPath,
   throwIfAborted,
-  verifySession,
+  trustedUrl,
   writeSession,
 } from './session.js';
 import type { SessionOptions } from './session.js';
 
 export type LoginOptions = SessionOptions & {
+  credentialsFile?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
-  onProgress?: (stage: 'waiting' | 'challenge' | 'saved') => void;
+  onProgress?: (stage: 'waiting' | 'saved', loginUrl?: string) => void;
 };
 
-/** Waits for the user in any tab/popup belonging to our isolated context. */
-export async function waitForLoginPage(
-  context: BrowserContext,
-  deadline: number,
+/** One credential submission, then the observed hidden-form relay. No page JavaScript runs. */
+export async function authenticate(
+  http: InfoMentorHttp,
+  credentials: Credentials,
   signal?: AbortSignal,
-  onChallenge?: () => void,
-): Promise<Page> {
-  while (Date.now() < deadline) {
-    throwIfAborted(signal);
+): Promise<void> {
+  const checked = credentialsSchema.safeParse(credentials);
 
-    if (!context.browser()?.isConnected() || context.pages().length === 0) {
-      throw new InfoMentorError(
-        'CANCELLED',
-        'The login window was closed. The existing saved session was kept.',
-      );
-    }
+  if (!checked.success)
+    throw new InfoMentorError('INVALID_CONFIGURATION', 'Enter a valid username and password.');
+  const page = await http.request(LOGIN_URL, undefined, signal, LOGIN_URL);
 
-    for (const page of context.pages()) {
-      if (page.isClosed()) continue;
+  const form = parseForms(page.text).find(
+    (candidate) => candidate.fields.has('__VIEWSTATE') && candidate.fields.has('__EVENTVALIDATION'),
+  );
 
-      try {
-        const state = await inspectPage(page);
+  if (!form || form.method !== 'post')
+    throw new InfoMentorError('UNEXPECTED_PAGE', 'InfoMentor returned an unsupported login form.');
+  const action = trustedUrl(new URL(form.action, page.url).href);
 
-        if (state === 'authenticated' && !page.isClosed()) return page;
+  if (action.origin !== new URL(LOGIN_URL).origin)
+    throw new InfoMentorError(
+      'UNEXPECTED_PAGE',
+      'InfoMentor changed its password form destination. Login stopped.',
+    );
+  form.fields.set('login_ascx$txtNotandanafn', checked.data.username);
+  form.fields.set('login_ascx$txtLykilord', checked.data.password);
+  form.fields.set('login_ascx$btnLogin', 'Innskrá');
+  let response;
 
-        if (state === 'challenge') onChallenge?.();
-      } catch (error) {
-        // Sign-in popups can close themselves after updating the parent window.
-        if (!page.isClosed()) throw error;
-      }
-    }
-
-    await pause(signal);
+  try {
+    response = await http.request(action.href, form.fields, signal, page.url);
+  } finally {
+    form.fields.delete('login_ascx$txtLykilord');
+    checked.data.password = '';
   }
 
-  throw new InfoMentorError(
-    'LOGIN_TIMEOUT',
-    'Sign-in timed out. The existing saved session was kept. Retry login or increase --timeout.',
-  );
+  const relay = parseForms(response.text).find((candidate) => candidate.id === 'openid_message');
+
+  if (relay) {
+    const destination = trustedUrl(new URL(relay.action, response.url).href);
+
+    if (
+      relay.method !== 'post' ||
+      !relay.fields.has('oauth_token') ||
+      destination.origin !== new URL(LOGIN_URL).origin
+    )
+      throw new InfoMentorError(
+        'UNEXPECTED_PAGE',
+        'InfoMentor returned an unsupported authentication handoff.',
+      );
+    await http.request(destination.href, relay.fields, signal, response.url);
+  }
+
+  if (!(await http.isAuthenticated(signal)))
+    throw new InfoMentorError(
+      'LOGIN_REQUIRED',
+      'InfoMentor did not accept the login. Check your credentials; no automatic retry was made.',
+    );
 }
 
 export async function login(options: LoginOptions = {}): Promise<void> {
   const timeout = options.timeoutMs ?? 300_000;
 
-  if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 3_600_000) {
+  if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 3_600_000)
     throw new InfoMentorError(
       'INVALID_CONFIGURATION',
       'Login timeout must be between 1 millisecond and one hour.',
     );
-  }
-
   throwIfAborted(options.signal);
-  const timeoutSignal = AbortSignal.timeout(timeout);
-  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
-  const deadline = Date.now() + timeout;
-  let browser: Browser | undefined;
+  const deadline = AbortSignal.timeout(timeout);
+  const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+  let credentials: Credentials | undefined;
 
   try {
-    browser = await launchBrowser(options, false, signal);
-    throwIfAborted(signal);
-    const context = await browser.newContext({ viewport: null });
-
-    const cancel = (): void => {
-      void context.close().catch(() => {});
-    };
-
-    signal.addEventListener('abort', cancel, { once: true });
-
-    try {
-      throwIfAborted(signal);
-      const page = await context.newPage();
-
-      try {
-        const response = await page.goto(LOGIN_URL, {
-          waitUntil: 'domcontentloaded',
-          timeout: 30_000,
-        });
-
-        if (!response?.ok() && (await inspectPage(page)) !== 'challenge')
-          throw new InfoMentorError('NETWORK_ERROR', 'InfoMentor could not load its login page.');
-      } catch {
-        throwIfAborted(signal);
-        throw new InfoMentorError(
-          'NETWORK_ERROR',
-          'Could not open the InfoMentor login page. Check the network and retry.',
-        );
-      }
-
-      options.onProgress?.('waiting');
-
-      const authenticated = await waitForLoginPage(context, deadline, signal, () =>
-        options.onProgress?.('challenge'),
-      );
-
-      const candidate = await captureSession(context, authenticated.url());
-      throwIfAborted(signal);
-      await writeSession(candidate, sessionPath(options.sessionFile), signal);
-      options.onProgress?.('saved');
-    } finally {
-      signal.removeEventListener('abort', cancel);
-      await context.close().catch(() => {});
-    }
+    const file = options.credentialsFile ?? process.env['INFOMENTOR_CREDENTIALS_FILE'];
+    credentials = file
+      ? await readCredentials(resolve(file), signal)
+      : await promptCredentials(signal, (url) => options.onProgress?.('waiting', url));
+    const http = new InfoMentorHttp();
+    await authenticate(http, credentials, signal);
+    credentials.password = '';
+    await writeSession(captureSession(http.jar), sessionPath(options.sessionFile), signal);
+    options.onProgress?.('saved');
   } catch (error) {
-    if (timeoutSignal.aborted && !options.signal?.aborted) {
+    if (deadline.aborted && !options.signal?.aborted)
       throw new InfoMentorError(
         'LOGIN_TIMEOUT',
-        'Sign-in timed out. The existing saved session was kept. Retry login or increase --timeout.',
+        'Sign-in timed out. The previous saved session was kept.',
       );
-    }
-
     throwIfAborted(options.signal);
     throw error;
   } finally {
-    await browser?.close();
-  } // CDP connections disconnect without stopping the remote browser.
+    if (credentials) credentials.password = '';
+  }
 }
 
-/** Validate in a headless context before replacing the destination session. */
 export async function importSession(
   file: string,
   options: SessionOptions = {},
@@ -146,13 +126,7 @@ export async function importSession(
 ): Promise<void> {
   throwIfAborted(signal);
   const imported = await readSession(resolve(file));
-  const browser = await launchBrowser(options, true, signal);
-
-  try {
-    const verified = await verifySession(browser, imported, signal);
-    throwIfAborted(signal);
-    await writeSession(verified, sessionPath(options.sessionFile), signal);
-  } finally {
-    await browser.close();
-  }
+  const http = new InfoMentorHttp(restoreCookies(imported));
+  await http.requireAuthentication(signal);
+  await writeSession(captureSession(http.jar), sessionPath(options.sessionFile), signal);
 }

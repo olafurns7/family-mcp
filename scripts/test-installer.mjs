@@ -57,8 +57,11 @@ cp "$TEST_ASSETS/\${url##*/}" "$output"
   assert.notEqual(spawnSync('/bin/sh', [join(root, 'install.sh')], { env }).status, 0);
   assert.equal(execFileSync(binary, ['--version'], { env, encoding: 'utf8' }).trim(), version);
 
+  const standalone = join(directory, 'standalone');
+  await copyFile(binary, standalone);
+
   const transport = new StdioClientTransport({
-    command: binary,
+    command: standalone,
     args: ['--session', join(directory, 'missing.json')],
     env: { PATH: '/usr/bin:/bin' },
     stderr: 'pipe',
@@ -68,7 +71,7 @@ cp "$TEST_ASSETS/\${url##*/}" "$output"
 
   try {
     await client.connect(transport);
-    assert.equal((await client.listTools()).tools.length, 7);
+    assert.equal((await client.listTools()).tools.length, 6);
     const status = await client.callTool({ name: 'infomentor_session_status', arguments: {} });
     assert.equal(status.structuredContent?.authenticated, false);
   } finally {
