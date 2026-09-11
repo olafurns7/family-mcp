@@ -532,7 +532,7 @@ test(
     let requests = 0;
     let concurrent = 0;
     let maximumConcurrent = 0;
-    let mode: 'ready' | 'limited' | 'challenge' | 'slow' = 'ready';
+    let mode: 'ready' | 'limited' | 'challenge' | 'slow' | 'loading' = 'ready';
     let contextForHuman: BrowserContext | undefined;
     const launch = testEngine.launch.bind(testEngine);
 
@@ -565,7 +565,12 @@ test(
                 return;
               }
 
-              if (mode === 'limited') {
+              if (mode === 'loading') {
+                await route.fulfill({
+                  contentType: 'text/html',
+                  body: '<title>Still loading</title>',
+                });
+              } else if (mode === 'limited') {
                 await route.fulfill({
                   status: 429,
                   headers: { 'retry-after': '1' },
@@ -607,6 +612,46 @@ test(
       assert.ok(contextForHuman);
       assert.equal((await contextForHuman.cookies(LOGIN_URL))[0]?.value, 'rotated');
       assert.equal((await readSession(file)).storageState.cookies[0]?.value, 'synthetic');
+
+      // Hold the real page's close operation open: cancellation must drain it
+      // before another read can inspect or reuse the page.
+      const closingPage = contextForHuman.pages()[0];
+      assert.ok(closingPage);
+      const closePage = closingPage.close.bind(closingPage);
+      const closeStarted = Promise.withResolvers<void>();
+      const finishClose = Promise.withResolvers<void>();
+
+      const pageClose = mock.method(closingPage, 'close', async () => {
+        closeStarted.resolve();
+        await finishClose.promise;
+        await closePage();
+      });
+
+      const loadingCancellation = new AbortController();
+      mode = 'loading';
+      let settled = false;
+
+      const loadingRead = assert.rejects(
+        client.getOverview(loadingCancellation.signal).finally(() => {
+          settled = true;
+        }),
+        { code: 'CANCELLED' },
+      );
+
+      try {
+        await closingPage.waitForFunction(() => document.title === 'Still loading');
+        loadingCancellation.abort();
+        await closeStarted.promise;
+        await delay(100);
+        assert.equal(settled, false, 'Cancellation must await page closure before settling');
+      } finally {
+        finishClose.resolve();
+        await loadingRead;
+        pageClose.mock.restore();
+      }
+
+      mode = 'ready';
+      assert.equal((await client.getSessionStatus()).authenticated, true);
 
       mode = 'slow';
       const cancellation = new AbortController();

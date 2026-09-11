@@ -108,8 +108,10 @@ export class InfoMentorClient {
       if (!active)
         throw new InfoMentorError('BROWSER_UNAVAILABLE', 'Browser session could not be created.');
 
+      let closingPage: Promise<void> | undefined;
+
       const cancel = (): void => {
-        void active.page.close().catch(() => {});
+        closingPage = active.page.close().catch(() => {});
       };
 
       signal?.addEventListener('abort', cancel, { once: true });
@@ -138,6 +140,8 @@ export class InfoMentorClient {
         throw error;
       } finally {
         signal?.removeEventListener('abort', cancel);
+        // Drain cancellation before the next queued read can reuse this context.
+        await closingPage;
       }
     });
 

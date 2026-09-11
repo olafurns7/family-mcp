@@ -29,6 +29,11 @@ cleanup replaced an open MCP result dictionary with the concrete result union
 and parses saved-session JSON directly at its boundary. Oxfmt replaced Prettier.
 Browser, package, and installer checks passed again after these changes.
 
+A later Chromium release check exposed a cancellation race: a queued read could
+inspect a page whose previous request was still closing it. The shared read path
+now awaits cancellation cleanup before releasing its queue. The browser regression
+check holds page closure open deliberately and fails without this fix.
+
 The release run also exposed a Chromium test-profile cleanup race after the
 browser assertions had passed. Cleanup now uses Node's bounded filesystem retries
 after waiting for the spawned browser process to exit.
