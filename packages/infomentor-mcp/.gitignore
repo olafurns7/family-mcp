@@ -1,16 +1,8 @@
 node_modules/
-*.tgz
 .env
 .env.*
 !.env.example
-playwright-report/
-test-results/
-.auth/
 session.json
-dist/
 coverage/
 *.tsbuildinfo
-.test-build/
-*.tgz.sha256
-release-notes.md
 release/
