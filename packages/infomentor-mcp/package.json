@@ -61,6 +61,7 @@
     "lint:fix": "bun run lint --fix"
   },
   "dependencies": {
+    "@family-mcp/session-store": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "htmlparser2": "^12.0.0",
     "tough-cookie": "^6.0.2",
