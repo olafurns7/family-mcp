@@ -8,24 +8,13 @@
     "tooling/release/**"
   ],
   "tasks": {
-    "build": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
-    },
     "test": {
-      "dependsOn": ["^build"],
       "outputs": []
     },
-    "infomentor-mcp#test": {
-      "dependsOn": ["build"],
-      "outputs": [".test-build/**"]
-    },
     "lint": {
-      "dependsOn": ["^build"],
       "outputs": []
     },
     "typecheck": {
-      "dependsOn": ["^build"],
       "outputs": []
     },
     "format:check": {
@@ -61,18 +50,11 @@
       ]
     },
     "build:binary": {
-      "dependsOn": ["^build"],
       "cache": false,
       "outputs": ["release/**"]
     },
-    "test:dist": {
-      "dependsOn": ["build"],
-      "cache": false,
-      "outputs": ["*.tgz", "*.tgz.sha256"],
-      "passThroughEnv": ["npm_config_cache", "NPM_CONFIG_CACHE"]
-    },
     "test:binary": {
-      "dependsOn": ["build", "build:binary"],
+      "dependsOn": ["build:binary"],
       "cache": false,
       "outputs": []
     },
