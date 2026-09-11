@@ -17,6 +17,7 @@ import type { SessionOptions } from './session.js';
 
 export type LoginOptions = SessionOptions & {
   credentialsFile?: string;
+  localForm?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
   onProgress?: (stage: 'waiting' | 'saved', loginUrl?: string) => void;
@@ -98,9 +99,31 @@ export async function login(options: LoginOptions = {}): Promise<void> {
 
   try {
     const file = options.credentialsFile ?? process.env['INFOMENTOR_CREDENTIALS_FILE'];
-    credentials = file
-      ? await readCredentials(resolve(file), signal)
-      : await promptCredentials(signal, (url) => options.onProgress?.('waiting', url));
+
+    if (file) credentials = await readCredentials(resolve(file), signal);
+    else if (
+      process.env['INFOMENTOR_USERNAME'] !== undefined ||
+      process.env['INFOMENTOR_PASSWORD'] !== undefined
+    ) {
+      const configured = credentialsSchema.safeParse({
+        username: process.env['INFOMENTOR_USERNAME'],
+        password: process.env['INFOMENTOR_PASSWORD'],
+      });
+
+      if (!configured.success)
+        throw new InfoMentorError(
+          'INVALID_CONFIGURATION',
+          'Use the app’s private secret input to provide both INFOMENTOR_USERNAME (kennitala or InfoMentor username; no email required) and INFOMENTOR_PASSWORD to the login process. Never put their values in chat or MCP arguments.',
+        );
+      credentials = configured.data;
+    } else if (options.localForm) {
+      credentials = await promptCredentials(signal, (url) => options.onProgress?.('waiting', url));
+    } else
+      throw new InfoMentorError(
+        'INVALID_CONFIGURATION',
+        'Credentials required. Use the app’s private secret input for INFOMENTOR_USERNAME (kennitala or InfoMentor username; no email required) and INFOMENTOR_PASSWORD, then run infomentor-mcp login with those secrets injected into its environment. If the MCP process already has them, call infomentor_login. Alternatively supply credentialsFile or importFile. Never put secret values in chat or MCP arguments. Browser login is opt-in with localForm; do not use it on a remote VM.',
+      );
+
     const http = new InfoMentorHttp();
     await authenticate(http, credentials, signal);
     credentials.password = '';

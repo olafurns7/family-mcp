@@ -21,6 +21,7 @@ export const loginRequestSchema = z
       .string()
       .refine(isAbsolute, 'Use an absolute path on the MCP host.')
       .optional(),
+    localForm: z.boolean().optional(),
     timeoutSeconds: z.number().int().min(1).max(3600).default(300),
   })
   .strict();
@@ -148,10 +149,10 @@ export class InfoMentorClient {
   startLogin(request: LoginRequest = {}): SetupStatus {
     const parsed = loginRequestSchema.parse(request);
 
-    if (parsed.importFile && parsed.credentialsFile)
+    if (parsed.importFile && (parsed.credentialsFile || parsed.localForm))
       throw new InfoMentorError(
         'INVALID_CONFIGURATION',
-        'Choose session import or a credentials file, not both.',
+        'Choose session import or login, not both.',
       );
 
     if (this.closed)
@@ -182,6 +183,7 @@ export class InfoMentorClient {
           const options = {
             ...this.options,
             signal: controller.signal,
+            localForm: parsed.localForm ?? false,
             timeoutMs: parsed.timeoutSeconds * 1000,
             onProgress: (stage: 'waiting' | 'saved', loginUrl?: string): void => {
               if (stage === 'saved') return;

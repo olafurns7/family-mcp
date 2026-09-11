@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install a verified prebuilt release into a user-owned prefix. No sudo or Node required.
 set -eu
-version=${INFOMENTOR_VERSION:-0.2.0}
+version=${INFOMENTOR_VERSION:-0.2.1}
 prefix=${INFOMENTOR_PREFIX:-${HOME:?HOME must be set}/.local}
 case "$version" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid INFOMENTOR_VERSION.' >&2; exit 1 ;; esac
 case "$prefix" in /*) ;; *) echo 'INFOMENTOR_PREFIX must be an absolute path.' >&2; exit 1 ;; esac

@@ -27,7 +27,7 @@ import {
 
 const nativeFetch = globalThis.fetch;
 
-const credentials = { username: 'synthetic-user', password: 'synthetic-password' };
+const credentials = { username: '0101991239', password: 'synthetic-password' };
 
 const parent = {
   account: { pupils: [{ id: 'child-1', name: 'Synthetic child', selected: true }] },
@@ -146,17 +146,33 @@ async function savedSession() {
   return captureSession(jar);
 }
 
-test('HTTP login relays fresh forms, reuses cookies, and exposes all six MCP operations', async () => {
+test('private environment login needs no browser, relays fresh forms, and exposes all six MCP operations', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-http-'));
   const file = join(directory, 'private/session.json');
-  const credentialsFile = join(directory, 'credentials.json');
+
+  const environment = {
+    INFOMENTOR_USERNAME: process.env['INFOMENTOR_USERNAME'],
+    INFOMENTOR_PASSWORD: process.env['INFOMENTOR_PASSWORD'],
+    INFOMENTOR_CREDENTIALS_FILE: process.env['INFOMENTOR_CREDENTIALS_FILE'],
+  };
+
   const routes = fixture();
   const server = createServer({ sessionFile: file });
   const client = new Client({ name: 'http-test', version: '1.0.0' });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
 
   try {
-    await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
+    for (const name of Object.keys(environment)) delete process.env[name];
+    await assert.rejects(login({ sessionFile: file, timeoutMs: 50 }), {
+      code: 'INVALID_CONFIGURATION',
+    });
+    assert.equal(routes.requests.length, 0);
+    process.env['INFOMENTOR_USERNAME'] = credentials.username;
+    await assert.rejects(login({ sessionFile: file, timeoutMs: 50 }), {
+      code: 'INVALID_CONFIGURATION',
+    });
+    assert.equal(routes.requests.length, 0);
+    process.env['INFOMENTOR_PASSWORD'] = credentials.password;
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
@@ -166,7 +182,7 @@ test('HTTP login relays fresh forms, reuses cookies, and exposes all six MCP ope
 
     const started = await client.callTool({
       name: 'infomentor_login',
-      arguments: { credentialsFile },
+      arguments: {},
     });
 
     assert.equal(setupStatusSchema.parse(started.structuredContent).state, 'running');
@@ -175,7 +191,10 @@ test('HTTP login relays fresh forms, reuses cookies, and exposes all six MCP ope
     for (let step = 0; step < 200 && state === 'running'; step++) {
       await delay(10);
       const status = await client.callTool({ name: 'infomentor_setup_status', arguments: {} });
-      state = setupStatusSchema.parse(status.structuredContent).state;
+      const progress = setupStatusSchema.parse(status.structuredContent);
+      assert.equal(progress.loginUrl, undefined);
+      assert.equal(JSON.stringify(status).includes(credentials.password), false);
+      state = progress.state;
     }
 
     assert.equal(state, 'succeeded');
@@ -213,6 +232,12 @@ test('HTTP login relays fresh forms, reuses cookies, and exposes all six MCP ope
     await client.close();
     await server.close();
     routes.restore();
+
+    for (const [name, value] of Object.entries(environment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -13,7 +13,7 @@ const help = [
   'Usage: infomentor-mcp [command] [options]',
   '',
   'Commands:',
-  '  login              Sign in over HTTPS using a private local form or credentials file',
+  '  login              Sign in over HTTPS using privately injected secrets or a credentials file',
   '  status             Verify the saved session without opening a window',
   '  logout             Delete the local session (does not revoke it on InfoMentor)',
   '  serve              Start the stdio MCP server (default)',
@@ -21,12 +21,14 @@ const help = [
   'Options:',
   '  --session FILE     Session file (default: ~/.infomentor-mcp/session.json)',
   '  --credentials FILE Private JSON file with username/password (headless login)',
+  '  --local-form       login: opt into a browser form on this same computer',
   '  --import FILE      login: validate and import a session on a headless machine',
   '  --timeout SECONDS  login: maximum wait (default: 300)',
   '  -h, --help         Show help',
   '  -v, --version      Show version',
   '',
-  'Environment: INFOMENTOR_SESSION_PATH, INFOMENTOR_CREDENTIALS_FILE',
+  'Environment: INFOMENTOR_SESSION_PATH, INFOMENTOR_CREDENTIALS_FILE,',
+  '             INFOMENTOR_USERNAME (kennitala or username), INFOMENTOR_PASSWORD',
 ].join('\n');
 
 async function main(): Promise<void> {
@@ -38,6 +40,7 @@ async function main(): Promise<void> {
       options: {
         session: { type: 'string' },
         credentials: { type: 'string' },
+        'local-form': { type: 'boolean' },
         import: { type: 'string' },
         timeout: { type: 'string' },
         help: { type: 'boolean', short: 'h' },
@@ -72,15 +75,15 @@ async function main(): Promise<void> {
     );
   const command = positionals[0] ?? 'serve';
 
-  if (command !== 'login' && (values.import || values.timeout || values.credentials)) {
+  if (
+    command !== 'login' &&
+    (values.import || values.timeout || values.credentials || values['local-form'])
+  ) {
     throw new InfoMentorError('INVALID_CONFIGURATION', 'Login options only apply to login.');
   }
 
-  if (values.import && values.credentials)
-    throw new InfoMentorError(
-      'INVALID_CONFIGURATION',
-      'Choose session import or credentials, not both.',
-    );
+  if (values.import && (values.credentials || values['local-form']))
+    throw new InfoMentorError('INVALID_CONFIGURATION', 'Choose session import or login, not both.');
 
   const options: SessionOptions = {};
 
@@ -135,6 +138,7 @@ async function main(): Promise<void> {
         const loginOptions = {
           ...options,
           signal: controller.signal,
+          localForm: values['local-form'] ?? false,
           timeoutMs: timeout.data * 1000,
           onProgress(stage: 'waiting' | 'saved', url?: string): void {
             console.error(

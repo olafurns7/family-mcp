@@ -1,5 +1,19 @@
 # Review and verification
 
+## 0.2.1: remote login correction
+
+Default login no longer starts the loopback credential form. Credentials come
+from the host-injected environment or an existing private file, and username
+accepts kennitala. The browser form requires explicit `localForm` / `--local-form`.
+This is independent of the agent vendor; a private input UI remains the host
+client's responsibility, not a universal MCP capability.
+
+The existing login integration check now covers missing and partial credentials,
+secret injection, HTTP authentication, session persistence, and MCP output with
+no credential values or loopback URL. Private-file and explicit-form paths remain
+covered by the other existing checks. No additional test suite was added.
+The actual Grok VM and its secret-injection configuration remain unverified.
+
 ## 0.2.0: direct HTTP and a single executable
 
 Playwright and its browser lifecycle, installers, and remote-debugging options
