@@ -14,7 +14,7 @@
   },
   "ignorePatterns": [
     "**/dist/**",
-    "**/release/**",
+    "packages/*/release/**",
     "**/node_modules/**",
     "**/.test-build/**",
     "tooling/oxlint-anti-slop/**"
@@ -97,7 +97,7 @@
   },
   "overrides": [
     {
-      "files": ["packages/abler-mcp/src/cli.ts", "packages/abler-mcp/test/pack-smoke.ts"],
+      "files": ["packages/abler-mcp/src/cli.ts"],
       "rules": {
         "no-console": "off"
       }
@@ -197,15 +197,9 @@
       }
     },
     {
-      "files": ["packages/infomentor-mcp/scripts/**"],
+      "files": ["tooling/release/*.mjs"],
       "rules": {
-        "eslint/no-console": "off",
-        "typescript/no-unsafe-argument": "off",
-        "typescript/no-unsafe-assignment": "off",
-        "typescript/no-unsafe-call": "off",
-        "typescript/no-unsafe-member-access": "off",
-        "typescript/no-unsafe-return": "off",
-        "typescript/require-array-sort-compare": "off"
+        "no-console": "off"
       }
     }
   ],

@@ -4,11 +4,11 @@ set -eu
 
 # Do not execute a partial script when invoked through curl | sh.
 main() {
-  version=${ABLER_VERSION:-0.3.1}
-  prefix=${ABLER_PREFIX:-${HOME:?Set HOME or ABLER_PREFIX}/.local}
-  case "$version" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid ABLER_VERSION.' >&2; exit 1 ;; esac
-  case "$prefix" in /*) ;; *) echo 'ABLER_PREFIX must be an absolute path.' >&2; exit 1 ;; esac
-  [ "$#" -eq 0 ] || { echo 'Usage: install.sh' >&2; exit 1; }
+  version=${@@ENV@@_VERSION:-@@VERSION@@}
+  prefix=${@@ENV@@_PREFIX:-${HOME:?Set HOME or @@ENV@@_PREFIX}/.local}
+  case "$version" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid @@ENV@@_VERSION.' >&2; exit 1 ;; esac
+  case "$prefix" in /*) ;; *) echo '@@ENV@@_PREFIX must be an absolute path.' >&2; exit 1 ;; esac
+@@OPTIONS@@
   for tool in curl tar mktemp uname; do
     command -v "$tool" >/dev/null 2>&1 || { printf 'Required command missing: %s\n' "$tool" >&2; exit 1; }
   done
@@ -18,47 +18,47 @@ main() {
   fi
   case "$(uname -s)" in Darwin) platform=darwin ;; Linux) platform=linux ;; *) echo 'Supported systems: macOS and Linux.' >&2; exit 1 ;; esac
   case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=x64 ;; *) echo 'Supported CPUs: arm64 and x64.' >&2; exit 1 ;; esac
-
-  temporary=$(mktemp -d "${TMPDIR:-/tmp}/abler-install.XXXXXX")
+@@NETWORK@@
+  temporary=$(mktemp -d "${TMPDIR:-/tmp}/@@SHORT@@-install.XXXXXX")
   staging=
   command_tmp=
   trap 'rm -rf "$temporary"; if [ -n "$staging" ]; then rm -rf "$staging"; fi; if [ -n "$command_tmp" ]; then rm -rf "$command_tmp"; fi' 0
   trap 'exit 1' 1 2 15
-  archive="abler-mcp-$version-$platform-$arch.tar.gz"
-  release="https://github.com/olafurns7/family-mcp/releases/download/abler-mcp@$version"
+  archive="@@NAME@@-$version-$platform-$arch.tar.gz"
+  release="https://github.com/olafurns7/family-mcp/releases/download/@@NAME@@@$version"
   curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL "$release/$archive" -o "$temporary/$archive"
   curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL "$release/$archive.sha256" -o "$temporary/checksum"
   actual=$(cd "$temporary" && $checksum_tool "$archive")
   [ "$actual" = "$(cat "$temporary/checksum")" ] || { echo 'Release checksum verification failed; nothing was installed.' >&2; exit 1; }
   digest=${actual%% *}
-  mkdir -p "$prefix/share/abler-mcp" "$prefix/bin"
-  [ ! -d "$prefix/bin/abler-mcp" ] || { echo 'Install destination is a directory; nothing was replaced.' >&2; exit 1; }
-  staging=$(mktemp -d "$prefix/share/abler-mcp/.install.XXXXXX")
+  mkdir -p "$prefix/share/@@NAME@@" "$prefix/bin"
+  [ ! -d "$prefix/bin/@@NAME@@" ] || { echo 'Install destination is a directory; nothing was replaced.' >&2; exit 1; }
+  staging=$(mktemp -d "$prefix/share/@@NAME@@/.install.XXXXXX")
   mkdir -p "$staging/bin"
   # Extract only named members to new regular files; never extract archive paths or links.
-  tar -xOzf "$temporary/$archive" 'abler-mcp/bin/abler-mcp' > "$staging/bin/abler-mcp"
-  chmod 755 "$staging/bin/abler-mcp"
-  [ "$("$staging/bin/abler-mcp" --version </dev/null)" = "$version" ] || { echo 'Downloaded executable returned an unexpected version; previous installation kept.' >&2; exit 1; }
+  tar -xOzf "$temporary/$archive" '@@NAME@@/bin/@@NAME@@' > "$staging/bin/@@NAME@@"
+  chmod 755 "$staging/bin/@@NAME@@"
+  [ "$("$staging/bin/@@NAME@@" --version </dev/null)" = "$version" ] || { echo 'Downloaded executable returned an unexpected version; previous installation kept.' >&2; exit 1; }
   for file in LICENSE README.md THIRD_PARTY_NOTICES.txt; do
-    tar -xOzf "$temporary/$archive" "abler-mcp/$file" > "$staging/$file"
+    tar -xOzf "$temporary/$archive" "@@NAME@@/$file" > "$staging/$file"
   done
-
-  entrypoint=abler-mcp
-
-  install_dir="$prefix/share/abler-mcp/$version-$digest"
+@@EXTRA_FILES@@
+  entrypoint=@@NAME@@
+@@POST_INSTALL@@
+  install_dir="$prefix/share/@@NAME@@/$version-$digest"
   if [ -e "$install_dir" ] || [ -L "$install_dir" ]; then
-    [ ! -L "$install_dir" ] && [ -d "$install_dir" ] && [ "$("$install_dir/bin/abler-mcp" --version </dev/null)" = "$version" ] || { echo 'Existing installation is invalid.' >&2; exit 1; }
+    [ ! -L "$install_dir" ] && [ -d "$install_dir" ] && [ "$("$install_dir/bin/@@NAME@@" --version </dev/null)" = "$version" ] || { echo 'Existing installation is invalid.' >&2; exit 1; }
     rm -rf "$staging"
   else
     mv "$staging" "$install_dir"
   fi
   staging=
-  command_tmp=$(mktemp -d "$prefix/bin/.abler-mcp.XXXXXX")
+  command_tmp=$(mktemp -d "$prefix/bin/.@@NAME@@.XXXXXX")
   ln -s "$install_dir/bin/$entrypoint" "$command_tmp/command"
-  mv -f "$command_tmp/command" "$prefix/bin/abler-mcp"
-
-  printf 'Installed abler-mcp %s at %s/bin/abler-mcp\n' "$version" "$prefix"
-  printf 'Use that absolute path in your MCP client. Setup: https://github.com/olafurns7/family-mcp/tree/abler-mcp@%s/packages/abler-mcp#readme\n' "$version"
+  mv -f "$command_tmp/command" "$prefix/bin/@@NAME@@"
+@@SAVE_NETWORK@@
+  printf 'Installed @@NAME@@ %s at %s/bin/@@NAME@@\n' "$version" "$prefix"
+  printf 'Use that absolute path in your MCP client. Setup: https://github.com/olafurns7/family-mcp/tree/@@NAME@@@%s/packages/@@NAME@@#readme\n' "$version"
   case ":${PATH:-}:" in *":$prefix/bin:"*) ;; *) printf 'For terminal use, add %s/bin to PATH.\n' "$prefix" ;; esac
 }
 

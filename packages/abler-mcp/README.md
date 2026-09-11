@@ -7,19 +7,22 @@ Unofficial, read-only [Abler](https://www.abler.io) MCP server. Written in TypeS
 On macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/abler-mcp/v0.3.1/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.3.1/packages/abler-mcp/install.sh | sh
 ```
 
 No Node, npm, Bun, checkout, build step, sudo, or browser download is needed.
 The installer selects your operating system and CPU, downloads the standalone
 release, verifies its SHA-256 checksum and executable version, then installs
 `~/.local/bin/abler-mcp`. Existing installations are replaced only after validation.
-Temporary downloads are removed; license notices go in `~/.local/share/abler-mcp`.
+Temporary downloads are removed. The command is a symlink into
+`~/.local/share/abler-mcp/<version>-<checksum>/bin/`; license notices are stored
+in that versioned directory. Previous version directories are retained.
+Set `ABLER_VERSION` to select another released package version.
 
 Supported downloads: macOS arm64 (Apple Silicon) and x64 (Intel), and Linux
 arm64 and x64 with glibc. Alpine/musl and Windows standalone binaries are not
 provided. Bundling the runtime makes the download larger than the npm package.
-See [release assets and checksums](https://github.com/olafurns7/abler-mcp/releases/tag/v0.3.1).
+See [release assets and checksums](https://github.com/olafurns7/family-mcp/releases/tag/abler-mcp@0.3.1).
 
 Then run `"$HOME/.local/bin/abler-mcp" --version`. Add `$HOME/.local/bin` to your
 PATH to use `abler-mcp` directly. Use the full executable path printed by the
@@ -27,10 +30,10 @@ installer in your MCP configuration. The installer leaves shell settings and
 Abler sessions alone.
 
 To choose another installation directory, pass an absolute `ABLER_PREFIX` to
-`sh`, for example `curl -fsSL https://raw.githubusercontent.com/olafurns7/abler-mcp/v0.3.1/install.sh | ABLER_PREFIX="/absolute/path" sh`.
+`sh`, for example `curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.3.1/packages/abler-mcp/install.sh | ABLER_PREFIX="/absolute/path" sh`.
 
 An alternative npm package remains available for Node.js 22+:
-`npm install --global --ignore-scripts https://github.com/olafurns7/abler-mcp/releases/download/v0.3.1/abler-mcp-0.3.1.tgz`.
+`npm install --global --ignore-scripts https://github.com/olafurns7/family-mcp/releases/download/abler-mcp@0.3.1/abler-mcp-0.3.1.tgz`.
 It requires Node on the MCP host's PATH and fetches runtime dependencies from npm.
 On Windows its command is `abler-mcp.cmd`; Windows has not been verified. Use
 the versioned `.tgz` asset, not GitHub's source ZIP/tarball.
@@ -212,21 +215,18 @@ The Chrome capture transport is covered by a local protocol test; live session c
 
 ## Development and packaging
 
-Maintainers need Node.js 22.12+ and Bun 1.4.2. Oxlint, Oxfmt, the type-aware
-lint engine, and TypeScript are pinned in `package.json` and `bun.lock`.
+Maintainers need Node.js 22+ and Bun 1.4.2. Oxlint, Oxfmt, the type-aware
+lint engine, and TypeScript are pinned in the repository root.
 Standalone consumers need neither; the alternative npm package requires Node.js 22+.
 
 The server uses the [official MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/v2/get-started/first-server), native `fetch`, `tough-cookie` for cookie handling, and `proper-lockfile` for session coordination. No browser dependency or download is required.
 
+From the monorepo root:
+
 ```sh
 bun install --frozen-lockfile
-bun run check
-bun test
-bun run build
-node dist/cli.js --help
-bun run build:native
-bun test/pack-smoke.ts release/native/abler-mcp --standalone
-npm pack
+bunx turbo run build check test --filter=abler-mcp
+bunx turbo run test:dist test:binary test:installer --filter=abler-mcp
 ```
 
 `bun run check` runs type-aware Oxlint, Oxfmt's formatting check, and TypeScript
@@ -249,19 +249,24 @@ Intentional exceptions: cookie updates and child requests may run sequentially;
 authentication errors omit original causes that could expose credentials;
 console output is allowed only in the CLI and package smoke check. Do not
 weaken rules or hide failures to make a check pass. Linter and formatter settings
-live in [`.oxlintrc.json`](.oxlintrc.json) and [`.oxfmtrc.json`](.oxfmtrc.json).
+live in [`.oxlintrc.json`](../../.oxlintrc.json) and [`.oxfmtrc.json`](../../.oxfmtrc.json).
 See the official [Oxlint type-aware guide](https://oxc.rs/docs/guide/usage/linter/type-aware)
 and [Oxfmt configuration reference](https://oxc.rs/docs/guide/usage/formatter/config-file-reference).
 
-`npm pack` runs the checks and builds a fresh `dist` before creating `abler-mcp-0.3.1.tgz`; it does not publish anything. The archive contains only compiled code, README, LICENSE, agent/maintainer documentation, and package metadata. The installed executable runs with Node; Bun is needed only for development and packing from source.
+`npm pack` runs the checks and builds a fresh `dist` before creating `abler-mcp-0.3.1.tgz`; it does not publish anything. The archive contains only compiled code, README, LICENSE, and package metadata. The installed executable runs with Node; Bun is needed only for development and packing from source.
 
 Offline tests use synthetic credentials and include real MCP stdio, local Chrome protocol capture, concurrent processes, logout during refresh, failed-import recovery, private file permissions, invalid filters, malformed pagination, sibling ID/name collisions, and shared events. See the [review record](docs/REVIEW.md) for verified scope and remaining limitations.
 
 This project is not affiliated with or endorsed by Abler.
 
-`bun run build:native` creates a standalone executable and checksummed archive
+`bun run build:binary` creates a standalone executable and checksummed archive
 for the current machine in `release/`. It uses [Bun's compiler](https://bun.com/docs/bundler/executables),
 with automatic `.env` and `bunfig.toml` loading disabled. Configuration comes
 from the process environment. GitHub Actions builds and checks macOS 15 and
 Ubuntu 24.04 on both CPU architectures, including a copied executable running
 outside the checkout with neither Node nor Bun on PATH.
+
+Installer regressions run separately as `test:installer`; package and native MCP
+smokes run as `test:dist` and `test:binary`. The shared builder generates notices
+from the actual bundle. Run `release:sync` after editing the package version;
+CI checks that generated installers and documented URLs are current.

@@ -25,6 +25,7 @@
       },
       "devDependencies": {
         "@family-mcp/oxlint-anti-slop": "workspace:*",
+        "@family-mcp/release-tooling": "workspace:*",
         "@family-mcp/tsconfig": "workspace:*",
         "@modelcontextprotocol/client": "^2.0.0",
         "@types/bun": "^1.2.19",
@@ -45,6 +46,7 @@
       },
       "devDependencies": {
         "@family-mcp/oxlint-anti-slop": "workspace:*",
+        "@family-mcp/release-tooling": "workspace:*",
         "@family-mcp/tsconfig": "workspace:*",
         "@modelcontextprotocol/client": "^2.0.0",
         "@types/node": "^22.20.2",
@@ -57,6 +59,18 @@
         "@oxlint/plugins": "1.82.0",
       },
     },
+    "tooling/release": {
+      "name": "@family-mcp/release-tooling",
+      "version": "0.0.0",
+      "dependencies": {
+        "@modelcontextprotocol/client": "^2.0.0",
+        "zod": "^4.6.2",
+      },
+      "devDependencies": {
+        "@family-mcp/tsconfig": "workspace:*",
+        "@types/node": "^22.20.2",
+      },
+    },
     "tooling/tsconfig": {
       "name": "@family-mcp/tsconfig",
       "version": "0.0.0",
@@ -64,6 +78,8 @@
   },
   "packages": {
     "@family-mcp/oxlint-anti-slop": ["@family-mcp/oxlint-anti-slop@workspace:tooling/oxlint-anti-slop"],
+
+    "@family-mcp/release-tooling": ["@family-mcp/release-tooling@workspace:tooling/release"],
 
     "@family-mcp/tsconfig": ["@family-mcp/tsconfig@workspace:tooling/tsconfig"],
 

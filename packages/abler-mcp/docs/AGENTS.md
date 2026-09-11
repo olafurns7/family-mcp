@@ -10,16 +10,17 @@ Prerequisites: macOS or glibc Linux on arm64/x64, curl, tar, and either
 on the server are unnecessary.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/abler-mcp/v0.3.1/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.3.1/packages/abler-mcp/install.sh | sh
 ```
 
 The script selects the native binary, verifies its archive's SHA-256 checksum,
 checks the executable version, and installs `$HOME/.local/bin/abler-mcp`.
 It replaces an existing executable only after successful validation, removes
-temporary downloads, and saves license notices in `$HOME/.local/share/abler-mcp`.
+temporary downloads, and saves license notices in the versioned directory under
+`$HOME/.local/share/abler-mcp`. The command is a symlink into that directory.
 It does not edit shell settings or import an Abler session. To choose another
 absolute prefix, set `ABLER_PREFIX` on the `sh` side of the pipe:
-`curl -fsSL https://raw.githubusercontent.com/olafurns7/abler-mcp/v0.3.1/install.sh | ABLER_PREFIX="/absolute/path" sh`.
+`curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.3.1/packages/abler-mcp/install.sh | ABLER_PREFIX="/absolute/path" sh`.
 
 Run the executable by absolute path or add `$HOME/.local/bin` to PATH. Check
 its `--version` and `--help`. Runtime and dependencies are embedded; execution
@@ -27,7 +28,7 @@ does not require registry access. Never substitute a GitHub source archive.
 Windows and Alpine/musl standalone builds are not provided.
 
 An alternative Node.js 22+ install is `npm install --global --ignore-scripts
-https://github.com/olafurns7/abler-mcp/releases/download/v0.3.1/abler-mcp-0.3.1.tgz`.
+https://github.com/olafurns7/family-mcp/releases/download/abler-mcp@0.3.1/abler-mcp-0.3.1.tgz`.
 That option needs Node on the host's PATH and downloads dependencies from npm.
 The Windows npm command is `abler-mcp.cmd`; Windows is not yet verified.
 

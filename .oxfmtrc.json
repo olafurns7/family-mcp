@@ -6,7 +6,7 @@
     "**/node_modules/**",
     "**/dist/**",
     "**/.test-build/**",
-    "**/release/**",
+    "packages/*/release/**",
     "**/.turbo/**",
     "bun.lock",
     "**/*.tgz",
