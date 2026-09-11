@@ -7,8 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, mock } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { CookieJar } from 'tough-cookie';
 import { InfoMentorClient, setupStatusSchema } from '../src/client.js';
 import { collectionSchema } from '../src/collection.js';
@@ -472,6 +471,7 @@ test('private login and eleven MCP tools select children and read school data wi
     });
 
     assert.equal(unknownChild.isError, true);
+    assert.equal(unknownChild.structuredContent, undefined);
     assert.equal(switchRequests().length, 1);
 
     for (const url of [

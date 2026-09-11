@@ -46,7 +46,14 @@ try {
     join(directory, 'package.json'),
     JSON.stringify({ name: 'infomentor-consumer', private: true, type: 'module' }),
   );
-  run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', tarball]);
+  run('npm', [
+    'install',
+    '--ignore-scripts',
+    '--no-audit',
+    '--no-fund',
+    tarball,
+    '@modelcontextprotocol/client@^2.0.0',
+  ]);
 
   const installed = JSON.parse(
     await readFile(join(directory, 'node_modules/infomentor-mcp/package.json'), 'utf8'),
@@ -62,8 +69,8 @@ try {
     join(directory, 'check.mjs'),
     `
     import assert from 'node:assert/strict';
-    import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-    import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+    import { Client } from '@modelcontextprotocol/client';
+    import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
     import { InfoMentorClient, setupStatusSchema } from 'infomentor-mcp';
     const api = new InfoMentorClient({ sessionFile: new URL('./missing.json', import.meta.url).pathname });
     assert.equal(api.getSetupStatus().state, 'idle');
