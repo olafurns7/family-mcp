@@ -7,6 +7,7 @@ import {
   captureSession,
   InfoMentorError,
   LOGIN_URL,
+  rateLimitCooldown,
   readSession,
   restoreCookies,
   sessionPath,
@@ -14,9 +15,14 @@ import {
   trustedUrl,
   writeSession,
 } from './session.js';
-import type { SessionOptions } from './session.js';
+import type { SavedSession, SessionOptions } from './session.js';
 
-export type LoginOptions = SessionOptions & {
+export type ImportOptions = SessionOptions & {
+  /** Replace a saved session that belongs to a different verified account. Default false. */
+  allowAccountChange?: boolean;
+};
+
+export type LoginOptions = ImportOptions & {
   localForm?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -156,12 +162,14 @@ export async function login(options: LoginOptions = {}): Promise<void> {
   const file = sessionPath(options.sessionFile);
   await withSessionLock(file, options.signal, async () => {
     const http = await createAuthenticatedHttp(options);
-    await writeSession(sessionFromHttp(http), file, options.signal);
+    const session = sessionFromHttp(http);
+    await requireSameAccount(file, session, options.allowAccountChange);
+    await writeSession(session, file, options.signal);
     options.onProgress?.('saved');
   });
 }
 
-export function sessionFromHttp(http: InfoMentorHttp): ReturnType<typeof captureSession> {
+export function sessionFromHttp(http: InfoMentorHttp): SavedSession {
   const session = captureSession(http.jar);
 
   if (http.parent) {
@@ -171,20 +179,61 @@ export function sessionFromHttp(http: InfoMentorHttp): ReturnType<typeof capture
     if (selected.length === 1 && selected[0]) session.selectedChildId = selected[0].id;
   }
 
+  if (http.rateLimitedUntil > Date.now())
+    session.rateLimitedUntil = new Date(http.rateLimitedUntil).toISOString();
+
   return session;
+}
+
+/** Cookies plus the pause InfoMentor requested, so every process sharing the file honours it. */
+export function httpFromSession(session: SavedSession): InfoMentorHttp {
+  return new InfoMentorHttp(restoreCookies(session), rateLimitCooldown(session));
+}
+
+/**
+ * An explicit login or import must not silently switch the saved account: a local attacker who
+ * hijacks the loopback form, or a mistaken credentials file, would otherwise take over the MCP.
+ * Missing, unreadable, and legacy files protect nothing and may be replaced.
+ */
+async function requireSameAccount(
+  file: string,
+  candidate: SavedSession,
+  allowAccountChange: boolean | undefined,
+): Promise<void> {
+  if (allowAccountChange) return;
+  let previous: SavedSession;
+
+  try {
+    previous = await readSession(file);
+  } catch {
+    return;
+  }
+
+  if (
+    previous.accountId !== undefined &&
+    candidate.accountId !== undefined &&
+    previous.accountId !== candidate.accountId
+  )
+    throw new InfoMentorError(
+      'INVALID_CONFIGURATION',
+      'The new sign-in belongs to a different InfoMentor account than the saved session. The previous session was kept. Log out first, or pass allowAccountChange to replace it.',
+    );
 }
 
 export async function importSession(
   file: string,
-  options: SessionOptions = {},
+  options: ImportOptions = {},
   signal?: AbortSignal,
 ): Promise<void> {
   throwIfAborted(signal);
-  await withSessionLock(sessionPath(options.sessionFile), signal, async () => {
+  const destination = sessionPath(options.sessionFile);
+  await withSessionLock(destination, signal, async () => {
     const imported = await readSession(resolve(file));
-    const http = new InfoMentorHttp(restoreCookies(imported));
+    const http = httpFromSession(imported);
     await http.requireAuthentication(signal);
     await http.readParent(signal);
-    await writeSession(sessionFromHttp(http), sessionPath(options.sessionFile), signal);
+    const session = sessionFromHttp(http);
+    await requireSameAccount(destination, session, options.allowAccountChange);
+    await writeSession(session, destination, signal);
   });
 }

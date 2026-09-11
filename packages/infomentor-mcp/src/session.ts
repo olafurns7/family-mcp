@@ -1,7 +1,11 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import {
+  SessionStoreError,
+  defaultSessionPath,
+  readPrivateFile,
+  writePrivateFile,
+} from '@family-mcp/session-store';
 import { CookieJar } from 'tough-cookie';
 import { z } from 'zod';
 
@@ -10,7 +14,13 @@ export const LOGIN_URL = 'https://im1.infomentor.is/production/mentor/';
 export const PARENT_URL = 'https://minn.infomentor.is/';
 
 export const LOGIN_REQUIRED =
-  'Call infomentor_login to sign in or import a session. CLI alternative: infomentor-mcp login.';
+  'Sign in first: run infomentor-mcp login on the MCP host, or call infomentor_login when the server was started with --allow-setup-tools.';
+
+/** A session file holds a cookie jar and identifiers; anything larger is not one. */
+export const SESSION_MAX_BYTES = 1_048_576;
+
+/** A persisted rate-limit pause is honoured for at most this long, whatever the file says. */
+export const MAX_RATE_LIMIT_MS = 3_600_000;
 
 export type ErrorCode =
   | 'LOGIN_REQUIRED'
@@ -67,9 +77,12 @@ export function trustedUrl(value: string): URL {
   return url;
 }
 
+/** New installs use the XDG location; an existing legacy file keeps its path. */
 export function sessionPath(
   path = process.env['INFOMENTOR_SESSION_PATH'] ??
-    join(homedir(), '.infomentor-mcp', 'session.json'),
+    defaultSessionPath('infomentor-mcp', {
+      legacy: join(homedir(), '.infomentor-mcp', 'session.json'),
+    }),
 ): string {
   if (!isAbsolute(path))
     throw new InfoMentorError('INVALID_CONFIGURATION', 'The session file path must be absolute.');
@@ -98,9 +111,20 @@ export const savedSessionSchema = z.object({
   cookies: z.array(cookieSchema),
   accountId: z.string().min(1).optional(),
   selectedChildId: z.string().min(1).optional(),
+  rateLimitedUntil: z.iso.datetime().optional(),
 });
 
 export type SavedSession = z.infer<typeof savedSessionSchema>;
+
+/** Epoch milliseconds until which every process sharing this session must pause; 0 when none. */
+export function rateLimitCooldown(session: SavedSession): number {
+  if (session.rateLimitedUntil === undefined) return 0;
+  const until = Date.parse(session.rateLimitedUntil);
+
+  if (!Number.isFinite(until) || until <= Date.now()) return 0;
+
+  return Math.min(until, Date.now() + MAX_RATE_LIMIT_MS);
+}
 
 export const pupilSchema = z.object({ id: z.string(), name: z.string(), selected: z.boolean() });
 
@@ -243,14 +267,22 @@ export function restoreCookies(session: SavedSession): CookieJar {
   }
 }
 
+/** Only a regular, owner-only file owned by this user is accepted; symlinks and copies with wider permissions are refused. */
 export async function readSession(path = sessionPath()): Promise<SavedSession> {
   let text: string;
 
   try {
-    text = await readFile(path, 'utf8');
+    text = await readPrivateFile(path, { maxBytes: SESSION_MAX_BYTES });
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
-      throw new InfoMentorError('LOGIN_REQUIRED', LOGIN_REQUIRED);
+    const code = error instanceof SessionStoreError ? error.code : 'IO';
+
+    if (code === 'NOT_FOUND') throw new InfoMentorError('LOGIN_REQUIRED', LOGIN_REQUIRED);
+
+    if (code === 'UNSAFE_FILE')
+      throw new InfoMentorError(
+        'INVALID_SESSION',
+        'Cannot use the session file: it must be a regular file owned by you with owner-only permissions (chmod 600), not a symlink.',
+      );
     throw new InfoMentorError(
       'INVALID_SESSION',
       'Cannot read the session file. Check its path and permissions.',
@@ -278,18 +310,17 @@ export async function writeSession(
 
   if (!checked.success)
     throw new InfoMentorError('INVALID_SESSION', 'Refusing to save an invalid InfoMentor session.');
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = path + '.' + randomUUID() + '.tmp';
 
   try {
-    await writeFile(temporary, JSON.stringify(checked.data), { mode: 0o600, flag: 'wx', signal });
-    throwIfAborted(signal);
-    await rename(temporary, path);
+    await writePrivateFile(path, JSON.stringify(checked.data), { fsync: true, signal });
   } catch (error) {
     throwIfAborted(signal);
-    throw error;
-  } finally {
-    await rm(temporary, { force: true });
+
+    if (!(error instanceof SessionStoreError)) throw error;
+    throw new InfoMentorError(
+      'INVALID_CONFIGURATION',
+      'Cannot save the session file. Check the session directory permissions.',
+    );
   }
 }
 
