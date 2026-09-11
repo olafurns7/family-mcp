@@ -1,0 +1,33 @@
+# dependencies / build
+node_modules/
+dist/
+release/
+coverage/
+*.tsbuildinfo
+.turbo/
+.test-build/
+
+# packaging artifacts
+*.tgz
+*.tgz.sha256
+SHA256SUMS
+pack.json
+release-notes.md
+
+# secrets and sessions (parent logins to school/sports systems)
+.env
+.env.*
+!.env.example
+.abler/
+.auth/
+*session*.json
+*cookies*.json
+*storage-state*.json
+*.pending
+*.tmp
+*.lock/
+playwright-report/
+test-results/
+
+# os / editor
+.DS_Store
