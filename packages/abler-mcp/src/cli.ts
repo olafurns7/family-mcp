@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
-import { readFile, rename } from "node:fs/promises";
-import { parseArgs } from "node:util";
+import { randomUUID } from 'node:crypto';
+import { readFile, rename } from 'node:fs/promises';
+import { parseArgs } from 'node:util';
 
-import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 
-import { AblerClient } from "./api.js";
+import { AblerClient } from './api.js';
 import {
   captureCookies,
   importCookies,
@@ -13,8 +13,8 @@ import {
   saveSession,
   sessionPath,
   withSessionLock,
-} from "./auth.js";
-import { createServer, VERSION } from "./server.js";
+} from './auth.js';
+import { createServer, VERSION } from './server.js';
 
 const help = `abler-mcp — unofficial read-only Abler MCP server
 
@@ -34,8 +34,8 @@ async function main() {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
     options: {
-      help: { type: "boolean", short: "h" },
-      version: { type: "boolean", short: "v" },
+      help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean', short: 'v' },
     },
   });
   if (values.help) {
@@ -46,27 +46,27 @@ async function main() {
     console.log(VERSION);
     return;
   }
-  const [command = "serve", action, argument] = positionals;
-  if (command === "serve" && positionals.length <= 1) {
+  const [command = 'serve', action, argument] = positionals;
+  if (command === 'serve' && positionals.length <= 1) {
     serveStdio(() => createServer());
     return;
   }
-  if (command !== "auth" || positionals.length > 3) throw new Error(help);
+  if (command !== 'auth' || positionals.length > 3) throw new Error(help);
   const path = sessionPath();
-  if (action === "capture" || action === "import") {
+  if (action === 'capture' || action === 'import') {
     let jar;
-    if (action === "capture") jar = await captureCookies(argument || "http://127.0.0.1:9222");
+    if (action === 'capture') jar = await captureCookies(argument || 'http://127.0.0.1:9222');
     else {
-      if (!argument) throw new Error("Provide a cookie JSON file, or - for stdin.");
-      let raw = "";
-      if (argument === "-") {
+      if (!argument) throw new Error('Provide a cookie JSON file, or - for stdin.');
+      let raw = '';
+      if (argument === '-') {
         for await (const chunk of process.stdin) raw += chunk;
-      } else raw = await readFile(argument, "utf8");
+      } else raw = await readFile(argument, 'utf8');
       try {
         jar = await importCookies(JSON.parse(raw));
       } catch {
         throw new Error(
-          "Import failed: provide valid browser cookie JSON containing an unexpired Abler refreshToken.",
+          'Import failed: provide valid browser cookie JSON containing an unexpired Abler refreshToken.',
         );
       }
     }
@@ -84,15 +84,15 @@ async function main() {
       }
     });
     console.log(`Abler session saved and verified: ${path}`);
-  } else if (action === "status" && !argument) {
+  } else if (action === 'status' && !argument) {
     console.log(JSON.stringify(await new AblerClient(path).status()));
-  } else if (action === "logout" && !argument) {
+  } else if (action === 'logout' && !argument) {
     await removeSession(path);
-    console.log("Local Abler session removed. This does not sign out other devices.");
+    console.log('Local Abler session removed. This does not sign out other devices.');
   } else throw new Error(help);
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "Abler MCP failed.");
+  console.error(error instanceof Error ? error.message : 'Abler MCP failed.');
   process.exitCode = 1;
 });

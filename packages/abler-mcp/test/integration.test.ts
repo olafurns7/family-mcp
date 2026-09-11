@@ -1,16 +1,16 @@
-import { test, expect } from "bun:test";
-import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { resolve, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { test, expect } from 'bun:test';
+import assert from 'node:assert/strict';
+import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-import { Client } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import * as z from "zod/v4";
+import { Client } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import * as z from 'zod/v4';
 
-import { AblerClient, childSchedulesInput, scheduleInput } from "../src/api.js";
-import { captureCookies, importCookies, loadSession, ORIGIN, saveSession } from "../src/auth.js";
+import { AblerClient, childSchedulesInput, scheduleInput } from '../src/api.js';
+import { captureCookies, importCookies, loadSession, ORIGIN, saveSession } from '../src/auth.js';
 
 const requestBodySchema = z.object({
   operationName: z.string(),
@@ -25,121 +25,121 @@ const requestBodySchema = z.object({
 });
 
 const eventBase = {
-  name: "Practice",
-  from: "2026-09-11T16:00:00Z",
-  to: "2026-09-11T17:00:00Z",
-  ageGroup: { id: "age-group", name: "Team" },
+  name: 'Practice',
+  from: '2026-09-11T16:00:00Z',
+  to: '2026-09-11T17:00:00Z',
+  ageGroup: { id: 'age-group', name: 'Team' },
   currentPlayerAttendance: [],
 };
 
 const cookie = {
-  name: "refreshToken",
-  value: "private-refresh",
-  domain: "www.abler.io",
-  path: "/",
+  name: 'refreshToken',
+  value: 'private-refresh',
+  domain: 'www.abler.io',
+  path: '/',
   expires: Date.now() / 1000 + 3600,
 };
 
-test("private cookie import, renewal, pagination, validation, and redacted failures", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "abler-test-"));
-  const path = join(directory, "session.json");
+test('private cookie import, renewal, pagination, validation, and redacted failures', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-test-'));
+  const path = join(directory, 'session.json');
   try {
     await assert.rejects(
-      importCookies({ cookies: [{ ...cookie, domain: "unrelated.example" }] }),
+      importCookies({ cookies: [{ ...cookie, domain: 'unrelated.example' }] }),
       /refreshToken/,
     );
     await assert.rejects(importCookies({ cookies: [{ ...cookie, expires: 0 }] }), /refreshToken/);
     await assert.rejects(
-      importCookies({ cookies: [{ ...cookie, value: "x\r\nInjected: bad" }] }),
+      importCookies({ cookies: [{ ...cookie, value: 'x\r\nInjected: bad' }] }),
       /Invalid/,
     );
     const jar = await importCookies({
       cookies: [
         cookie,
-        { ...cookie, name: "_analytics" },
-        { ...cookie, name: "id_token", value: "private-stale", expires: Date.now() / 1000 + 30 },
+        { ...cookie, name: '_analytics' },
+        { ...cookie, name: 'id_token', value: 'private-stale', expires: Date.now() / 1000 + 30 },
       ],
     });
     await saveSession(path, jar);
     expect((await stat(path)).mode & 0o777).toBe(0o600);
-    expect(await readFile(path, "utf8")).not.toContain("_analytics");
+    expect(await readFile(path, 'utf8')).not.toContain('_analytics');
     let renewals = 0;
     let queries = 0;
     const request = async (url: string, options: RequestInit) => {
       expect(url.startsWith(ORIGIN)).toBe(true);
-      expect(options.redirect).toBe("error");
+      expect(options.redirect).toBe('error');
       const headers = new Headers(options.headers);
-      if (url.endsWith("/oauth/token")) {
+      if (url.endsWith('/oauth/token')) {
         renewals++;
-        expect(headers.get("cookie")).toContain("refreshToken=");
-        const response = Response.json({ access_token: "private-access" });
+        expect(headers.get('cookie')).toContain('refreshToken=');
+        const response = Response.json({ access_token: 'private-access' });
         response.headers.append(
-          "Set-Cookie",
+          'Set-Cookie',
           `id_token=private-access; Path=/; Max-Age=600; HttpOnly`,
         );
         response.headers.append(
-          "Set-Cookie",
+          'Set-Cookie',
           `refreshToken=rotated-${renewals}; Path=/; Max-Age=3600; HttpOnly`,
         );
         return response;
       }
       queries++;
-      expect(headers.get("cookie")).toContain("id_token=private-access");
+      expect(headers.get('cookie')).toContain('id_token=private-access');
       const saved = await loadSession(path);
-      expect((await saved.getCookies(ORIGIN)).find((c) => c.key === "refreshToken")?.value).toBe(
+      expect((await saved.getCookies(ORIGIN)).find((c) => c.key === 'refreshToken')?.value).toBe(
         `rotated-${renewals}`,
       );
-      assert(typeof options.body === "string");
+      assert(typeof options.body === 'string');
       const body = requestBodySchema.parse(JSON.parse(options.body));
       if (queries === 1)
-        return Response.json({ errors: [{ extensions: { code: "UNAUTHENTICATED" } }] });
-      if (body.operationName === "Schedule") {
+        return Response.json({ errors: [{ extensions: { code: 'UNAUTHENTICATED' } }] });
+      if (body.operationName === 'Schedule') {
         expect(body.variables.filter).toEqual({
-          dateFrom: "2026-09-11",
-          dateTo: "2026-09-30",
-          label: ["TRAINING"],
+          dateFrom: '2026-09-11',
+          dateTo: '2026-09-30',
+          label: ['TRAINING'],
         });
         return Response.json({
           data: {
             schedule: {
-              edges: [{ node: { ...eventBase, eventId: body.variables.cursor || "one" } }],
-              pageInfo: { hasNextPage: !body.variables.cursor, endCursor: "opaque-next" },
+              edges: [{ node: { ...eventBase, eventId: body.variables.cursor || 'one' } }],
+              pageInfo: { hasNextPage: !body.variables.cursor, endCursor: 'opaque-next' },
             },
           },
         });
       }
-      return Response.json({ errors: [{ message: "private-refresh private-access" }] });
+      return Response.json({ errors: [{ message: 'private-refresh private-access' }] });
     };
     const client = new AblerClient(path, request);
-    const filter = { from: "2026-09-11", to: "2026-09-30", types: ["TRAINING" as const], first: 1 };
+    const filter = { from: '2026-09-11', to: '2026-09-30', types: ['TRAINING' as const], first: 1 };
     const first = await client.schedule(filter);
     assert(first.pageInfo.endCursor);
     const second = await client.schedule({
       ...filter,
       after: first.pageInfo.endCursor,
     });
-    expect(first.events[0]?.eventId).toBe("one");
-    expect(second.events[0]?.eventId).toBe("opaque-next");
+    expect(first.events[0]?.eventId).toBe('one');
+    expect(second.events[0]?.eventId).toBe('opaque-next');
     expect(second.pageInfo.hasNextPage).toBe(false);
     expect(renewals).toBe(2);
-    await assert.rejects(client.schedule({ from: "2026-02-30" }));
-    await assert.rejects(client.schedule({ from: "2026-09-30", to: "2026-09-11" }));
+    await assert.rejects(client.schedule({ from: '2026-02-30' }));
+    await assert.rejects(client.schedule({ from: '2026-09-30', to: '2026-09-11' }));
     await assert.rejects(client.schedule({ first: 101 }));
-    assert.throws(() => scheduleInput.parse({ participantId: "child-a" }));
+    assert.throws(() => scheduleInput.parse({ participantId: 'child-a' }));
     await assert.rejects(client.schedule({ participantIds: [] }));
     await assert.rejects(client.status(), /Abler rejected SessionStatus/);
     const stored = await loadSession(path);
-    const access = (await stored.getCookies(ORIGIN)).find((c) => c.key === "id_token");
+    const access = (await stored.getCookies(ORIGIN)).find((c) => c.key === 'id_token');
     assert(access);
     expect(access.TTL()).toBeGreaterThan(500000);
     expect(access.TTL()).toBeLessThanOrEqual(600000);
     expect(access.secure).toBe(true);
-    await stored.setCookie("refreshToken=deleted; Path=/; Max-Age=0", ORIGIN);
+    await stored.setCookie('refreshToken=deleted; Path=/; Max-Age=0', ORIGIN);
     await saveSession(path, stored);
     await assert.rejects(loadSession(path), /expired/);
     await saveSession(path, jar);
     const revoked = new AblerClient(path, async () =>
-      Response.json({ error: "private-refresh" }, { status: 401 }),
+      Response.json({ error: 'private-refresh' }, { status: 401 }),
     );
     await assert.rejects(revoked.status(), /expired or was revoked/);
   } finally {
@@ -147,27 +147,27 @@ test("private cookie import, renewal, pagination, validation, and redacted failu
   }
 });
 
-test("Chrome capture is limited to loopback and to the Abler tab", async () => {
-  await assert.rejects(captureCookies("https://example.com"), /loopback/);
+test('Chrome capture is limited to loopback and to the Abler tab', async () => {
+  await assert.rejects(captureCookies('https://example.com'), /loopback/);
   const mockChrome = Bun.serve({
-    hostname: "127.0.0.1",
+    hostname: '127.0.0.1',
     port: 0,
     fetch(request, server) {
-      if (new URL(request.url).pathname === "/json/list")
+      if (new URL(request.url).pathname === '/json/list')
         return Response.json([
           {
-            type: "page",
-            url: "https://unrelated.example",
-            webSocketDebuggerUrl: "ws://unrelated.example",
+            type: 'page',
+            url: 'https://unrelated.example',
+            webSocketDebuggerUrl: 'ws://unrelated.example',
           },
           {
-            type: "page",
+            type: 'page',
             url: `${ORIGIN}/coach`,
             webSocketDebuggerUrl: `ws://127.0.0.1:${server.port}/devtools/page/1`,
           },
         ]);
       if (server.upgrade(request)) return undefined;
-      return new Response("Not found", { status: 404 });
+      return new Response('Not found', { status: 404 });
     },
     websocket: {
       message(socket, message) {
@@ -178,7 +178,7 @@ test("Chrome capture is limited to loopback and to the Abler tab", async () => {
             params: z.object({ urls: z.array(z.string()) }),
           })
           .parse(JSON.parse(String(message)));
-        expect(request.method).toBe("Network.getCookies");
+        expect(request.method).toBe('Network.getCookies');
         expect(request.params.urls).toEqual([`${ORIGIN}/oauth/token`, `${ORIGIN}/graphql`]);
         socket.send(JSON.stringify({ id: request.id, result: { cookies: [cookie] } }));
       },
@@ -186,42 +186,42 @@ test("Chrome capture is limited to loopback and to the Abler tab", async () => {
   });
   try {
     const jar = await captureCookies(`http://127.0.0.1:${mockChrome.port}`);
-    expect(await jar.getCookieString(ORIGIN)).toBe("refreshToken=private-refresh");
+    expect(await jar.getCookieString(ORIGIN)).toBe('refreshToken=private-refresh');
   } finally {
     await mockChrome.stop(true);
   }
 });
 
-test("MCP executable exposes only read tools and reports missing auth without protocol noise", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "abler-mcp-test-"));
-  const client = new Client({ name: "abler-check", version: "1.0.0" });
+test('MCP executable exposes only read tools and reports missing auth without protocol noise', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-mcp-test-'));
+  const client = new Client({ name: 'abler-check', version: '1.0.0' });
   const transport = new StdioClientTransport({
-    command: "bun",
-    args: ["src/cli.ts"],
-    env: { ...process.env, ABLER_SESSION_FILE: join(directory, "missing.json") },
-    stderr: "pipe",
+    command: 'bun',
+    args: ['src/cli.ts'],
+    env: { ...process.env, ABLER_SESSION_FILE: join(directory, 'missing.json') },
+    stderr: 'pipe',
   });
   try {
     await client.connect(transport);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).toSorted()).toEqual([
-      "auth_status",
-      "get_event",
-      "get_profile",
-      "list_child_schedules",
-      "list_groups",
-      "list_schedule",
+      'auth_status',
+      'get_event',
+      'get_profile',
+      'list_child_schedules',
+      'list_groups',
+      'list_schedule',
     ]);
     expect(tools.every((t) => t.annotations?.readOnlyHint)).toBe(true);
-    const result = await client.callTool({ name: "auth_status", arguments: {} });
+    const result = await client.callTool({ name: 'auth_status', arguments: {} });
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result)).toContain("No saved Abler session");
+    expect(JSON.stringify(result)).toContain('No saved Abler session');
     const typo = await client.callTool({
-      name: "list_child_schedules",
-      arguments: { childId: "only-this-child" },
+      name: 'list_child_schedules',
+      arguments: { childId: 'only-this-child' },
     });
     expect(typo.isError).toBe(true);
-    const invalid = await client.callTool({ name: "list_schedule", arguments: { first: 0 } });
+    const invalid = await client.callTool({ name: 'list_schedule', arguments: { first: 0 } });
     expect(invalid.isError).toBe(true);
   } finally {
     await client.close();
@@ -229,35 +229,35 @@ test("MCP executable exposes only read tools and reports missing auth without pr
   }
 });
 
-test("child schedules separate siblings by ID, retain empty children, and paginate independently", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "abler-children-test-"));
-  const path = join(directory, "session.json");
+test('child schedules separate siblings by ID, retain empty children, and paginate independently', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-children-test-'));
+  const path = join(directory, 'session.json');
   const linkedChildren = [
-    { id: "child-a", displayName: "Alex" },
-    { id: "child-b", displayName: "Alex" },
-    { id: "child-c", displayName: "Jamie" },
+    { id: 'child-a', displayName: 'Alex' },
+    { id: 'child-b', displayName: 'Alex' },
+    { id: 'child-c', displayName: 'Jamie' },
   ] as const;
   let noChildren = false;
   const requests: { child: string; cursor: string | null }[] = [];
   try {
     await saveSession(
       path,
-      await importCookies({ cookies: [cookie, { ...cookie, name: "id_token" }] }),
+      await importCookies({ cookies: [cookie, { ...cookie, name: 'id_token' }] }),
     );
     const request = async (_url: string, init: RequestInit) => {
-      assert(typeof init.body === "string");
+      assert(typeof init.body === 'string');
       const body = requestBodySchema.parse(JSON.parse(init.body));
-      if (body.operationName === "Profile")
+      if (body.operationName === 'Profile')
         return Response.json({
           data: {
             me: {
-              id: "parent",
-              displayName: "Parent",
+              id: 'parent',
+              displayName: 'Parent',
               children: noChildren ? [] : linkedChildren,
             },
           },
         });
-      expect(body.operationName).toBe("Schedule");
+      expect(body.operationName).toBe('Schedule');
       expect(body.variables.first).toBe(1);
       assert(body.variables.filter?.participant);
       expect(body.variables.filter.participant).toHaveLength(1);
@@ -269,23 +269,23 @@ test("child schedules separate siblings by ID, retain empty children, and pagina
         data: {
           schedule: {
             edges:
-              child === "child-c"
+              child === 'child-c'
                 ? []
                 : [
                     {
                       node: {
                         ...eventBase,
-                        eventId: cursor ? "next-event" : "shared-event",
+                        eventId: cursor ? 'next-event' : 'shared-event',
                         currentPlayerAttendance: [
-                          { player: linkedChildren[0], status: "G", coachStatus: "P" },
-                          { player: linkedChildren[1], status: "N", coachStatus: null },
+                          { player: linkedChildren[0], status: 'G', coachStatus: 'P' },
+                          { player: linkedChildren[1], status: 'N', coachStatus: null },
                         ],
                       },
                     },
                   ],
             pageInfo: {
-              hasNextPage: child === "child-a" && !cursor,
-              endCursor: child === "child-a" ? "a-next" : null,
+              hasNextPage: child === 'child-a' && !cursor,
+              endCursor: child === 'child-a' ? 'a-next' : null,
             },
           },
         },
@@ -293,9 +293,9 @@ test("child schedules separate siblings by ID, retain empty children, and pagina
     };
     const client = new AblerClient(path, request);
     expect((await client.profile()).childNamesById).toEqual({
-      "child-a": "Alex",
-      "child-b": "Alex",
-      "child-c": "Jamie",
+      'child-a': 'Alex',
+      'child-b': 'Alex',
+      'child-c': 'Jamie',
     });
     const result = await client.childSchedules({ first: 1 });
     assert.deepEqual(
@@ -303,12 +303,12 @@ test("child schedules separate siblings by ID, retain empty children, and pagina
       linkedChildren,
     );
     expect(result.children[0]?.events[0]).toMatchObject({
-      eventId: "shared-event",
-      attendance: [{ status: "G", coachStatus: "P" }],
+      eventId: 'shared-event',
+      attendance: [{ status: 'G', coachStatus: 'P' }],
     });
     expect(result.children[1]?.events[0]).toMatchObject({
-      eventId: "shared-event",
-      attendance: [{ status: "N", coachStatus: null }],
+      eventId: 'shared-event',
+      attendance: [{ status: 'N', coachStatus: null }],
     });
     expect(result.children[2]).toEqual({
       child: linkedChildren[2],
@@ -317,26 +317,26 @@ test("child schedules separate siblings by ID, retain empty children, and pagina
     });
     expect(result.children.map((c) => c.pageInfo.hasNextPage)).toEqual([true, false, false]);
     const next = await client.childSchedules({
-      childIds: ["child-a"],
+      childIds: ['child-a'],
       first: 1,
-      afterByChild: { "child-a": "a-next" },
+      afterByChild: { 'child-a': 'a-next' },
     });
     expect(next.children).toHaveLength(1);
-    expect(next.children[0]?.events[0]?.eventId).toBe("next-event");
+    expect(next.children[0]?.events[0]?.eventId).toBe('next-event');
     expect(requests).toEqual([
-      { child: "child-a", cursor: null },
-      { child: "child-b", cursor: null },
-      { child: "child-c", cursor: null },
-      { child: "child-a", cursor: "a-next" },
+      { child: 'child-a', cursor: null },
+      { child: 'child-b', cursor: null },
+      { child: 'child-c', cursor: null },
+      { child: 'child-a', cursor: 'a-next' },
     ]);
-    await assert.rejects(client.childSchedules({ childIds: ["unlinked"] }), /Unknown child/);
+    await assert.rejects(client.childSchedules({ childIds: ['unlinked'] }), /Unknown child/);
     await assert.rejects(
-      client.childSchedules({ childIds: ["child-a"], afterByChild: { "child-b": "b-next" } }),
+      client.childSchedules({ childIds: ['child-a'], afterByChild: { 'child-b': 'b-next' } }),
       /unselected child/,
     );
-    await assert.rejects(client.childSchedules({ from: "2026-09-30", to: "2026-09-11" }));
-    assert.throws(() => childSchedulesInput.parse({ childId: "child-a" }));
-    assert.throws(() => childSchedulesInput.parse({ participantIds: ["child-a"] }));
+    await assert.rejects(client.childSchedules({ from: '2026-09-30', to: '2026-09-11' }));
+    assert.throws(() => childSchedulesInput.parse({ childId: 'child-a' }));
+    assert.throws(() => childSchedulesInput.parse({ participantIds: ['child-a'] }));
     noChildren = true;
     expect(await client.childSchedules()).toEqual({ children: [] });
     expect(requests).toHaveLength(4);
@@ -345,35 +345,35 @@ test("child schedules separate siblings by ID, retain empty children, and pagina
   }
 });
 
-test("separate processes serialize rotating credentials and logout waits for an in-flight request", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "abler-concurrency-"));
-  const path = join(directory, "session.json");
+test('separate processes serialize rotating credentials and logout waits for an in-flight request', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-concurrency-'));
+  const path = join(directory, 'session.json');
   let current = cookie.value;
   let rotations = 0;
   let hold = false;
   const { promise: refreshing, resolve: started } = Promise.withResolvers<void>();
   const { promise: proceed, resolve: release } = Promise.withResolvers<void>();
   const upstream = Bun.serve({
-    hostname: "127.0.0.1",
+    hostname: '127.0.0.1',
     port: 0,
     async fetch(request) {
-      if (new URL(request.url).pathname === "/oauth/token") {
-        if (!request.headers.get("cookie")?.includes(`refreshToken=${current}`))
+      if (new URL(request.url).pathname === '/oauth/token') {
+        if (!request.headers.get('cookie')?.includes(`refreshToken=${current}`))
           return new Response(null, { status: 401 });
         current = `rotated-${++rotations}`;
         if (hold) {
           started();
           await proceed;
         }
-        const response = Response.json({ access_token: "access" });
-        response.headers.append("Set-Cookie", "id_token=access; Path=/; Max-Age=600; HttpOnly");
+        const response = Response.json({ access_token: 'access' });
+        response.headers.append('Set-Cookie', 'id_token=access; Path=/; Max-Age=600; HttpOnly');
         response.headers.append(
-          "Set-Cookie",
+          'Set-Cookie',
           `refreshToken=${current}; Path=/; Max-Age=3600; HttpOnly`,
         );
         return response;
       }
-      return Response.json({ data: { me: { id: "parent", displayName: "Parent" } } });
+      return Response.json({ data: { me: { id: 'parent', displayName: 'Parent' } } });
     },
   });
   const env = {
@@ -381,11 +381,11 @@ test("separate processes serialize rotating credentials and logout waits for an 
     ABLER_TEST_FILE: path,
     ABLER_TEST_ORIGIN: `http://127.0.0.1:${upstream.port}`,
   };
-  const code = `import { AblerClient } from ${JSON.stringify(pathToFileURL(resolve("src/api.ts")).href)};
+  const code = `import { AblerClient } from ${JSON.stringify(pathToFileURL(resolve('src/api.ts')).href)};
     const request = (url, init) => fetch(new URL(new URL(url).pathname, process.env.ABLER_TEST_ORIGIN), init);
     console.log(JSON.stringify(await new AblerClient(process.env.ABLER_TEST_FILE, request).status(true)));`;
   const run = () =>
-    Bun.spawn([process.execPath, "--eval", code], { env, stdout: "pipe", stderr: "pipe" });
+    Bun.spawn([process.execPath, '--eval', code], { env, stdout: 'pipe', stderr: 'pipe' });
   try {
     await saveSession(path, await importCookies([cookie]));
     const processes = [run(), run(), run()];
@@ -402,7 +402,7 @@ test("separate processes serialize rotating credentials and logout waits for an 
         (r) => z.object({ authenticated: z.boolean() }).parse(JSON.parse(r.out)).authenticated,
       ),
     ).toBe(true);
-    expect(results.every((r) => r.err === "")).toBe(true);
+    expect(results.every((r) => r.err === '')).toBe(true);
     expect(rotations).toBe(3);
     hold = true;
     const active = run();
@@ -410,17 +410,17 @@ test("separate processes serialize rotating credentials and logout waits for an 
     const logout = Bun.spawn(
       [
         process.execPath,
-        "--eval",
+        '--eval',
         `
-      import { removeSession } from ${JSON.stringify(pathToFileURL(resolve("src/auth.ts")).href)};
+      import { removeSession } from ${JSON.stringify(pathToFileURL(resolve('src/auth.ts')).href)};
       const removal = removeSession(process.env.ABLER_TEST_FILE);
       console.log("started");
       await removal;`,
       ],
-      { env, stdout: "pipe", stderr: "pipe" },
+      { env, stdout: 'pipe', stderr: 'pipe' },
     );
     const reader = logout.stdout.getReader();
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain("started");
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('started');
     expect(await Bun.file(path).exists()).toBe(true);
     release();
     expect(await active.exited).toBe(0);
@@ -434,17 +434,17 @@ test("separate processes serialize rotating credentials and logout waits for an 
   }
 }, 15000);
 
-test("unsafe session files, malformed pages, stalled cursors, and wrong events fail explicitly", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "abler-validation-"));
-  const path = join(directory, "session.json");
+test('unsafe session files, malformed pages, stalled cursors, and wrong events fail explicitly', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-validation-'));
+  const path = join(directory, 'session.json');
   try {
-    await saveSession(path, await importCookies([cookie, { ...cookie, name: "id_token" }]));
-    if (process.platform !== "win32") {
+    await saveSession(path, await importCookies([cookie, { ...cookie, name: 'id_token' }]));
+    if (process.platform !== 'win32') {
       await chmod(path, 0o644);
       await assert.rejects(loadSession(path), /owner-only/);
       await chmod(path, 0o600);
-      await symlink(path, join(directory, "link.json"));
-      await assert.rejects(loadSession(join(directory, "link.json")), /symlink/);
+      await symlink(path, join(directory, 'link.json'));
+      await assert.rejects(loadSession(join(directory, 'link.json')), /symlink/);
     }
     let page: unknown = { edges: [], pageInfo: { hasNextPage: true, endCursor: null } };
     const client = new AblerClient(path, async () =>
@@ -454,12 +454,12 @@ test("unsafe session files, malformed pages, stalled cursors, and wrong events f
     page = { edges: [{ node: {} }], pageInfo: { hasNextPage: false, endCursor: null } };
     await assert.rejects(client.schedule());
     page = {
-      edges: [{ node: { ...eventBase, eventId: "event-a" } }],
-      pageInfo: { hasNextPage: true, endCursor: "same" },
+      edges: [{ node: { ...eventBase, eventId: 'event-a' } }],
+      pageInfo: { hasNextPage: true, endCursor: 'same' },
     };
-    await assert.rejects(client.schedule({ after: "same" }), /did not advance/);
+    await assert.rejects(client.schedule({ after: 'same' }), /did not advance/);
     await assert.rejects(
-      client.event({ eventId: "event-b", ageGroupId: "age-group" }),
+      client.event({ eventId: 'event-b', ageGroupId: 'age-group' }),
       /different event/,
     );
   } finally {
@@ -467,15 +467,15 @@ test("unsafe session files, malformed pages, stalled cursors, and wrong events f
   }
 });
 
-test("failed import retains a rotated candidate without overwriting the existing session", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "abler-import-"));
-  const path = join(directory, "session.json");
+test('failed import retains a rotated candidate without overwriting the existing session', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-import-'));
+  const path = join(directory, 'session.json');
   try {
     await saveSession(path, await importCookies([cookie]));
-    const original = await readFile(path, "utf8");
-    const source = join(directory, "cookies.json");
+    const original = await readFile(path, 'utf8');
+    const source = join(directory, 'cookies.json');
     await writeFile(source, JSON.stringify([cookie]), { mode: 0o600 });
-    const preload = join(directory, "upstream.ts");
+    const preload = join(directory, 'upstream.ts');
     await writeFile(
       preload,
       `globalThis.fetch = async url => {
@@ -489,26 +489,26 @@ test("failed import retains a rotated candidate without overwriting the existing
     };`,
     );
     const child = Bun.spawn(
-      [process.execPath, "--preload", preload, "src/cli.ts", "auth", "import", source],
+      [process.execPath, '--preload', preload, 'src/cli.ts', 'auth', 'import', source],
       {
         env: { ...process.env, ABLER_SESSION_FILE: path },
-        stdout: "pipe",
-        stderr: "pipe",
+        stdout: 'pipe',
+        stderr: 'pipe',
       },
     );
     expect(await child.exited).toBe(1);
     const error = await new Response(child.stderr).text();
-    expect(error).toContain("candidate is retained");
-    expect(error).not.toContain("recovery-token");
-    expect(await readFile(path, "utf8")).toBe(original);
-    const candidates = (await readdir(directory)).filter((name) => name.endsWith(".pending"));
+    expect(error).toContain('candidate is retained');
+    expect(error).not.toContain('recovery-token');
+    expect(await readFile(path, 'utf8')).toBe(original);
+    const candidates = (await readdir(directory)).filter((name) => name.endsWith('.pending'));
     expect(candidates).toHaveLength(1);
     const [candidateName] = candidates;
     assert(candidateName);
     const candidate = join(directory, candidateName);
     expect((await stat(candidate)).mode & 0o777).toBe(0o600);
     expect(await (await loadSession(candidate)).getCookieString(ORIGIN)).toContain(
-      "refreshToken=recovery-token",
+      'refreshToken=recovery-token',
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

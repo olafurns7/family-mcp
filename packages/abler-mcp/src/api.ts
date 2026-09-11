@@ -1,5 +1,5 @@
-import { Cookie, type CookieJar } from "tough-cookie";
-import * as z from "zod/v4";
+import { Cookie, type CookieJar } from 'tough-cookie';
+import * as z from 'zod/v4';
 
 import {
   AUTH_COOKIES,
@@ -8,7 +8,7 @@ import {
   saveSession,
   sessionPath,
   withSessionLock,
-} from "./auth.js";
+} from './auth.js';
 
 const id = z.string().min(1).max(256);
 const date = z.iso.date();
@@ -16,9 +16,9 @@ const scheduleFields = z.strictObject({
   from: date
     .optional()
     .describe("First calendar date, YYYY-MM-DD, as used by Abler's date filter."),
-  to: date.optional().describe("Last calendar date, YYYY-MM-DD."),
+  to: date.optional().describe('Last calendar date, YYYY-MM-DD.'),
   types: z
-    .array(z.enum(["TRAINING", "MATCH", "GENERAL", "CLASSES"]))
+    .array(z.enum(['TRAINING', 'MATCH', 'GENERAL', 'CLASSES']))
     .max(4)
     .optional(),
   groupIds: z
@@ -26,18 +26,18 @@ const scheduleFields = z.strictObject({
     .min(1)
     .max(50)
     .optional()
-    .describe("Subgroup IDs from list_groups, not age-group IDs."),
-  participantIds: z.array(id).min(1).max(20).optional().describe("Player IDs from get_profile."),
+    .describe('Subgroup IDs from list_groups, not age-group IDs.'),
+  participantIds: z.array(id).min(1).max(20).optional().describe('Player IDs from get_profile.'),
   first: z.number().int().min(1).max(100).default(20),
   after: z
     .string()
     .min(1)
     .max(1024)
     .optional()
-    .describe("Opaque endCursor from the previous page; keep filters unchanged."),
+    .describe('Opaque endCursor from the previous page; keep filters unchanged.'),
 });
 export const scheduleInput = scheduleFields.refine((v) => !v.from || !v.to || v.from <= v.to, {
-  message: "from must be on or before to",
+  message: 'from must be on or before to',
 });
 export const childSchedulesInput = scheduleFields
   .omit({ participantIds: true, after: true })
@@ -48,10 +48,10 @@ export const childSchedulesInput = scheduleFields
       .max(20)
       .optional()
       .describe(
-        "Linked child IDs from get_profile. Omit for all children; IDs distinguish children with the same name.",
+        'Linked child IDs from get_profile. Omit for all children; IDs distinguish children with the same name.',
       ),
     first: scheduleFields.shape.first.describe(
-      "Maximum events per child, independently paginated.",
+      'Maximum events per child, independently paginated.',
     ),
     afterByChild: z
       .record(id, scheduleFields.shape.after.unwrap())
@@ -60,7 +60,7 @@ export const childSchedulesInput = scheduleFields
         "Map child ID to that child's endCursor. To continue one child, also select only that ID in childIds. Keep filters unchanged.",
       ),
   })
-  .refine((v) => !v.from || !v.to || v.from <= v.to, { message: "from must be on or before to" });
+  .refine((v) => !v.from || !v.to || v.from <= v.to, { message: 'from must be on or before to' });
 export const eventInput = z.strictObject({ eventId: id, ageGroupId: id });
 const person = z.object({ id, displayName: z.string() });
 const profileSchema = person.extend({ children: z.array(person) });
@@ -101,7 +101,7 @@ const pageSchema = z
     (page) =>
       !page.pageInfo.hasNextPage || (page.edges.length > 0 && Boolean(page.pageInfo.endCursor)),
     {
-      message: "Abler returned an incomplete pagination cursor.",
+      message: 'Abler returned an incomplete pagination cursor.',
     },
   );
 
@@ -117,24 +117,24 @@ export class AblerClient {
 
   private async post(
     jar: CookieJar,
-    path: "/oauth/token" | "/graphql",
+    path: '/oauth/token' | '/graphql',
     body?: unknown,
   ): Promise<Response> {
     let response: Response;
     try {
       response = await this.request(`${ORIGIN}${path}`, {
-        method: "POST",
-        redirect: "error",
+        method: 'POST',
+        redirect: 'error',
         signal: AbortSignal.timeout(20000),
         headers: {
           Cookie: await jar.getCookieString(`${ORIGIN}${path}`),
-          Accept: "application/json",
-          "Content-Type": "application/json",
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch {
-      throw new Error("Abler request failed or timed out. Check the connection and try again.");
+      throw new Error('Abler request failed or timed out. Check the connection and try again.');
     }
     let changed = false;
     for (const header of response.headers.getSetCookie()) {
@@ -150,17 +150,17 @@ export class AblerClient {
   }
 
   private async refresh(jar: CookieJar): Promise<void> {
-    const response = await this.post(jar, "/oauth/token");
+    const response = await this.post(jar, '/oauth/token');
     if ([401, 403].includes(response.status))
-      throw new Error("Abler session expired or was revoked. Sign in again and capture/import it.");
+      throw new Error('Abler session expired or was revoked. Sign in again and capture/import it.');
     if (!response.ok) throw new Error(`Abler session refresh failed (HTTP ${response.status}).`);
     const result = z
       .object({ access_token: z.string().min(1), error: z.unknown().optional() })
       .safeParse(await response.json().catch(() => null));
     if (!result.success || result.data.error)
-      throw new Error("Abler returned an invalid session refresh response.");
-    if (!(await jar.getCookies(`${ORIGIN}/graphql`)).some((c) => c.key === "id_token")) {
-      throw new Error("Abler did not issue an access cookie. Capture a fresh session.");
+      throw new Error('Abler returned an invalid session refresh response.');
+    if (!(await jar.getCookies(`${ORIGIN}/graphql`)).some((c) => c.key === 'id_token')) {
+      throw new Error('Abler did not issue an access cookie. Capture a fresh session.');
     }
   }
 
@@ -171,29 +171,29 @@ export class AblerClient {
     variables: unknown = {},
     forceRefresh = false,
   ): Promise<Record<string, unknown>> {
-    const access = (await jar.getCookies(`${ORIGIN}/graphql`)).find((c) => c.key === "id_token");
+    const access = (await jar.getCookies(`${ORIGIN}/graphql`)).find((c) => c.key === 'id_token');
     if (forceRefresh || !access || access.TTL() < 60000) await this.refresh(jar);
     const body = { operationName, query, variables };
-    let response = await this.post(jar, "/graphql", body);
+    let response = await this.post(jar, '/graphql', body);
     let result = graphqlResponseSchema.safeParse(await response.json().catch(() => null));
     if (
       response.status === 401 ||
       (result.success &&
-        result.data.errors?.some((error) => error?.extensions?.code === "UNAUTHENTICATED"))
+        result.data.errors?.some((error) => error?.extensions?.code === 'UNAUTHENTICATED'))
     ) {
       await this.refresh(jar);
-      response = await this.post(jar, "/graphql", body);
+      response = await this.post(jar, '/graphql', body);
       result = graphqlResponseSchema.safeParse(await response.json().catch(() => null));
     }
     if (!response.ok) throw new Error(`Abler ${operationName} failed (HTTP ${response.status}).`);
-    if (!result.success) throw new Error("Abler returned an invalid API response.");
+    if (!result.success) throw new Error('Abler returned an invalid API response.');
     if (result.data.errors?.length) {
       // Server messages may contain private values. Never echo raw response bodies.
       throw new Error(
         `Abler rejected ${operationName}. The session may lack permission, or the API may have changed.`,
       );
     }
-    if (!result.data.data) throw new Error("Abler returned no data.");
+    if (!result.data.data) throw new Error('Abler returned no data.');
     return result.data.data;
   }
 
@@ -202,8 +202,8 @@ export class AblerClient {
     return this.session(async (jar) => {
       const data = await this.query(
         jar,
-        "SessionStatus",
-        "query SessionStatus { me { id displayName } }",
+        'SessionStatus',
+        'query SessionStatus { me { id displayName } }',
         {},
         forceRefresh,
       );
@@ -218,10 +218,10 @@ export class AblerClient {
   private async profileWithSession(jar: CookieJar) {
     const data = await this.query(
       jar,
-      "Profile",
+      'Profile',
       `query Profile { me { id displayName children { id displayName } } }`,
     );
-    if (!data.me) throw new Error("Abler returned no signed-in user.");
+    if (!data.me) throw new Error('Abler returned no signed-in user.');
     const profile = profileSchema.parse(data.me);
     return {
       ...profile,
@@ -235,7 +235,7 @@ export class AblerClient {
     return this.session(async (jar) => {
       const data = await this.query(
         jar,
-        "Groups",
+        'Groups',
         `query Groups { me { userAgeGroups {
         id name isActive groups { id name label } sport { id name }
       } } }`,
@@ -261,7 +261,7 @@ export class AblerClient {
     };
     const data = await this.query(
       jar,
-      "Schedule",
+      'Schedule',
       `query Schedule($first: Int, $cursor: String, $filter: eventFilter) {
       schedule(first: $first, after: $cursor, filter: $filter) { edges { node { ${eventFields} } } ${pageFields} }
     }`,
@@ -270,7 +270,7 @@ export class AblerClient {
     const page = pageSchema.parse(data.schedule);
     if (page.pageInfo.hasNextPage && page.pageInfo.endCursor === after) {
       throw new Error(
-        "Abler pagination did not advance. Retry later; do not report this schedule as complete.",
+        'Abler pagination did not advance. Retry later; do not report this schedule as complete.',
       );
     }
     return { events: page.edges.map((e) => e.node), pageInfo: page.pageInfo };
@@ -281,14 +281,14 @@ export class AblerClient {
     return this.session(async (jar) => {
       const profile = await this.profileWithSession(jar);
       if (childIds?.some((childId) => !Object.hasOwn(profile.childNamesById, childId))) {
-        throw new Error("Unknown child ID. Use get_profile to choose linked children.");
+        throw new Error('Unknown child ID. Use get_profile to choose linked children.');
       }
       const selected = profile.children.filter((child) => !childIds || childIds.includes(child.id));
       if (
         Object.keys(afterByChild).some((childId) => !selected.some((child) => child.id === childId))
       ) {
         throw new Error(
-          "A cursor was supplied for an unselected child. Match afterByChild keys to childIds.",
+          'A cursor was supplied for an unselected child. Match afterByChild keys to childIds.',
         );
       }
       const children = [];
@@ -317,7 +317,7 @@ export class AblerClient {
     return this.session(async (jar) => {
       const data = await this.query(
         jar,
-        "Event",
+        'Event',
         `query Event($id: String!, $ageGroupId: String!) {
         event(id: $id, ageGroupId: $ageGroupId, first: 1) { edges { node { ${eventFields} } } ${pageFields} }
       }`,
@@ -325,9 +325,9 @@ export class AblerClient {
       );
       const page = pageSchema.parse(data.event);
       const event = page.edges[0]?.node;
-      if (!event) throw new Error("Event not found or not accessible with this session.");
+      if (!event) throw new Error('Event not found or not accessible with this session.');
       if (event.eventId !== eventId || event.ageGroup.id !== ageGroupId) {
-        throw new Error("Abler returned a different event than requested.");
+        throw new Error('Abler returned a different event than requested.');
       }
       return event;
     });
