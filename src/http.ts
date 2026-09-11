@@ -52,6 +52,7 @@ export function parseForms(html: string): Form[] {
 /** Manual redirects keep cookie handling and destination validation on every hop. */
 export class InfoMentorHttp {
   private cooldownUntil = 0;
+  parent: z.infer<typeof parentSchema> | undefined;
   constructor(readonly jar = new CookieJar()) {}
 
   async request(
@@ -223,6 +224,8 @@ export class InfoMentorHttp {
       signal,
     );
 
+    requireSchoolPage(page);
+
     try {
       return schema.parse(JSON.parse(page.text));
     } catch {
@@ -232,6 +235,76 @@ export class InfoMentorHttp {
       );
     }
   }
+
+  async readParent(signal?: AbortSignal, childId?: string): Promise<z.infer<typeof parentSchema>> {
+    const page = await this.request(PARENT_URL, undefined, signal);
+    requireSchoolPage(page);
+    let parent = parseParent(page.text);
+
+    if (childId !== undefined) {
+      const child = parent.account.pupils.find((pupil) => pupil.id === childId);
+
+      if (!child)
+        throw new InfoMentorError(
+          'INVALID_CONFIGURATION',
+          'This child is not registered in the account. Use a child ID from infomentor_get_overview.',
+        );
+
+      if (!child.selected) {
+        if (!child.switchPupilUrl)
+          throw new InfoMentorError(
+            'UNEXPECTED_PAGE',
+            'InfoMentor did not provide a child switch link.',
+          );
+        const url = trustedUrl(new URL(child.switchPupilUrl, PARENT_URL).href);
+
+        if (
+          url.origin !== new URL(PARENT_URL).origin ||
+          !/^\/Account\/PupilSwitcher\/SwitchPupil\/\d+$/i.test(url.pathname) ||
+          url.search ||
+          url.hash
+        )
+          throw new InfoMentorError(
+            'UNEXPECTED_PAGE',
+            'InfoMentor returned an unsupported child switch link.',
+          );
+
+        try {
+          await this.request(url.href, undefined, signal);
+          parent = await this.readParent(signal);
+        } catch (cause) {
+          const error = cause instanceof InfoMentorError ? cause : undefined;
+          throw new InfoMentorError(
+            error?.code ?? 'UNEXPECTED_PAGE',
+            `${error?.message ?? 'InfoMentor could not select the child.'} Selection may have changed; refresh infomentor_get_overview before continuing.`,
+            error?.retryAfterMs,
+          );
+        }
+      }
+
+      const selected = parent.account.pupils.filter((pupil) => pupil.selected);
+
+      if (selected.length !== 1 || selected[0]?.id !== childId)
+        throw new InfoMentorError(
+          'UNEXPECTED_PAGE',
+          'InfoMentor did not confirm the requested child. Selection may have changed; refresh infomentor_get_overview before continuing.',
+        );
+    }
+
+    this.parent = parent;
+
+    return parent;
+  }
+}
+
+function requireSchoolPage(page: HttpPage): void {
+  const url = new URL(page.url);
+
+  if (
+    url.origin !== new URL(PARENT_URL).origin ||
+    /^\/authentication\/authentication\/login(?:callback)?\b/i.test(url.pathname)
+  )
+    throw new InfoMentorError('LOGIN_REQUIRED', LOGIN_REQUIRED);
 }
 
 async function readBody(response: Response, signal: AbortSignal): Promise<string> {
@@ -264,7 +337,10 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
 }
 
 export const parentSchema = z.object({
-  account: z.object({ pupils: z.array(pupilSchema) }),
+  account: z.object({
+    currentUser: z.object({ id: z.string().min(1) }),
+    pupils: z.array(pupilSchema.extend({ switchPupilUrl: z.string().nullish() })),
+  }),
   apps: z.array(z.object({ codeName: z.string() })),
 });
 

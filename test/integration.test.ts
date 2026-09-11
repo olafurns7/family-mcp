@@ -11,6 +11,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { CookieJar } from 'tough-cookie';
 import { InfoMentorClient, setupStatusSchema } from '../src/client.js';
+import { collectionSchema } from '../src/collection.js';
 import { promptCredentials } from '../src/credentials.js';
 import { InfoMentorHttp, parseForms } from '../src/http.js';
 import { authenticate, importSession, login } from '../src/login.js';
@@ -33,7 +34,13 @@ const nativeFetch = globalThis.fetch;
 const credentials = { username: '0101991239', password: 'synthetic-password' };
 
 const parent = {
-  account: { pupils: [{ id: 'child-1', name: 'Synthetic child', selected: true }] },
+  account: {
+    currentUser: { id: 'parent-1' },
+    pupils: [
+      { id: 'child-1', name: 'Synthetic child', selected: true },
+      { id: 'child-2 & sibling', name: 'Synthetic sibling', selected: false },
+    ],
+  },
   apps: [{ codeName: 'timetable' }],
 };
 
@@ -48,7 +55,7 @@ const entry = {
   establishmentName: 'Synthetic school',
 };
 
-const parentHtml = `<script>IMHome.home.homeData = ${JSON.stringify(parent)}; IMHome.home.init(IMHome.home.homeData);</script>`;
+const siblingEntry = { ...entry, title: 'Sund' };
 
 const loginHtml =
   '<form method="POST" action="./"><input type="hidden" name="__VIEWSTATE" value="fresh&amp;state"><input type="hidden" name="__EVENTVALIDATION" value="fresh-validation"><input type="hidden" name="__VIEWSTATEGENERATOR" value="generator"></form>';
@@ -82,6 +89,13 @@ const notifications = ['New', 'Seen', 'Read', 'Cleared'].map((state, index) => (
 
 function fixture() {
   const requests: { url: string; method: string; body: string; cookies: string }[] = [];
+
+  const selection = {
+    id: 'child-1',
+    overrideUrl: '',
+    ignoreSwitch: false,
+    failTimetable: false,
+  };
 
   const fetcher = mock.method(
     globalThis,
@@ -148,16 +162,81 @@ function fixture() {
       if (input.pathname.endsWith('/isauthenticated/')) {
         assert.equal(method, 'POST');
 
-        return Response.json(cookies.includes('IMHome=synthetic'));
+        return Response.json(/(?:^|; )IMHome=(?:synthetic|other)(?:;|$)/.test(cookies));
       }
 
-      if (input.href === PARENT_URL) return new Response(parentHtml);
+      if (cookies.includes('IMHome=other')) {
+        if (input.href === PARENT_URL) {
+          const model = {
+            ...parent,
+            account: {
+              currentUser: { id: 'parent-2' },
+              pupils: [
+                {
+                  id: 'only-child',
+                  name: 'Another account child',
+                  selected: true,
+                  switchPupilUrl: null,
+                },
+              ],
+            },
+          };
+
+          return new Response(
+            `<script>IMHome.home.homeData = ${JSON.stringify(model)}; IMHome.home.init(IMHome.home.homeData);</script>`,
+          );
+        }
+
+        if (input.pathname === '/timetable/timetable/appData')
+          return Response.json({ items: [{ ...entry, title: 'Another account timetable' }] });
+        throw new Error('Unexpected request in the other account');
+      }
+
+      if (input.href === PARENT_URL) {
+        const model = {
+          ...parent,
+          account: {
+            currentUser: { id: 'parent-1' },
+            pupils: parent.account.pupils.map((pupil, index) => ({
+              ...pupil,
+              selected: pupil.id === selection.id,
+              switchPupilUrl:
+                selection.overrideUrl || `/Account/PupilSwitcher/SwitchPupil/${101 + index}`,
+            })),
+          },
+        };
+
+        return new Response(
+          `<script>IMHome.home.homeData = ${JSON.stringify(model)}; IMHome.home.init(IMHome.home.homeData);</script>`,
+        );
+      }
+
+      if (/^\/Account\/PupilSwitcher\/SwitchPupil\/(101|102)$/.test(input.pathname)) {
+        assert.equal(method, 'GET');
+        const pupil = parent.account.pupils[Number(input.pathname.split('/').at(-1)) - 101];
+        assert.ok(pupil);
+
+        if (!selection.ignoreSwitch) selection.id = pupil.id;
+
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: PARENT_URL,
+            'Set-Cookie': `selectedChild=${encodeURIComponent(selection.id)}; Secure; HttpOnly; Path=/`,
+          },
+        });
+      }
 
       if (input.pathname === '/timetable/timetable/appData') {
         assert.equal(method, 'POST');
         assert.match(cookies, /IMHome=synthetic/);
 
-        return Response.json({ items: [entry] });
+        if (selection.failTimetable) return new Response('private-upstream-value', { status: 500 });
+
+        if (selection.id !== 'child-1')
+          assert.ok(cookies.includes(`selectedChild=${encodeURIComponent(selection.id)}`));
+
+        return Response.json({ items: [selection.id === 'child-1' ? entry : siblingEntry] });
       }
 
       if (input.pathname === '/Message/message/GetMessages') {
@@ -167,6 +246,17 @@ function fixture() {
 
         if (fields.get('messageText') === 'malformed')
           return new Response('{"items":"private-upstream-value"}');
+
+        if (fields.get('messageText') === '') {
+          assert.equal(fields.get('pageSize'), '100');
+          assert.equal(fields.get('page'), '1');
+
+          return Response.json({
+            items: fields.get('inbox') === 'true' ? [message] : [],
+            more: false,
+          });
+        }
+
         assert.equal(fields.get('inbox'), 'false');
         assert.equal(fields.get('sentItems'), 'true');
         assert.equal(fields.get('messageText'), 'Skólaferð & nesti');
@@ -192,24 +282,32 @@ function fixture() {
       if (input.pathname === '/NotificationApp/NotificationApp/appData') {
         assert.equal(method, 'POST');
 
-        return Response.json({ notifications });
+        return Response.json({
+          notifications: notifications.map((item) => ({
+            ...item,
+            currentlySelectedPupil:
+              selection.id === 'child-1'
+                ? item.currentlySelectedPupil
+                : !item.currentlySelectedPupil,
+          })),
+        });
       }
 
       throw new Error('Unexpected synthetic endpoint');
     },
   );
 
-  return { requests, restore: () => fetcher.mock.restore() };
+  return { requests, selection, restore: () => fetcher.mock.restore() };
 }
 
-async function savedSession() {
+async function savedSession(value = 'synthetic') {
   const jar = new CookieJar();
-  await jar.setCookie('IMHome=synthetic; Secure; HttpOnly; Path=/', PARENT_URL);
+  await jar.setCookie(`IMHome=${value}; Secure; HttpOnly; Path=/`, PARENT_URL);
 
   return captureSession(jar);
 }
 
-test('private login and nine MCP tools validate school reads without changing read state', async () => {
+test('private login and eleven MCP tools select children and read school data without changing read state', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-http-'));
   const file = join(directory, 'private/session.json');
 
@@ -239,7 +337,7 @@ test('private login and nine MCP tools validate school reads without changing re
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 9);
+    assert.equal(tools.length, 11);
     assert.ok(tools.every((tool) => tool.outputSchema));
     assert.ok(!tools.some((tool) => tool.name.includes('browser')));
 
@@ -320,7 +418,144 @@ test('private login and nine MCP tools validate school reads without changing re
         .isError,
       true,
     );
+    assert.equal(
+      (await client.callTool({ name: 'infomentor_select_child', arguments: { childId: '' } }))
+        .isError,
+      true,
+    );
     assert.equal(routes.requests.length, beforeInvalid);
+
+    const switching = client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'child-2 & sibling' },
+    });
+
+    const queuedOverview = client.callTool({ name: 'infomentor_get_overview', arguments: {} });
+
+    for (const response of await Promise.all([switching, queuedOverview])) {
+      const switched = overviewSchema.parse(response.structuredContent);
+      assert.equal(switched.children.find((child) => child.selected)?.id, 'child-2 & sibling');
+      assert.deepEqual(switched.timetable, [siblingEntry]);
+      assert.ok(!JSON.stringify(response).includes('switchPupilUrl'));
+    }
+
+    const switchRequests = () => routes.requests.filter(({ url }) => url.includes('/SwitchPupil/'));
+
+    const noOp = await client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'child-2 & sibling' },
+    });
+
+    assert.notEqual(noOp.isError, true);
+    assert.equal(switchRequests().length, 1);
+
+    const siblingFeed = await client.callTool({
+      name: 'infomentor_get_notifications',
+      arguments: { selectedChildOnly: true },
+    });
+
+    assert.deepEqual(
+      notificationsSchema.parse(siblingFeed.structuredContent).notifications.map(({ id }) => id),
+      [2],
+    );
+
+    const siblingMessages = await client.callTool({
+      name: 'infomentor_get_messages',
+      arguments: { folder: 'sent', search: 'Skólaferð & nesti', page: 2, pageSize: 1 },
+    });
+
+    assert.deepEqual(messagesSchema.parse(siblingMessages.structuredContent).items, [message]);
+
+    const unknownChild = await client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'not-registered' },
+    });
+
+    assert.equal(unknownChild.isError, true);
+    assert.equal(switchRequests().length, 1);
+
+    for (const url of [
+      'https://evil.test/Account/PupilSwitcher/SwitchPupil/101',
+      'https://im1.infomentor.is/Account/PupilSwitcher/SwitchPupil/101',
+      '/Message/message/DeleteMessage/101',
+      '/Account/PupilSwitcher/SwitchPupil/101?private=synthetic',
+    ]) {
+      routes.selection.overrideUrl = url;
+      const beforeRejectedUrl: number = routes.requests.length;
+
+      const refused = await client.callTool({
+        name: 'infomentor_select_child',
+        arguments: { childId: 'child-1' },
+      });
+
+      assert.equal(refused.isError, true);
+      assert.ok(!JSON.stringify(refused).includes(url));
+      assert.equal(switchRequests().length, 1);
+      assert.deepEqual(
+        routes.requests.slice(beforeRejectedUrl).map(({ url: requested }) => requested),
+        [PARENT_URL + 'authentication/authentication/isauthenticated/', PARENT_URL, PARENT_URL],
+      );
+    }
+
+    routes.selection.overrideUrl = '';
+    routes.selection.ignoreSwitch = true;
+
+    const unconfirmed = await client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'child-1' },
+    });
+
+    assert.equal(unconfirmed.isError, true);
+    assert.equal(routes.selection.id, 'child-2 & sibling');
+    routes.selection.ignoreSwitch = false;
+
+    const restored = await client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'child-1' },
+    });
+
+    assert.deepEqual(
+      overviewSchema.parse(restored.structuredContent).children,
+      parent.account.pupils,
+    );
+    assert.equal(
+      tools.find(({ name }) => name === 'infomentor_select_child')?.annotations?.readOnlyHint,
+      false,
+    );
+
+    routes.selection.failTimetable = true;
+
+    const partial = await client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'child-2 & sibling' },
+    });
+
+    assert.equal(partial.isError, true);
+    assert.match(JSON.stringify(partial), /Selection may have changed/);
+    assert.ok(!JSON.stringify(partial).includes('private-upstream-value'));
+    assert.equal(routes.selection.id, 'child-2 & sibling');
+    routes.selection.failTimetable = false;
+
+    const otherFile = join(directory, 'other/session.json');
+    await writeSession(await savedSession('other'), otherFile);
+    const otherClient = new InfoMentorClient({ sessionFile: otherFile });
+
+    try {
+      const onlyChild = await otherClient.selectChild({ childId: 'only-child' });
+      assert.deepEqual(onlyChild.children, [
+        { id: 'only-child', name: 'Another account child', selected: true },
+      ]);
+      assert.equal(onlyChild.timetable?.[0]?.title, 'Another account timetable');
+      await assert.rejects(otherClient.selectChild({ childId: 'child-2 & sibling' }), {
+        code: 'INVALID_CONFIGURATION',
+      });
+      assert.equal((await otherClient.getOverview()).children[0]?.id, 'only-child');
+      assert.equal(routes.selection.id, 'child-2 & sibling');
+    } finally {
+      await otherClient.close();
+    }
+
+    await client.callTool({ name: 'infomentor_select_child', arguments: { childId: 'child-1' } });
 
     const malformed = await client.callTool({
       name: 'infomentor_get_messages',
@@ -353,6 +588,30 @@ test('private login and nine MCP tools validate school reads without changing re
       await freshClient.close();
     }
 
+    const baselineResult = await client.callTool({
+      name: 'infomentor_collect_updates',
+      arguments: {},
+    });
+
+    assert.equal(baselineResult.isError, undefined);
+    const baseline = collectionSchema.parse(baselineResult.structuredContent);
+    assert.equal(baseline.baseline, true);
+    assert.deepEqual(baseline.updates, []);
+    assert.equal(baseline.children.length, 2);
+
+    const unchanged = collectionSchema.parse(
+      (
+        await client.callTool({
+          name: 'infomentor_collect_updates',
+          arguments: { cursor: baseline.cursor },
+        })
+      ).structuredContent,
+    );
+
+    assert.equal(unchanged.cursor, baseline.cursor);
+    assert.deepEqual(unchanged.updates, []);
+    assert.equal(routes.selection.id, 'child-1');
+
     await client.callTool({ name: 'infomentor_logout', arguments: {} });
     assert.equal(
       sessionStatusSchema.parse(
@@ -375,6 +634,191 @@ test('private login and nine MCP tools validate school reads without changing re
       else process.env[name] = value;
     }
 
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('expired sessions renew once with private credentials, preserve account and child, and persist cookies', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-refresh-'));
+  const file = join(directory, 'session.json');
+  const credentialsFile = join(directory, 'credentials.json');
+  await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
+  const routes = fixture();
+  const fetchEndpoint = globalThis.fetch;
+  let expired = false;
+  let redirectParent = false;
+  let expireMessage = false;
+  let rejectPassword = false;
+  let wrongAccount = false;
+  let failureStatus = 0;
+  let passwordSubmissions = 0;
+
+  const fetcher = mock.method(
+    globalThis,
+    'fetch',
+    async (input: string | URL | Request, init?: RequestInit) => {
+      assert.ok(input instanceof URL);
+      const body = String(init?.body ?? '');
+
+      if (body.includes('txtLykilord')) {
+        passwordSubmissions++;
+
+        if (rejectPassword) return new Response(loginHtml);
+        expired = false;
+        redirectParent = false;
+        routes.selection.id = 'child-1';
+      }
+
+      if (input.pathname.endsWith('/isauthenticated/')) {
+        if (failureStatus) return new Response('', { status: failureStatus });
+
+        if (expired) return Response.json(false);
+      }
+
+      if (expired && input.href === PARENT_URL) return new Response('', { status: 401 });
+
+      if (redirectParent && input.href === PARENT_URL)
+        return new Response(null, {
+          status: 302,
+          headers: { Location: PARENT_URL + 'authentication/authentication/login' },
+        });
+
+      if (redirectParent && input.pathname === '/authentication/authentication/login')
+        return new Response(relayHtml);
+
+      if (input.pathname === '/Message/message/GetMessage' && expireMessage) {
+        expireMessage = false;
+        expired = true;
+
+        return new Response('', { status: 401 });
+      }
+
+      const response = await fetchEndpoint(input, init);
+
+      if (input.href === PARENT_URL && wrongAccount)
+        return new Response((await response.text()).replace('parent-1', 'different-parent'));
+
+      if (input.pathname === '/Message/message/GetMessage')
+        response.headers.append('Set-Cookie', 'rotation=kept; Secure; HttpOnly; Path=/');
+
+      return response;
+    },
+  );
+
+  let client = new InfoMentorClient({ sessionFile: file, credentialsFile });
+
+  try {
+    // A missing/deleted session needs explicit login, even when credentials are configured.
+    assert.equal((await client.getSessionStatus()).authenticated, false);
+    assert.equal(passwordSubmissions, 0);
+    await login({ sessionFile: file, credentialsFile });
+    assert.equal((await readSession(file)).accountId, 'parent-1');
+    await client.selectChild({ childId: 'child-2 & sibling' });
+    expired = true;
+    const beforeRefresh = passwordSubmissions;
+    const overviews = await Promise.all([client.getOverview(), client.getOverview()]);
+    assert.equal(passwordSubmissions, beforeRefresh + 1);
+    assert.ok(
+      overviews.every(
+        (overview) => overview.children.find((child) => child.selected)?.id === 'child-2 & sibling',
+      ),
+    );
+    assert.deepEqual(overviews[0]?.timetable, [siblingEntry]);
+    expireMessage = true;
+    const bodyBefore = passwordSubmissions;
+    assert.equal((await client.getMessage({ id: 41 })).message.messageBodyPlainText, 'Bring lunch');
+    assert.equal(passwordSubmissions, bodyBefore + 1, 'mid-read expiry gets exactly one recovery');
+    assert.ok(
+      (await readSession(file)).cookies.some(
+        (cookie) => cookie.key === 'rotation' && cookie.value === 'kept',
+      ),
+    );
+    expireMessage = true;
+    const collectionBefore = passwordSubmissions;
+    const collected = await client.collectUpdates({ includeExisting: true });
+    assert.equal(passwordSubmissions, collectionBefore + 1);
+    assert.equal(
+      routes.selection.id,
+      'child-2 & sibling',
+      'mid-collection expiry restores the pre-collection child',
+    );
+    assert.ok(
+      collected.updates.some((update) => update.kind === 'message' && update.childIds.length === 2),
+    );
+    await client.close();
+    client = new InfoMentorClient({ sessionFile: file, credentialsFile });
+    const restartBefore = passwordSubmissions;
+    assert.equal((await client.getSessionStatus()).authenticated, true);
+    assert.equal(
+      passwordSubmissions,
+      restartBefore,
+      'a new process reuses persisted renewed cookies',
+    );
+    redirectParent = true;
+    const redirectBefore = passwordSubmissions;
+    await client.getOverview();
+    assert.equal(
+      passwordSubmissions,
+      redirectBefore + 1,
+      'a known login redirect renews even when isauthenticated returned true',
+    );
+
+    for (const status of [403, 429, 500]) {
+      failureStatus = status;
+      const count: number = passwordSubmissions;
+      await assert.rejects(client.getOverview());
+      assert.equal(
+        passwordSubmissions,
+        count,
+        'non-authentication failures never submit credentials',
+      );
+      // A 429 deliberately keeps the HTTP client's cooldown, so use a new client for the next case.
+      await client.close();
+      client = new InfoMentorClient({ sessionFile: file, credentialsFile });
+    }
+
+    failureStatus = 0;
+
+    for (const mode of ['rejected', 'wrong-account']) {
+      expired = true;
+      rejectPassword = mode === 'rejected';
+      wrongAccount = mode === 'wrong-account';
+      const before = await readFile(file, 'utf8');
+      const count: number = passwordSubmissions;
+      await assert.rejects(client.getOverview(), { code: 'LOGIN_REQUIRED' });
+      assert.equal(passwordSubmissions, count + 1);
+      assert.equal(
+        await readFile(file, 'utf8'),
+        before,
+        'failed recovery must preserve the prior session',
+      );
+      assert.ok(!before.includes(credentials.password));
+    }
+
+    rejectPassword = false;
+    wrongAccount = false;
+    expired = false;
+    await client.logout();
+    assert.equal((await client.getSessionStatus()).authenticated, false);
+    await client.close();
+    const legacyFile = join(directory, 'legacy.json');
+    await writeSession(await savedSession(), legacyFile);
+    client = new InfoMentorClient({ sessionFile: legacyFile, credentialsFile });
+    expired = true;
+    const legacyCount = passwordSubmissions;
+    await assert.rejects(client.getOverview(), { code: 'LOGIN_REQUIRED' });
+    assert.equal(
+      passwordSubmissions,
+      legacyCount,
+      'an unverified expired legacy account cannot silently change',
+    );
+    expired = false;
+    await client.getOverview();
+    assert.equal((await readSession(legacyFile)).accountId, 'parent-1');
+  } finally {
+    await client.close();
+    fetcher.mock.restore();
+    routes.restore();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -473,7 +917,7 @@ test('cancelled login/import cannot replace the previous account at the atomic c
         async (...args: Parameters<typeof fs.writeFile>) => {
           await originalWrite(...args);
 
-          if (String(args[0]).startsWith(file + '.')) {
+          if (String(args[0]).startsWith(file + '.') && String(args[0]).endsWith('.tmp')) {
             written.resolve();
             await finish.promise;
           }

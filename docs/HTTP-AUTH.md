@@ -43,6 +43,37 @@ handoff and no timetable items.
 The parent page contains templates and bootstrap data; rendering its initial
 HTML as text is not a replacement for reading the application's JSON endpoints.
 
+## Renewal for scheduled reads
+
+Abler MCP was used as a reference for renewal policy: serialize the whole
+read/renew/write operation across processes, persist rotated cookies, and replay
+a read at most once after an authentication failure. Abler's `/oauth/token`
+and refresh-token cookies belong to Abler; they are not InfoMentor endpoints.
+
+An isolated-cookie test against InfoMentor removed the parent `IMHome` cookie
+and followed the existing login/OpenID handoff. It reached a password form and
+did not renew authentication. The handoff also affected shared server session
+state: the original cookies still returned `true` from `isauthenticated`, while
+the parent page redirected to the login relay. Cookie-jar isolation therefore
+does not guarantee independent upstream state. No cookie-only renewal contract
+was established, and that experiment is not part of the implementation.
+
+Version 0.5.0 instead uses the verified password login flow after a confirmed
+authentication failure, using a private credentials file or environment secrets
+already configured for the MCP process. A known login-page redirect also counts
+as an authentication failure, even if `isauthenticated` returned `true`.
+The renewed account must match its previously verified parent ID. The original
+child selection is restored before replaying the read once. Network errors,
+rate limits, access denials, and security challenges do not trigger password
+retries. A missing/deleted session still requires explicit login. An expired
+legacy session without a verified account ID requires one explicit login;
+an authenticated legacy session acquires that identity on its next read.
+
+Successful renewal and rotated cookies are saved atomically under the same
+session lock used for collection, login, import, and logout. The MCP does not
+save the password. A configured credentials file remains under the user's
+control; a one-time local form cannot provide credentials for unattended renewal.
+
 ## Scope and consequence
 
 Direct HTTP authentication and timetable access work for the tested account.

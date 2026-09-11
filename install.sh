@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install a verified release. Only the optional WARP setup needs administrator access.
 set -eu
-version=${INFOMENTOR_VERSION:-0.4.0}
+version=${INFOMENTOR_VERSION:-0.5.0}
 prefix=${INFOMENTOR_PREFIX:-${HOME:?HOME must be set}/.local}
 network=''
 case "$*" in '') ;; --with-warp) network=warp ;; --without-warp) network=direct ;; *) echo 'Usage: install.sh [--with-warp|--without-warp]' >&2; exit 1 ;; esac

@@ -1,12 +1,20 @@
 import { rm } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
-import { login, importSession } from './login.js';
-import { InfoMentorHttp, parseParent, timetableSchema } from './http.js';
+import {
+  login,
+  importSession,
+  createAuthenticatedHttp,
+  hasConfiguredCredentials,
+  sessionFromHttp,
+} from './login.js';
+import { withSessionLock } from './lock.js';
+import { collectUpdates, collectRequestSchema } from './collection.js';
+import type { CollectRequest, Collection } from './collection.js';
+import { InfoMentorHttp, timetableSchema } from './http.js';
 import {
   InfoMentorError,
-  LOGIN_REQUIRED,
-  PARENT_URL,
+  selectChildRequestSchema,
   messagesRequestSchema,
   messageRequestSchema,
   notificationsRequestSchema,
@@ -17,9 +25,11 @@ import {
   restoreCookies,
   sessionPath,
   throwIfAborted,
+  writeSession,
 } from './session.js';
 import type {
   Overview,
+  SelectChildRequest,
   SessionOptions,
   SessionStatus,
   MessagesRequest,
@@ -28,6 +38,7 @@ import type {
   Messages,
   Message,
   Notifications,
+  SavedSession,
 } from './session.js';
 
 export const loginRequestSchema = z
@@ -53,9 +64,17 @@ export const setupStatusSchema = z.object({
 
 export type SetupStatus = z.infer<typeof setupStatusSchema>;
 
-/** Reuses cookies and serializes account reads for one MCP connection. */
+function comparableSession(session: SavedSession): string {
+  return JSON.stringify({
+    accountId: session.accountId,
+    selectedChildId: session.selectedChildId,
+    cookies: session.cookies.map(({ lastAccessed: _lastAccessed, ...cookie }) => cookie),
+  });
+}
+
+/** Reuses cookies and serializes account requests for one MCP connection. */
 export class InfoMentorClient {
-  private active: { http: InfoMentorHttp; savedAt: string } | undefined;
+  private active: { http: InfoMentorHttp; serializedSession: string } | undefined;
   private pending: Promise<void> = Promise.resolve();
   private readonly lifetime = new AbortController();
   private closed = false;
@@ -75,7 +94,7 @@ export class InfoMentorClient {
       ? AbortSignal.any([signal, this.lifetime.signal])
       : this.lifetime.signal;
 
-    // ponytail: one queue per account/client; separate clients if multi-account use is added.
+    // A local queue preserves call order; the file lock also excludes other MCP processes.
     const result = this.pending.then(async () => {
       throwIfAborted(combined);
 
@@ -87,17 +106,72 @@ export class InfoMentorClient {
           'OPERATION_IN_PROGRESS',
           'Account setup is in progress. Check infomentor_setup_status before reading school data.',
         );
-      const saved = await readSession(sessionPath(this.options.sessionFile));
+      const file = sessionPath(this.options.sessionFile);
 
-      if (this.active?.savedAt !== saved.savedAt)
-        this.active = { http: new InfoMentorHttp(restoreCookies(saved)), savedAt: saved.savedAt };
-      const http = this.active.http;
-      await http.requireAuthentication(combined);
-      const output = await read(http, combined);
-      throwIfAborted(combined);
+      return withSessionLock(file, combined, async () => {
+        let saved = await readSession(file);
 
-      // Rotated cookies stay in memory; a background disk write could undo logout or a new login.
-      return output;
+        if (this.active?.serializedSession !== JSON.stringify(saved))
+          this.active = {
+            http: new InfoMentorHttp(restoreCookies(saved)),
+            serializedSession: JSON.stringify(saved),
+          };
+        let http = this.active.http;
+        let preserveSession = false;
+
+        try {
+          await http.requireAuthentication(combined);
+          const parent = await http.readParent(combined);
+
+          if (saved.accountId && parent.account.currentUser.id !== saved.accountId)
+            throw new InfoMentorError(
+              'INVALID_SESSION',
+              'The saved session no longer matches its verified account. Sign in explicitly before continuing.',
+            );
+          saved = await this.saveActive(http, saved, combined);
+          const output = await read(http, combined);
+          throwIfAborted(combined);
+
+          return output;
+        } catch (cause) {
+          if (!(cause instanceof InfoMentorError) || cause.code !== 'LOGIN_REQUIRED') throw cause;
+          preserveSession = true;
+
+          if (!hasConfiguredCredentials(this.options)) throw cause;
+          const accountId = saved.accountId ?? http.parent?.account.currentUser.id;
+
+          if (!accountId)
+            throw new InfoMentorError(
+              'LOGIN_REQUIRED',
+              'This older session expired before its account could be verified. Call infomentor_login once to enable automatic authentication refresh.',
+            );
+          const selectedChildId = saved.selectedChildId;
+
+          const candidate = await createAuthenticatedHttp({
+            ...this.options,
+            signal: combined,
+            timeoutMs: 60_000,
+          });
+
+          if (candidate.parent?.account.currentUser.id !== accountId)
+            throw new InfoMentorError(
+              'LOGIN_REQUIRED',
+              'The configured credentials belong to a different InfoMentor account. The previous session was kept. Correct the private credentials or explicitly sign in to change accounts.',
+            );
+
+          if (selectedChildId) await candidate.readParent(combined, selectedChildId);
+          saved = await this.saveActive(candidate, saved, combined);
+          http = candidate;
+          preserveSession = false;
+          // Only confirmed authentication expiry replays a read, once. Other failures propagate.
+          const output = await read(http, combined);
+          throwIfAborted(combined);
+
+          return output;
+        } finally {
+          if (!preserveSession && !combined.aborted) await this.saveActive(http, saved, combined);
+        }
+      });
     });
 
     this.pending = result.then(
@@ -108,16 +182,122 @@ export class InfoMentorClient {
     return result;
   }
 
+  private async saveActive(
+    http: InfoMentorHttp,
+    previous: SavedSession,
+    signal: AbortSignal,
+  ): Promise<SavedSession> {
+    const current = sessionFromHttp(http);
+
+    if (previous.accountId && current.accountId && current.accountId !== previous.accountId)
+      throw new InfoMentorError(
+        'INVALID_SESSION',
+        'Refusing to replace the verified account during a school-data request. Sign in explicitly to change accounts.',
+      );
+
+    if (!current.accountId && previous.accountId) current.accountId = previous.accountId;
+
+    if (!current.selectedChildId && previous.selectedChildId)
+      current.selectedChildId = previous.selectedChildId;
+
+    if (comparableSession(current) === comparableSession(previous)) {
+      this.active = { http, serializedSession: JSON.stringify(previous) };
+
+      return previous;
+    }
+
+    await writeSession(current, sessionPath(this.options.sessionFile), signal);
+    this.active = { http, serializedSession: JSON.stringify(current) };
+
+    return current;
+  }
+
   getOverview(signal?: AbortSignal): Promise<Overview> {
-    return this.read(async (http, activeSignal) => {
-      const page = await http.request(PARENT_URL, undefined, activeSignal);
-      const parent = parseParent(page.text);
+    return this.read((http, activeSignal) => this.overview(http, activeSignal), signal);
+  }
+
+  selectChild(request: SelectChildRequest, signal?: AbortSignal): Promise<Overview> {
+    const { childId } = selectChildRequestSchema.parse(request);
+
+    return this.read((http, activeSignal) => this.overview(http, activeSignal, childId), signal);
+  }
+
+  collectUpdates(request: CollectRequest = {}, signal?: AbortSignal): Promise<Collection> {
+    const input = collectRequestSchema.parse(request);
+    const deadline = AbortSignal.timeout(5 * 60_000);
+    const collectionSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+
+    return this.read(
+      (http, activeSignal) =>
+        collectUpdates(input, {
+          sessionFile: sessionPath(this.options.sessionFile),
+          signal: activeSignal,
+          getParent: (nextSignal) => http.readParent(nextSignal),
+          selectChild: (childId, nextSignal) => http.readParent(nextSignal, childId),
+          readTimetable: async (parent, nextSignal) =>
+            parent.apps.some((app) => app.codeName === 'timetable')
+              ? (
+                  await http.readAppData(
+                    'timetable/timetable/appData',
+                    {},
+                    timetableSchema,
+                    nextSignal,
+                  )
+                ).items
+              : null,
+          getMessages: (folder, page, nextSignal) =>
+            http.readAppData(
+              'Message/message/GetMessages',
+              {
+                page: String(page),
+                pageSize: '100',
+                messageText: '',
+                inbox: String(folder === 'inbox'),
+                sentItems: String(folder === 'sent'),
+              },
+              messagesPageSchema,
+              nextSignal,
+            ),
+          getMessage: (id, nextSignal) =>
+            http.readAppData(
+              'Message/message/GetMessage',
+              { id: String(id) },
+              messageDetailSchema,
+              nextSignal,
+            ),
+          getNotifications: async (nextSignal) =>
+            (
+              await http.readAppData(
+                'NotificationApp/NotificationApp/appData',
+                {},
+                notificationsDataSchema,
+                nextSignal,
+              )
+            ).notifications,
+        }),
+      collectionSignal,
+    );
+  }
+
+  private async overview(
+    http: InfoMentorHttp,
+    signal: AbortSignal,
+    childId?: string,
+  ): Promise<Overview> {
+    let selectionAttempted = false;
+
+    try {
+      selectionAttempted = childId !== undefined;
+
+      const parent =
+        childId === undefined && http.parent ? http.parent : await http.readParent(signal, childId);
+
       const hasTimetable = parent.apps.some((app) => app.codeName === 'timetable');
       let timetable: Overview['timetable'] = null;
 
       if (hasTimetable) {
         timetable = (
-          await http.readAppData('timetable/timetable/appData', {}, timetableSchema, activeSignal)
+          await http.readAppData('timetable/timetable/appData', {}, timetableSchema, signal)
         ).items;
       }
 
@@ -134,11 +314,20 @@ export class InfoMentorClient {
         title: 'InfoMentor parent overview',
         text: text.slice(0, 40_000),
         truncated: text.length > 40_000,
-        children: parent.account.pupils,
+        children: parent.account.pupils.map(({ id, name, selected }) => ({ id, name, selected })),
         timetable,
         retrievedAt: new Date().toISOString(),
       };
-    }, signal);
+    } catch (cause) {
+      if (!selectionAttempted) throw cause;
+      const error = cause instanceof InfoMentorError ? cause : undefined;
+
+      throw new InfoMentorError(
+        error?.code ?? 'UNEXPECTED_PAGE',
+        `${error?.message ?? 'InfoMentor could not load the selected child.'} Selection may have changed; refresh infomentor_get_overview before continuing.`,
+        error?.retryAfterMs,
+      );
+    }
   }
 
   getMessages(request: MessagesRequest = {}, signal?: AbortSignal): Promise<Messages> {
@@ -217,7 +406,7 @@ export class InfoMentorClient {
       return await this.read(async () => ({ authenticated: true }), signal);
     } catch (error) {
       if (error instanceof InfoMentorError && error.code === 'LOGIN_REQUIRED')
-        return { authenticated: false, nextStep: LOGIN_REQUIRED };
+        return { authenticated: false, nextStep: error.message };
       throw error;
     }
   }
@@ -325,7 +514,9 @@ export class InfoMentorClient {
       await this.cancelSetup();
       await this.pending;
       this.active = undefined;
-      await rm(sessionPath(this.options.sessionFile), { force: true });
+      await withSessionLock(sessionPath(this.options.sessionFile), undefined, () =>
+        rm(sessionPath(this.options.sessionFile), { force: true }),
+      );
       this.setupStatus = {
         state: 'idle',
         message: 'Local session removed. Call infomentor_login to sign in again.',

@@ -1,6 +1,6 @@
 {
   "name": "infomentor-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Local MCP server for Icelandic InfoMentor parent accounts with direct HTTP login",
   "keywords": [
     "iceland",
@@ -48,7 +48,7 @@
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
-    "test": "bun run build && bun build ./test/integration.test.ts --target=node --packages=external --outfile=.test-build/integration.test.js && node --test .test-build/integration.test.js",
+    "test": "bun run build && bun build ./test/*.test.ts --target=node --packages=external --outdir=.test-build && node --test .test-build/*.test.js",
     "prepack": "bun run check && bun run build",
     "prepublishOnly": "bun run validate",
     "validate": "bun run format:check && bun run lint && bun run check && bun run test",

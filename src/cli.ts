@@ -20,7 +20,7 @@ const help = [
   '',
   'Options:',
   '  --session FILE     Session file (default: ~/.infomentor-mcp/session.json)',
-  '  --credentials FILE Private JSON file with username/password (headless login)',
+  '  --credentials FILE Private JSON file with username/password (login and automatic renewal)',
   '  --local-form       login: opt into a browser form on this same computer',
   '  --import FILE      login: validate and import a session on a headless machine',
   '  --timeout SECONDS  login: maximum wait (default: 300)',
@@ -75,10 +75,7 @@ async function main(): Promise<void> {
     );
   const command = positionals[0] ?? 'serve';
 
-  if (
-    command !== 'login' &&
-    (values.import || values.timeout || values.credentials || values['local-form'])
-  ) {
+  if (command !== 'login' && (values.import || values.timeout || values['local-form'])) {
     throw new InfoMentorError('INVALID_CONFIGURATION', 'Login options only apply to login.');
   }
 
@@ -88,6 +85,8 @@ async function main(): Promise<void> {
   const options: SessionOptions = {};
 
   if (values.session) options.sessionFile = resolve(values.session);
+
+  if (values.credentials) options.credentialsFile = resolve(values.credentials);
 
   if (command === 'serve') {
     const server = createServer(options);

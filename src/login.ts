@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { InfoMentorHttp, parseForms } from './http.js';
+import { withSessionLock } from './lock.js';
 import { credentialsSchema, promptCredentials, readCredentials } from './credentials.js';
 import type { Credentials } from './credentials.js';
 import {
@@ -16,7 +17,6 @@ import {
 import type { SessionOptions } from './session.js';
 
 export type LoginOptions = SessionOptions & {
-  credentialsFile?: string;
   localForm?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -84,7 +84,16 @@ export async function authenticate(
     );
 }
 
-export async function login(options: LoginOptions = {}): Promise<void> {
+export function hasConfiguredCredentials(options: SessionOptions): boolean {
+  return (
+    Boolean(options.credentialsFile ?? process.env['INFOMENTOR_CREDENTIALS_FILE']) ||
+    process.env['INFOMENTOR_USERNAME'] !== undefined ||
+    process.env['INFOMENTOR_PASSWORD'] !== undefined
+  );
+}
+
+/** Build a verified candidate; the caller commits only after checking account/context. */
+export async function createAuthenticatedHttp(options: LoginOptions): Promise<InfoMentorHttp> {
   const timeout = options.timeoutMs ?? 300_000;
 
   if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 3_600_000)
@@ -127,8 +136,9 @@ export async function login(options: LoginOptions = {}): Promise<void> {
     const http = new InfoMentorHttp();
     await authenticate(http, credentials, signal);
     credentials.password = '';
-    await writeSession(captureSession(http.jar), sessionPath(options.sessionFile), signal);
-    options.onProgress?.('saved');
+    await http.readParent(signal);
+
+    return http;
   } catch (error) {
     if (deadline.aborted && !options.signal?.aborted)
       throw new InfoMentorError(
@@ -142,14 +152,39 @@ export async function login(options: LoginOptions = {}): Promise<void> {
   }
 }
 
+export async function login(options: LoginOptions = {}): Promise<void> {
+  const file = sessionPath(options.sessionFile);
+  await withSessionLock(file, options.signal, async () => {
+    const http = await createAuthenticatedHttp(options);
+    await writeSession(sessionFromHttp(http), file, options.signal);
+    options.onProgress?.('saved');
+  });
+}
+
+export function sessionFromHttp(http: InfoMentorHttp): ReturnType<typeof captureSession> {
+  const session = captureSession(http.jar);
+
+  if (http.parent) {
+    session.accountId = http.parent.account.currentUser.id;
+    const selected = http.parent.account.pupils.filter((pupil) => pupil.selected);
+
+    if (selected.length === 1 && selected[0]) session.selectedChildId = selected[0].id;
+  }
+
+  return session;
+}
+
 export async function importSession(
   file: string,
   options: SessionOptions = {},
   signal?: AbortSignal,
 ): Promise<void> {
   throwIfAborted(signal);
-  const imported = await readSession(resolve(file));
-  const http = new InfoMentorHttp(restoreCookies(imported));
-  await http.requireAuthentication(signal);
-  await writeSession(captureSession(http.jar), sessionPath(options.sessionFile), signal);
+  await withSessionLock(sessionPath(options.sessionFile), signal, async () => {
+    const imported = await readSession(resolve(file));
+    const http = new InfoMentorHttp(restoreCookies(imported));
+    await http.requireAuthentication(signal);
+    await http.readParent(signal);
+    await writeSession(sessionFromHttp(http), sessionPath(options.sessionFile), signal);
+  });
 }

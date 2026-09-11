@@ -8,10 +8,15 @@ export { login, importSession } from './login.js';
 
 export type { LoginOptions } from './login.js';
 
+export { collectRequestSchema, collectionSchema } from './collection.js';
+
+export type { CollectRequest, Collection } from './collection.js';
+
 export {
   InfoMentorError,
   LOGIN_URL,
   overviewSchema,
+  selectChildRequestSchema,
   savedSessionSchema,
   sessionStatusSchema,
   sessionPath,
@@ -26,6 +31,7 @@ export {
 export type {
   ErrorCode,
   Overview,
+  SelectChildRequest,
   SavedSession,
   SessionOptions,
   SessionStatus,

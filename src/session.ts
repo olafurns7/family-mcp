@@ -37,7 +37,7 @@ export class InfoMentorError extends Error {
   }
 }
 
-export type SessionOptions = { sessionFile?: string };
+export type SessionOptions = { sessionFile?: string; credentialsFile?: string };
 
 const isInfoMentorHost = (host: string): boolean =>
   host === 'infomentor.is' || host.endsWith('.infomentor.is');
@@ -96,6 +96,8 @@ export const savedSessionSchema = z.object({
   version: z.literal(2),
   savedAt: z.iso.datetime(),
   cookies: z.array(cookieSchema),
+  accountId: z.string().min(1).optional(),
+  selectedChildId: z.string().min(1).optional(),
 });
 
 export type SavedSession = z.infer<typeof savedSessionSchema>;
@@ -123,6 +125,10 @@ export const overviewSchema = z.object({
 });
 
 export type Overview = z.infer<typeof overviewSchema>;
+
+export const selectChildRequestSchema = z.object({ childId: z.string().min(1).max(1024) }).strict();
+
+export type SelectChildRequest = z.infer<typeof selectChildRequestSchema>;
 
 export const messagesRequestSchema = z
   .object({

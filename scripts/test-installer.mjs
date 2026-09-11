@@ -145,7 +145,7 @@ cp "$TEST_ASSETS/\${url##*/}" "$output"
 
   try {
     await client.connect(transport);
-    assert.equal((await client.listTools()).tools.length, 9);
+    assert.equal((await client.listTools()).tools.length, 11);
     const status = await client.callTool({ name: 'infomentor_session_status', arguments: {} });
     assert.equal(status.structuredContent?.authenticated, false);
   } finally {

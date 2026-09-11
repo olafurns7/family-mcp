@@ -44,13 +44,13 @@ jobs:
           const repository = process.env.GITHUB_REPOSITORY;
           writeFileSync('release-notes.md', [
             `InfoMentor MCP ${version} (preview)`, '',
-            'Playwright removed. Login, session import, progress, cancellation, logout, session checks, and a child/timetable overview are available through MCP using direct HTTPS.', '',
+            'Parent-account tools include login, child selection, messages, notifications, all-child update collection, and automatic session renewal using configured private credentials. School-data requests use direct HTTPS without a browser.', '',
             'Install the single-file executable on macOS/Linux (Bun embedded; no Node, Bun, or browser installation required):', '',
             '```sh', `curl -fsSL https://raw.githubusercontent.com/${repository}/v${version}/install.sh | sh`, '```', '',
             'Or install the npm tarball using an existing Node.js 22+ runtime:', '',
             '```sh', `npm install --global --ignore-scripts https://github.com/${repository}/releases/download/v${version}/infomentor-mcp-${version}.tgz`, '```', '',
-            'Five focused HTTP/login checks passed on Node 22 and 24. Native macOS/Linux x64/arm64 installers passed standalone executable and MCP checks, including checksum failure and reinstalls.', '',
-            '**Compatibility:** direct HTTP sign-in, saved-session reuse, child lists, and timetable retrieval were verified with a real parent account. Other SSO/MFA paths and the Grok VM remain unverified. **Upgrade:** 0.1.x browser options and session snapshots are removed; sign in again to create an HTTP session.', '',
+            'Automated authentication, collection, and session-lock checks passed on Node 22 and 24. Native macOS/Linux x64/arm64 installers passed standalone executable and MCP checks, including checksum failure and reinstalls.', '',
+            '**Compatibility:** verified operations and their limits are documented in docs/REVIEW.md. SSO/MFA variants and every school are not covered. WARP is an optional installer flag, never the default. Restart the MCP client after upgrading to discover new tools; an expired legacy session may need one explicit login.', '',
             'The npm registry has not been published to. Each archive has a SHA-256 checksum. The archives contain one executable plus documentation and license notices.', '',
             `Setup guide: https://github.com/${repository}/blob/v${version}/README.md`,
           ].join('\n'));
