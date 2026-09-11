@@ -1,6 +1,0 @@
-{
-  "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "printWidth": 100,
-  "sortImports": {},
-  "ignorePatterns": ["dist/**", "release/**", "node_modules/**", "bun.lock"]
-}

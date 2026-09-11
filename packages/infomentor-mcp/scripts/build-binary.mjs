@@ -78,15 +78,15 @@ try {
   const packages = new Set();
 
   for (const input of Object.keys(build.inputs)) {
-    const match = /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(input);
+    const match = /^(.*node_modules\/((?:@[^/]+\/)?[^/]+))(?:\/|$)/.exec(input);
 
-    if (match) packages.add(match[1]);
+    if (match) packages.add(resolve(root, match[1]));
   }
 
   const notices = [await readFile(join(root, 'licenses/Bun.txt'), 'utf8')];
 
-  for (const name of [...packages].toSorted()) {
-    const packageRoot = join(root, 'node_modules', name);
+  for (const packageRoot of [...packages].toSorted()) {
+    const { name } = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
 
     const licenses = (await readdir(packageRoot)).filter((file) =>
       /^(?:licen[sc]e|notice|copying)(?:\.|$)/i.test(file),

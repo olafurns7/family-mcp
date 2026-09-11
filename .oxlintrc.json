@@ -12,7 +12,13 @@
   "env": {
     "node": true
   },
-  "ignorePatterns": ["dist/**", "release/**", "node_modules/**"],
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/release/**",
+    "**/node_modules/**",
+    "**/.test-build/**",
+    "tooling/oxlint-anti-slop/**"
+  ],
   "rules": {
     "eqeqeq": ["error", "always"],
     "no-console": "error",
@@ -68,17 +74,36 @@
     "unicorn/prefer-node-protocol": "error",
     "unicorn/prefer-object-from-entries": "error",
     "import/no-cycle": "error",
-    "no-unneeded-ternary": "error"
+    "no-unneeded-ternary": "error",
+    "oxc/no-accumulating-spread": "error",
+    "anti-slop/no-array-filter-map": "error",
+    "anti-slop/no-reduce-accumulator-copy": "error",
+    "anti-slop/no-chained-type-assertions": "error",
+    "anti-slop/no-conditional-empty-object-spread": "error",
+    "anti-slop/no-known-value-widening": "error",
+    "anti-slop/no-module-mocking": "error",
+    "anti-slop/no-object-parameters": "error",
+    "anti-slop/no-reflect-apply": "error",
+    "anti-slop/no-reflect-get": "error",
+    "anti-slop/no-runtime-typeof": "error",
+    "anti-slop/no-unsafe-dictionary-type": "error",
+    "anti-slop/no-shape-in-symbol-names": "error",
+    "anti-slop/no-unknown-parameters": "error",
+    "anti-slop/no-unknown-returns": "error",
+    "anti-slop/no-unknown-type-aliases": "error",
+    "anti-slop/no-widen-then-assert": "error",
+    "anti-slop/require-readable-spacing": "error",
+    "anti-slop/require-safety-comment-for-type-assertion": "error"
   },
   "overrides": [
     {
-      "files": ["src/cli.ts", "test/pack-smoke.ts"],
+      "files": ["packages/abler-mcp/src/cli.ts", "packages/abler-mcp/test/pack-smoke.ts"],
       "rules": {
         "no-console": "off"
       }
     },
     {
-      "files": ["test/**/*.ts"],
+      "files": ["packages/abler-mcp/test/**/*.ts"],
       "env": {
         "bun": true
       },
@@ -125,10 +150,69 @@
       }
     },
     {
-      "files": ["src/auth.ts"],
+      "files": ["packages/abler-mcp/src/auth.ts"],
       "rules": {
         "preserve-caught-error": "off"
       }
+    },
+    {
+      "files": ["packages/infomentor-mcp/**"],
+      "env": {
+        "browser": true
+      }
+    },
+    {
+      "files": ["packages/abler-mcp/**"],
+      "rules": {
+        "anti-slop/no-conditional-empty-object-spread": "off",
+        "anti-slop/no-known-value-widening": "off",
+        "anti-slop/no-runtime-typeof": "off",
+        "anti-slop/no-unknown-parameters": "off",
+        "anti-slop/no-unknown-returns": "off",
+        "anti-slop/no-unsafe-dictionary-type": "off",
+        "anti-slop/require-readable-spacing": "off"
+      }
+    },
+    {
+      "files": ["packages/infomentor-mcp/src/**"],
+      "rules": {
+        "eslint/max-depth": "off",
+        "eslint/no-console": "off",
+        "eslint/no-duplicate-imports": "off",
+        "promise/always-return": "off",
+        "typescript/no-unnecessary-condition": "off",
+        "typescript/no-unsafe-argument": "off"
+      }
+    },
+    {
+      "files": ["packages/infomentor-mcp/test/**"],
+      "rules": {
+        "eslint/no-duplicate-imports": "off",
+        "oxc/no-map-spread": "off",
+        "typescript/no-base-to-string": "off",
+        "typescript/no-floating-promises": "off",
+        "typescript/no-non-null-assertion": "off",
+        "typescript/no-unnecessary-condition": "off",
+        "typescript/no-unsafe-argument": "off"
+      }
+    },
+    {
+      "files": ["packages/infomentor-mcp/scripts/**"],
+      "rules": {
+        "eslint/no-console": "off",
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-return": "off",
+        "typescript/require-array-sort-compare": "off"
+      }
+    }
+  ],
+  "jsPlugins": [
+    {
+      "name": "anti-slop",
+      "specifier": "./tooling/oxlint-anti-slop/index.ts"
     }
   ]
 }

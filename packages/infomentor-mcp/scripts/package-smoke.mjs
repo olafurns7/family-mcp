@@ -107,7 +107,7 @@ try {
   `,
   );
   run(process.execPath, [
-    join(root, 'node_modules/typescript/bin/tsc'),
+    fileURLToPath(new URL('./bin/tsc', import.meta.resolve('typescript/package.json'))),
     '--noEmit',
     '--strict',
     '--noUncheckedIndexedAccess',

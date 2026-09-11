@@ -1,0 +1,10 @@
+{
+  "name": "@family-mcp/oxlint-anti-slop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./index.ts",
+  "dependencies": {
+    "@oxlint/plugins": "1.82.0"
+  }
+}
