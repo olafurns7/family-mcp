@@ -28,7 +28,11 @@ Do not publish to npm unless that action is explicitly authorized.
 
 The executable is compiled directly from `src/cli.ts` using Bun 1.4.2. It embeds
 its runtime and dependencies; the archive includes its license notices and
-README. The npm artifact still runs on Node 22+ and exports TypeScript types.
+README. Linux archives also contain the optional WARP installer and launcher
+scripts; the Cloudflare client itself is downloaded only during opt-in setup.
+CI tests replace administrator commands. Changes to WARP setup also need a
+real Debian 13/x64 installation and daemon-recovery check before publication.
+The npm artifact still runs on Node 22+ and exports TypeScript types.
 Do not include session files, credentials files, investigation captures, browser
 profiles, or environment files in any artifact.
 

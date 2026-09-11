@@ -1,5 +1,17 @@
 # Review and verification
 
+## 0.4.0: optional WARP installation
+
+The Linux installer can opt into WARP on the validated Debian 13/x64 platform.
+Its choice survives upgrades. A separate launcher sets the existing runtime's
+proxy environment; the MCP's HTTP transport remains unchanged. The headless
+client download is pinned and checksum-verified, and existing WARP installations
+are refused rather than reconfigured. No sudo permission is granted.
+
+Installer coverage includes opt-in, retained mode on upgrade, return to direct
+mode, and the launcher's proxy environment and argument forwarding. Real-host
+installation and restart verification are recorded in the connectivity report.
+
 ## 0.3.0: message and notification reads
 
 Three new MCP tools and typed client methods read message lists, message details,
@@ -15,9 +27,13 @@ schema exports, and package/installer consumers.
 
 A live MCP handshake and calls on the authorized VM verified all three new
 tools with a real account and unchanged observed read states. The VM used its
-existing exit route. Direct VM TLS remains unresolved; see
-[the connectivity investigation](CONNECTIVITY.md) for measured results and
-the limits of the evidence. Provider-side tracing is unavailable.
+existing exit route. A subsequent check used the published Linux x64 executable
+with `HTTPS_PROXY` pointing to a temporary local WARP proxy. Authentication,
+overview, all three new tools, and unchanged observed message states passed.
+The WARP tunnel used the native VM interface, independently of the exit node.
+The temporary setup was removed. Proxy-free VM TLS remains unresolved; see
+[the connectivity investigation](CONNECTIVITY.md) for configuration, measurements,
+and evidence limits. No provider trace or VM rebuild was needed.
 
 ## 0.2.2: empty authentication cookie fix
 

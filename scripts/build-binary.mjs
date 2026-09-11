@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -55,6 +64,15 @@ try {
   );
   await copyFile(join(root, 'LICENSE'), join(payload, 'LICENSE'));
   await copyFile(join(root, 'README.md'), join(payload, 'README.md'));
+
+  if (process.platform === 'linux') {
+    await mkdir(join(payload, 'libexec'));
+    await copyFile(join(root, 'scripts/warp.sh'), join(payload, 'libexec/warp.sh'));
+    const launcher = join(payload, 'bin/infomentor-mcp-warp');
+    await copyFile(join(root, 'scripts/warp-launcher.sh'), launcher);
+    await chmod(launcher, 0o755);
+  }
+
   // Include license notices for the actual bundled packages, not every development dependency.
   const build = JSON.parse(await readFile(metadata, 'utf8'));
   const packages = new Set();

@@ -15,7 +15,7 @@ not affiliated with InfoMentor.
 On macOS or Linux, including a headless VM:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.3.0/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.4.0/install.sh | sh
 ```
 
 The installer chooses macOS/Linux and arm64/x64, verifies the SHA-256 checksum,
@@ -28,7 +28,7 @@ Use the absolute command path printed by the installer in your MCP client.
 A different location can be selected with `INFOMENTOR_PREFIX`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.3.0/install.sh |
+curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.4.0/install.sh |
   INFOMENTOR_PREFIX="$HOME/tools" sh
 ```
 
@@ -38,13 +38,36 @@ place. Old release directories are retained under the selected prefix's
 
 Releases: <https://github.com/olafurns7/infomentor-mcp/releases>
 
+### Optional managed connection
+
+On Debian 13/x64, including the tested Grok Bot VM, the installer can set up
+Cloudflare WARP for this MCP. This removes the need for your own Tailscale exit
+node while still using Cloudflare as a network provider:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.4.0/install.sh |
+  sh -s -- --with-warp
+```
+
+This option requires administrator access, downloads and verifies the official
+headless WARP client, registers it under [Cloudflare's terms](https://www.cloudflare.com/application/terms/),
+and configures a local proxy used only by the installed MCP command. It does not
+change the VM's default route or its Tailscale settings. Existing WARP
+installations are left unchanged and require manual proxy configuration.
+
+Regular upgrades preserve the selected connection mode. To return the MCP to
+direct access, rerun the installer with `--without-warp`; this leaves WARP and its
+registration installed. On VMs without systemd, daemon recovery happens when
+the MCP starts and uses the host's existing noninteractive `sudo` access. The installer does not add
+sudo permissions. See [connection setup and verification](docs/CONNECTIVITY.md).
+
 ### npm-compatible package
 
 The npm registry has **not** been published to. With Node.js 22 or newer, install
 the prebuilt package from the GitHub release instead:
 
 ```sh
-npm install --global --ignore-scripts https://github.com/olafurns7/infomentor-mcp/releases/download/v0.3.0/infomentor-mcp-0.3.0.tgz
+npm install --global --ignore-scripts https://github.com/olafurns7/infomentor-mcp/releases/download/v0.4.0/infomentor-mcp-0.4.0.tgz
 ```
 
 No build or install scripts are needed by consumers. The package contains ESM
@@ -329,7 +352,9 @@ The library is a small standards-based cookie jar, not a browser dependency.
 The package does not require or configure a proxy, VPN, or Tailscale. Its host
 must be able to establish verified HTTPS connections to `im1.infomentor.is` and
 `minn.infomentor.is`. A tested Grok VM's normal internet route closed TLS before
-HTTP; changing its route worked. No proxy-free repair on that VM has been
-confirmed. See the [measured results and next steps](docs/CONNECTIVITY.md).
+HTTP. WARP in local proxy mode worked with the published standalone MCP and
+removed the need for a user-operated Tailscale exit node. It remains a managed
+proxy; no proxy-free repair on that VM has been confirmed. See the
+[verified configuration and measured results](docs/CONNECTIVITY.md).
 
 License: MIT.
