@@ -1,6 +1,6 @@
 {
   "name": "infomentor-mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Local MCP server for Icelandic InfoMentor parent accounts with browser-based login",
   "keywords": [
     "iceland",

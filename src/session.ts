@@ -199,7 +199,12 @@ export async function captureSession(context: BrowserContext, url: string): Prom
 }
 
 /** Atomic replacement preserves an existing session when login/import fails. */
-export async function writeSession(session: SavedSession, path = sessionPath()): Promise<void> {
+export async function writeSession(
+  session: SavedSession,
+  path = sessionPath(),
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
   const checked = savedSessionSchema.safeParse(session);
 
   if (!checked.success)
@@ -208,8 +213,13 @@ export async function writeSession(session: SavedSession, path = sessionPath()):
   const temporary = path + '.' + randomUUID() + '.tmp';
 
   try {
-    await writeFile(temporary, JSON.stringify(checked.data), { mode: 0o600, flag: 'wx' });
+    await writeFile(temporary, JSON.stringify(checked.data), { mode: 0o600, flag: 'wx', signal });
+    // The atomic rename is the commit point; cancellation before it keeps the old account.
+    throwIfAborted(signal);
     await rename(temporary, path);
+  } catch (error) {
+    throwIfAborted(signal);
+    throw error;
   } finally {
     await rm(temporary, { force: true });
   }
@@ -247,7 +257,9 @@ export function validateCdpUrl(value: string): string {
 export async function launchBrowser(
   options: SessionOptions = {},
   headless = true,
+  signal?: AbortSignal,
 ): Promise<Browser> {
+  throwIfAborted(signal);
   const cdpUrl = options.cdpUrl ?? process.env['INFOMENTOR_CDP_URL'];
   const configured = options.browser ?? process.env['INFOMENTOR_BROWSER'];
   const selection = configured ? browserChoiceSchema.safeParse(configured) : undefined;
@@ -280,8 +292,9 @@ export async function launchBrowser(
     validateCdpUrl(cdpUrl);
 
     try {
-      return await chromium.connectOverCDP(cdpUrl, { timeout: 30_000 });
+      return await acquireBrowser(chromium.connectOverCDP(cdpUrl, { timeout: 30_000 }), signal);
     } catch {
+      throwIfAborted(signal);
       throw new InfoMentorError(
         'BROWSER_UNAVAILABLE',
         'Cannot connect to the remote browser. Check the browser and its SSH tunnel or TLS endpoint.',
@@ -315,8 +328,9 @@ export async function launchBrowser(
     else if (name === 'chrome' || name === 'msedge') launchOptions.channel = name;
 
     try {
-      return await engine.launch(launchOptions);
+      return await acquireBrowser(engine.launch(launchOptions), signal);
     } catch {
+      throwIfAborted(signal);
       /* Try the next installed compatible browser. */
     }
   }
@@ -325,6 +339,40 @@ export async function launchBrowser(
     'BROWSER_UNAVAILABLE',
     'No usable browser found. Run infomentor-mcp install-browser, choose --browser, or supply --executable-path.',
   );
+}
+
+/** Playwright acquisition has no AbortSignal; dispose any browser that arrives after cancellation. */
+async function acquireBrowser(pending: Promise<Browser>, signal?: AbortSignal): Promise<Browser> {
+  if (!signal) return pending;
+  const cancelled = Promise.withResolvers<never>();
+
+  const cancel = (): void => {
+    try {
+      throwIfAborted(signal);
+    } catch (error) {
+      cancelled.reject(error);
+    }
+  };
+
+  signal.addEventListener('abort', cancel, { once: true });
+
+  if (signal.aborted) cancel();
+
+  try {
+    return await Promise.race([
+      pending.then(async (browser) => {
+        if (signal.aborted) {
+          await browser.close().catch(() => {});
+          throwIfAborted(signal);
+        }
+
+        return browser;
+      }),
+      cancelled.promise,
+    ]);
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
 }
 
 export type PageState = 'authenticated' | 'login' | 'loading' | 'unsupported' | 'challenge';

@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import type { BrowserContext, Page } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import {
   captureSession,
   inspectPage,
@@ -39,11 +39,18 @@ export async function waitForLoginPage(
     }
 
     for (const page of context.pages()) {
-      const state = await inspectPage(page);
+      if (page.isClosed()) continue;
 
-      if (state === 'authenticated') return page;
+      try {
+        const state = await inspectPage(page);
 
-      if (state === 'challenge') onChallenge?.();
+        if (state === 'authenticated' && !page.isClosed()) return page;
+
+        if (state === 'challenge') onChallenge?.();
+      } catch (error) {
+        // Sign-in popups can close themselves after updating the parent window.
+        if (!page.isClosed()) throw error;
+      }
     }
 
     await pause(signal);
@@ -69,9 +76,11 @@ export async function login(options: LoginOptions = {}): Promise<void> {
   const timeoutSignal = AbortSignal.timeout(timeout);
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
   const deadline = Date.now() + timeout;
-  const browser = await launchBrowser(options, false);
+  let browser: Browser | undefined;
 
   try {
+    browser = await launchBrowser(options, false, signal);
+    throwIfAborted(signal);
     const context = await browser.newContext({ viewport: null });
 
     const cancel = (): void => {
@@ -108,7 +117,7 @@ export async function login(options: LoginOptions = {}): Promise<void> {
 
       const candidate = await captureSession(context, authenticated.url());
       throwIfAborted(signal);
-      await writeSession(candidate, sessionPath(options.sessionFile));
+      await writeSession(candidate, sessionPath(options.sessionFile), signal);
       options.onProgress?.('saved');
     } finally {
       signal.removeEventListener('abort', cancel);
@@ -125,7 +134,7 @@ export async function login(options: LoginOptions = {}): Promise<void> {
     throwIfAborted(options.signal);
     throw error;
   } finally {
-    await browser.close();
+    await browser?.close();
   } // CDP connections disconnect without stopping the remote browser.
 }
 
@@ -137,12 +146,12 @@ export async function importSession(
 ): Promise<void> {
   throwIfAborted(signal);
   const imported = await readSession(resolve(file));
-  const browser = await launchBrowser(options);
+  const browser = await launchBrowser(options, true, signal);
 
   try {
     const verified = await verifySession(browser, imported, signal);
     throwIfAborted(signal);
-    await writeSession(verified, sessionPath(options.sessionFile));
+    await writeSession(verified, sessionPath(options.sessionFile), signal);
   } finally {
     await browser.close();
   }

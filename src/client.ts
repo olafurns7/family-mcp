@@ -88,7 +88,7 @@ export class InfoMentorClient {
 
       if (this.active?.savedAt !== saved.savedAt || !this.active.browser.isConnected()) {
         await this.closeBrowser();
-        const browser = await launchBrowser(this.options);
+        const browser = await launchBrowser(this.options, true, signal);
 
         try {
           const context = await browser.newContext({

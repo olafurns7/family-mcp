@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import childProcess, { spawn } from 'node:child_process';
+import type { SpawnOptions } from 'node:child_process';
+import fs, { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -13,6 +15,7 @@ import { chromium, firefox, webkit } from 'playwright';
 import type { Browser, BrowserContext } from 'playwright';
 import type { LoginRequest } from '../src/client.js';
 import { InfoMentorClient, setupStatusSchema } from '../src/client.js';
+import { installBrowser } from '../src/browser-install.js';
 import { createServer } from '../src/server.js';
 import { importSession, login, waitForLoginPage } from '../src/login.js';
 import {
@@ -29,6 +32,7 @@ import {
   validateCdpUrl,
   writeSession,
 } from '../src/session.js';
+import type { SessionOptions } from '../src/session.js';
 
 const overviewUrl = new URL('/parent/overview', LOGIN_URL).href;
 
@@ -204,7 +208,7 @@ test(
 
 test(
   'login detects a signed-in popup automatically and supports cancellation and timeout without a terminal',
-  { timeout: 15_000 },
+  { timeout: 30_000 },
   async () => {
     const browser = await launchBrowser();
 
@@ -233,9 +237,266 @@ test(
       controller.abort();
       await assert.rejects(cancelled, { code: 'CANCELLED' });
       await assert.rejects(waitForLoginPage(context, Date.now() + 1), { code: 'LOGIN_TIMEOUT' });
+
+      const closingPopup = await context.newPage();
+      await closingPopup.goto(LOGIN_URL);
+
+      const title = mock.method(closingPopup, 'title', async () => {
+        await loginPage.goto(overviewUrl);
+        await closingPopup.close();
+        throw new Error('Target page has been closed');
+      });
+
+      try {
+        assert.equal(await waitForLoginPage(context, Date.now() + 5_000), loginPage);
+        assert.equal(closingPopup.isClosed(), true);
+      } finally {
+        title.mock.restore();
+      }
     } finally {
       await browser.close();
     }
+  },
+);
+
+test(
+  'cancelled login and import preserve the old account while a session write is pending',
+  { timeout: 20_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'infomentor-save-cancel-'));
+    const file = join(directory, 'session.json');
+    const transfer = join(directory, 'transfer.json');
+
+    const saved = savedSessionSchema.parse({
+      version: 1,
+      url: overviewUrl,
+      savedAt: new Date(0).toISOString(),
+      storageState: { cookies: [], origins: [] },
+    });
+
+    await writeSession(saved, file);
+    await writeSession(saved, transfer);
+    const before = await readFile(file, 'utf8');
+    const launch = testEngine.launch.bind(testEngine);
+
+    const launcher = mock.method(
+      testEngine,
+      'launch',
+      async (...args: Parameters<typeof testEngine.launch>) => {
+        const browser = await launch({ ...args[0], headless: true });
+        const newContext = browser.newContext.bind(browser);
+        mock.method(
+          browser,
+          'newContext',
+          async (...contextArgs: Parameters<Browser['newContext']>) => {
+            const context = await newContext(...contextArgs);
+            await intercept(context);
+            await context.addCookies([
+              { name: 'test-session', value: 'synthetic', domain: 'im1.infomentor.is', path: '/' },
+            ]);
+
+            return context;
+          },
+        );
+
+        return browser;
+      },
+    );
+
+    const originalWrite = fs.writeFile.bind(fs);
+
+    try {
+      for (const request of [{}, { importFile: transfer }]) {
+        const written = Promise.withResolvers<void>();
+        const finishWrite = Promise.withResolvers<void>();
+
+        const writer = mock.method(
+          fs,
+          'writeFile',
+          async (...args: Parameters<typeof fs.writeFile>) => {
+            await originalWrite(...args);
+
+            if (String(args[0]).startsWith(file + '.')) {
+              written.resolve();
+              await finishWrite.promise;
+            }
+          },
+        );
+
+        syncBuiltinESMExports();
+        const client = new InfoMentorClient({ sessionFile: file });
+
+        try {
+          client.startLogin(request);
+          await written.promise;
+          const cancelled = client.cancelSetup();
+          finishWrite.resolve();
+          assert.equal((await cancelled).state, 'cancelled');
+          assert.equal(await readFile(file, 'utf8'), before);
+          assert.deepEqual((await readdir(directory)).toSorted(), [
+            'session.json',
+            'transfer.json',
+          ]);
+        } finally {
+          finishWrite.resolve();
+          await client.close();
+          writer.mock.restore();
+          syncBuiltinESMExports();
+        }
+      }
+    } finally {
+      launcher.mock.restore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'browser acquisition obeys cancellation and login deadlines and closes late browsers',
+  { timeout: 15_000 },
+  async () => {
+    for (const connection of ['local', 'cdp']) {
+      for (const timeout of [false, true]) {
+        const browser = await launchBrowser();
+        const acquired = Promise.withResolvers<Browser>();
+        const started = Promise.withResolvers<void>();
+        const closed = Promise.withResolvers<void>();
+        const close = browser.close.bind(browser);
+
+        const closer = mock.method(browser, 'close', async () => {
+          await close();
+          closed.resolve();
+        });
+
+        const acquire = async () => {
+          started.resolve();
+
+          return acquired.promise;
+        };
+
+        const launcher =
+          connection === 'cdp'
+            ? mock.method(chromium, 'connectOverCDP', acquire)
+            : mock.method(testEngine, 'launch', acquire);
+
+        const controller = new AbortController();
+
+        const options: SessionOptions =
+          connection === 'cdp' ? { cdpUrl: 'http://127.0.0.1:9222', browser: 'chromium' } : {};
+
+        const client = new InfoMentorClient(options);
+
+        try {
+          const failed = timeout
+            ? assert.rejects(login({ ...options, signal: controller.signal, timeoutMs: 50 }), {
+                code: 'LOGIN_TIMEOUT',
+              })
+            : undefined;
+
+          if (!timeout) client.startLogin();
+          await started.promise;
+
+          await Promise.race([
+            failed ??
+              client.cancelSetup().then((status) => assert.equal(status.state, 'cancelled')),
+            delay(2_000).then(() =>
+              assert.fail('Cancellation/deadline must interrupt acquisition'),
+            ),
+          ]);
+          assert.equal(
+            browser.isConnected(),
+            true,
+            'Acquisition is still pending when cancellation completes',
+          );
+          assert.equal(launcher.mock.callCount(), 1, 'Cancellation must not try another browser');
+          acquired.resolve(browser);
+          await closed.promise;
+          assert.equal(browser.isConnected(), false);
+        } finally {
+          controller.abort();
+          acquired.resolve(browser);
+          await client.close();
+          launcher.mock.restore();
+          closer.mock.restore();
+          await close();
+        }
+      }
+    }
+  },
+);
+
+test(
+  'installer cancellation stops its owned process tree before setup completes',
+  { timeout: 15_000, skip: process.platform === 'win32' },
+  async () => {
+    const realSpawn = childProcess.spawn.bind(childProcess);
+    const ready = Promise.withResolvers<void>();
+
+    // A real grandchild ignores SIGTERM and inherits the installer streams, like a subprocess
+    // that outlives its CLI parent. No browser download or system package manager runs here.
+    const descendant =
+      "process.on('SIGTERM', () => {}); console.log('descendant ready'); setInterval(() => {}, 1000);";
+
+    const parent = `const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: 'inherit' }); setInterval(() => {}, 1000);`;
+    const children: ReturnType<typeof spawn>[] = [];
+
+    const spawner = mock.method(
+      childProcess,
+      'spawn',
+      (_command: string, _args: readonly string[], options: SpawnOptions) => {
+        const child = realSpawn(process.execPath, ['-e', parent], options);
+        children.push(child);
+        child.stdout?.on('data', (chunk: Buffer) => {
+          if (chunk.toString().includes('descendant ready')) ready.resolve();
+        });
+
+        return child;
+      },
+    );
+
+    syncBuiltinESMExports();
+    const client = new InfoMentorClient();
+
+    try {
+      client.startBrowserInstall({ withDeps: true });
+      await ready.promise;
+      const child = children[0];
+      assert.ok(child?.pid);
+      let outputClosed = false;
+      child.once('close', () => {
+        outputClosed = true;
+      });
+      const cancelled = client.cancelSetup();
+      await delay(100);
+      assert.equal(client.getSetupStatus().state, 'running');
+      assert.equal(
+        outputClosed,
+        false,
+        'The grandchild must keep the inherited pipe open until killed',
+      );
+      assert.throws(() => client.startBrowserInstall(), { code: 'OPERATION_IN_PROGRESS' });
+      assert.equal((await cancelled).state, 'cancelled');
+      assert.equal(outputClosed, true);
+      assert.equal(child.signalCode, 'SIGTERM');
+    } finally {
+      for (const child of children) {
+        if (child.pid) {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            /* Already stopped. */
+          }
+        }
+      }
+
+      await client.close();
+      spawner.mock.restore();
+      syncBuiltinESMExports();
+    }
+
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(installBrowser({}, controller.signal), { code: 'CANCELLED' });
   },
 );
 
