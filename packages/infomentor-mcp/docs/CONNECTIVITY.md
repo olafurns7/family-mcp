@@ -82,7 +82,7 @@ persistent setup must also arrange the daemon's lifecycle on that existing VM.
 [WARP local proxy mode](https://developers.cloudflare.com/warp-client/warp-modes/#local-proxy)
 limits tunneled application traffic to clients configured to use it.
 [Bun documents `HTTPS_PROXY` support](https://bun.com/guides/http/proxy).
-The npm/Node executable's proxy-environment behavior was not tested here.
+The native executable's proxy-environment behavior was not tested here.
 
 The final test downloaded the public Linux x64 release, verified its SHA-256,
 then exercised it through MCP with the existing session file. All nine tools
