@@ -4,7 +4,8 @@
     ".oxlintrc.json",
     ".oxfmtrc.json",
     "tooling/tsconfig/**",
-    "tooling/oxlint-anti-slop/**"
+    "tooling/oxlint-anti-slop/**",
+    "tooling/release/**"
   ],
   "tasks": {
     "build": {
@@ -29,7 +30,7 @@
       "dependsOn": ["//#format:root:check"]
     },
     "check": {
-      "dependsOn": ["lint", "typecheck", "format:check"],
+      "dependsOn": ["lint", "typecheck", "format:check", "release:check"],
       "outputs": []
     },
     "lint:fix": {
@@ -55,9 +56,42 @@
         ".github/**",
         "tooling/**"
       ]
+    },
+    "build:binary": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "outputs": ["release/**"]
+    },
+    "test:dist": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "outputs": ["*.tgz", "*.tgz.sha256"],
+      "passThroughEnv": ["npm_config_cache", "NPM_CONFIG_CACHE"]
+    },
+    "test:binary": {
+      "dependsOn": ["build", "build:binary"],
+      "cache": false,
+      "outputs": []
+    },
+    "test:installer": {
+      "dependsOn": ["build:binary"],
+      "cache": false,
+      "outputs": []
+    },
+    "release:sync": {
+      "cache": false,
+      "outputs": []
+    },
+    "release:check": {
+      "outputs": []
+    },
+    "@family-mcp/release-tooling#test": {
+      "outputs": [],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.github/workflows/release.yml"]
     }
   },
   "remoteCache": {
     "enabled": false
-  }
+  },
+  "cacheDir": ".turbo/cache"
 }

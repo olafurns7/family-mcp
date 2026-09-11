@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags: ['abler-mcp@*', 'infomentor-mcp@*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      package: ${{ steps.version.outputs.package }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require a matching existing package tag
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, readFileSync } from 'node:fs';
+          assert.equal(process.env.REF_TYPE, 'tag', 'Select an existing package release tag.');
+          const match = /^(abler-mcp|infomentor-mcp)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(process.env.RELEASE_TAG);
+          assert.ok(match, 'Use <package>@<version>.');
+          const [, name, version] = match;
+          const root = `packages/${name}`;
+          const manifest = JSON.parse(readFileSync(`${root}/package.json`, 'utf8'));
+          assert.equal(manifest.name, name);
+          assert.equal(manifest.version, version);
+          const prefix = name.replace('-mcp', '').toUpperCase();
+          assert.ok(readFileSync(`${root}/install.sh`, 'utf8').includes(`${prefix}_VERSION:-${version}}`), 'Installer pin differs from the package.');
+          appendFileSync(process.env.GITHUB_OUTPUT, `package=${name}\nversion=${version}\n`);
+          NODE
+
+  checks:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  draft:
+    needs: [version, checks]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    env:
+      RELEASE_PACKAGE: ${{ needs.version.outputs.package }}
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download validated artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --pattern 'release-*' --dir "$RUNNER_TEMP/release-artifacts"
+      - name: Select only this package and verify its asset checksums
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const name = process.env.RELEASE_PACKAGE;
+          const version = process.env.RELEASE_VERSION;
+          const tag = process.env.RELEASE_TAG;
+          const assets = [`${name}-${version}.tgz`];
+          for (const os of ['darwin', 'linux']) for (const arch of ['arm64', 'x64']) assets.push(`${name}-${version}-${os}-${arch}.tar.gz`);
+          const expected = new Set(assets.flatMap(file => [file, `${file}.sha256`]));
+          const found = new Set();
+          const output = join(process.env.RUNNER_TEMP, 'release-assets');
+          mkdirSync(output);
+          function collect(directory) {
+            for (const entry of readdirSync(directory, { withFileTypes: true })) {
+              const path = join(directory, entry.name);
+              if (entry.isDirectory()) collect(path);
+              else if (entry.isFile() && expected.has(entry.name)) {
+                assert.ok(!found.has(entry.name), `Duplicate asset: ${entry.name}`);
+                found.add(entry.name);
+                copyFileSync(path, join(output, entry.name));
+              }
+            }
+          }
+          collect(join(process.env.RUNNER_TEMP, 'release-artifacts'));
+          assert.deepEqual(found, expected, 'Missing package release assets.');
+          for (const file of assets) {
+            const digest = createHash('sha256').update(readFileSync(join(output, file))).digest('hex');
+            assert.equal(readFileSync(join(output, `${file}.sha256`), 'utf8').trim(), `${digest}  ${file}`);
+          }
+          copyFileSync(`packages/${name}/install.sh`, join(output, 'install.sh'));
+          const repo = 'olafurns7/family-mcp';
+          writeFileSync(join(process.env.RUNNER_TEMP, 'release-notes.md'), [
+            `${name} ${version} (preview)`, '',
+            'Install the verified standalone executable (macOS/Linux, arm64/x64):', '',
+            '```sh', `curl -fsSL https://raw.githubusercontent.com/${repo}/${tag}/packages/${name}/install.sh | sh`, '```', '',
+            'Or install the prebuilt npm tarball with Node.js 22+:', '',
+            '```sh', `npm install --global --ignore-scripts https://github.com/${repo}/releases/download/${tag}/${name}-${version}.tgz`, '```', '',
+            'Node 22/24 package checks and macOS/Linux arm64/x64 standalone installer checks passed in this workflow. Live account connectivity was not tested. No npm registry publication is performed.', '',
+            `Setup: https://github.com/${repo}/blob/${tag}/packages/${name}/README.md`,
+          ].join('\n'));
+          NODE
+      - name: Create a draft prerelease for the verified existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$RELEASE_TAG" "$RUNNER_TEMP/release-assets/"* --draft --prerelease --verify-tag --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"

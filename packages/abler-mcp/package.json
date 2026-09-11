@@ -10,15 +10,16 @@
     "schedule",
     "sports"
   ],
-  "homepage": "https://github.com/olafurns7/abler-mcp#readme",
+  "homepage": "https://github.com/olafurns7/family-mcp/tree/main/packages/abler-mcp#readme",
   "bugs": {
-    "url": "https://github.com/olafurns7/abler-mcp/issues"
+    "url": "https://github.com/olafurns7/family-mcp/issues"
   },
   "license": "MIT",
   "author": "Ólafur Nils Sigurðsson",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/olafurns7/abler-mcp.git"
+    "url": "git+https://github.com/olafurns7/family-mcp.git",
+    "directory": "packages/abler-mcp"
   },
   "bin": {
     "abler-mcp": "dist/cli.js"
@@ -26,8 +27,7 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE",
-    "docs"
+    "LICENSE"
   ],
   "type": "module",
   "publishConfig": {
@@ -36,8 +36,7 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "build:native": "sh scripts/build-native.sh",
-    "check": "sh -n install.sh && sh -n scripts/build-native.sh && bun run lint && bun run format:check && bun run typecheck",
+    "check": "sh -n install.sh && bun run lint && bun run format:check && bun run typecheck",
     "test": "bun test",
     "start": "bun src/cli.ts",
     "prepack": "bun run check && bun test && bun run build",
@@ -45,7 +44,13 @@
     "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings --report-unused-disable-directives-severity error .",
     "lint:fix": "bun run lint --fix",
     "format": "oxfmt -c ../../.oxfmtrc.json --write .",
-    "format:check": "oxfmt -c ../../.oxfmtrc.json --check ."
+    "format:check": "oxfmt -c ../../.oxfmtrc.json --check .",
+    "build:binary": "node ../../tooling/release/build-binary.mjs --package .",
+    "test:dist": "node ../../tooling/release/test-dist.mjs --package .",
+    "test:binary": "node ../../tooling/release/mcp-smoke.mjs --package . --bin release/native/abler-mcp --standalone",
+    "test:installer": "node ../../tooling/release/installer-test.mjs --package .",
+    "release:sync": "node ../../tooling/release/sync-version.mjs --package .",
+    "release:check": "node ../../tooling/release/render-install.mjs --package . --check && node ../../tooling/release/sync-version.mjs --package . --check"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
@@ -55,6 +60,7 @@
   },
   "devDependencies": {
     "@family-mcp/oxlint-anti-slop": "workspace:*",
+    "@family-mcp/release-tooling": "workspace:*",
     "@family-mcp/tsconfig": "workspace:*",
     "@modelcontextprotocol/client": "^2.0.0",
     "@types/bun": "^1.2.19",
@@ -63,5 +69,17 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "bun@1.4.2"
+  "packageManager": "bun@1.4.2",
+  "familyMcp": {
+    "release": {
+      "tools": [
+        "auth_status",
+        "get_profile",
+        "list_groups",
+        "list_schedule",
+        "list_child_schedules",
+        "get_event"
+      ]
+    }
+  }
 }

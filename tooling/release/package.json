@@ -1,0 +1,19 @@
+{
+  "name": "@family-mcp/release-tooling",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test release.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "zod": "^4.6.2"
+  },
+  "devDependencies": {
+    "@family-mcp/tsconfig": "workspace:*",
+    "@types/node": "^22.20.2"
+  }
+}

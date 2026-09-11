@@ -1,0 +1,9 @@
+{
+  "extends": "@family-mcp/tsconfig/base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "types": ["node"]
+  },
+  "include": ["*.mjs"]
+}

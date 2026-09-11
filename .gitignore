@@ -2,6 +2,7 @@
 node_modules/
 dist/
 release/
+!tooling/release/
 coverage/
 *.tsbuildinfo
 .turbo/

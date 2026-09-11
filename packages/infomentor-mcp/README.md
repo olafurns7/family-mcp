@@ -18,7 +18,7 @@ not affiliated with InfoMentor.
 On macOS or Linux, including a headless VM:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.5.0/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.5.0/packages/infomentor-mcp/install.sh | sh
 ```
 
 The installer chooses macOS/Linux and arm64/x64, verifies the SHA-256 checksum,
@@ -31,15 +31,16 @@ Use the absolute command path printed by the installer in your MCP client.
 A different location can be selected with `INFOMENTOR_PREFIX`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.5.0/install.sh |
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.5.0/packages/infomentor-mcp/install.sh |
   INFOMENTOR_PREFIX="$HOME/tools" sh
 ```
 
 Reinstalling is safe. A failed download/checksum leaves the working command in
 place. Old release directories are retained under the selected prefix's
-`share/infomentor-mcp` directory.
+`share/infomentor-mcp` directory. Set `INFOMENTOR_VERSION` to select another
+released package version.
 
-Releases: <https://github.com/olafurns7/infomentor-mcp/releases>
+Releases: <https://github.com/olafurns7/family-mcp/releases>
 
 ### Optional managed connection
 
@@ -48,7 +49,7 @@ Cloudflare WARP for this MCP. This removes the need for your own Tailscale exit
 node while still using Cloudflare as a network provider:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.5.0/install.sh |
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.5.0/packages/infomentor-mcp/install.sh |
   sh -s -- --with-warp
 ```
 
@@ -70,7 +71,7 @@ The npm registry has **not** been published to. With Node.js 22 or newer, instal
 the prebuilt package from the GitHub release instead:
 
 ```sh
-npm install --global --ignore-scripts https://github.com/olafurns7/infomentor-mcp/releases/download/v0.5.0/infomentor-mcp-0.5.0.tgz
+npm install --global --ignore-scripts https://github.com/olafurns7/family-mcp/releases/download/infomentor-mcp@0.5.0/infomentor-mcp-0.5.0.tgz
 ```
 
 No build or install scripts are needed by consumers. The package contains ESM
@@ -427,13 +428,12 @@ for automatic renewal.
 Use the pinned **Bun 1.4.2** for package management and executable builds. Node
 22+ remains the runtime for the npm package and its checks.
 
+From the monorepo root:
+
 ```sh
 bun install --frozen-lockfile
-bun run validate
-bun pm pack
-bun run test:package
-bun run build:binary
-bun run test:installer
+bunx turbo run build check test --filter=infomentor-mcp
+bunx turbo run test:dist test:binary test:installer --filter=infomentor-mcp
 ```
 
 `validate` runs Oxfmt, Oxlint with the basic and vendored anti-slop rules, strict
@@ -441,7 +441,7 @@ TypeScript, and focused HTTP/login, collection, and session-lock checks. The exe
 [Bun's single-file compiler](https://bun.com/docs/bundler/executables). It does
 not automatically load `.env` or `bunfig.toml` from the working directory.
 Archives include third-party license notices. Bun's license is pinned in
-`licenses/Bun.txt` from its `bun-v1.4.2` tag.
+[`tooling/release/Bun.txt`](../../tooling/release/Bun.txt) from its `bun-v1.4.2` tag.
 
 See [the verified HTTP flow](docs/HTTP-AUTH.md), [connectivity investigation](docs/CONNECTIVITY.md), [review notes](docs/REVIEW.md),
 and [release instructions](docs/RELEASING.md).
