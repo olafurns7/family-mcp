@@ -7,12 +7,28 @@ import {
   InfoMentorError,
   LOGIN_REQUIRED,
   PARENT_URL,
+  messagesRequestSchema,
+  messageRequestSchema,
+  notificationsRequestSchema,
+  messagesPageSchema,
+  messageDetailSchema,
+  notificationsDataSchema,
   readSession,
   restoreCookies,
   sessionPath,
   throwIfAborted,
 } from './session.js';
-import type { Overview, SessionOptions, SessionStatus } from './session.js';
+import type {
+  Overview,
+  SessionOptions,
+  SessionStatus,
+  MessagesRequest,
+  MessageRequest,
+  NotificationsRequest,
+  Messages,
+  Message,
+  Notifications,
+} from './session.js';
 
 export const loginRequestSchema = z
   .object({
@@ -100,20 +116,9 @@ export class InfoMentorClient {
       let timetable: Overview['timetable'] = null;
 
       if (hasTimetable) {
-        const response = await http.request(
-          new URL('timetable/timetable/appData', PARENT_URL).href,
-          new URLSearchParams(),
-          activeSignal,
-        );
-
-        try {
-          timetable = timetableSchema.parse(JSON.parse(response.text)).items;
-        } catch {
-          throw new InfoMentorError(
-            'UNEXPECTED_PAGE',
-            'InfoMentor timetable data is unavailable or its format has changed.',
-          );
-        }
+        timetable = (
+          await http.readAppData('timetable/timetable/appData', {}, timetableSchema, activeSignal)
+        ).items;
       }
 
       const lines = parent.account.pupils.map(
@@ -131,6 +136,77 @@ export class InfoMentorClient {
         truncated: text.length > 40_000,
         children: parent.account.pupils,
         timetable,
+        retrievedAt: new Date().toISOString(),
+      };
+    }, signal);
+  }
+
+  getMessages(request: MessagesRequest = {}, signal?: AbortSignal): Promise<Messages> {
+    const input = messagesRequestSchema.parse(request);
+
+    return this.read(async (http, activeSignal) => {
+      const data = await http.readAppData(
+        'Message/message/GetMessages',
+        {
+          page: String(input.page),
+          pageSize: String(input.pageSize),
+          messageText: input.search,
+          inbox: String(input.folder === 'inbox'),
+          sentItems: String(input.folder === 'sent'),
+        },
+        messagesPageSchema,
+        activeSignal,
+      );
+
+      // The live endpoint reports page: 0 even when it correctly applies a requested page.
+      return {
+        ...data,
+        page: input.page,
+        pageSize: input.pageSize,
+        folder: input.folder,
+        retrievedAt: new Date().toISOString(),
+      };
+    }, signal);
+  }
+
+  getMessage(request: MessageRequest, signal?: AbortSignal): Promise<Message> {
+    const { id } = messageRequestSchema.parse(request);
+
+    return this.read(
+      async (http, activeSignal) => ({
+        message: await http.readAppData(
+          'Message/message/GetMessage',
+          { id: String(id) },
+          messageDetailSchema,
+          activeSignal,
+        ),
+        retrievedAt: new Date().toISOString(),
+      }),
+      signal,
+    );
+  }
+
+  getNotifications(
+    request: NotificationsRequest = {},
+    signal?: AbortSignal,
+  ): Promise<Notifications> {
+    const input = notificationsRequestSchema.parse(request);
+
+    return this.read(async (http, activeSignal) => {
+      const data = await http.readAppData(
+        'NotificationApp/NotificationApp/appData',
+        {},
+        notificationsDataSchema,
+        activeSignal,
+      );
+
+      return {
+        notifications: data.notifications.filter(
+          (item) =>
+            (input.includeCleared || item.state !== 'Cleared') &&
+            (!input.selectedChildOnly || item.currentlySelectedPupil),
+        ),
+        ...input,
         retrievedAt: new Date().toISOString(),
       };
     }, signal);

@@ -76,7 +76,7 @@ try {
     try {
       await client.connect(transport);
       const { tools } = await client.listTools();
-      assert.equal(tools.length, 6);
+      assert.equal(tools.length, 9);
       assert.ok(tools.every((tool) => tool.outputSchema));
       const status = await client.callTool({ name: 'infomentor_setup_status', arguments: {} });
       assert.equal(setupStatusSchema.parse(status.structuredContent).state, 'idle');
@@ -89,13 +89,16 @@ try {
     join(directory, 'check.ts'),
     `
     import { InfoMentorClient, loginRequestSchema } from 'infomentor-mcp';
-    import type { SessionOptions, Overview, SetupStatus, LoginRequest } from 'infomentor-mcp';
+    import type { SessionOptions, Overview, SetupStatus, LoginRequest, Messages, Message, Notifications } from 'infomentor-mcp';
     const options: SessionOptions = { sessionFile: '/tmp/infomentor-consumer-session.json' };
     const client = new InfoMentorClient(options);
     const request: LoginRequest = { timeoutSeconds: 300 };
     const status: SetupStatus = client.startLogin(loginRequestSchema.parse(request));
     const overview: Promise<Overview> = client.getOverview();
-    void [status, overview, client.logout(), client.cancelSetup()];
+    const messages: Promise<Messages> = client.getMessages({ folder: 'inbox', page: 1 });
+    const message: Promise<Message> = client.getMessage({ id: 1 });
+    const notifications: Promise<Notifications> = client.getNotifications();
+    void [status, overview, messages, message, notifications, client.logout(), client.cancelSetup()];
   `,
   );
   run(process.execPath, [

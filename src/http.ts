@@ -209,6 +209,29 @@ export class InfoMentorHttp {
     if (!(await this.isAuthenticated(signal)))
       throw new InfoMentorError('LOGIN_REQUIRED', LOGIN_REQUIRED);
   }
+
+  /** InfoMentor's read endpoints use form POSTs, including paging and search. */
+  async readAppData<T>(
+    path: string,
+    fields: Record<string, string>,
+    schema: z.ZodType<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const page = await this.request(
+      new URL(path, PARENT_URL).href,
+      new URLSearchParams(fields),
+      signal,
+    );
+
+    try {
+      return schema.parse(JSON.parse(page.text));
+    } catch {
+      throw new InfoMentorError(
+        'UNEXPECTED_PAGE',
+        'InfoMentor school data is unavailable or its format has changed.',
+      );
+    }
+  }
 }
 
 async function readBody(response: Response, signal: AbortSignal): Promise<string> {

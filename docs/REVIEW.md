@@ -1,5 +1,24 @@
 # Review and verification
 
+## 0.3.0: message and notification reads
+
+Three new MCP tools and typed client methods read message lists, message details,
+and the current notification feed. They use the existing authenticated HTTP
+transport and account queue. Responses are validated; message bodies use the
+server's plain-text field. No send/delete/viewed-state endpoint is called.
+
+The existing MCP integration check now covers nine tools, paging/search form
+encoding, invalid inputs, malformed upstream data, notification filtering, and
+preservation of synthetic unread state. No extra suite or dependency was added.
+Source review traced all read callers, redirect/cookie handling, cancellation,
+schema exports, and package/installer consumers.
+
+A live MCP handshake and calls on the authorized VM verified all three new
+tools with a real account and unchanged observed read states. The VM used its
+existing exit route. Direct VM TLS remains unresolved; see
+[the connectivity investigation](CONNECTIVITY.md) for measured results and
+the limits of the evidence. Provider-side tracing is unavailable.
+
 ## 0.2.2: empty authentication cookie fix
 
 `captureSession` now drops empty cookies before validating the saved session.
@@ -77,6 +96,6 @@ code and its tests were deleted in 0.2.0.
 
 The selected child's timetable is an overview, not a complete school record.
 The package does not switch children or provide homework, attendance, grades,
-or messaging tools. Other SSO/MFA paths, challenge-protected accounts, long-term
-session lifetime, and the particular Grok VM have not been verified. The npm
+or message sending. Other SSO/MFA paths, challenge-protected accounts, long-term
+session lifetime, and direct connectivity from the Grok VM remain unverified. The npm
 registry remains unpublished.

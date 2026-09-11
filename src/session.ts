@@ -124,6 +124,93 @@ export const overviewSchema = z.object({
 
 export type Overview = z.infer<typeof overviewSchema>;
 
+export const messagesRequestSchema = z
+  .object({
+    folder: z.enum(['inbox', 'sent']).default('inbox'),
+    search: z.string().max(500).default(''),
+    page: z.number().int().min(1).max(100_000).default(1),
+    pageSize: z.number().int().min(1).max(100).default(20),
+  })
+  .strict();
+
+export const messageRequestSchema = z.object({ id: z.number().int().positive() }).strict();
+
+export const notificationsRequestSchema = z
+  .object({
+    selectedChildOnly: z.boolean().default(false),
+    includeCleared: z.boolean().default(false),
+  })
+  .strict();
+
+const messageUserSchema = z.object({ id: z.number().int(), displayName: z.string() });
+
+export const messageSummarySchema = z.object({
+  id: z.number().int().positive(),
+  messageContextType: z.string(),
+  sentUser: messageUserSchema,
+  isNew: z.boolean(),
+  messageSubject: z.string(),
+  timeSent: z.string(),
+});
+
+export const messageDetailSchema = messageSummarySchema.extend({
+  messageBodyPlainText: z.string(),
+  toUsers: z.array(messageUserSchema),
+  messageFolder: z.string(),
+});
+
+export const messagesPageSchema = z.object({
+  items: z.array(messageSummarySchema),
+  more: z.boolean(),
+});
+
+export const messagesSchema = messagesPageSchema.extend({
+  page: z.number().int().positive(),
+  pageSize: z.number().int().positive(),
+  folder: z.enum(['inbox', 'sent']),
+  retrievedAt: z.iso.datetime(),
+});
+
+export const messageSchema = z.object({
+  message: messageDetailSchema,
+  retrievedAt: z.iso.datetime(),
+});
+
+export const notificationSchema = z.object({
+  id: z.number().int(),
+  title: z.string(),
+  subTitle: z.string(),
+  subjectsCourses: z.string(),
+  dateSent: z.string(),
+  appType: z.string(),
+  state: z.enum(['New', 'Seen', 'Read', 'Cleared']),
+  type: z.string(),
+  url: z.string(),
+  pupilIM2Id: z.number().int(),
+  pupilSourceId: z.string(),
+  currentlySelectedPupil: z.boolean(),
+});
+
+export const notificationsDataSchema = z.object({ notifications: z.array(notificationSchema) });
+
+export const notificationsSchema = notificationsDataSchema.extend({
+  selectedChildOnly: z.boolean(),
+  includeCleared: z.boolean(),
+  retrievedAt: z.iso.datetime(),
+});
+
+export type MessagesRequest = z.input<typeof messagesRequestSchema>;
+
+export type MessageRequest = z.input<typeof messageRequestSchema>;
+
+export type NotificationsRequest = z.input<typeof notificationsRequestSchema>;
+
+export type Messages = z.infer<typeof messagesSchema>;
+
+export type Message = z.infer<typeof messageSchema>;
+
+export type Notifications = z.infer<typeof notificationsSchema>;
+
 export const sessionStatusSchema = z.object({
   authenticated: z.boolean(),
   nextStep: z.string().optional(),

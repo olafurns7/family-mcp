@@ -19,6 +19,9 @@ import {
   captureSession,
   LOGIN_URL,
   overviewSchema,
+  messagesSchema,
+  messageSchema,
+  notificationsSchema,
   PARENT_URL,
   readSession,
   sessionStatusSchema,
@@ -52,6 +55,30 @@ const loginHtml =
 
 const relayHtml =
   '<form id="openid_message" method="post" action="https://im1.infomentor.is/Production/Mentor/"><input type="hidden" name="oauth_token" value="synthetic&amp;token"></form>';
+
+const message = {
+  id: 41,
+  messageContextType: 'General',
+  sentUser: { id: 12, displayName: 'Synthetic teacher' },
+  isNew: true,
+  messageSubject: 'Skólaferð',
+  timeSent: '11.09.2026 09:00',
+};
+
+const notifications = ['New', 'Seen', 'Read', 'Cleared'].map((state, index) => ({
+  id: index + 1,
+  title: 'Synthetic notification',
+  subTitle: 'Bring lunch',
+  subjectsCourses: '',
+  dateSent: '11.09.2026',
+  appType: 'Message',
+  state,
+  type: 'MessageCreated',
+  url: '/#/message/show/41',
+  pupilIM2Id: index,
+  pupilSourceId: `synthetic-${index}`,
+  currentlySelectedPupil: index % 2 === 0,
+}));
 
 function fixture() {
   const requests: { url: string; method: string; body: string; cookies: string }[] = [];
@@ -133,6 +160,41 @@ function fixture() {
         return Response.json({ items: [entry] });
       }
 
+      if (input.pathname === '/Message/message/GetMessages') {
+        assert.equal(method, 'POST');
+        assert.match(cookies, /IMHome=synthetic/);
+        const fields = new URLSearchParams(body);
+
+        if (fields.get('messageText') === 'malformed')
+          return new Response('{"items":"private-upstream-value"}');
+        assert.equal(fields.get('inbox'), 'false');
+        assert.equal(fields.get('sentItems'), 'true');
+        assert.equal(fields.get('messageText'), 'Skólaferð & nesti');
+        assert.equal(fields.get('page'), '2');
+        assert.equal(fields.get('pageSize'), '1');
+
+        return Response.json({ items: [message], page: 0, more: true });
+      }
+
+      if (input.pathname === '/Message/message/GetMessage') {
+        assert.equal(method, 'POST');
+        assert.equal(new URLSearchParams(body).get('id'), '41');
+
+        return Response.json({
+          ...message,
+          messageBody: '<p>Bring lunch</p>',
+          messageBodyPlainText: 'Bring lunch',
+          toUsers: [{ id: 13, displayName: 'Synthetic parent' }],
+          messageFolder: 'Inbox',
+        });
+      }
+
+      if (input.pathname === '/NotificationApp/NotificationApp/appData') {
+        assert.equal(method, 'POST');
+
+        return Response.json({ notifications });
+      }
+
       throw new Error('Unexpected synthetic endpoint');
     },
   );
@@ -147,7 +209,7 @@ async function savedSession() {
   return captureSession(jar);
 }
 
-test('private environment login needs no browser, relays fresh forms, and exposes all six MCP operations', async () => {
+test('private login and nine MCP tools validate school reads without changing read state', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-http-'));
   const file = join(directory, 'private/session.json');
 
@@ -177,7 +239,7 @@ test('private environment login needs no browser, relays fresh forms, and expose
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 6);
+    assert.equal(tools.length, 9);
     assert.ok(tools.every((tool) => tool.outputSchema));
     assert.ok(!tools.some((tool) => tool.name.includes('browser')));
 
@@ -211,6 +273,78 @@ test('private environment login needs no browser, relays fresh forms, and expose
     assert.deepEqual(overview.children, parent.account.pupils);
     assert.deepEqual(overview.timetable, [entry]);
     assert.match(overview.text, /Íslenska/);
+
+    const messagesResult = await client.callTool({
+      name: 'infomentor_get_messages',
+      arguments: { folder: 'sent', search: 'Skólaferð & nesti', page: 2, pageSize: 1 },
+    });
+
+    const listed = messagesSchema.parse(messagesResult.structuredContent);
+    assert.deepEqual(listed.items, [message]);
+    assert.equal(listed.page, 2);
+    assert.equal(listed.more, true);
+
+    const detailResult = await client.callTool({
+      name: 'infomentor_get_message',
+      arguments: { id: 41 },
+    });
+
+    const detail = messageSchema.parse(detailResult.structuredContent).message;
+    assert.equal(detail.messageBodyPlainText, 'Bring lunch');
+    assert.equal(detail.isNew, true);
+    assert.ok(!('messageBody' in detail));
+
+    for (const [arguments_, expectedIds] of [
+      [{}, [1, 2, 3]],
+      [{ selectedChildOnly: true }, [1, 3]],
+      [{ includeCleared: true }, [1, 2, 3, 4]],
+    ] as const) {
+      const feed = await client.callTool({
+        name: 'infomentor_get_notifications',
+        arguments: arguments_,
+      });
+
+      assert.deepEqual(
+        notificationsSchema.parse(feed.structuredContent).notifications.map((item) => item.id),
+        expectedIds,
+      );
+    }
+
+    const beforeInvalid = routes.requests.length;
+    assert.equal(
+      (await client.callTool({ name: 'infomentor_get_message', arguments: { id: -1 } })).isError,
+      true,
+    );
+    assert.equal(
+      (await client.callTool({ name: 'infomentor_get_messages', arguments: { pageSize: 101 } }))
+        .isError,
+      true,
+    );
+    assert.equal(routes.requests.length, beforeInvalid);
+
+    const malformed = await client.callTool({
+      name: 'infomentor_get_messages',
+      arguments: { search: 'malformed' },
+    });
+
+    assert.equal(malformed.isError, true);
+    assert.ok(!JSON.stringify(malformed).includes('private-upstream-value'));
+    assert.ok(
+      !routes.requests.some(({ url }) =>
+        /ViewedMessage|UpdateNotificationState|SendMessage|DeleteMessage/i.test(url),
+      ),
+    );
+    assert.ok(
+      tools
+        .filter((tool) =>
+          [
+            'infomentor_get_messages',
+            'infomentor_get_message',
+            'infomentor_get_notifications',
+          ].includes(tool.name),
+        )
+        .every((tool) => tool.annotations?.readOnlyHint),
+    );
     const freshClient = new InfoMentorClient({ sessionFile: file });
 
     try {

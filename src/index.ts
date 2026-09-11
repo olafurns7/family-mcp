@@ -15,6 +15,12 @@ export {
   savedSessionSchema,
   sessionStatusSchema,
   sessionPath,
+  messagesRequestSchema,
+  messageRequestSchema,
+  notificationsRequestSchema,
+  messagesSchema,
+  messageSchema,
+  notificationsSchema,
 } from './session.js';
 
 export type {
@@ -23,4 +29,10 @@ export type {
   SavedSession,
   SessionOptions,
   SessionStatus,
+  MessagesRequest,
+  MessageRequest,
+  NotificationsRequest,
+  Messages,
+  Message,
+  Notifications,
 } from './session.js';
