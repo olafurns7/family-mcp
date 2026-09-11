@@ -14,7 +14,7 @@ not affiliated with InfoMentor.
 On macOS or Linux, including a headless VM:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.2.1/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.2.2/install.sh | sh
 ```
 
 The installer chooses macOS/Linux and arm64/x64, verifies the SHA-256 checksum,
@@ -27,7 +27,7 @@ Use the absolute command path printed by the installer in your MCP client.
 A different location can be selected with `INFOMENTOR_PREFIX`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.2.1/install.sh |
+curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.2.2/install.sh |
   INFOMENTOR_PREFIX="$HOME/tools" sh
 ```
 
@@ -43,7 +43,7 @@ The npm registry has **not** been published to. With Node.js 22 or newer, instal
 the prebuilt package from the GitHub release instead:
 
 ```sh
-npm install --global --ignore-scripts https://github.com/olafurns7/infomentor-mcp/releases/download/v0.2.1/infomentor-mcp-0.2.1.tgz
+npm install --global --ignore-scripts https://github.com/olafurns7/infomentor-mcp/releases/download/v0.2.2/infomentor-mcp-0.2.2.tgz
 ```
 
 No build or install scripts are needed by consumers. The package contains ESM
@@ -221,6 +221,9 @@ logged-out account or overwrite a newer login. Sign in again when the saved
 session expires.
 
 ### Upgrading
+
+Version 0.2.2 fixes session saving when InfoMentor sends empty authentication
+deletion cookies. Existing HTTP sessions remain valid.
 
 Version 0.2.1 makes the browser form opt-in and adds username/password environment
 input. Existing HTTP sessions remain valid. Desktop users who want the form now

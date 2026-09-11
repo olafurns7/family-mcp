@@ -104,6 +104,7 @@ function fixture() {
           status: 303,
           headers: {
             Location: PARENT_URL + 'Authentication/Authentication/LoginCallback?token=synthetic',
+            'Set-Cookie': '.ASPXAUTH=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure',
           },
         });
       }
@@ -200,6 +201,8 @@ test('private environment login needs no browser, relays fresh forms, and expose
     assert.equal(state, 'succeeded');
     const stored = await readSession(file);
     assert.equal(stored.version, 2);
+    assert.ok(stored.cookies.some((cookie) => cookie.key === 'IMHome'));
+    assert.ok(stored.cookies.every((cookie) => cookie.value && cookie.key !== '.ASPXAUTH'));
     assert.equal((await readFile(file, 'utf8')).includes(credentials.password), false);
 
     if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o600);

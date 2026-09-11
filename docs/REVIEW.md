@@ -1,5 +1,16 @@
 # Review and verification
 
+## 0.2.2: empty authentication cookie fix
+
+`captureSession` now drops empty cookies before validating the saved session.
+The cookie library omits `value` for these cookies, so an empty `.ASPXAUTH`
+deletion cookie previously caused saving to fail after successful authentication.
+Login and session import share this fix.
+
+The existing login integration check reproduces the deletion cookie and verifies
+that the authenticated session is saved, reopened, and used for the MCP overview.
+The regression failed before the fix. No additional test suite was added.
+
 ## 0.2.1: remote login correction
 
 Default login no longer starts the loopback credential form. Credentials come

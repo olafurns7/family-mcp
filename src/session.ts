@@ -135,7 +135,8 @@ export function captureSession(jar: CookieJar): SavedSession {
   return savedSessionSchema.parse({
     version: 2,
     savedAt: new Date().toISOString(),
-    cookies: jar.serializeSync()?.cookies ?? [],
+    // tough-cookie omits value for empty cookies, including authentication deletion cookies.
+    cookies: (jar.serializeSync()?.cookies ?? []).filter((cookie) => cookie.value),
   });
 }
 
