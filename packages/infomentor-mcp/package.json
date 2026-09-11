@@ -61,7 +61,7 @@
     "lint:fix": "bun run lint --fix"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "htmlparser2": "^12.0.0",
     "tough-cookie": "^6.0.2",
     "zod": "^4.6.2"
@@ -69,6 +69,7 @@
   "devDependencies": {
     "@family-mcp/oxlint-anti-slop": "workspace:*",
     "@family-mcp/tsconfig": "workspace:*",
+    "@modelcontextprotocol/client": "^2.0.0",
     "@types/node": "^22.20.2"
   },
   "engines": {

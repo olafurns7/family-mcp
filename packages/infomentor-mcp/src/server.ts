@@ -1,6 +1,6 @@
 import manifest from '../package.json' with { type: 'json' };
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+import { McpServer } from '@modelcontextprotocol/server';
+import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { InfoMentorClient, loginRequestSchema, setupStatusSchema } from './client.js';
 import { collectRequestSchema, collectionSchema } from './collection.js';
@@ -69,7 +69,7 @@ export function createServer(options: SessionOptions = {}): McpServer {
       outputSchema: sessionStatusSchema,
       annotations: readOnly,
     },
-    (_, extra) => result(() => client.getSessionStatus(extra.signal)),
+    (_, ctx) => result(() => client.getSessionStatus(ctx.mcpReq.signal)),
   );
   server.registerTool(
     'infomentor_get_overview',
@@ -80,7 +80,7 @@ export function createServer(options: SessionOptions = {}): McpServer {
       outputSchema: overviewSchema,
       annotations: readOnly,
     },
-    (_, extra) => result(() => client.getOverview(extra.signal)),
+    (_, ctx) => result(() => client.getOverview(ctx.mcpReq.signal)),
   );
   server.registerTool(
     'infomentor_select_child',
@@ -91,7 +91,7 @@ export function createServer(options: SessionOptions = {}): McpServer {
       outputSchema: overviewSchema,
       annotations: { ...readOnly, readOnlyHint: false },
     },
-    (request, extra) => result(() => client.selectChild(request, extra.signal)),
+    (request, ctx) => result(() => client.selectChild(request, ctx.mcpReq.signal)),
   );
   server.registerTool(
     'infomentor_get_messages',
@@ -102,7 +102,7 @@ export function createServer(options: SessionOptions = {}): McpServer {
       outputSchema: messagesSchema,
       annotations: readOnly,
     },
-    (request, extra) => result(() => client.getMessages(request, extra.signal)),
+    (request, ctx) => result(() => client.getMessages(request, ctx.mcpReq.signal)),
   );
   server.registerTool(
     'infomentor_get_message',
@@ -113,7 +113,7 @@ export function createServer(options: SessionOptions = {}): McpServer {
       outputSchema: messageSchema,
       annotations: readOnly,
     },
-    (request, extra) => result(() => client.getMessage(request, extra.signal)),
+    (request, ctx) => result(() => client.getMessage(request, ctx.mcpReq.signal)),
   );
   server.registerTool(
     'infomentor_get_notifications',
@@ -124,7 +124,7 @@ export function createServer(options: SessionOptions = {}): McpServer {
       outputSchema: notificationsSchema,
       annotations: readOnly,
     },
-    (request, extra) => result(() => client.getNotifications(request, extra.signal)),
+    (request, ctx) => result(() => client.getNotifications(request, ctx.mcpReq.signal)),
   );
   server.registerTool(
     'infomentor_collect_updates',
@@ -135,7 +135,7 @@ export function createServer(options: SessionOptions = {}): McpServer {
       outputSchema: collectionSchema,
       annotations: { ...readOnly, readOnlyHint: false },
     },
-    (request, extra) => result(() => client.collectUpdates(request, extra.signal)),
+    (request, ctx) => result(() => client.collectUpdates(request, ctx.mcpReq.signal)),
   );
   server.registerTool(
     'infomentor_login',

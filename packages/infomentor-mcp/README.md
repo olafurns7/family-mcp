@@ -413,6 +413,11 @@ try {
 `login`, `importSession`, `createServer`, input/output schemas, and their types
 are also exported. Public operations accept an `AbortSignal` where applicable.
 School responses and session files are validated before use.
+
+Library compatibility: `createServer()` returns the v2 `McpServer` from
+`@modelcontextprotocol/server`. Consumers typed against the v1 SDK must migrate
+their SDK imports and transport types to v2.
+
 For subsequent collection runs, call `client.collectUpdates({ cursor })` with the
 last handled cursor. `InfoMentorClient` also accepts a `credentialsFile` option
 for automatic renewal.
