@@ -21,7 +21,7 @@ jobs:
         with:
           bun-version: 1.2.19
       - run: bun install --frozen-lockfile
-      - name: Check, test, and compile the release archive
+      - name: Lint, format, typecheck, test, and compile the release archive
         run: npm pack
       - name: Install the compiled archive without lifecycle scripts
         run: npm install --global --prefix "$RUNNER_TEMP/abler" --ignore-scripts "./abler-mcp-$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version').tgz"

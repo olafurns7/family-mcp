@@ -99,14 +99,14 @@ The credential has the account's normal Abler permissions; the package itself ex
 
 ## Tools
 
-| Tool | Result |
-| --- | --- |
-| `auth_status` | Verifies API access and returns the account ID/name, with no credentials |
-| `get_profile` | Your ID/name, linked children, and `childNamesById` mapping Abler child IDs to names |
-| `list_groups` | Age groups, sports, and nested subgroups |
-| `list_schedule` | Paginated events, times, locations, and linked participants' attendance |
+| Tool                   | Result                                                                                    |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| `auth_status`          | Verifies API access and returns the account ID/name, with no credentials                  |
+| `get_profile`          | Your ID/name, linked children, and `childNamesById` mapping Abler child IDs to names      |
+| `list_groups`          | Age groups, sports, and nested subgroups                                                  |
+| `list_schedule`        | Paginated events, times, locations, and linked participants' attendance                   |
 | `list_child_schedules` | A separate schedule for each linked child, with their ID/name, attendance, and pagination |
-| `get_event` | One event, using `eventId` and `ageGroup.id` from a schedule result |
+| `get_event`            | One event, using `eventId` and `ageGroup.id` from a schedule result                       |
 
 Example `list_schedule` arguments:
 
@@ -175,21 +175,25 @@ The Chrome capture transport is covered by a local protocol test; live session c
 
 ## Troubleshooting
 
-| Symptom | Action |
-| --- | --- |
-| `abler-mcp` or `node` not found | Use the absolute installed executable path; ensure the MCP host can find Node 22+. |
-| Server appears to wait in the terminal | Server mode waits for MCP input on stdio. Use an MCP host, or run `--help` / `auth status` for a CLI response. |
-| No saved session | Capture/import into the same `ABLER_SESSION_FILE` used by the MCP host. |
-| Cannot read session / unsafe permissions | Use a regular file, not a symlink; run `chmod 600 /absolute/path/session.json` on Unix. Its parent must be writable for atomic rotation and locking. Windows users must restrict access with OS ACLs. |
-| Expired or revoked session | Sign in again and capture/import. A refresh token is not permanent. |
-| Session busy | Retry when the active request ends. After a hard crash, wait two minutes; do not delete an active lock. |
-| Capture cannot list tabs | Launch a separate Chrome profile with the documented flags, keep it open, and use the exact loopback port. |
-| No Abler tab found | Open and sign in at `https://www.abler.io` in that debugging profile. |
-| Failed import with a retained candidate | Run `ABLER_SESSION_FILE=/absolute/path/to/candidate.pending abler-mcp auth status`. If it succeeds, use that path in the MCP host or stop users of the old session and move the candidate into place. Remove unused private candidates after recovery. If it fails again, capture a fresh session. |
-| Abler rejects a query or returns unexpected data | Check inputs and account access. Retry transient connection errors; an upstream API change may require a package update. Failures are not empty schedules. |
-| HTTP 429 / service error | Back off and retry later. No automatic retry loop is implemented for service errors. |
+| Symptom                                          | Action                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `abler-mcp` or `node` not found                  | Use the absolute installed executable path; ensure the MCP host can find Node 22+.                                                                                                                                                                                                                 |
+| Server appears to wait in the terminal           | Server mode waits for MCP input on stdio. Use an MCP host, or run `--help` / `auth status` for a CLI response.                                                                                                                                                                                     |
+| No saved session                                 | Capture/import into the same `ABLER_SESSION_FILE` used by the MCP host.                                                                                                                                                                                                                            |
+| Cannot read session / unsafe permissions         | Use a regular file, not a symlink; run `chmod 600 /absolute/path/session.json` on Unix. Its parent must be writable for atomic rotation and locking. Windows users must restrict access with OS ACLs.                                                                                              |
+| Expired or revoked session                       | Sign in again and capture/import. A refresh token is not permanent.                                                                                                                                                                                                                                |
+| Session busy                                     | Retry when the active request ends. After a hard crash, wait two minutes; do not delete an active lock.                                                                                                                                                                                            |
+| Capture cannot list tabs                         | Launch a separate Chrome profile with the documented flags, keep it open, and use the exact loopback port.                                                                                                                                                                                         |
+| No Abler tab found                               | Open and sign in at `https://www.abler.io` in that debugging profile.                                                                                                                                                                                                                              |
+| Failed import with a retained candidate          | Run `ABLER_SESSION_FILE=/absolute/path/to/candidate.pending abler-mcp auth status`. If it succeeds, use that path in the MCP host or stop users of the old session and move the candidate into place. Remove unused private candidates after recovery. If it fails again, capture a fresh session. |
+| Abler rejects a query or returns unexpected data | Check inputs and account access. Retry transient connection errors; an upstream API change may require a package update. Failures are not empty schedules.                                                                                                                                         |
+| HTTP 429 / service error                         | Back off and retry later. No automatic retry loop is implemented for service errors.                                                                                                                                                                                                               |
 
 ## Development and packaging
+
+Maintainers need Node.js 22.12+ and Bun 1.2.19. Oxlint, Oxfmt, the type-aware
+lint engine, and TypeScript are pinned in `package.json` and `bun.lock`.
+The published executable's Node.js 22+ requirement is unchanged.
 
 The server uses the [official MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/v2/get-started/first-server), native `fetch`, `tough-cookie` for cookie handling, and `proper-lockfile` for session coordination. No browser dependency or download is required.
 
@@ -201,6 +205,30 @@ bun run build
 node dist/cli.js --help
 npm pack
 ```
+
+`bun run check` runs type-aware Oxlint, Oxfmt's formatting check, and TypeScript
+against both source and tests. `npm pack` and GitHub Actions enforce that same
+gate before testing and compiling. Build output and the Bun lockfile are
+excluded from formatting; runtime dependencies are excluded from linting.
+
+Use `bun run lint:fix` for safe lint fixes and `bun run format` to format files
+and sort imports. `bun run lint`, `bun run format:check`, and
+`bun run typecheck` can also run independently.
+
+The rules reject unused code, unsafe `any` and type assertions, unhandled
+promises (including `void` escapes), redundant classes and generics, unnecessary
+conditions, import cycles, and nesting deeper than four levels. Bun's
+`test`/`it`/`describe` focused, skipped, and placeholder methods are forbidden.
+Unused lint suppressions fail the check; TypeScript error expectations need an
+explanation. Use existing functions and platform APIs before adding wrappers.
+
+Intentional exceptions: cookie updates and child requests may run sequentially;
+authentication errors omit original causes that could expose credentials;
+console output is allowed only in the CLI and package smoke check. Do not
+weaken rules or hide failures to make a check pass. Linter and formatter settings
+live in [`.oxlintrc.json`](.oxlintrc.json) and [`.oxfmtrc.json`](.oxfmtrc.json).
+See the official [Oxlint type-aware guide](https://oxc.rs/docs/guide/usage/linter/type-aware)
+and [Oxfmt configuration reference](https://oxc.rs/docs/guide/usage/formatter/config-file-reference).
 
 `npm pack` runs the checks and builds a fresh `dist` before creating `abler-mcp-0.3.0.tgz`; it does not publish anything. The archive contains only compiled code, README, LICENSE, agent/maintainer documentation, and package metadata. The installed executable runs with Node; Bun is needed only for development and packing from source.
 

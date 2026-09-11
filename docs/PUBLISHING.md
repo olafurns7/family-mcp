@@ -19,13 +19,15 @@ configured.
    npm pack
    ```
 
-   `prepack` checks TypeScript, runs offline regression tests, deletes stale
+   `prepack` enforces type-aware linting, formatting, and TypeScript for source
+   and tests, runs offline regression tests, deletes stale
    build output, and compiles the executable. A failed check blocks packing.
    Bun is a maintainer dependency; release consumers do not need it.
+
 4. Inspect the tarball with `tar -tzf abler-mcp-VERSION.tgz`. It should contain
    only `dist/*.js`, `package.json`, README, LICENSE, and `docs/*.md`.
 5. Install that archive into a temporary prefix with `npm install --global
-   --prefix /temporary/prefix --ignore-scripts ./abler-mcp-VERSION.tgz`. Run:
+--prefix /temporary/prefix --ignore-scripts ./abler-mcp-VERSION.tgz`. Run:
 
    ```sh
    bun test/pack-smoke.ts /temporary/prefix/bin/abler-mcp
@@ -34,6 +36,7 @@ configured.
    This starts the installed executable with Node, checks its version, makes a
    real MCP stdio connection, enumerates tools, and verifies a missing-session
    error. The check uses a private temporary directory and no live account.
+
 6. Review runtime advisories (`npm audit --omit=dev` in a temporary npm install).
    Do not generate or commit a second root lockfile just for auditing.
 7. If using authorized live credentials, separately check auth, profile, groups,
@@ -78,6 +81,7 @@ documentation requires npm 11.5.1+ / Node 22.14.0+; check it again when setting
 up the workflow. Public source repository metadata must match for provenance.
 
 References:
+
 - [npm package metadata](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/)
 - [npm install from a tarball URL](https://docs.npmjs.com/cli/v11/commands/npm-install/)
 - [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/)

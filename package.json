@@ -2,7 +2,24 @@
   "name": "abler-mcp",
   "version": "0.3.0",
   "description": "Unofficial, read-only Abler schedules MCP server with portable session authentication",
-  "type": "module",
+  "keywords": [
+    "abler",
+    "family",
+    "mcp",
+    "model-context-protocol",
+    "schedule",
+    "sports"
+  ],
+  "homepage": "https://github.com/olafurns7/abler-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/olafurns7/abler-mcp/issues"
+  },
+  "license": "MIT",
+  "author": "Ólafur Nils Sigurðsson",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/olafurns7/abler-mcp.git"
+  },
   "bin": {
     "abler-mcp": "dist/cli.js"
   },
@@ -12,16 +29,22 @@
     "LICENSE",
     "docs"
   ],
-  "engines": {
-    "node": ">=22"
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
-  "packageManager": "bun@1.2.19",
   "scripts": {
-    "build": "rm -rf dist && tsc",
-    "check": "tsc --noEmit",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "check": "bun run lint && bun run format:check && bun run typecheck",
     "test": "bun test",
     "start": "bun src/cli.ts",
-    "prepack": "bun run check && bun test && bun run build"
+    "prepack": "bun run check && bun test && bun run build",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives-severity error .",
+    "lint:fix": "bun run lint --fix",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check ."
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
@@ -33,28 +56,13 @@
     "@modelcontextprotocol/client": "^2.0.0",
     "@types/bun": "^1.2.19",
     "@types/proper-lockfile": "^4.1.4",
-    "typescript": "^5.9.3"
+    "oxfmt": "0.67.0",
+    "oxlint": "1.82.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "typescript": "7.0.2"
   },
-  "license": "MIT",
-  "author": "Ólafur Nils Sigurðsson",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/olafurns7/abler-mcp.git"
+  "engines": {
+    "node": ">=22"
   },
-  "homepage": "https://github.com/olafurns7/abler-mcp#readme",
-  "bugs": {
-    "url": "https://github.com/olafurns7/abler-mcp/issues"
-  },
-  "keywords": [
-    "abler",
-    "mcp",
-    "model-context-protocol",
-    "schedule",
-    "sports",
-    "family"
-  ],
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  }
+  "packageManager": "bun@1.2.19"
 }
