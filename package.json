@@ -1,0 +1,74 @@
+{
+  "name": "infomentor-mcp",
+  "version": "0.1.0",
+  "description": "Local MCP server for Icelandic InfoMentor parent accounts with browser-based login",
+  "type": "module",
+  "bin": {
+    "infomentor-mcp": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "packageManager": "bun@1.2.19",
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "infomentor",
+    "iceland",
+    "school"
+  ],
+  "scripts": {
+    "start": "bun run build && node dist/cli.js",
+    "login": "bun run build && node dist/cli.js login",
+    "check": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "bun run build && bun build ./test/integration.test.ts --target=node --packages=external --outfile=.test-build/integration.test.js && node --test .test-build/integration.test.js",
+    "prepack": "bun run check && bun run build",
+    "prepublishOnly": "bun run validate",
+    "validate": "bun run format:check && bun run check && bun run test",
+    "test:package": "node scripts/package-smoke.mjs",
+    "release:check": "bun run validate && bun pm pack && bun run test:package",
+    "build:binary": "node scripts/build-binary.mjs",
+    "test:installer": "node scripts/test-installer.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "playwright": "^1.63.0",
+    "zod": "^4.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "prettier": "^3.9.6",
+    "typescript": "^7.0.2"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "author": "\u00d3lafur Nils Sigur\u00f0sson",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/olafurns7/infomentor-mcp.git"
+  },
+  "homepage": "https://github.com/olafurns7/infomentor-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/olafurns7/infomentor-mcp/issues"
+  }
+}
