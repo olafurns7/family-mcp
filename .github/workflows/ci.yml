@@ -1,0 +1,29 @@
+name: Package checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.2.19
+      - run: bun install --frozen-lockfile
+      - name: Check, test, and compile the release archive
+        run: npm pack
+      - name: Install the compiled archive without lifecycle scripts
+        run: npm install --global --prefix "$RUNNER_TEMP/abler" --ignore-scripts "./abler-mcp-$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version').tgz"
+      - name: Verify the installed Node executable over MCP stdio
+        run: bun test/pack-smoke.ts "$RUNNER_TEMP/abler/bin/abler-mcp"
