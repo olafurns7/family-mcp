@@ -1,6 +1,6 @@
 {
   "name": "abler-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Unofficial, read-only Abler schedules MCP server with portable session authentication",
   "keywords": [
     "abler",
@@ -36,7 +36,8 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "check": "bun run lint && bun run format:check && bun run typecheck",
+    "build:native": "sh scripts/build-native.sh",
+    "check": "sh -n install.sh && sh -n scripts/build-native.sh && bun run lint && bun run format:check && bun run typecheck",
     "test": "bun test",
     "start": "bun src/cli.ts",
     "prepack": "bun run check && bun test && bun run build",
@@ -64,5 +65,5 @@
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "bun@1.2.19"
+  "packageManager": "bun@1.4.2"
 }

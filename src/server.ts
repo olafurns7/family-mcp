@@ -1,12 +1,9 @@
-import { createRequire } from "node:module";
-
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 
+import metadata from "../package.json" with { type: "json" };
 import { AblerClient, childSchedulesInput, eventInput, scheduleInput } from "./api.js";
-export const VERSION = z
-  .object({ version: z.string() })
-  .parse(createRequire(import.meta.url)("../package.json")).version;
+export const VERSION = metadata.version;
 
 const result = async (work: () => Promise<unknown>) => {
   try {

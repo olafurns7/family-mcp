@@ -1,7 +1,8 @@
 # Maintainer release guide
 
 Source: https://github.com/olafurns7/abler-mcp
-License: MIT. Package name: `abler-mcp`. Runtime: Node.js 22+.
+License: MIT. Package name: `abler-mcp`. Standalone runtime: embedded Bun 1.4.2.
+Alternative npm package runtime: Node.js 22+.
 The first public distribution is a compiled GitHub release archive; npm
 publication is a separate, deliberate operation. No npm publish workflow is
 configured.
@@ -10,8 +11,9 @@ configured.
 
 1. Start from the intended clean commit. Review source and dependency changes.
    Never commit session/cookie exports, `.pending` recovery files, or credentials.
-2. Update `package.json` version and versioned install links in README and this
-   guide's companion `AGENTS.md`. CLI and MCP versions read `package.json`.
+2. Update `package.json`, the pinned `version` in `install.sh`, and versioned
+   install links in README and this guide's companion `AGENTS.md`. CLI and MCP
+   versions read `package.json`; installer tests catch a mismatched script pin.
 3. Install exactly the development dependencies from the Bun lockfile:
 
    ```sh
@@ -19,13 +21,13 @@ configured.
    npm pack
    ```
 
-   `prepack` enforces type-aware linting, formatting, and TypeScript for source
+   `prepack` checks the installer's shell syntax and enforces type-aware linting, formatting, and TypeScript for source
    and tests, runs offline regression tests, deletes stale
    build output, and compiles the executable. A failed check blocks packing.
    Bun is a maintainer dependency; release consumers do not need it.
 
 4. Inspect the tarball with `tar -tzf abler-mcp-VERSION.tgz`. It should contain
-   only `dist/*.js`, `package.json`, README, LICENSE, and `docs/*.md`.
+   only `dist/*.js`, `package.json`, README, LICENSE, and documentation/notices in `docs/`.
 5. Install that archive into a temporary prefix with `npm install --global
 --prefix /temporary/prefix --ignore-scripts ./abler-mcp-VERSION.tgz`. Run:
 
@@ -46,23 +48,36 @@ configured.
 
 ## GitHub distribution
 
-Commit and push the reviewed files, tag the commit `vVERSION`, and upload the
-compiled `abler-mcp-VERSION.tgz` plus its SHA-256 checksum to that release.
-On macOS, produce the checksum with:
+Commit and push the reviewed files and wait for all package and standalone
+jobs in `.github/workflows/ci.yml`. The standalone jobs build and smoke-test
+on macOS 15 and Ubuntu 24.04, both arm64 and x64. Each uploads its verified
+`.tar.gz` archive and matching `.tar.gz.sha256` as a workflow artifact. Download
+those artifacts from the exact commit being released. For a local native build:
 
 ```sh
-shasum -a 256 abler-mcp-VERSION.tgz > SHA256SUMS
+bun run build:native
+bun test/pack-smoke.ts release/native/abler-mcp --standalone
 ```
 
-Linux can use `sha256sum` instead. Create a new version for changed bytes;
-do not replace an archive under an existing version link. Download the hosted
-archive into a clean prefix and repeat the installed-package smoke check.
-Consumers can optionally download `SHA256SUMS` and verify the archive before
-installing it; the checksum must match the published release asset.
+Each native archive contains `abler-mcp`, `LICENSE`, and `THIRD_PARTY_NOTICES.txt`.
+The executable includes its runtime and package dependencies. The smoke check
+copies it outside the checkout, removes Node/Bun from PATH, and checks MCP
+startup and errors. Update the third-party notices when bundled dependencies
+or Bun change; retain the upstream source and rebuilding references.
 
-The one-liner installs directly from the versioned GitHub asset using npm's
-native tarball support. It performs no build or lifecycle scripts. Registry
-access is still needed for the package's declared runtime dependencies.
+Tag the verified commit `vVERSION`. Upload all four native archives and their
+individual checksum files, plus the separately tested npm `.tgz` and its
+`SHA256SUMS`, to the GitHub release. Each native checksum file must have exactly
+one line: `HEX_DIGEST  abler-mcp-VERSION-PLATFORM-ARCH.tar.gz`. Create a new
+version for changed bytes; never move a release tag or replace published assets.
+
+The one-liner fetches `install.sh` from the release tag, downloads the matching
+platform asset, verifies its digest and filename, and checks the binary before
+replacing an existing installation. It needs curl, tar, and a SHA-256 utility,
+with no Node/npm or registry access. Test the exact public command with an
+isolated `ABLER_PREFIX` after publishing, then run `test/pack-smoke.ts` with
+`--standalone` against that installed executable. Session files are never
+release assets. npm publication remains a separate operation.
 
 ## Publish to npm only when authorized
 

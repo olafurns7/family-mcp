@@ -1,18 +1,39 @@
 # abler-mcp
 
-Unofficial, read-only [Abler](https://www.abler.io) MCP server. Written in TypeScript, managed with Bun, distributed as an npm executable. Requires Node.js 22+ to run the installed executable; Bun is used for development. The running MCP server uses HTTP and needs no browser.
+Unofficial, read-only [Abler](https://www.abler.io) MCP server. Written in TypeScript and compiled with Bun into a single executable, including its runtime and dependencies. The running MCP server uses HTTP and needs no browser.
 
 ## Install the prebuilt release
 
-Node.js **22+** and npm are required. No Bun, checkout, build step, browser download, or npm publication is needed:
+On macOS or Linux:
 
 ```sh
-npm install --global --prefix "$HOME/.local" --ignore-scripts 'https://github.com/olafurns7/abler-mcp/releases/download/v0.3.0/abler-mcp-0.3.0.tgz'
+curl -fsSL https://raw.githubusercontent.com/olafurns7/abler-mcp/v0.3.1/install.sh | sh
 ```
 
-Then run `"$HOME/.local/bin/abler-mcp" --version`. Add `$HOME/.local/bin` to your PATH to use `abler-mcp` directly. Runtime dependencies are fetched from npm; the compiled release itself is hosted on GitHub. [Release assets and checksums](https://github.com/olafurns7/abler-mcp/releases/tag/v0.3.0) are available for verification. Use the versioned `.tgz` asset, not GitHub's source ZIP/tarball.
+No Node, npm, Bun, checkout, build step, sudo, or browser download is needed.
+The installer selects your operating system and CPU, downloads the standalone
+release, verifies its SHA-256 checksum and executable version, then installs
+`~/.local/bin/abler-mcp`. Existing installations are replaced only after validation.
+Temporary downloads are removed; license notices go in `~/.local/share/abler-mcp`.
 
-On Windows, omit `--prefix "$HOME/.local"` and use `abler-mcp.cmd`; Windows has not been verified. macOS and Linux are the supported installation examples.
+Supported downloads: macOS arm64 (Apple Silicon) and x64 (Intel), and Linux
+arm64 and x64 with glibc. Alpine/musl and Windows standalone binaries are not
+provided. Bundling the runtime makes the download larger than the npm package.
+See [release assets and checksums](https://github.com/olafurns7/abler-mcp/releases/tag/v0.3.1).
+
+Then run `"$HOME/.local/bin/abler-mcp" --version`. Add `$HOME/.local/bin` to your
+PATH to use `abler-mcp` directly. Use the full executable path printed by the
+installer in your MCP configuration. The installer leaves shell settings and
+Abler sessions alone.
+
+To choose another installation directory, pass an absolute `ABLER_PREFIX` to
+`sh`, for example `curl -fsSL https://raw.githubusercontent.com/olafurns7/abler-mcp/v0.3.1/install.sh | ABLER_PREFIX="/absolute/path" sh`.
+
+An alternative npm package remains available for Node.js 22+:
+`npm install --global --ignore-scripts https://github.com/olafurns7/abler-mcp/releases/download/v0.3.1/abler-mcp-0.3.1.tgz`.
+It requires Node on the MCP host's PATH and fetches runtime dependencies from npm.
+On Windows its command is `abler-mcp.cmd`; Windows has not been verified. Use
+the versioned `.tgz` asset, not GitHub's source ZIP/tarball.
 
 For agent setup and reporting rules, read **[docs/AGENTS.md](docs/AGENTS.md)**. For a future npm publication, read **[docs/PUBLISHING.md](docs/PUBLISHING.md)**.
 
@@ -32,7 +53,7 @@ Configure an MCP host to launch the installed server, replacing both paths with 
 }
 ```
 
-On macOS, home paths normally start `/Users/you`. JSON configurations generally do not expand `~` or `$HOME`. Node must be on the MCP host's PATH; alternatively use its absolute executable path and pass the installed `lib/node_modules/abler-mcp/dist/cli.js` as an argument.
+On macOS, home paths normally start `/Users/you`. JSON configurations generally do not expand `~` or `$HOME`. The standalone executable needs no JavaScript runtime on the MCP host's PATH.
 
 Omit `ABLER_SESSION_FILE` to use `$XDG_CONFIG_HOME/abler-mcp/session.json`, defaulting to `~/.config/abler-mcp/session.json`. Stdout is reserved for the MCP protocol. Auth commands print human-readable output separately from server mode.
 
@@ -177,7 +198,7 @@ The Chrome capture transport is covered by a local protocol test; live session c
 
 | Symptom                                          | Action                                                                                                                                                                                                                                                                                             |
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `abler-mcp` or `node` not found                  | Use the absolute installed executable path; ensure the MCP host can find Node 22+.                                                                                                                                                                                                                 |
+| `abler-mcp` not found                            | Use the absolute installed executable path. Only the alternative npm install needs Node 22+.                                                                                                                                                                                                       |
 | Server appears to wait in the terminal           | Server mode waits for MCP input on stdio. Use an MCP host, or run `--help` / `auth status` for a CLI response.                                                                                                                                                                                     |
 | No saved session                                 | Capture/import into the same `ABLER_SESSION_FILE` used by the MCP host.                                                                                                                                                                                                                            |
 | Cannot read session / unsafe permissions         | Use a regular file, not a symlink; run `chmod 600 /absolute/path/session.json` on Unix. Its parent must be writable for atomic rotation and locking. Windows users must restrict access with OS ACLs.                                                                                              |
@@ -191,9 +212,9 @@ The Chrome capture transport is covered by a local protocol test; live session c
 
 ## Development and packaging
 
-Maintainers need Node.js 22.12+ and Bun 1.2.19. Oxlint, Oxfmt, the type-aware
+Maintainers need Node.js 22.12+ and Bun 1.4.2. Oxlint, Oxfmt, the type-aware
 lint engine, and TypeScript are pinned in `package.json` and `bun.lock`.
-The published executable's Node.js 22+ requirement is unchanged.
+Standalone consumers need neither; the alternative npm package requires Node.js 22+.
 
 The server uses the [official MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/v2/get-started/first-server), native `fetch`, `tough-cookie` for cookie handling, and `proper-lockfile` for session coordination. No browser dependency or download is required.
 
@@ -203,12 +224,14 @@ bun run check
 bun test
 bun run build
 node dist/cli.js --help
+bun run build:native
+bun test/pack-smoke.ts release/native/abler-mcp --standalone
 npm pack
 ```
 
 `bun run check` runs type-aware Oxlint, Oxfmt's formatting check, and TypeScript
 against both source and tests. `npm pack` and GitHub Actions enforce that same
-gate before testing and compiling. Build output and the Bun lockfile are
+gate before testing and compiling. Build/release output and the Bun lockfile are
 excluded from formatting; runtime dependencies are excluded from linting.
 
 Use `bun run lint:fix` for safe lint fixes and `bun run format` to format files
@@ -230,8 +253,15 @@ live in [`.oxlintrc.json`](.oxlintrc.json) and [`.oxfmtrc.json`](.oxfmtrc.json).
 See the official [Oxlint type-aware guide](https://oxc.rs/docs/guide/usage/linter/type-aware)
 and [Oxfmt configuration reference](https://oxc.rs/docs/guide/usage/formatter/config-file-reference).
 
-`npm pack` runs the checks and builds a fresh `dist` before creating `abler-mcp-0.3.0.tgz`; it does not publish anything. The archive contains only compiled code, README, LICENSE, agent/maintainer documentation, and package metadata. The installed executable runs with Node; Bun is needed only for development and packing from source.
+`npm pack` runs the checks and builds a fresh `dist` before creating `abler-mcp-0.3.1.tgz`; it does not publish anything. The archive contains only compiled code, README, LICENSE, agent/maintainer documentation, and package metadata. The installed executable runs with Node; Bun is needed only for development and packing from source.
 
 Offline tests use synthetic credentials and include real MCP stdio, local Chrome protocol capture, concurrent processes, logout during refresh, failed-import recovery, private file permissions, invalid filters, malformed pagination, sibling ID/name collisions, and shared events. See the [review record](docs/REVIEW.md) for verified scope and remaining limitations.
 
 This project is not affiliated with or endorsed by Abler.
+
+`bun run build:native` creates a standalone executable and checksummed archive
+for the current machine in `release/`. It uses [Bun's compiler](https://bun.com/docs/bundler/executables),
+with automatic `.env` and `bunfig.toml` loading disabled. Configuration comes
+from the process environment. GitHub Actions builds and checks macOS 15 and
+Ubuntu 24.04 on both CPU architectures, including a copied executable running
+outside the checkout with neither Node nor Bun on PATH.

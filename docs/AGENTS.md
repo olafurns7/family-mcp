@@ -5,22 +5,31 @@ Abler data; session renewal changes the local credential file automatically.
 
 ## Install the prebuilt release
 
-Prerequisite: Node.js 22 or later, with npm. Check `node --version` first.
-Bun, a compiler, a Git checkout, and a browser on the server are unnecessary.
+Prerequisites: macOS or glibc Linux on arm64/x64, curl, tar, and either
+`sha256sum` or `shasum`. Node, npm, Bun, a compiler, a Git checkout, and a browser
+on the server are unnecessary.
 
 ```sh
-npm install --global --prefix "$HOME/.local" --ignore-scripts 'https://github.com/olafurns7/abler-mcp/releases/download/v0.3.0/abler-mcp-0.3.0.tgz'
+curl -fsSL https://raw.githubusercontent.com/olafurns7/abler-mcp/v0.3.1/install.sh | sh
 ```
 
-The executable is `$HOME/.local/bin/abler-mcp`. Run it by absolute path or add
-`$HOME/.local/bin` to PATH. Check its `--version` and `--help`. Installation
-fetches runtime dependencies from npm; the archive does not bundle Node or
-those dependencies. Do not substitute a GitHub source archive or `github:`
-shorthand: those are not the compiled release.
+The script selects the native binary, verifies its archive's SHA-256 checksum,
+checks the executable version, and installs `$HOME/.local/bin/abler-mcp`.
+It replaces an existing executable only after successful validation, removes
+temporary downloads, and saves license notices in `$HOME/.local/share/abler-mcp`.
+It does not edit shell settings or import an Abler session. To choose another
+absolute prefix, set `ABLER_PREFIX` on the `sh` side of the pipe:
+`curl -fsSL https://raw.githubusercontent.com/olafurns7/abler-mcp/v0.3.1/install.sh | ABLER_PREFIX="/absolute/path" sh`.
 
-On Windows, install the same URL with `npm install --global --ignore-scripts`
-and use `abler-mcp.cmd`. Windows is not yet verified; the release checks cover
-macOS and Linux.
+Run the executable by absolute path or add `$HOME/.local/bin` to PATH. Check
+its `--version` and `--help`. Runtime and dependencies are embedded; execution
+does not require registry access. Never substitute a GitHub source archive.
+Windows and Alpine/musl standalone builds are not provided.
+
+An alternative Node.js 22+ install is `npm install --global --ignore-scripts
+https://github.com/olafurns7/abler-mcp/releases/download/v0.3.1/abler-mcp-0.3.1.tgz`.
+That option needs Node on the host's PATH and downloads dependencies from npm.
+The Windows npm command is `abler-mcp.cmd`; Windows is not yet verified.
 
 ## Establish the account
 
@@ -61,9 +70,7 @@ paths; JSON configuration generally does not expand `$HOME` or `~`.
 ```
 
 Replace both paths. On macOS, home paths normally begin `/Users/you`.
-The host must inherit a PATH that can find Node. Alternatively use an absolute
-Node executable as `command` and the installed
-`lib/node_modules/abler-mcp/dist/cli.js` as its first argument. The MCP host owns
+The standalone executable needs no Node or Bun on PATH. The MCP host owns
 the process; running server mode in a terminal waits for protocol input.
 
 ## Select children and report schedules

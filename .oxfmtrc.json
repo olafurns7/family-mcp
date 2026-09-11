@@ -2,5 +2,5 @@
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
   "printWidth": 100,
   "sortImports": {},
-  "ignorePatterns": ["dist/**", "node_modules/**", "bun.lock"]
+  "ignorePatterns": ["dist/**", "release/**", "node_modules/**", "bun.lock"]
 }
