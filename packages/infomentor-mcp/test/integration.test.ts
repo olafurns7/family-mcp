@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
-import fs from 'node:fs/promises';
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,13 +9,15 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { CookieJar } from 'tough-cookie';
 import { InfoMentorClient, setupStatusSchema } from '../src/client.js';
+import type { SetupStatus } from '../src/client.js';
 import { collectionSchema } from '../src/collection.js';
-import { promptCredentials } from '../src/credentials.js';
+import { promptCredentials, readCredentials } from '../src/credentials.js';
 import { InfoMentorHttp, parseForms } from '../src/http.js';
 import { authenticate, importSession, login } from '../src/login.js';
 import { createServer } from '../src/server.js';
 import {
   captureSession,
+  InfoMentorError,
   LOGIN_URL,
   overviewSchema,
   messagesSchema,
@@ -94,6 +95,8 @@ function fixture() {
     overrideUrl: '',
     ignoreSwitch: false,
     failTimetable: false,
+    // Called on the parent read, which is the last request before a login or import commits.
+    onParent: (): void => {},
   };
 
   const fetcher = mock.method(
@@ -192,6 +195,8 @@ function fixture() {
       }
 
       if (input.href === PARENT_URL) {
+        selection.onParent();
+
         const model = {
           ...parent,
           account: {
@@ -299,6 +304,23 @@ function fixture() {
   return { requests, selection, restore: () => fetcher.mock.restore() };
 }
 
+const unsafe = (pattern: RegExp) => (cause: unknown) =>
+  cause instanceof InfoMentorError &&
+  cause.code === 'INVALID_SESSION' &&
+  pattern.test(cause.message);
+
+const mismatch = (cause: unknown) =>
+  cause instanceof InfoMentorError && /different InfoMentor account/.test(cause.message);
+
+const limited =
+  (minimumMs: number, maximumMs: number) =>
+  (cause: unknown): boolean =>
+    cause instanceof InfoMentorError &&
+    cause.code === 'RATE_LIMITED' &&
+    cause.retryAfterMs !== undefined &&
+    cause.retryAfterMs > minimumMs &&
+    cause.retryAfterMs <= maximumMs;
+
 async function savedSession(value = 'synthetic') {
   const jar = new CookieJar();
   await jar.setCookie(`IMHome=${value}; Secure; HttpOnly; Path=/`, PARENT_URL);
@@ -307,6 +329,7 @@ async function savedSession(value = 'synthetic') {
 }
 
 test('private login and eleven MCP tools select children and read school data without changing read state', async () => {
+  // The four setup tools are an opt-in; this test enables them to drive login and logout over MCP.
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-http-'));
   const file = join(directory, 'private/session.json');
 
@@ -317,12 +340,57 @@ test('private login and eleven MCP tools select children and read school data wi
   };
 
   const routes = fixture();
-  const server = createServer({ sessionFile: file });
+  const server = createServer({ sessionFile: file, allowSetupTools: true });
   const client = new Client({ name: 'http-test', version: '1.0.0' });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
 
   try {
     for (const name of Object.keys(environment)) delete process.env[name];
+
+    // By default the server registers only the seven read and collection tools, and a missing
+    // session points the user at the CLI.
+    const readOnlyServer = createServer({ sessionFile: file });
+    const readOnlyClient = new Client({ name: 'default-test', version: '1.0.0' });
+    const [readOnlyServerTransport, readOnlyClientTransport] = InMemoryTransport.createLinkedPair();
+    await readOnlyServer.connect(readOnlyServerTransport);
+    await readOnlyClient.connect(readOnlyClientTransport);
+
+    try {
+      assert.deepEqual(
+        (await readOnlyClient.listTools()).tools.map((tool) => tool.name).toSorted(),
+        [
+          'infomentor_collect_updates',
+          'infomentor_get_message',
+          'infomentor_get_messages',
+          'infomentor_get_notifications',
+          'infomentor_get_overview',
+          'infomentor_select_child',
+          'infomentor_session_status',
+        ],
+      );
+
+      const missing = sessionStatusSchema.parse(
+        (await readOnlyClient.callTool({ name: 'infomentor_session_status', arguments: {} }))
+          .structuredContent,
+      );
+
+      assert.equal(missing.authenticated, false);
+      assert.match(missing.nextStep ?? '', /infomentor-mcp login/);
+
+      for (const name of ['infomentor_login', 'infomentor_logout']) {
+        const attempt = await readOnlyClient
+          .callTool({ name, arguments: {} })
+          .catch(() => ({ isError: true }));
+
+        assert.equal(attempt.isError, true);
+      }
+
+      assert.equal(routes.requests.length, 0);
+    } finally {
+      await readOnlyClient.close();
+      await readOnlyServer.close();
+    }
+
     await assert.rejects(login({ sessionFile: file, timeoutMs: 50 }), {
       code: 'INVALID_CONFIGURATION',
     });
@@ -352,7 +420,8 @@ test('private login and eleven MCP tools select children and read school data wi
       await delay(10);
       const status = await client.callTool({ name: 'infomentor_setup_status', arguments: {} });
       const progress = setupStatusSchema.parse(status.structuredContent);
-      assert.equal(progress.loginUrl, undefined);
+      assert.ok(!('loginUrl' in progress));
+      assert.equal(JSON.stringify(status).includes('loginUrl'), false);
       assert.equal(JSON.stringify(status).includes(credentials.password), false);
       state = progress.state;
     }
@@ -763,7 +832,7 @@ test('expired sessions renew once with private credentials, preserve account and
       'a known login redirect renews even when isauthenticated returned true',
     );
 
-    for (const status of [403, 429, 500]) {
+    for (const status of [403, 500]) {
       failureStatus = status;
       const count: number = passwordSubmissions;
       await assert.rejects(client.getOverview());
@@ -772,7 +841,6 @@ test('expired sessions renew once with private credentials, preserve account and
         count,
         'non-authentication failures never submit credentials',
       );
-      // A 429 deliberately keeps the HTTP client's cooldown, so use a new client for the next case.
       await client.close();
       client = new InfoMentorClient({ sessionFile: file, credentialsFile });
     }
@@ -894,7 +962,7 @@ test('rejected login, unsafe redirects, challenges, rate limits and malformed au
   }
 });
 
-test('cancelled login/import cannot replace the previous account at the atomic commit', async () => {
+test('cancelled login/import cannot replace the previous account, even after the last request before the commit', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-commit-'));
   const file = join(directory, 'session.json');
   const transfer = join(directory, 'transfer.json');
@@ -904,35 +972,18 @@ test('cancelled login/import cannot replace the previous account at the atomic c
   await writeSession(await savedSession(), transfer);
   await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
   const before = await readFile(file, 'utf8');
-  const originalWrite = fs.writeFile.bind(fs);
 
   try {
     for (const request of [{ credentialsFile }, { importFile: transfer }]) {
-      const written = Promise.withResolvers<void>();
-      const finish = Promise.withResolvers<void>();
-
-      const writer = mock.method(
-        fs,
-        'writeFile',
-        async (...args: Parameters<typeof fs.writeFile>) => {
-          await originalWrite(...args);
-
-          if (String(args[0]).startsWith(file + '.') && String(args[0]).endsWith('.tmp')) {
-            written.resolve();
-            await finish.promise;
-          }
-        },
-      );
-
-      syncBuiltinESMExports();
       const client = new InfoMentorClient({ sessionFile: file });
+      const cancelling = Promise.withResolvers<SetupStatus>();
+      // The verified parent read is the final request; the cancellation lands after it, so only
+      // the session-store commit check stands between the candidate and the file.
+      routes.selection.onParent = () => cancelling.resolve(client.cancelSetup());
 
       try {
         client.startLogin(request);
-        await written.promise;
-        const cancelled = client.cancelSetup();
-        finish.resolve();
-        assert.equal((await cancelled).state, 'cancelled');
+        assert.equal((await cancelling.promise).state, 'cancelled');
         assert.equal(await readFile(file, 'utf8'), before);
         assert.deepEqual((await readdir(directory)).toSorted(), [
           'credentials.json',
@@ -940,14 +991,195 @@ test('cancelled login/import cannot replace the previous account at the atomic c
           'transfer.json',
         ]);
       } finally {
-        finish.resolve();
+        routes.selection.onParent = () => {};
+
         await client.close();
-        writer.mock.restore();
-        syncBuiltinESMExports();
       }
     }
   } finally {
     routes.restore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('session and credential files that are world-readable or symlinked are refused for reads and imports', async () => {
+  if (process.platform === 'win32') return;
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-guards-'));
+  const file = join(directory, 'session.json');
+  const destination = join(directory, 'imported.json');
+  const credentialsFile = join(directory, 'credentials.json');
+  const routes = fixture();
+
+  try {
+    await writeSession(await savedSession(), file);
+    await chmod(file, 0o644);
+    await assert.rejects(readSession(file), unsafe(/chmod 600/));
+    const client = new InfoMentorClient({ sessionFile: file });
+
+    try {
+      await assert.rejects(client.getOverview(), { code: 'INVALID_SESSION' });
+    } finally {
+      await client.close();
+    }
+
+    await assert.rejects(importSession(file, { sessionFile: destination }), unsafe(/chmod 600/));
+    await chmod(file, 0o600);
+    const link = join(directory, 'link.json');
+    await symlink(file, link);
+    await assert.rejects(readSession(link), unsafe(/symlink/));
+    await assert.rejects(importSession(link, { sessionFile: destination }), unsafe(/symlink/));
+    await assert.rejects(stat(destination), { code: 'ENOENT' });
+    assert.equal(routes.requests.length, 0, 'refused files never reach InfoMentor');
+    await importSession(file, { sessionFile: destination });
+    assert.equal((await readSession(destination)).accountId, 'parent-1');
+
+    await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o644 });
+    await assert.rejects(readCredentials(credentialsFile), { code: 'INVALID_CONFIGURATION' });
+    await chmod(credentialsFile, 0o600);
+    await symlink(credentialsFile, join(directory, 'credentials-link.json'));
+    await assert.rejects(readCredentials(join(directory, 'credentials-link.json')), {
+      code: 'INVALID_CONFIGURATION',
+    });
+    assert.deepEqual(await readCredentials(credentialsFile), credentials);
+  } finally {
+    routes.restore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('explicit login or import cannot silently replace a session verified for another account', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-account-'));
+  const file = join(directory, 'session.json');
+  const transfer = join(directory, 'transfer.json');
+  const credentialsFile = join(directory, 'credentials.json');
+  const routes = fixture();
+  const otherAccount = await savedSession('other');
+  otherAccount.accountId = 'parent-2';
+  await writeSession(otherAccount, file);
+  await writeSession(await savedSession(), transfer);
+  await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
+  const before = await readFile(file, 'utf8');
+  const server = createServer({ sessionFile: file, allowSetupTools: true });
+  const client = new Client({ name: 'account-test', version: '1.0.0' });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+
+  const finished = async (): Promise<SetupStatus> => {
+    let status = setupStatusSchema.parse(
+      (await client.callTool({ name: 'infomentor_setup_status', arguments: {} })).structuredContent,
+    );
+
+    for (let step = 0; step < 500 && status.state === 'running'; step++) {
+      await delay(10);
+      status = setupStatusSchema.parse(
+        (await client.callTool({ name: 'infomentor_setup_status', arguments: {} }))
+          .structuredContent,
+      );
+    }
+
+    return status;
+  };
+
+  try {
+    await assert.rejects(login({ sessionFile: file, credentialsFile }), mismatch);
+    assert.equal(await readFile(file, 'utf8'), before);
+    await assert.rejects(importSession(transfer, { sessionFile: file }), mismatch);
+    assert.equal(await readFile(file, 'utf8'), before);
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    await client.callTool({ name: 'infomentor_login', arguments: { credentialsFile } });
+    const refused = await finished();
+    assert.equal(refused.state, 'failed');
+    assert.match(refused.message, /different InfoMentor account/);
+    assert.equal(await readFile(file, 'utf8'), before);
+
+    await client.callTool({
+      name: 'infomentor_login',
+      arguments: { credentialsFile, allowAccountChange: true },
+    });
+    assert.equal((await finished()).state, 'succeeded');
+    assert.equal((await readSession(file)).accountId, 'parent-1');
+
+    // The same account may sign in again, and files without a verified account are replaceable.
+    await login({ sessionFile: file, credentialsFile });
+    await writeSession(await savedSession('other'), file);
+    await login({ sessionFile: file, credentialsFile });
+    assert.equal((await readSession(file)).accountId, 'parent-1');
+    await writeFile(file, '{"version":1}', { mode: 0o600 });
+    await importSession(transfer, { sessionFile: file });
+    assert.equal((await readSession(file)).accountId, 'parent-1');
+  } finally {
+    await client.close();
+    await server.close();
+    routes.restore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a rate-limit pause is saved with the session and honoured by other processes without contacting InfoMentor', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-rate-'));
+  const file = join(directory, 'session.json');
+  const otherFile = join(directory, 'other.json');
+  await writeSession(await savedSession(), file);
+  await writeSession(await savedSession(), otherFile);
+  let calls = 0;
+
+  const fetcher = mock.method(globalThis, 'fetch', async () => {
+    calls++;
+
+    return new Response('', { status: 429, headers: { 'Retry-After': '120' } });
+  });
+
+  const first = new InfoMentorClient({ sessionFile: file });
+
+  try {
+    await assert.rejects(first.getOverview(), limited(100_000, 120_000));
+    assert.equal(calls, 1);
+    const saved = await readSession(file);
+    assert.ok(saved.rateLimitedUntil);
+    const until = Date.parse(saved.rateLimitedUntil);
+    assert.ok(until > Date.now() + 100_000 && until <= Date.now() + 120_000);
+
+    const second = new InfoMentorClient({ sessionFile: file });
+
+    try {
+      await assert.rejects(second.getOverview(), limited(100_000, 120_000));
+      assert.equal(calls, 1, 'a second process waits without a request');
+      assert.equal((await readSession(file)).rateLimitedUntil, saved.rateLimitedUntil);
+    } finally {
+      await second.close();
+    }
+
+    const third = new InfoMentorClient({ sessionFile: otherFile });
+
+    try {
+      await assert.rejects(third.getOverview(), { code: 'RATE_LIMITED' });
+      assert.equal(calls, 2, 'another session file is not affected');
+    } finally {
+      await third.close();
+    }
+
+    const expired = await savedSession();
+    expired.rateLimitedUntil = new Date(Date.now() - 1000).toISOString();
+    await writeSession(expired, otherFile);
+    const absurd = await savedSession();
+    absurd.rateLimitedUntil = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString();
+    await writeSession(absurd, file);
+    const fourth = new InfoMentorClient({ sessionFile: otherFile });
+    const fifth = new InfoMentorClient({ sessionFile: file });
+
+    try {
+      await assert.rejects(fourth.getOverview(), { code: 'RATE_LIMITED' });
+      assert.equal(calls, 3, 'an expired pause is not honoured');
+      await assert.rejects(fifth.getOverview(), limited(0, 3_600_000));
+      assert.equal(calls, 3, 'a saved pause is capped at one hour');
+    } finally {
+      await fourth.close();
+      await fifth.close();
+    }
+  } finally {
+    await first.close();
+    fetcher.mock.restore();
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -6,12 +6,14 @@ import {
   importSession,
   createAuthenticatedHttp,
   hasConfiguredCredentials,
+  httpFromSession,
   sessionFromHttp,
 } from './login.js';
 import { withSessionLock } from './lock.js';
 import { collectUpdates, collectRequestSchema } from './collection.js';
 import type { CollectRequest, Collection } from './collection.js';
-import { InfoMentorHttp, timetableSchema } from './http.js';
+import type { InfoMentorHttp } from './http.js';
+import { timetableSchema } from './http.js';
 import {
   InfoMentorError,
   selectChildRequestSchema,
@@ -22,7 +24,6 @@ import {
   messageDetailSchema,
   notificationsDataSchema,
   readSession,
-  restoreCookies,
   sessionPath,
   throwIfAborted,
   writeSession,
@@ -49,17 +50,18 @@ export const loginRequestSchema = z
       .refine(isAbsolute, 'Use an absolute path on the MCP host.')
       .optional(),
     localForm: z.boolean().optional(),
+    allowAccountChange: z.boolean().optional(),
     timeoutSeconds: z.number().int().min(1).max(3600).default(300),
   })
   .strict();
 
 export type LoginRequest = z.input<typeof loginRequestSchema>;
 
+/** The local form's URL is never exposed here: any local process that learns it can submit credentials. */
 export const setupStatusSchema = z.object({
   state: z.enum(['idle', 'running', 'waiting', 'succeeded', 'failed', 'cancelled']),
   operation: z.enum(['login', 'import']).optional(),
   message: z.string(),
-  loginUrl: z.string().optional(),
 });
 
 export type SetupStatus = z.infer<typeof setupStatusSchema>;
@@ -68,6 +70,7 @@ function comparableSession(session: SavedSession): string {
   return JSON.stringify({
     accountId: session.accountId,
     selectedChildId: session.selectedChildId,
+    rateLimitedUntil: session.rateLimitedUntil,
     cookies: session.cookies.map(({ lastAccessed: _lastAccessed, ...cookie }) => cookie),
   });
 }
@@ -112,10 +115,7 @@ export class InfoMentorClient {
         let saved = await readSession(file);
 
         if (this.active?.serializedSession !== JSON.stringify(saved))
-          this.active = {
-            http: new InfoMentorHttp(restoreCookies(saved)),
-            serializedSession: JSON.stringify(saved),
-          };
+          this.active = { http: httpFromSession(saved), serializedSession: JSON.stringify(saved) };
         let http = this.active.http;
         let preserveSession = false;
 
@@ -443,12 +443,17 @@ export class InfoMentorClient {
         this.active = undefined;
 
         if (parsed.importFile)
-          await importSession(parsed.importFile, this.options, controller.signal);
+          await importSession(
+            parsed.importFile,
+            { ...this.options, allowAccountChange: parsed.allowAccountChange ?? false },
+            controller.signal,
+          );
         else {
           const options = {
             ...this.options,
             signal: controller.signal,
             localForm: parsed.localForm ?? false,
+            allowAccountChange: parsed.allowAccountChange ?? false,
             timeoutMs: parsed.timeoutSeconds * 1000,
             onProgress: (stage: 'waiting' | 'saved', loginUrl?: string): void => {
               if (stage === 'saved') return;
@@ -456,10 +461,11 @@ export class InfoMentorClient {
                 operation,
                 state: 'waiting',
                 message:
-                  'Open the private local sign-in form. Never send passwords or session cookies to the agent.',
+                  'Open the private local sign-in form that was opened in a browser on this computer. Never send passwords or session cookies to the agent.',
               };
 
-              if (loginUrl) this.setupStatus.loginUrl = loginUrl;
+              // The URL goes to the host's log only; through MCP it would reach the model.
+              if (loginUrl) console.error('Open the private sign-in form: ' + loginUrl);
             },
           };
 
@@ -514,9 +520,12 @@ export class InfoMentorClient {
       await this.cancelSetup();
       await this.pending;
       this.active = undefined;
-      await withSessionLock(sessionPath(this.options.sessionFile), undefined, () =>
-        rm(sessionPath(this.options.sessionFile), { force: true }),
-      );
+      const file = sessionPath(this.options.sessionFile);
+      await withSessionLock(file, undefined, async () => {
+        await rm(file, { force: true });
+        // Snapshots hold fingerprints and identifiers of the account; they leave with the session.
+        await rm(file + '.collections', { recursive: true, force: true });
+      });
       this.setupStatus = {
         state: 'idle',
         message: 'Local session removed. Call infomentor_login to sign in again.',

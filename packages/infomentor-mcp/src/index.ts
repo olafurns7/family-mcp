@@ -1,12 +1,14 @@
 export { createServer } from './server.js';
 
+export type { ServerOptions } from './server.js';
+
 export { InfoMentorClient, loginRequestSchema, setupStatusSchema } from './client.js';
 
 export type { LoginRequest, SetupStatus } from './client.js';
 
 export { login, importSession } from './login.js';
 
-export type { LoginOptions } from './login.js';
+export type { ImportOptions, LoginOptions } from './login.js';
 
 export { collectRequestSchema, collectionSchema } from './collection.js';
 
