@@ -31,3 +31,6 @@ test-results/
 
 # os / editor
 .DS_Store
+
+# agent worktrees
+.worktrees/
