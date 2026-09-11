@@ -467,7 +467,7 @@ test('unsafe session files, malformed pages, stalled cursors, and wrong events f
   }
 });
 
-test('failed import retains a rotated candidate without overwriting the existing session', async () => {
+test('failed import retains a rotated candidate without overwriting the existing session, and a later verified import removes it', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-import-'));
   const path = join(directory, 'session.json');
   try {
@@ -509,6 +509,33 @@ test('failed import retains a rotated candidate without overwriting the existing
     expect((await stat(candidate)).mode & 0o777).toBe(0o600);
     expect(await (await loadSession(candidate)).getCookieString(ORIGIN)).toContain(
       'refreshToken=recovery-token',
+    );
+    // A later verified import supersedes the retained candidate.
+    await writeFile(
+      preload,
+      `globalThis.fetch = async url => {
+      if (url.endsWith('/oauth/token')) {
+        const response = Response.json({ access_token: 'access' });
+        response.headers.append('Set-Cookie', 'id_token=access; Path=/; Max-Age=600');
+        response.headers.append('Set-Cookie', 'refreshToken=verified-token; Path=/; Max-Age=3600');
+        return response;
+      }
+      return Response.json({ data: { me: { id: 'parent', displayName: 'Parent' } } });
+    };`,
+    );
+    const verified = Bun.spawn(
+      [process.execPath, '--preload', preload, 'src/cli.ts', 'auth', 'import', source],
+      {
+        env: { ...process.env, ABLER_SESSION_FILE: path },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    );
+    expect(await verified.exited).toBe(0);
+    expect(await new Response(verified.stdout).text()).toContain('saved and verified');
+    expect((await readdir(directory)).filter((name) => name.endsWith('.pending'))).toHaveLength(0);
+    expect(await (await loadSession(path)).getCookieString(ORIGIN)).toContain(
+      'refreshToken=verified-token',
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

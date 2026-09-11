@@ -18,8 +18,8 @@
         "abler-mcp": "dist/cli.js",
       },
       "dependencies": {
+        "@family-mcp/session-store": "workspace:*",
         "@modelcontextprotocol/server": "^2.0.0",
-        "proper-lockfile": "^4.1.2",
         "tough-cookie": "^6.0.0",
         "zod": "^4.0.0",
       },
@@ -29,7 +29,6 @@
         "@family-mcp/tsconfig": "workspace:*",
         "@modelcontextprotocol/client": "^2.0.0",
         "@types/bun": "^1.2.19",
-        "@types/proper-lockfile": "^4.1.4",
       },
     },
     "packages/infomentor-mcp": {
@@ -39,6 +38,7 @@
         "infomentor-mcp": "dist/cli.js",
       },
       "dependencies": {
+        "@family-mcp/session-store": "workspace:*",
         "@modelcontextprotocol/server": "^2.0.0",
         "htmlparser2": "^12.0.0",
         "tough-cookie": "^6.0.2",
@@ -50,6 +50,15 @@
         "@family-mcp/tsconfig": "workspace:*",
         "@modelcontextprotocol/client": "^2.0.0",
         "@types/node": "^22.20.2",
+      },
+    },
+    "packages/session-store": {
+      "name": "@family-mcp/session-store",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@family-mcp/oxlint-anti-slop": "workspace:*",
+        "@family-mcp/tsconfig": "workspace:*",
+        "@types/bun": "^1.2.19",
       },
     },
     "tooling/oxlint-anti-slop": {
@@ -80,6 +89,8 @@
     "@family-mcp/oxlint-anti-slop": ["@family-mcp/oxlint-anti-slop@workspace:tooling/oxlint-anti-slop"],
 
     "@family-mcp/release-tooling": ["@family-mcp/release-tooling@workspace:tooling/release"],
+
+    "@family-mcp/session-store": ["@family-mcp/session-store@workspace:packages/session-store"],
 
     "@family-mcp/tsconfig": ["@family-mcp/tsconfig@workspace:tooling/tsconfig"],
 
@@ -195,10 +206,6 @@
 
     "@types/node": ["@types/node@22.20.2", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-xlvWf4Vs9n1PEVYwP1n4vvG07M6y8WgvJ2t0vbrWTmijsIHp1cS+uJ2kMIRdY3nHZK0nCYKrPeD171+SzF4/zw=="],
 
-    "@types/proper-lockfile": ["@types/proper-lockfile@4.1.4", "", { "dependencies": { "@types/retry": "*" } }, "sha512-uo2ABllncSqg9F1D4nugVl9v93RmjxF6LJzQLMLDdPaXCUIDPeOJ21Gbqi43xNKzBi/WQ0Q0dICqufzQbMjipQ=="],
-
-    "@types/retry": ["@types/retry@0.12.5", "", {}, "sha512-3xSjTp3v03X/lSQLkczaN9UIEwJMoMCA1+Nb5HfbJEQWogdeQIyVtTvxPXDQjZ5zws8rFQfVfRdz03ARihPJgw=="],
-
     "@typescript/typescript-aix-ppc64": ["@typescript/typescript-aix-ppc64@7.0.2", "", { "os": "aix", "cpu": "ppc64" }, "sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ=="],
 
     "@typescript/typescript-darwin-arm64": ["@typescript/typescript-darwin-arm64@7.0.2", "", { "os": "darwin", "cpu": "arm64" }, "sha512-gowzar9MwS/aRWp6f3a4KUqzRjAZjOsmGNCM6LcTgXum+dBfgsBVMN+AgvOCCbguXyick6LJhpBszxMebJ8syA=="],
@@ -259,8 +266,6 @@
 
     "eventsource-parser": ["eventsource-parser@3.1.1", "", {}, "sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ=="],
 
-    "graceful-fs": ["graceful-fs@4.2.11", "", {}, "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="],
-
     "htmlparser2": ["htmlparser2@12.0.0", "", { "dependencies": { "domelementtype": "^3.0.0", "domhandler": "^6.0.0", "domutils": "^4.0.2", "entities": "^8.0.0" } }, "sha512-Tz7u1i95/g2x2jz81+x0FBVhBhY5aRTvD3tXXdFaljuNdzDLJ8UGNRrTcj2cgQvAg3iW/h77Fz15nLW0L0CrZw=="],
 
     "infomentor-mcp": ["infomentor-mcp@workspace:packages/infomentor-mcp"],
@@ -279,15 +284,9 @@
 
     "pkce-challenge": ["pkce-challenge@5.0.1", "", {}, "sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ=="],
 
-    "proper-lockfile": ["proper-lockfile@4.1.2", "", { "dependencies": { "graceful-fs": "^4.2.4", "retry": "^0.12.0", "signal-exit": "^3.0.2" } }, "sha512-TjNPblN4BwAWMXU8s9AEz4JmQxnD1NNL7bNOY/AKUzyamc379FWASUhc/K1pL2noVb+XmZKLL68cjzLsiOAMaA=="],
-
-    "retry": ["retry@0.12.0", "", {}, "sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow=="],
-
     "shebang-command": ["shebang-command@2.0.0", "", { "dependencies": { "shebang-regex": "^3.0.0" } }, "sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA=="],
 
     "shebang-regex": ["shebang-regex@3.0.0", "", {}, "sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A=="],
-
-    "signal-exit": ["signal-exit@3.0.7", "", {}, "sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ=="],
 
     "tinypool": ["tinypool@2.1.2", "", {}, "sha512-9YodfrxS9g9IbFr/KOjE5bAeJ0p61n3bW6mqvy0jtoeKd1kTW1Cxm0oulm6KX2lyM9Gl6WIe8nEbY7LWv5ZJww=="],
 

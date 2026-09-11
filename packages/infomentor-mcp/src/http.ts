@@ -51,9 +51,19 @@ export function parseForms(html: string): Form[] {
 
 /** Manual redirects keep cookie handling and destination validation on every hop. */
 export class InfoMentorHttp {
-  private cooldownUntil = 0;
+  private cooldownUntil: number;
   parent: z.infer<typeof parentSchema> | undefined;
-  constructor(readonly jar = new CookieJar()) {}
+  constructor(
+    readonly jar = new CookieJar(),
+    cooldownUntil = 0,
+  ) {
+    this.cooldownUntil = cooldownUntil;
+  }
+
+  /** Epoch milliseconds until which InfoMentor asked this session to pause; 0 when it did not. */
+  get rateLimitedUntil(): number {
+    return this.cooldownUntil;
+  }
 
   async request(
     value: string,

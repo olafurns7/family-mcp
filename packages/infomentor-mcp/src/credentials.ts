@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { open } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { SessionStoreError, readPrivateFile } from '@family-mcp/session-store';
 import { z } from 'zod';
 import { InfoMentorError, throwIfAborted } from './session.js';
 
@@ -11,36 +11,35 @@ export const credentialsSchema = z
 
 export type Credentials = z.infer<typeof credentialsSchema>;
 
+/** The file must be a regular, owner-only file owned by this user; symlinked secret mounts are refused. */
 export async function readCredentials(file: string, signal?: AbortSignal): Promise<Credentials> {
   throwIfAborted(signal);
+  let text: string;
 
   try {
-    const handle = await open(file, 'r');
+    text = await readPrivateFile(file, { maxBytes: 16_384 });
+  } catch (error) {
+    throwIfAborted(signal);
 
-    try {
-      const info = await handle.stat();
-
-      if (
-        !info.isFile() ||
-        info.size > 16_384 ||
-        (process.platform !== 'win32' && (info.mode & 0o077) !== 0)
-      ) {
-        throw new InfoMentorError(
-          'INVALID_CONFIGURATION',
-          'Use a private credentials JSON file (chmod 600) containing username and password.',
-        );
-      }
-
-      const value = credentialsSchema.parse(
-        JSON.parse(await handle.readFile({ encoding: 'utf8', signal })),
+    if (
+      error instanceof SessionStoreError &&
+      (error.code === 'UNSAFE_FILE' || error.code === 'TOO_LARGE')
+    )
+      throw new InfoMentorError(
+        'INVALID_CONFIGURATION',
+        'Use a private credentials JSON file (a regular file owned by you, chmod 600, not a symlink) containing username and password.',
       );
+    throw new InfoMentorError(
+      'INVALID_CONFIGURATION',
+      'Cannot read valid credentials. Supply a private JSON file containing username and password.',
+    );
+  }
 
-      throwIfAborted(signal);
+  try {
+    const value = credentialsSchema.parse(JSON.parse(text));
+    throwIfAborted(signal);
 
-      return value;
-    } finally {
-      await handle.close();
-    }
+    return value;
   } catch (error) {
     throwIfAborted(signal);
 

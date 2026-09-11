@@ -1,16 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  chmod,
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  stat,
-  utimes,
-  writeFile,
-} from 'node:fs/promises';
+import { readdir, rm, stat, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
+import {
+  ensurePrivateDir,
+  readPrivateFile,
+  sweepTempInDirectory,
+  writePrivateFile,
+} from '@family-mcp/session-store';
 import { z } from 'zod';
 import {
   InfoMentorError,
@@ -204,7 +200,10 @@ async function readSnapshot(directory: string, cursor: string, owner: string): P
 
     if (!info.isFile() || info.size > MAX_BYTES || Date.now() - info.mtimeMs > RETENTION_MS)
       cursorError();
-    const snapshot = snapshotSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+
+    const snapshot = snapshotSchema.parse(
+      JSON.parse(await readPrivateFile(path, { maxBytes: MAX_BYTES })),
+    );
 
     if (snapshot.accountHash !== owner) cursorError();
     const keys = new Set(snapshot.fingerprints.map(fingerprintKey));
@@ -230,21 +229,13 @@ async function saveSnapshot(
       'UNEXPECTED_PAGE',
       'The collection snapshot exceeds the supported size. No cursor was advanced.',
     );
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(directory, 0o700);
-  const path = join(directory, cursor + '.json');
-  const temporary = path + '.' + randomUUID() + '.tmp';
-
-  try {
-    await writeFile(temporary, contents, { mode: 0o600, flag: 'wx', signal });
-    throwIfAborted(signal);
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await ensurePrivateDir(directory, { enforceMode: true });
+  await writePrivateFile(join(directory, cursor + '.json'), contents, { fsync: true, signal });
 }
 
 async function pruneSnapshots(directory: string): Promise<void> {
+  await sweepTempInDirectory(directory);
+
   for (const name of await readdir(directory)) {
     if (!/^[a-f0-9-]{36}\.json$/.test(name)) continue;
     const path = join(directory, name);

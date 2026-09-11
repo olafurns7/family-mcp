@@ -13,6 +13,7 @@
       "outputs": ["dist/**"]
     },
     "test": {
+      "dependsOn": ["^build"],
       "outputs": []
     },
     "infomentor-mcp#test": {
@@ -20,9 +21,11 @@
       "outputs": [".test-build/**"]
     },
     "lint": {
+      "dependsOn": ["^build"],
       "outputs": []
     },
     "typecheck": {
+      "dependsOn": ["^build"],
       "outputs": []
     },
     "format:check": {

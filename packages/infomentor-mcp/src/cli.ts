@@ -6,8 +6,8 @@ import { z } from 'zod';
 import { importSession, login } from './login.js';
 import { InfoMentorClient } from './client.js';
 import { createServer, packageInfo } from './server.js';
+import type { ServerOptions } from './server.js';
 import { InfoMentorError, sessionPath } from './session.js';
-import type { SessionOptions } from './session.js';
 
 const help = [
   'Usage: infomentor-mcp [command] [options]',
@@ -19,11 +19,16 @@ const help = [
   '  serve              Start the stdio MCP server (default)',
   '',
   'Options:',
-  '  --session FILE     Session file (default: ~/.infomentor-mcp/session.json)',
+  '  --session FILE     Session file (default: ~/.config/infomentor-mcp/session.json, or',
+  '                     ~/.infomentor-mcp/session.json when that legacy file exists)',
   '  --credentials FILE Private JSON file with username/password (login and automatic renewal)',
   '  --local-form       login: opt into a browser form on this same computer',
   '  --import FILE      login: validate and import a session on a headless machine',
   '  --timeout SECONDS  login: maximum wait (default: 300)',
+  '  --allow-account-change',
+  '                     login: replace a saved session that belongs to another account',
+  '  --allow-setup-tools',
+  '                     serve: also register the login, setup-status, cancel, and logout tools',
   '  -h, --help         Show help',
   '  -v, --version      Show version',
   '',
@@ -43,6 +48,8 @@ async function main(): Promise<void> {
         'local-form': { type: 'boolean' },
         import: { type: 'string' },
         timeout: { type: 'string' },
+        'allow-account-change': { type: 'boolean' },
+        'allow-setup-tools': { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
       },
@@ -75,18 +82,26 @@ async function main(): Promise<void> {
     );
   const command = positionals[0] ?? 'serve';
 
-  if (command !== 'login' && (values.import || values.timeout || values['local-form'])) {
+  if (
+    command !== 'login' &&
+    (values.import || values.timeout || values['local-form'] || values['allow-account-change'])
+  ) {
     throw new InfoMentorError('INVALID_CONFIGURATION', 'Login options only apply to login.');
   }
+
+  if (command !== 'serve' && values['allow-setup-tools'])
+    throw new InfoMentorError('INVALID_CONFIGURATION', 'Server options only apply to serve.');
 
   if (values.import && (values.credentials || values['local-form']))
     throw new InfoMentorError('INVALID_CONFIGURATION', 'Choose session import or login, not both.');
 
-  const options: SessionOptions = {};
+  const options: ServerOptions = {};
 
   if (values.session) options.sessionFile = resolve(values.session);
 
   if (values.credentials) options.credentialsFile = resolve(values.credentials);
+
+  if (values['allow-setup-tools']) options.allowSetupTools = true;
 
   if (command === 'serve') {
     const server = createServer(options);
@@ -115,7 +130,11 @@ async function main(): Promise<void> {
     switch (command) {
       case 'login': {
         if (values.import) {
-          await importSession(values.import, options, controller.signal);
+          await importSession(
+            values.import,
+            { ...options, allowAccountChange: values['allow-account-change'] ?? false },
+            controller.signal,
+          );
           console.error('Session imported and verified.');
 
           return;
@@ -138,6 +157,7 @@ async function main(): Promise<void> {
           ...options,
           signal: controller.signal,
           localForm: values['local-form'] ?? false,
+          allowAccountChange: values['allow-account-change'] ?? false,
           timeoutMs: timeout.data * 1000,
           onProgress(stage: 'waiting' | 'saved', url?: string): void {
             console.error(

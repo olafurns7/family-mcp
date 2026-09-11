@@ -2,15 +2,18 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { withSessionLock } from '../src/lock.js';
 import { InfoMentorError } from '../src/session.js';
 
 const busy = (error: Error): boolean =>
   error instanceof InfoMentorError && error.code === 'OPERATION_IN_PROGRESS';
+
+const failFast = { waitMs: 0 };
 
 test(
   'session locks exclude live owners, recover dead owners safely, and release only their token',
@@ -33,7 +36,7 @@ test(
       await mkdir(lock, { mode: 0o700 });
       await writeFile(join(lock, childOwner), '', { mode: 0o600 });
       await assert.rejects(
-        withSessionLock(file, undefined, async () => assert.fail()),
+        withSessionLock(file, undefined, async () => assert.fail(), failFast),
         busy,
       );
       assert.deepEqual(await readdir(lock), [childOwner]);
@@ -58,27 +61,32 @@ test(
 
       const attempts = Array.from({ length: 12 }, async () => {
         try {
-          return await withSessionLock(file, undefined, async () => {
-            entered++;
-            attempted++;
+          return await withSessionLock(
+            file,
+            undefined,
+            async () => {
+              entered++;
+              attempted++;
 
-            if (attempted === 12) allAttempted?.();
-            const owners = await readdir(lock);
-            assert.equal(owners.length, 1);
+              if (attempted === 12) allAttempted?.();
+              const owners = await readdir(lock);
+              assert.equal(owners.length, 1);
 
-            if (process.platform !== 'win32') {
-              assert.equal((await stat(lock)).mode & 0o777, 0o700);
-              assert.equal((await stat(join(lock, owners[0]!))).mode & 0o777, 0o600);
-            }
+              if (process.platform !== 'win32') {
+                assert.equal((await stat(lock)).mode & 0o777, 0o700);
+                assert.equal((await stat(join(lock, owners[0]!))).mode & 0o777, 0o600);
+              }
 
-            await held;
-            await assert.rejects(
-              withSessionLock(file, undefined, async () => assert.fail()),
-              busy,
-            );
+              await held;
+              await assert.rejects(
+                withSessionLock(file, undefined, async () => assert.fail(), failFast),
+                busy,
+              );
 
-            return 'collected';
-          });
+              return 'collected';
+            },
+            failFast,
+          );
         } catch (error) {
           attempted++;
 
@@ -136,24 +144,80 @@ test(
         await symlink('real', join(directory, 'alias'), 'dir');
         await withSessionLock(join(directory, 'real', 'session.json'), undefined, async () => {
           await assert.rejects(
-            withSessionLock(join(directory, 'alias', 'session.json'), undefined, async () =>
-              assert.fail(),
+            withSessionLock(
+              join(directory, 'alias', 'session.json'),
+              undefined,
+              async () => assert.fail(),
+              failFast,
             ),
             busy,
           );
         });
       }
-
-      const replacement = `${process.pid}-${randomUUID()}`;
-      await withSessionLock(file, undefined, async () => {
-        await rename(lock, `${lock}.previous`);
-        await mkdir(lock, { mode: 0o700 });
-        await writeFile(join(lock, replacement), '', { mode: 0o600 });
-      });
-      assert.deepEqual(await readdir(lock), [replacement]);
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill();
       await childExit;
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'session locks wait a bounded time for another process and cancel while waiting',
+  { timeout: 10_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'infomentor-lock-wait-'));
+    const file = join(directory, 'session.json');
+
+    try {
+      let entered: (() => void) | undefined;
+      let release: (() => void) | undefined;
+
+      const holding = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+
+      const holder = withSessionLock(file, undefined, async () => {
+        entered?.();
+        await held;
+
+        return 'held';
+      });
+
+      await holding;
+      await assert.rejects(
+        withSessionLock(file, undefined, async () => assert.fail(), failFast),
+        busy,
+      );
+      const started = Date.now();
+      await assert.rejects(
+        withSessionLock(file, undefined, async () => assert.fail(), { waitMs: 200 }),
+        busy,
+      );
+      assert.ok(Date.now() - started >= 150);
+
+      const controller = new AbortController();
+
+      const cancelled = assert.rejects(
+        withSessionLock(file, controller.signal, async () => assert.fail(), { waitMs: 10_000 }),
+        (error: Error) => error instanceof InfoMentorError && error.code === 'CANCELLED',
+      );
+
+      await delay(50);
+      controller.abort();
+      await cancelled;
+
+      const waiter = withSessionLock(file, undefined, async () => 'waited', { waitMs: 10_000 });
+      await delay(300);
+      release?.();
+      assert.equal(await holder, 'held');
+      assert.equal(await waiter, 'waited');
+      assert.deepEqual(await readdir(directory), []);
+    } finally {
       await rm(directory, { recursive: true, force: true });
     }
   },

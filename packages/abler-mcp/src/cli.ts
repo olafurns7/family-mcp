@@ -9,6 +9,7 @@ import { AblerClient } from './api.js';
 import {
   captureCookies,
   importCookies,
+  prunePendingCandidates,
   removeSession,
   saveSession,
   sessionPath,
@@ -82,6 +83,8 @@ async function main() {
           `Session verification failed. The previous file was kept; a possibly rotated candidate is retained at ${pending}. Retry with ABLER_SESSION_FILE pointing there and auth status, or capture a fresh session. Treat both files as credentials.`,
         );
       }
+      // The verified session supersedes candidates retained by earlier failed imports.
+      await prunePendingCandidates(path);
     });
     console.log(`Abler session saved and verified: ${path}`);
   } else if (action === 'status' && !argument) {
