@@ -11,13 +11,14 @@ Commits on the branch (each ends with the session trailer):
 | `bbd8e70` | Add the shared `@family-mcp/session-store` package (plus `turbo.json` task edges and `bun.lock`) |
 | `7b08962` | Adopt the session store in abler-mcp and drop proper-lockfile |
 | `b488480` | Adopt the session store in infomentor-mcp and gate setup tools |
-| (this report) | Document phase 2 |
+| `438eaec` | Document phase 2: session store, adoption, and security fixes |
+| (this commit) | Drop the last loginUrl mentions from the server text and refresh this report |
 
 Not done, as instructed: no merge, no push, no live logins, no version bumps. Files owned by
 terra (`scripts/`, `install.sh`, `.github/`, the SDK import lines and `extra.signal` sites in
 `info/src/server.ts`, the stdio wiring in `info/src/cli.ts`) were not touched beyond the
-localised edits the brief allowed; see §4 for the two places where terra's files will need a
-follow-up.
+localised edits the brief allowed; see §4 for the places where terra's files will need a
+follow-up and the conflicts to expect.
 
 ---
 
@@ -140,7 +141,11 @@ merge.
   `allowAccountChange: true`) is given. Missing, unreadable, legacy-v1 and account-less files are
   replaceable, so "run login again to create a version-2 session" keeps working.
 - **`loginUrl` removed from `infomentor_setup_status`** (`setupStatusSchema`); the MCP path prints
-  the URL on stderr and opens the browser locally, the CLI prints it as before.
+  the URL on stderr and opens the browser locally, the CLI prints it as before. The two server
+  strings that still promised the field (the `instructions` sentence "Show an explicitly requested
+  loginUrl to the user …" and the `infomentor_setup_status` description) now say the URL is
+  printed on the server's stderr and never returned; `grep loginUrl` over `info/src` matches only
+  the local-form module and the CLI that print it.
 
 ---
 
@@ -198,10 +203,12 @@ merge.
 
 ## 4. Consequences for terra's files (not changed here)
 
-1. **Tool count in the smoke scripts.** `info/scripts/package-smoke.mjs:79` and
-   `info/scripts/test-installer.mjs:148` assert `tools.length === 11`. Both spawn `serve` without
-   `--allow-setup-tools`, so the server now lists **7** tools. Change the expectation to 7 (and
-   optionally add a second handshake with the flag expecting 11).
+1. **Smoke scripts spawn the default server.** `info/scripts/package-smoke.mjs:79-83` asserts
+   `tools.length === 11` and then calls `infomentor_setup_status`; a default `serve` now lists
+   **7** tools and does not register that tool, so the script fails on the count *and* on the
+   call. Add `'--allow-setup-tools'` to the spawned `args` in that check: both the 11 and the
+   call stay valid. `info/scripts/test-installer.mjs:148` only asserts the count and then calls
+   `infomentor_session_status`, so it needs either `7` or the same flag.
 2. **npm tarballs.** Verified locally: `npm pack` keeps `"@family-mcp/session-store":
    "workspace:*"` verbatim in the packed `package.json`, and `bun pm pack` rewrites it to
    `"0.0.0"`. Neither resolves from a registry, so the CI `check` job's `npm install --global
@@ -210,6 +217,13 @@ merge.
    binaries (`build:native`, `build:binary`) bundle it and are unaffected; the store has no
    third-party dependencies, so the generated notices do not change.
 3. `.oxlintrc.json` gained no overrides; the store lints under every rule.
+4. **Expected merge conflicts in files terra rewrites.** `info/src/cli.ts:9` (the
+   `import type { ServerOptions }` line that replaced the `SessionOptions` type import) sits in
+   the same import block as the stdio import terra replaces (line 4). `info/src/server.ts` has,
+   besides the `return server` guard before `infomentor_login`, one-line string edits inside the
+   `instructions` block and in the `infomentor_select_child` and `infomentor_setup_status`
+   descriptions. Expect trivial import-block and string conflicts there; both sides should be
+   kept.
 
 ---
 
@@ -230,6 +244,11 @@ merge.
   (`serveStdio` handle, `onCompromised`) were out of scope; `onCompromised` is moot without
   proper-lockfile.
 - `infomentor_select_child` and `infomentor_collect_updates` stay reachable by design.
+- Timing-sensitive tests: the "live holder keeps refreshing" branch of
+  `store/test/lock.test.ts` (`staleMs: 600`, refresh every 100 ms, a `waitMs: 0` contender must
+  still see it busy) and the 200 ms bounded-wait assertions in `info/test/lock.test.ts` pass
+  locally under both Bun versions but have not run on a hosted runner; a loaded CI machine could
+  make them flaky.
 
 ---
 
@@ -243,46 +262,42 @@ then reports no changes) and `git diff --check` clean.
 bunx turbo run build typecheck lint format:check test --force
 ```
 
-Exact summary of the run with the global Bun 1.2.19 (the run terra's phase 1 report used):
+Verbatim tail of the log from the final tree with the global Bun 1.2.19 (the last 21 lines; the
+earlier lines are the interleaved echo and per-test output of the 16 tasks, saved in full during
+the run):
 
 ```text
-• turbo 2.10.12
-
-   • Packages in scope: @family-mcp/oxlint-anti-slop, @family-mcp/session-store, @family-mcp/tsconfig, abler-mcp, infomentor-mcp
-   • Running build, typecheck, lint, format:check, test in 5 packages
-   • Remote caching disabled (in configuration), using shared worktree cache
-
-//:format:root:check: All matched files use the correct format.
-//:format:root:check: Finished in 4ms on 8 files using 14 threads.
-@family-mcp/session-store:lint: Found 0 warnings and 0 errors.
-@family-mcp/session-store:lint: Finished in 336ms on 9 files with 218 rules using 14 threads.
-@family-mcp/session-store:format:check: All matched files use the correct format.
-@family-mcp/session-store:format:check: Finished in 247ms on 13 files using 14 threads.
-abler-mcp:lint: Found 0 warnings and 0 errors.
-abler-mcp:lint: Finished in 451ms on 7 files with 218 rules using 14 threads.
-abler-mcp:format:check: All matched files use the correct format.
-abler-mcp:format:check: Finished in 229ms on 14 files using 14 threads.
-infomentor-mcp:format:check: All matched files use the correct format.
-infomentor-mcp:format:check: Finished in 270ms on 25 files using 14 threads.
-infomentor-mcp:lint: Found 0 warnings and 0 errors.
-infomentor-mcp:lint: Finished in 673ms on 16 files with 218 rules using 14 threads.
-infomentor-mcp:test: ℹ tests 19
-infomentor-mcp:test: ℹ pass 19
-infomentor-mcp:test: ℹ fail 0
-infomentor-mcp:test: ℹ duration_ms 729.944416
+abler-mcp:test:  8 pass
+abler-mcp:test:  0 fail
 abler-mcp:test:  85 expect() calls
-abler-mcp:test: Ran 8 tests across 2 files. [2.05s]
+abler-mcp:test: Ran 8 tests across 2 files. [2.12s]
+@family-mcp/session-store:test: (pass) waiters poll for a busy lock up to waitMs and abandoned owners expire by age [2147.57ms]
+@family-mcp/session-store:test:
+@family-mcp/session-store:test: test/files.test.ts:
+@family-mcp/session-store:test: (pass) private files are written atomically with owner-only permissions and read back [7.88ms]
+@family-mcp/session-store:test: (pass) an abort observed at the commit point keeps the previous file and leaves no temporary [2.04ms]
+@family-mcp/session-store:test: (pass) sweeping removes only old temporaries that belong to the target [3.51ms]
+@family-mcp/session-store:test: (pass) private directories are created with 0700 and tightened only on request [1.04ms]
+@family-mcp/session-store:test: (pass) the default session path follows XDG and keeps an existing legacy file [1.25ms]
+@family-mcp/session-store:test:
+@family-mcp/session-store:test:  8 pass
+@family-mcp/session-store:test:  0 fail
 @family-mcp/session-store:test:  38 expect() calls
-@family-mcp/session-store:test: Ran 8 tests across 3 files. [3.47s]
+@family-mcp/session-store:test: Ran 8 tests across 3 files. [3.23s]
 
  Tasks:    16 successful, 16 total
 Cached:    0 cached, 16 total
-  Time:    3.502s
+  Time:    3.256s
 ```
 
-The same command with Bun 1.4.2 on `PATH` (as CI runs it) also finished `Tasks: 16 successful,
-16 total`, `Cached: 0 cached, 16 total`, `Time: 3.214s`, with the same test counts under
-`bun test v1.4.2`.
+Per-package tallies from the same log: infomentor `ℹ tests 19` / `ℹ pass 19` / `ℹ fail 0`
+(`duration_ms 746.14975`), abler `8 pass` / `0 fail` / `85 expect() calls`, session-store
+`8 pass` / `0 fail` / `38 expect() calls`; `oxlint` reported `Found 0 warnings and 0 errors` and
+`oxfmt` `All matched files use the correct format` for every package and the root.
+
+The same command on the same tree with Bun 1.4.2 on `PATH` (as CI runs it) finished
+`Tasks: 16 successful, 16 total`, `Cached: 0 cached, 16 total`, `Time: 3.443s`, with identical
+test tallies under `bun test v1.4.2`.
 
 Test counts: infomentor 19 (the original 15 including 7 subtests, plus 4 new), abler 8 (one
 extended), session-store 8.
