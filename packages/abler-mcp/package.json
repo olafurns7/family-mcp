@@ -48,8 +48,8 @@
     "format:check": "oxfmt -c ../../.oxfmtrc.json --check ."
   },
   "dependencies": {
+    "@family-mcp/session-store": "workspace:*",
     "@modelcontextprotocol/server": "^2.0.0",
-    "proper-lockfile": "^4.1.2",
     "tough-cookie": "^6.0.0",
     "zod": "^4.0.0"
   },
@@ -57,8 +57,7 @@
     "@family-mcp/oxlint-anti-slop": "workspace:*",
     "@family-mcp/tsconfig": "workspace:*",
     "@modelcontextprotocol/client": "^2.0.0",
-    "@types/bun": "^1.2.19",
-    "@types/proper-lockfile": "^4.1.4"
+    "@types/bun": "^1.2.19"
   },
   "engines": {
     "node": ">=22"

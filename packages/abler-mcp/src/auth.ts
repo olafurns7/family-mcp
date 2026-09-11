@@ -1,47 +1,57 @@
-import { randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
-import { mkdir, open, realpath, rename, rm } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { readdir, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
-import lockfile from 'proper-lockfile';
+import {
+  SessionStoreError,
+  defaultSessionPath,
+  readPrivateFile,
+  sweepTemp,
+  withFileLock,
+  writePrivateFile,
+} from '@family-mcp/session-store';
 import { Cookie, CookieJar } from 'tough-cookie';
 import * as z from 'zod/v4';
 
 export const ORIGIN = 'https://www.abler.io';
 export const AUTH_COOKIES = new Set(['id_token', 'refreshToken']);
+/** Two cookies of at most 32 KiB each fit comfortably; anything larger is not a session file. */
+export const SESSION_MAX_BYTES = 262_144;
 export const sessionPath = () =>
-  resolve(
-    process.env.ABLER_SESSION_FILE ||
-      join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'abler-mcp', 'session.json'),
-  );
+  resolve(process.env.ABLER_SESSION_FILE || defaultSessionPath('abler-mcp'));
 
 /** Hold across the complete read/refresh/write operation, including import and logout. */
 export async function withSessionLock<T>(path: string, work: () => Promise<T>): Promise<T> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const canonical = join(await realpath(dirname(path)), basename(path));
-  let release: () => Promise<void>;
   try {
-    release = await lockfile.lock(canonical, {
-      realpath: false,
-      stale: 120000,
-      update: 10000,
-      retries: { retries: 30, factor: 1, minTimeout: 1000, maxTimeout: 1000 },
+    return await withFileLock(path, {}, async () => {
+      // Temporaries orphaned by a hard crash hold credentials; the lock holder removes old ones.
+      await sweepTemp(path);
+      return work();
     });
-  } catch {
+  } catch (error) {
+    if (!(error instanceof SessionStoreError)) throw error;
+    if (error.code === 'LOCK_LOST') {
+      throw new Error('Another process took over the Abler session lock. Retry the request.');
+    }
     throw new Error(
       'Cannot lock the Abler session. Another request may be busy; retry shortly and check directory permissions.',
     );
-  }
-  try {
-    return await work();
-  } finally {
-    await release();
   }
 }
 
 export async function removeSession(path: string): Promise<void> {
   await withSessionLock(path, () => rm(path, { force: true }));
+}
+
+/** A verified import supersedes the candidates that earlier failed imports retained. */
+export async function prunePendingCandidates(path: string): Promise<number> {
+  const prefix = `${basename(path)}.`;
+  let removed = 0;
+  for (const name of await readdir(dirname(path))) {
+    if (!name.startsWith(prefix) || !name.endsWith('.pending')) continue;
+    await rm(join(dirname(path), name), { force: true });
+    removed++;
+  }
+  return removed;
 }
 
 const browserCookie = z.object({
@@ -103,24 +113,15 @@ export async function importCookies(input: unknown): Promise<CookieJar> {
 export async function loadSession(path: string): Promise<CookieJar> {
   let raw: string;
   try {
-    const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
-    try {
-      const info = await handle.stat();
-      if (!info.isFile() || (process.platform !== 'win32' && info.mode & 0o077)) {
-        throw new Error('Unsafe permissions');
-      }
-      raw = await handle.readFile('utf8');
-    } finally {
-      await handle.close();
-    }
+    raw = await readPrivateFile(path, { maxBytes: SESSION_MAX_BYTES });
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+    if (error instanceof SessionStoreError && error.code === 'NOT_FOUND') {
       throw new Error(
         'No saved Abler session. Run abler-mcp auth capture or abler-mcp auth import first.',
       );
     }
     throw new Error(
-      'Cannot read the Abler session file. Use a regular file with owner-only permissions (chmod 600 on Unix), not a symlink.',
+      'Cannot read the Abler session file. Use a regular file that you own with owner-only permissions (chmod 600 on Unix), not a symlink.',
     );
   }
   try {
@@ -152,19 +153,11 @@ export async function saveSession(path: string, jar: CookieJar): Promise<void> {
         secure: true,
       };
     });
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    const handle = await open(temporary, 'wx', 0o600);
-    try {
-      await handle.writeFile(JSON.stringify({ version: 1, cookies }) + '\n');
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
+    await writePrivateFile(path, JSON.stringify({ version: 1, cookies }) + '\n');
+  } catch (error) {
+    if (!(error instanceof SessionStoreError)) throw error;
+    throw new Error('Cannot save the Abler session file. Check the directory permissions.');
   }
 }
 
