@@ -42,10 +42,10 @@
     "start": "bun src/cli.ts",
     "prepack": "bun run check && bun test && bun run build",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --deny-warnings --report-unused-disable-directives-severity error .",
+    "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings --report-unused-disable-directives-severity error .",
     "lint:fix": "bun run lint --fix",
-    "format": "oxfmt --write .",
-    "format:check": "oxfmt --check ."
+    "format": "oxfmt -c ../../.oxfmtrc.json --write .",
+    "format:check": "oxfmt -c ../../.oxfmtrc.json --check ."
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
@@ -54,13 +54,11 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@family-mcp/oxlint-anti-slop": "workspace:*",
+    "@family-mcp/tsconfig": "workspace:*",
     "@modelcontextprotocol/client": "^2.0.0",
     "@types/bun": "^1.2.19",
-    "@types/proper-lockfile": "^4.1.4",
-    "oxfmt": "0.67.0",
-    "oxlint": "1.82.0",
-    "oxlint-tsgolint": "7.0.2001",
-    "typescript": "7.0.2"
+    "@types/proper-lockfile": "^4.1.4"
   },
   "engines": {
     "node": ">=22"

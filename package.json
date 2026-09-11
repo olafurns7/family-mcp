@@ -1,0 +1,28 @@
+{
+  "name": "family-mcp",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "tooling/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "lint:fix": "turbo run lint:fix",
+    "format": "turbo run format",
+    "format:check": "turbo run format:check",
+    "typecheck": "turbo run typecheck",
+    "check": "turbo run check",
+    "format:root": "oxfmt --write package.json turbo.json .oxlintrc.json .oxfmtrc.json .github tooling",
+    "format:root:check": "oxfmt --check package.json turbo.json .oxlintrc.json .oxfmtrc.json .github tooling"
+  },
+  "devDependencies": {
+    "oxfmt": "0.67.0",
+    "oxlint": "1.82.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "turbo": "2.10.12",
+    "typescript": "7.0.2"
+  },
+  "packageManager": "bun@1.4.2"
+}

@@ -45,8 +45,8 @@
     "start": "bun run build && node dist/cli.js",
     "login": "bun run build && node dist/cli.js login",
     "check": "tsc --noEmit",
-    "format": "oxfmt --write .",
-    "format:check": "oxfmt --check .",
+    "format": "oxfmt -c ../../.oxfmtrc.json --write .",
+    "format:check": "oxfmt -c ../../.oxfmtrc.json --check .",
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
     "test": "bun run build && bun build ./test/*.test.ts --target=node --packages=external --outdir=.test-build && node --test .test-build/*.test.js",
     "prepack": "bun run check && bun run build",
@@ -56,7 +56,9 @@
     "release:check": "bun run validate && bun pm pack && bun run test:package",
     "build:binary": "node scripts/build-binary.mjs",
     "test:installer": "node scripts/test-installer.mjs",
-    "lint": "oxlint --max-warnings 0 src test scripts"
+    "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings --report-unused-disable-directives-severity error src test scripts",
+    "typecheck": "tsc --noEmit",
+    "lint:fix": "bun run lint --fix"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -65,11 +67,9 @@
     "zod": "^4.6.2"
   },
   "devDependencies": {
-    "@oxlint/plugins": "1.82.0",
-    "@types/node": "^22.20.2",
-    "oxfmt": "0.67.0",
-    "oxlint": "1.82.0",
-    "typescript": "^7.0.2"
+    "@family-mcp/oxlint-anti-slop": "workspace:*",
+    "@family-mcp/tsconfig": "workspace:*",
+    "@types/node": "^22.20.2"
   },
   "engines": {
     "node": ">=22"

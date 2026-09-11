@@ -1,0 +1,63 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "globalDependencies": [
+    ".oxlintrc.json",
+    ".oxfmtrc.json",
+    "tooling/tsconfig/**",
+    "tooling/oxlint-anti-slop/**"
+  ],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "test": {
+      "outputs": []
+    },
+    "infomentor-mcp#test": {
+      "dependsOn": ["build"],
+      "outputs": [".test-build/**"]
+    },
+    "lint": {
+      "outputs": []
+    },
+    "typecheck": {
+      "outputs": []
+    },
+    "format:check": {
+      "outputs": [],
+      "dependsOn": ["//#format:root:check"]
+    },
+    "check": {
+      "dependsOn": ["lint", "typecheck", "format:check"],
+      "outputs": []
+    },
+    "lint:fix": {
+      "cache": false,
+      "outputs": []
+    },
+    "format": {
+      "cache": false,
+      "outputs": [],
+      "dependsOn": ["//#format:root"]
+    },
+    "//#format:root": {
+      "cache": false,
+      "outputs": []
+    },
+    "//#format:root:check": {
+      "outputs": [],
+      "inputs": [
+        "package.json",
+        "turbo.json",
+        ".oxlintrc.json",
+        ".oxfmtrc.json",
+        ".github/**",
+        "tooling/**"
+      ]
+    }
+  },
+  "remoteCache": {
+    "enabled": false
+  }
+}
