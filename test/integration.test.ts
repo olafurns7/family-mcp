@@ -11,6 +11,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { chromium, firefox, webkit } from 'playwright';
 import type { Browser, BrowserContext } from 'playwright';
+import type { LoginRequest } from '../src/client.js';
 import { InfoMentorClient, setupStatusSchema } from '../src/client.js';
 import { createServer } from '../src/server.js';
 import { importSession, login, waitForLoginPage } from '../src/login.js';
@@ -30,6 +31,7 @@ import {
 } from '../src/session.js';
 
 const overviewUrl = new URL('/parent/overview', LOGIN_URL).href;
+
 const testEngine =
   process.env['INFOMENTOR_BROWSER'] === 'firefox'
     ? firefox
@@ -43,9 +45,11 @@ async function intercept(context: BrowserContext): Promise<void> {
     const authenticated = (await context.cookies(route.request().url())).some(
       ({ name, value }) => name === 'test-session' && value === 'synthetic',
     );
+
     const body = authenticated
       ? '<title>Test overview</title><h1>Vikuáætlun</h1><a href="/logout">Útskrá</a><iframe src="/school"></iframe>'
       : '<title>Sign in</title><input type="password"><button>Innskrá</button>';
+
     await route.fulfill({
       contentType: 'text/html; charset=utf-8',
       body:
@@ -60,6 +64,7 @@ async function intercept(context: BrowserContext): Promise<void> {
 test('HTTPS/session and remote-browser boundaries reject lookalikes and insecure remote endpoints', () => {
   assert.equal(trustedUrl(LOGIN_URL).hostname, 'im1.infomentor.is');
   assert.equal(trustedUrl('https://parents.infomentor.is/').hostname, 'parents.infomentor.is');
+
   for (const url of [
     'http://im1.infomentor.is/',
     'https://im1.infomentor.is.evil.test/',
@@ -69,6 +74,7 @@ test('HTTPS/session and remote-browser boundaries reject lookalikes and insecure
     'https://evilinfomentor.is/',
   ])
     assert.throws(() => trustedUrl(url));
+
   for (const url of [
     'http://localhost:9222',
     'http://127.0.0.1:9222',
@@ -77,6 +83,7 @@ test('HTTPS/session and remote-browser boundaries reject lookalikes and insecure
   ]) {
     assert.equal(validateCdpUrl(url), url);
   }
+
   for (const url of [
     'http://browser.example:9222',
     'ws://localhost.evil.test',
@@ -94,6 +101,7 @@ test(
     const directory = await mkdtemp(join(tmpdir(), 'infomentor-state-'));
     const file = join(directory, 'private', 'session.json');
     const browser = await launchBrowser();
+
     try {
       const context = await browser.newContext();
       await intercept(context);
@@ -119,18 +127,25 @@ test(
         localStorage.setItem('synthetic-token', 'test-token');
         await new Promise<void>((resolveDb, reject) => {
           const request = indexedDB.open('test-auth', 1);
-          request.onupgradeneeded = () => request.result.createObjectStore('tokens');
-          request.onerror = () => reject(new Error('Could not create synthetic database'));
-          request.onsuccess = () => {
+          request.addEventListener('upgradeneeded', () =>
+            request.result.createObjectStore('tokens'),
+          );
+          request.addEventListener('error', () =>
+            reject(new Error('Could not create synthetic database')),
+          );
+          request.addEventListener('success', () => {
             const db = request.result;
             const transaction = db.transaction('tokens', 'readwrite');
             transaction.objectStore('tokens').put('test-idb-token', 'token');
-            transaction.oncomplete = () => {
+            transaction.addEventListener('complete', () => {
               db.close();
               resolveDb();
-            };
-            transaction.onerror = () => reject(new Error('Could not write synthetic database'));
-          };
+            });
+
+            transaction.addEventListener('error', () =>
+              reject(new Error('Could not write synthetic database')),
+            );
+          });
         });
       });
       const saved = await captureSession(context, page.url());
@@ -155,14 +170,14 @@ test(
           () =>
             new Promise<string>((resolveDb, reject) => {
               const request = indexedDB.open('test-auth');
-              request.onerror = () => reject(new Error('Database missing'));
-              request.onsuccess = () => {
+              request.addEventListener('error', () => reject(new Error('Database missing')));
+              request.addEventListener('success', () => {
                 const db = request.result;
                 const transaction = db.transaction('tokens');
                 const value = transaction.objectStore('tokens').get('token');
-                value.onsuccess = () => resolveDb(String(value.result));
-                transaction.oncomplete = () => db.close();
-              };
+                value.addEventListener('success', () => resolveDb(String(value.result)));
+                transaction.addEventListener('complete', () => db.close());
+              });
             }),
         ),
         'test-idb-token',
@@ -192,6 +207,7 @@ test(
   { timeout: 15_000 },
   async () => {
     const browser = await launchBrowser();
+
     try {
       const context = await browser.newContext();
       await intercept(context);
@@ -240,11 +256,10 @@ test('login keeps an initial HTTP 403 challenge open for a human without retryin
   // Keep this interactive-login check headless and use only synthetic pages.
   const launcher = mock.method(testEngine, 'launch', async () => browser);
   mock.method(browser, 'newContext', async () => context);
-  let showChallenge = (): void => {};
-  const challenge = new Promise<void>((resolveChallenge) => {
-    showChallenge = resolveChallenge;
-  });
+  const { promise: challenge, resolve: showChallenge } = Promise.withResolvers<void>();
+
   const stages: string[] = [];
+
   try {
     await Promise.all([
       login({
@@ -252,6 +267,7 @@ test('login keeps an initial HTTP 403 challenge open for a human without retryin
         timeoutMs: 5_000,
         onProgress(stage) {
           stages.push(stage);
+
           if (stage === 'challenge') showChallenge();
         },
       }),
@@ -286,12 +302,14 @@ test(
   },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), 'infomentor-cdp-'));
+
     const executable =
       process.env['INFOMENTOR_BROWSER'] === 'chromium'
         ? chromium.executablePath()
         : process.platform === 'darwin'
           ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
           : chromium.executablePath();
+
     const child = spawn(
       executable,
       [
@@ -303,22 +321,28 @@ test(
       ],
       { stdio: 'ignore' },
     );
+
     let processError: Error | undefined;
     child.on('error', (error) => {
       processError = error;
     });
+
     try {
       let port: string | undefined;
+
       for (let tries = 0; tries < 100; tries++) {
         if (processError) throw processError;
+
         try {
           port = (await readFile(join(directory, 'DevToolsActivePort'), 'utf8')).split('\n')[0];
         } catch {
           /* Browser is starting. */
         }
+
         if (port) break;
         await delay(100);
       }
+
       assert.ok(port, 'Chrome should expose a loopback debugging port');
       const cdpUrl = 'http://127.0.0.1:' + port;
       const remote = await launchBrowser({ cdpUrl });
@@ -334,6 +358,7 @@ test(
       await isolated.close();
       await remote.close();
       const reconnected = await launchBrowser({ cdpUrl });
+
       try {
         assert.ok(
           reconnected
@@ -350,7 +375,8 @@ test(
         child.kill('SIGTERM');
         await exited;
       }
-      await rm(directory, { recursive: true, force: true });
+
+      await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   },
 );
@@ -361,15 +387,18 @@ test(
   async () => {
     const directory = await mkdtemp(join(tmpdir(), 'infomentor-mcp-'));
     const client = new Client({ name: 'infomentor-test', version: '1.0.0' });
+
     const transport = new StdioClientTransport({
       command: 'node',
       args: [resolve('dist/cli.js'), '--session', join(directory, 'missing.json')],
       stderr: 'pipe',
     });
+
     let stderr = '';
     transport.stderr?.on('data', (chunk: Buffer) => {
       stderr += chunk.toString();
     });
+
     try {
       await client.connect(transport);
       const { tools } = await client.listTools();
@@ -399,27 +428,35 @@ test(
               annotations?.readOnlyHint && !annotations.destructiveHint && outputSchema,
           ),
       );
+
       const status = CallToolResultSchema.parse(
         await client.callTool({ name: 'infomentor_session_status', arguments: {} }),
       );
+
       assert.equal(sessionStatusSchema.parse(status.structuredContent).authenticated, false);
+
       const overview = CallToolResultSchema.parse(
         await client.callTool({ name: 'infomentor_get_overview', arguments: {} }),
       );
+
       assert.equal(overview.isError, true);
       const content = overview.content[0];
       assert.equal(content?.type === 'text' ? content.text : undefined, LOGIN_REQUIRED);
+
       const invalid = CallToolResultSchema.parse(
         await client.callTool({
           name: 'infomentor_get_overview',
           arguments: { password: 'never-accept-a-password' },
         }),
       );
+
       assert.equal(invalid.isError, true);
       assert.ok(!JSON.stringify(invalid).includes('never-accept-a-password'));
+
       const setup = CallToolResultSchema.parse(
         await client.callTool({ name: 'infomentor_setup_status', arguments: {} }),
       );
+
       assert.equal(setupStatusSchema.parse(setup.structuredContent).state, 'idle');
       assert.equal(
         tools.find(({ name }) => name === 'infomentor_logout')?.annotations?.destructiveHint,
@@ -431,21 +468,28 @@ test(
       );
       // CI installs this exact engine first; do not download another browser in ordinary tests.
       const browser = process.env['INFOMENTOR_BROWSER'];
+
       if (browser && ['chromium', 'firefox', 'webkit'].includes(browser)) {
         const install = CallToolResultSchema.parse(
           await client.callTool({ name: 'infomentor_install_browser', arguments: { browser } }),
         );
+
         assert.equal(setupStatusSchema.parse(install.structuredContent).state, 'running');
         let state = 'running';
+
         for (let tries = 0; tries < 100 && state === 'running'; tries++) {
           await delay(50);
-          const status = CallToolResultSchema.parse(
+
+          const progress = CallToolResultSchema.parse(
             await client.callTool({ name: 'infomentor_setup_status', arguments: {} }),
           );
-          state = setupStatusSchema.parse(status.structuredContent).state;
+
+          state = setupStatusSchema.parse(progress.structuredContent).state;
         }
+
         assert.equal(state, 'succeeded');
       }
+
       assert.equal(stderr, '');
     } finally {
       await client.close();
@@ -491,6 +535,7 @@ test(
     let mode: 'ready' | 'limited' | 'challenge' | 'slow' = 'ready';
     let contextForHuman: BrowserContext | undefined;
     const launch = testEngine.launch.bind(testEngine);
+
     // Only intercept network traffic; exercise the actual browser and client lifecycle.
     const launcher = mock.method(
       testEngine,
@@ -512,11 +557,14 @@ test(
               maximumConcurrent = Math.max(maximumConcurrent, concurrent);
               await delay(40);
               concurrent--;
+
               if (mode === 'slow') {
                 await delay(1000);
                 await route.abort().catch(() => {});
+
                 return;
               }
+
               if (mode === 'limited') {
                 await route.fulfill({
                   status: 429,
@@ -539,13 +587,17 @@ test(
                 });
               }
             });
+
             return context;
           },
         );
+
         return browser;
       },
     );
+
     const client = new InfoMentorClient({ sessionFile: file });
+
     try {
       const results = await Promise.all([client.getOverview(), client.getOverview()]);
       assert.ok(results.every((result) => result.text.includes('Vikuáætlun')));
@@ -607,6 +659,7 @@ test(
     const browsers: Browser[] = [];
     let latestContext: BrowserContext | undefined;
     const launch = testEngine.launch.bind(testEngine);
+
     const launcher = mock.method(
       testEngine,
       'launch',
@@ -621,27 +674,35 @@ test(
             const context = await newContext(...contextArgs);
             latestContext = context;
             await intercept(context);
+
             return context;
           },
         );
+
         return browser;
       },
     );
+
     const server = createServer({ sessionFile: file });
     const client = new Client({ name: 'setup-test', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const call = async (name: string, args: Record<string, unknown> = {}) =>
+
+    const call = async (name: string, args: LoginRequest = {}) =>
       CallToolResultSchema.parse(await client.callTool({ name, arguments: args }));
+
     const waitFor = async (expected: string) => {
       for (let tries = 0; tries < 100; tries++) {
         const result = await call('infomentor_setup_status');
         const status = setupStatusSchema.parse(result.structuredContent);
+
         if (status.state === expected) return status;
         assert.ok(!['failed', 'cancelled'].includes(status.state), status.message);
         await delay(50);
       }
+
       assert.fail('Setup should reach ' + expected);
     };
+
     try {
       await server.connect(serverTransport);
       await client.connect(clientTransport);
@@ -707,6 +768,7 @@ test(
       await call('infomentor_login');
       await waitFor('waiting');
       await client.close();
+
       for (let tries = 0; tries < 50 && browsers.some((browser) => browser.isConnected()); tries++)
         await delay(50);
       assert.ok(browsers.every((browser) => !browser.isConnected()));
@@ -714,6 +776,7 @@ test(
       await client.close();
       await server.close();
       launcher.mock.restore();
+
       for (const browser of browsers) await browser.close();
       await rm(directory, { recursive: true, force: true });
     }

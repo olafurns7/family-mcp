@@ -5,7 +5,7 @@ parent landing page using your authenticated browser session. **Login, session
 import, browser installation, status, cancellation, and logout are all available
 through MCP.** Passwords stay in the browser.
 
-**0.1.0 is a preview:** the tools currently provide session status and visible
+**0.1.1 is a preview:** the tools currently provide session status and visible
 parent-page text. Structured child selection, schedules, homework, notices,
 attendance, and grades are not implemented. Automated checks use synthetic school
 pages; real parent-account compatibility has not yet been verified. This project
@@ -16,7 +16,7 @@ is not affiliated with InfoMentor.
 For macOS or Linux, copy this one command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.1.0/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/infomentor-mcp/v0.1.1/install.sh | sh
 ```
 
 The version-pinned installer chooses your platform and CPU, checks the download's
@@ -35,8 +35,8 @@ command in a terminal, add `~/.local/bin` to PATH.
 
 To choose a different user-owned installation directory, set `INFOMENTOR_PREFIX`
 for the installer. Downloads and checksums are available on the
-[release page](https://github.com/olafurns7/infomentor-mcp/releases/tag/v0.1.0).
-The [installer source](https://github.com/olafurns7/infomentor-mcp/blob/v0.1.0/install.sh)
+[release page](https://github.com/olafurns7/infomentor-mcp/releases/tag/v0.1.1).
+The [installer source](https://github.com/olafurns7/infomentor-mcp/blob/v0.1.1/install.sh)
 is short enough to inspect before running it.
 
 ### Prebuilt npm tarball
@@ -44,7 +44,7 @@ is short enough to inspect before running it.
 If Node.js 22+ is already available, this also works **before npm publication**:
 
 ```sh
-npm install --global --ignore-scripts https://github.com/olafurns7/infomentor-mcp/releases/download/v0.1.0/infomentor-mcp-0.1.0.tgz
+npm install --global --ignore-scripts https://github.com/olafurns7/infomentor-mcp/releases/download/v0.1.1/infomentor-mcp-0.1.1.tgz
 ```
 
 Or use `bun add --global` with the same URL. The tarball contains compiled ESM,
@@ -288,7 +288,9 @@ infomentor-mcp status
 infomentor-mcp logout
 ```
 
-Bun manages source dependencies and builds. Node.js 22+ runs the package:
+Bun manages source dependencies and builds. Oxlint checks source correctness,
+Oxfmt handles formatting, and strict TypeScript checks source and tests. Node.js
+22+ runs the package:
 
 ```sh
 bun install --frozen-lockfile
@@ -299,10 +301,16 @@ bun run build:binary
 bun run test:installer
 ```
 
+Oxlint enforces the base correctness and suspicious rules, explicit `any`
+rejection, accumulating-spread checks, and all 18 generic
+[Anti-Slop rules](https://github.com/dmmulroy/anti-slop). Oxfmt handles formatting.
+The vendored rules and their licenses are development-only; the exact upstream
+revision is recorded in `tools/oxlint/anti-slop/UPSTREAM.md`. CI runs both checks.
+
 The browser tests need an installed compatible browser. Linux tests that exercise
 interactive login run under `xvfb-run -a`. Package/installer checks perform real
-clean installs and MCP handshakes. See [review evidence](https://github.com/olafurns7/infomentor-mcp/blob/v0.1.0/docs/REVIEW.md) and the
-[release procedure](https://github.com/olafurns7/infomentor-mcp/blob/v0.1.0/docs/RELEASING.md).
+clean installs and MCP handshakes. See [review evidence](https://github.com/olafurns7/infomentor-mcp/blob/v0.1.1/docs/REVIEW.md) and the
+[release procedure](https://github.com/olafurns7/infomentor-mcp/blob/v0.1.1/docs/RELEASING.md).
 
 ```ts
 import { InfoMentorClient } from 'infomentor-mcp';

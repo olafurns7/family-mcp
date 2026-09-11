@@ -1,8 +1,0 @@
-node_modules/
-dist/
-.test-build/
-bun.lock
-*.tgz
-coverage/
-release/
-*.tgz.sha256

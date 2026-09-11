@@ -7,9 +7,13 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+
 const tarball = resolve(process.argv[2] ?? join(root, `infomentor-mcp-${manifest.version}.tgz`));
+
 const directory = await mkdtemp(join(tmpdir(), 'infomentor-package-'));
+
 const run = (command, args) =>
   execFileSync(command, args, {
     cwd: directory,
@@ -17,12 +21,15 @@ const run = (command, args) =>
     stdio: 'pipe',
     timeout: 120_000,
   });
+
 try {
   const [packed] = JSON.parse(
     run('npm', ['pack', tarball, '--dry-run', '--json', '--ignore-scripts']),
   );
+
   assert.ok(packed.files.some(({ path }) => path === 'dist/cli.js'));
   assert.ok(packed.files.some(({ path }) => path === 'dist/index.d.ts'));
+
   for (const { path } of packed.files) {
     assert.match(
       path,
@@ -34,14 +41,17 @@ try {
       `Private file in package: ${path}`,
     );
   }
+
   await writeFile(
     join(directory, 'package.json'),
     JSON.stringify({ name: 'infomentor-consumer', private: true, type: 'module' }),
   );
   run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', tarball]);
+
   const installed = JSON.parse(
     await readFile(join(directory, 'node_modules/infomentor-mcp/package.json'), 'utf8'),
   );
+
   assert.equal(installed.version, manifest.version);
   assert.equal(installed.scripts?.install, undefined);
   assert.equal(installed.scripts?.postinstall, undefined);
@@ -105,9 +115,11 @@ try {
     'check.ts',
   ]);
   run('npm', ['publish', tarball, '--dry-run', '--ignore-scripts', '--access', 'public']);
+
   const digest = createHash('sha256')
     .update(await readFile(tarball))
     .digest('hex');
+
   await writeFile(tarball + '.sha256', `${digest}  ${tarball.split(/[\\/]/).at(-1)}\n`);
   console.log(
     'Prebuilt package passed: contents, npm installation without build scripts, executable CLI, MCP handshake, strict consumer types, and npm publication dry-run.',

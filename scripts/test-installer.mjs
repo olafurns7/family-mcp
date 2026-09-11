@@ -8,11 +8,17 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
 const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+
 const directory = await mkdtemp(join(tmpdir(), 'infomentor-installer-'));
+
 const archive = `infomentor-mcp-${version}-${process.platform}-${process.arch}.tar.gz`;
+
 const prefix = join(directory, 'prefix with spaces');
+
 const fakeBin = join(directory, 'download-fixture');
+
 try {
   await mkdir(fakeBin);
   await copyFile(join(root, 'release', archive), join(directory, archive));
@@ -30,6 +36,7 @@ cp "$TEST_ASSETS/\${url##*/}" "$output"
 `,
     { mode: 0o755 },
   );
+
   const env = {
     ...process.env,
     PATH: `${fakeBin}:/usr/bin:/bin`,
@@ -37,6 +44,7 @@ cp "$TEST_ASSETS/\${url##*/}" "$output"
     INFOMENTOR_PREFIX: prefix,
     INFOMENTOR_VERSION: version,
   };
+
   execFileSync('/bin/sh', [join(root, 'install.sh')], { env, stdio: 'pipe' });
   const binary = join(prefix, 'bin/infomentor-mcp');
   assert.equal(execFileSync(binary, ['--version'], { env, encoding: 'utf8' }).trim(), version);
@@ -48,13 +56,16 @@ cp "$TEST_ASSETS/\${url##*/}" "$output"
   );
   assert.notEqual(spawnSync('/bin/sh', [join(root, 'install.sh')], { env }).status, 0);
   assert.equal(execFileSync(binary, ['--version'], { env, encoding: 'utf8' }).trim(), version);
+
   const transport = new StdioClientTransport({
     command: binary,
     args: ['--session', join(directory, 'missing.json')],
     env: { PATH: '/usr/bin:/bin' },
     stderr: 'pipe',
   });
+
   const client = new Client({ name: 'binary-test', version: '1.0.0' });
+
   try {
     await client.connect(transport);
     assert.equal((await client.listTools()).tools.length, 7);
@@ -63,6 +74,7 @@ cp "$TEST_ASSETS/\${url##*/}" "$output"
   } finally {
     await client.close();
   }
+
   console.log(
     'Installer passed without system Node/Bun: spaced prefix, reinstall, checksum rejection, preservation of the working command, and binary MCP handshake.',
   );

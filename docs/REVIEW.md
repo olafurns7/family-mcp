@@ -22,6 +22,17 @@ restoration, private POSIX file modes, malformed imports preserving saved state,
 and absence of credentials in MCP output. Read requests reuse a browser, serialize
 access, retain rotated cookies in memory, and honor HTTP 429 cooldowns.
 
+Oxlint now enforces base correctness/suspicious checks, explicit-any rejection,
+accumulating-spread checks, and all 18 generic Anti-Slop rules. A deliberate
+violation probe confirmed base, TypeScript, and plugin diagnostics. The lint
+cleanup replaced an open MCP result dictionary with the concrete result union
+and parses saved-session JSON directly at its boundary. Oxfmt replaced Prettier.
+Browser, package, and installer checks passed again after these changes.
+
+The release run also exposed a Chromium test-profile cleanup race after the
+browser assertions had passed. Cleanup now uses Node's bounded filesystem retries
+after waiting for the spawned browser process to exit.
+
 ## Remaining limits
 
 - Real-account login detection still uses signed-out/signed-in page controls.

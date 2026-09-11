@@ -7,16 +7,24 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
 const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+
 assert.ok(
   ['darwin', 'linux'].includes(process.platform),
   'Binary releases support macOS and Linux.',
 );
+
 assert.ok(['arm64', 'x64'].includes(process.arch), 'Binary releases support arm64 and x64.');
+
 const tarball = join(root, `infomentor-mcp-${version}.tgz`);
+
 const directory = await mkdtemp(join(tmpdir(), 'infomentor-binary-'));
+
 const payload = join(directory, 'infomentor-mcp');
+
 const output = join(root, 'release');
+
 try {
   await mkdir(join(payload, 'runtime/bin'), { recursive: true });
   await mkdir(join(payload, 'bin'));
@@ -62,9 +70,11 @@ exec "$root/runtime/bin/node" "$root/node_modules/infomentor-mcp/dist/cli.js" "$
   execFileSync('tar', ['-czf', archive, '-C', directory, 'infomentor-mcp'], {
     env: { ...process.env, COPYFILE_DISABLE: '1' },
   });
+
   const digest = createHash('sha256')
     .update(await readFile(archive))
     .digest('hex');
+
   await writeFile(archive + '.sha256', `${digest}  ${name}\n`);
   console.log(`Built ${name} with ${process.version} bundled. No system Node or Bun is needed.`);
 } finally {

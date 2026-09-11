@@ -30,19 +30,25 @@ export async function waitForLoginPage(
 ): Promise<Page> {
   while (Date.now() < deadline) {
     throwIfAborted(signal);
+
     if (!context.browser()?.isConnected() || context.pages().length === 0) {
       throw new InfoMentorError(
         'CANCELLED',
         'The login window was closed. The existing saved session was kept.',
       );
     }
+
     for (const page of context.pages()) {
       const state = await inspectPage(page);
+
       if (state === 'authenticated') return page;
+
       if (state === 'challenge') onChallenge?.();
     }
+
     await pause(signal);
   }
+
   throw new InfoMentorError(
     'LOGIN_TIMEOUT',
     'Sign-in timed out. The existing saved session was kept. Retry login or increase --timeout.',
@@ -51,31 +57,39 @@ export async function waitForLoginPage(
 
 export async function login(options: LoginOptions = {}): Promise<void> {
   const timeout = options.timeoutMs ?? 300_000;
+
   if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 3_600_000) {
     throw new InfoMentorError(
       'INVALID_CONFIGURATION',
       'Login timeout must be between 1 millisecond and one hour.',
     );
   }
+
   throwIfAborted(options.signal);
   const timeoutSignal = AbortSignal.timeout(timeout);
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
   const deadline = Date.now() + timeout;
   const browser = await launchBrowser(options, false);
+
   try {
     const context = await browser.newContext({ viewport: null });
+
     const cancel = (): void => {
       void context.close().catch(() => {});
     };
+
     signal.addEventListener('abort', cancel, { once: true });
+
     try {
       throwIfAborted(signal);
       const page = await context.newPage();
+
       try {
         const response = await page.goto(LOGIN_URL, {
           waitUntil: 'domcontentloaded',
           timeout: 30_000,
         });
+
         if (!response?.ok() && (await inspectPage(page)) !== 'challenge')
           throw new InfoMentorError('NETWORK_ERROR', 'InfoMentor could not load its login page.');
       } catch {
@@ -85,10 +99,13 @@ export async function login(options: LoginOptions = {}): Promise<void> {
           'Could not open the InfoMentor login page. Check the network and retry.',
         );
       }
+
       options.onProgress?.('waiting');
+
       const authenticated = await waitForLoginPage(context, deadline, signal, () =>
         options.onProgress?.('challenge'),
       );
+
       const candidate = await captureSession(context, authenticated.url());
       throwIfAborted(signal);
       await writeSession(candidate, sessionPath(options.sessionFile));
@@ -104,6 +121,7 @@ export async function login(options: LoginOptions = {}): Promise<void> {
         'Sign-in timed out. The existing saved session was kept. Retry login or increase --timeout.',
       );
     }
+
     throwIfAborted(options.signal);
     throw error;
   } finally {
@@ -120,6 +138,7 @@ export async function importSession(
   throwIfAborted(signal);
   const imported = await readSession(resolve(file));
   const browser = await launchBrowser(options);
+
   try {
     const verified = await verifySession(browser, imported, signal);
     throwIfAborted(signal);

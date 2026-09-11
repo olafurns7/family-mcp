@@ -36,6 +36,7 @@ const help = [
 
 async function main(): Promise<void> {
   let parsed;
+
   try {
     parsed = parseArgs({
       allowPositionals: true,
@@ -57,21 +58,28 @@ async function main(): Promise<void> {
       'Invalid arguments. Run infomentor-mcp --help.',
     );
   }
+
   const { values, positionals } = parsed;
+
   if (values.help) {
     console.log(help);
+
     return;
   }
+
   if (values.version) {
     console.log(packageInfo.version);
+
     return;
   }
+
   if (positionals.length > 1)
     throw new InfoMentorError(
       'INVALID_CONFIGURATION',
       'Unexpected arguments. Run infomentor-mcp --help.',
     );
   const command = positionals[0] ?? 'serve';
+
   if (
     (command !== 'login' && (values.import || values.timeout)) ||
     (command !== 'install-browser' && values['with-deps'])
@@ -81,12 +89,18 @@ async function main(): Promise<void> {
       'An option does not apply to this command. Run infomentor-mcp --help.',
     );
   }
+
   const options: SessionOptions = {};
+
   if (values.session) options.sessionFile = resolve(values.session);
+
   if (values['cdp-url']) options.cdpUrl = values['cdp-url'];
+
   if (values['executable-path']) options.executablePath = resolve(values['executable-path']);
+
   if (values.browser) {
     const browser = browserChoiceSchema.safeParse(values.browser);
+
     if (!browser.success)
       throw new InfoMentorError(
         'INVALID_CONFIGURATION',
@@ -94,27 +108,34 @@ async function main(): Promise<void> {
       );
     options.browser = browser.data;
   }
+
   if (command === 'serve') {
     const server = createServer(options);
+
     const stop = (): void => {
       void server.close().catch(() => {
         process.exitCode = 1;
       });
     };
+
     // Stdio EOF and process termination must also close remote browser contexts.
     process.stdin.once('end', stop);
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
     await server.connect(new StdioServerTransport());
+
     return;
   }
+
   const controller = new AbortController();
   const cancel = (): void => controller.abort();
   process.once('SIGINT', cancel);
   process.once('SIGTERM', cancel);
+
   try {
     if (command === 'install-browser') {
       const browser = options.browser ?? 'chromium';
+
       if (
         (browser !== 'chromium' && browser !== 'firefox' && browser !== 'webkit') ||
         options.cdpUrl ||
@@ -125,26 +146,32 @@ async function main(): Promise<void> {
           'Install chromium, firefox, or webkit. System Chrome, Edge, and custom executables are selected when running the package.',
         );
       }
+
       await installBrowser(
         { browser, withDeps: values['with-deps'] ?? false },
         controller.signal,
         (text) => process.stderr.write(text),
       );
+
       return;
     }
+
     switch (command) {
       case 'login': {
         if (values.import) {
           await importSession(values.import, options, controller.signal);
           console.error('Session imported and verified.');
+
           return;
         }
+
         const timeout = z.coerce
           .number()
           .int()
           .positive()
           .max(3600)
           .safeParse(values.timeout ?? '300');
+
         if (!timeout.success)
           throw new InfoMentorError(
             'INVALID_CONFIGURATION',
@@ -158,38 +185,50 @@ async function main(): Promise<void> {
           onProgress(stage) {
             if (lastStage === stage) return;
             lastStage = stage;
+
             const messages = {
               waiting:
                 'Sign in directly in the browser. This command will save the session automatically. Ctrl+C cancels.',
               challenge: 'Complete the security check in the browser. This command will wait.',
               saved: 'Signed in. Session saved to ' + sessionPath(options.sessionFile),
             };
+
             console.error(messages[stage]);
           },
         });
+
         return;
       }
+
       case 'status': {
         const client = new InfoMentorClient(options);
+
         try {
           const status = await client.getSessionStatus(controller.signal);
           console.error(status.authenticated ? 'InfoMentor session is active.' : status.nextStep);
+
           if (!status.authenticated) process.exitCode = 1;
         } finally {
           await client.close();
         }
+
         return;
       }
+
       case 'logout': {
         const client = new InfoMentorClient(options);
+
         try {
           await client.logout();
         } finally {
           await client.close();
         }
+
         console.error('Local InfoMentor session removed.');
+
         return;
       }
+
       default:
         throw new InfoMentorError(
           'INVALID_CONFIGURATION',
@@ -202,11 +241,11 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch((error: unknown) => {
+void main().catch((cause: unknown) => {
   console.error(
-    error instanceof InfoMentorError
-      ? error.message
+    cause instanceof InfoMentorError
+      ? cause.message
       : 'InfoMentor operation failed. Check the browser, network, and session-file permissions.',
   );
-  process.exitCode = error instanceof InfoMentorError && error.code === 'CANCELLED' ? 130 : 1;
+  process.exitCode = cause instanceof InfoMentorError && cause.code === 'CANCELLED' ? 130 : 1;
 });

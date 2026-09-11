@@ -50,9 +50,9 @@ outside an agent conversation. Never commit or paste npm tokens.
 Publish the exact tarball already validated in the GitHub release:
 
 ```sh
-npm publish ./infomentor-mcp-0.1.0.tgz --dry-run --ignore-scripts --access public
+npm publish ./infomentor-mcp-0.1.1.tgz --dry-run --ignore-scripts --access public
 # Only after deciding to publish:
-npm publish ./infomentor-mcp-0.1.0.tgz --ignore-scripts --access public
+npm publish ./infomentor-mcp-0.1.1.tgz --ignore-scripts --access public
 ```
 
 The validation script already ran package-content checks, a clean npm install
