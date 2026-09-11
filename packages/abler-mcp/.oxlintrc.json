@@ -1,0 +1,134 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "node"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "options": {
+    "typeAware": true
+  },
+  "env": {
+    "node": true
+  },
+  "ignorePatterns": ["dist/**", "release/**", "node_modules/**"],
+  "rules": {
+    "eqeqeq": ["error", "always"],
+    "no-console": "error",
+    "no-await-in-loop": "off",
+    "no-duplicate-imports": "error",
+    "no-empty": "error",
+    "no-else-return": "error",
+    "no-eval": "error",
+    "no-implicit-coercion": "error",
+    "no-new-func": "error",
+    "no-param-reassign": "error",
+    "no-useless-return": "error",
+    "prefer-const": "error",
+    "max-depth": ["error", 4],
+    "typescript/ban-ts-comment": [
+      "error",
+      {
+        "ts-ignore": true,
+        "ts-nocheck": true,
+        "ts-expect-error": "allow-with-description",
+        "minimumDescriptionLength": 10
+      }
+    ],
+    "typescript/consistent-type-assertions": [
+      "error",
+      {
+        "assertionStyle": "never"
+      }
+    ],
+    "typescript/consistent-type-imports": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-extraneous-class": "error",
+    "typescript/no-floating-promises": [
+      "error",
+      {
+        "ignoreVoid": false
+      }
+    ],
+    "typescript/no-misused-promises": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/no-unnecessary-condition": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/no-unnecessary-type-parameters": "error",
+    "typescript/no-unsafe-argument": "error",
+    "typescript/no-unsafe-assignment": "error",
+    "typescript/no-unsafe-call": "error",
+    "typescript/no-unsafe-member-access": "error",
+    "typescript/no-unsafe-return": "error",
+    "unicorn/no-array-for-each": "error",
+    "unicorn/no-useless-promise-resolve-reject": "error",
+    "unicorn/prefer-array-find": "error",
+    "unicorn/prefer-array-some": "error",
+    "unicorn/prefer-node-protocol": "error",
+    "unicorn/prefer-object-from-entries": "error",
+    "import/no-cycle": "error",
+    "no-unneeded-ternary": "error"
+  },
+  "overrides": [
+    {
+      "files": ["src/cli.ts", "test/pack-smoke.ts"],
+      "rules": {
+        "no-console": "off"
+      }
+    },
+    {
+      "files": ["test/**/*.ts"],
+      "env": {
+        "bun": true
+      },
+      "rules": {
+        "no-restricted-properties": [
+          "error",
+          {
+            "object": "test",
+            "property": "only"
+          },
+          {
+            "object": "test",
+            "property": "skip"
+          },
+          {
+            "object": "test",
+            "property": "todo"
+          },
+          {
+            "object": "it",
+            "property": "only"
+          },
+          {
+            "object": "it",
+            "property": "skip"
+          },
+          {
+            "object": "it",
+            "property": "todo"
+          },
+          {
+            "object": "describe",
+            "property": "only"
+          },
+          {
+            "object": "describe",
+            "property": "skip"
+          },
+          {
+            "object": "describe",
+            "property": "todo"
+          }
+        ]
+      }
+    },
+    {
+      "files": ["src/auth.ts"],
+      "rules": {
+        "preserve-caught-error": "off"
+      }
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "name": "abler-mcp",
+  "version": "0.3.1",
+  "description": "Unofficial, read-only Abler schedules MCP server with portable session authentication",
+  "keywords": [
+    "abler",
+    "family",
+    "mcp",
+    "model-context-protocol",
+    "schedule",
+    "sports"
+  ],
+  "homepage": "https://github.com/olafurns7/abler-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/olafurns7/abler-mcp/issues"
+  },
+  "license": "MIT",
+  "author": "Ólafur Nils Sigurðsson",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/olafurns7/abler-mcp.git"
+  },
+  "bin": {
+    "abler-mcp": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build:native": "sh scripts/build-native.sh",
+    "check": "sh -n install.sh && sh -n scripts/build-native.sh && bun run lint && bun run format:check && bun run typecheck",
+    "test": "bun test",
+    "start": "bun src/cli.ts",
+    "prepack": "bun run check && bun test && bun run build",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives-severity error .",
+    "lint:fix": "bun run lint --fix",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "proper-lockfile": "^4.1.2",
+    "tough-cookie": "^6.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/bun": "^1.2.19",
+    "@types/proper-lockfile": "^4.1.4",
+    "oxfmt": "0.67.0",
+    "oxlint": "1.82.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "bun@1.4.2"
+}
