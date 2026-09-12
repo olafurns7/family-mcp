@@ -5,17 +5,9 @@
   "description": "Small shared MCP runtime helpers for the family MCP servers",
   "author": "Ólafur Nils Sigurðsson",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    }
-  },
+  "exports": "./src/index.ts",
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings --report-unused-disable-directives-severity error .",
