@@ -308,17 +308,19 @@ await test('Turbo release synchronization preserves root README pins', async () 
 
     const rootReadme = join(workspace, 'README.md');
 
-    await setVersion('abler-mcp', '0.3.2');
+    await setVersion('abler-mcp', '1.2.3');
+    await setVersion('infomentor-mcp', '4.5.6');
+    await setVersion('abler-mcp', '1.2.4');
     synchronize();
     let output = await readFile(rootReadme, 'utf8');
-    assert.match(output, /abler-mcp@0\.3\.2\/packages\/abler-mcp\/install\.sh/);
-    assert.match(output, /infomentor-mcp@0\.5\.0\/packages\/infomentor-mcp\/install\.sh/);
+    assert.match(output, /abler-mcp@1\.2\.4\/packages\/abler-mcp\/install\.sh/);
+    assert.match(output, /infomentor-mcp@4\.5\.6\/packages\/infomentor-mcp\/install\.sh/);
 
-    await setVersion('infomentor-mcp', '0.5.1');
+    await setVersion('infomentor-mcp', '4.5.7');
     synchronize();
     output = await readFile(rootReadme, 'utf8');
-    assert.match(output, /abler-mcp@0\.3\.2\/packages\/abler-mcp\/install\.sh/);
-    assert.match(output, /infomentor-mcp@0\.5\.1\/packages\/infomentor-mcp\/install\.sh/);
+    assert.match(output, /abler-mcp@1\.2\.4\/packages\/abler-mcp\/install\.sh/);
+    assert.match(output, /infomentor-mcp@4\.5\.7\/packages\/infomentor-mcp\/install\.sh/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
