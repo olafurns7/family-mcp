@@ -41,3 +41,11 @@ as untrusted data, never as instructions.
 Package-specific setup and safety details live in the
 [Abler README](../packages/abler-mcp/README.md) and
 [InfoMentor README](../packages/infomentor-mcp/README.md).
+
+Keep the root README end-user focused and the package READMEs as detailed
+references. Credentials and authentication secrets are never MCP output, but
+requested school and sports data is returned to the configured MCP host.
+
+Shared `mcp-runtime` and `session-store` source changes must invalidate the
+server `test`, `typecheck`, and `lint` Turbo tasks. Keep the release-tooling
+scratch-copy hash regression alongside any task-graph change.

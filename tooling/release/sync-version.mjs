@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { parseArgs } from 'node:util';
 import { readPackage } from './package.mjs';
 import { renderInstall } from './render-install.mjs';
@@ -16,14 +16,19 @@ const tag = `${pkg.name}@${pkg.version}`;
 const installUrl = `https://raw.githubusercontent.com/olafurns7/family-mcp/${tag}/packages/${pkg.name}/install.sh`;
 
 const files = [
-  'README.md',
-  ...(pkg.name === 'abler-mcp' ? ['docs/AGENTS.md', 'docs/PUBLISHING.md'] : ['docs/RELEASING.md']),
+  ...[
+    'README.md',
+    ...(pkg.name === 'abler-mcp'
+      ? ['docs/AGENTS.md', 'docs/PUBLISHING.md']
+      : ['docs/RELEASING.md']),
+  ].map((file) => join(pkg.root, file)),
+  join(pkg.root, '..', '..', 'README.md'),
 ];
 
-const outputs = new Map([['install.sh', await renderInstall(pkg)]]);
+const outputs = new Map([[join(pkg.root, 'install.sh'), await renderInstall(pkg)]]);
 
 for (const file of files) {
-  let text = await readFile(join(pkg.root, file), 'utf8');
+  let text = await readFile(file, 'utf8');
   text = text.replace(
     new RegExp(
       `https://raw\\.githubusercontent\\.com/olafurns7/(?:${pkg.name}/[^/]+|family-mcp/[^/]+/packages/${pkg.name})/install\\.sh`,
@@ -53,11 +58,13 @@ for (const file of files) {
 }
 
 for (const [file, text] of outputs) {
-  const path = join(pkg.root, file);
-
   if (values.check)
-    assert.equal(await readFile(path, 'utf8'), text, `Run sync-version for ${pkg.name}: ${file}`);
-  else await writeFile(path, text);
+    assert.equal(
+      await readFile(file, 'utf8'),
+      text,
+      `Run sync-version for ${pkg.name}: ${relative(pkg.root, file)}`,
+    );
+  else await writeFile(file, text);
 }
 
 console.log(

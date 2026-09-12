@@ -34,25 +34,12 @@ To choose another installation directory, pass an absolute `ABLER_PREFIX` to
 
 For agent setup and reporting rules, read **[docs/AGENTS.md](docs/AGENTS.md)**.
 
-Configure an MCP host to launch the installed server, replacing both paths with real absolute paths:
-
-```json
-{
-  "mcpServers": {
-    "abler": {
-      "command": "/home/you/.local/bin/abler-mcp",
-      "args": ["serve"],
-      "env": {
-        "ABLER_SESSION_FILE": "/home/you/.config/abler-mcp/session.json"
-      }
-    }
-  }
-}
-```
-
-On macOS, home paths normally start `/Users/you`. JSON configurations generally do not expand `~` or `$HOME`. The standalone executable needs no JavaScript runtime on the MCP host's PATH.
-
-Omit `ABLER_SESSION_FILE` to use `$XDG_CONFIG_HOME/abler-mcp/session.json`, defaulting to `~/.config/abler-mcp/session.json`. Stdout is reserved for the MCP protocol. Auth commands print human-readable output separately from server mode.
+For Claude Desktop, Claude Code, and Codex configuration, see the root
+[connection guide](../../README.md#connect-to-your-mcp-host). On macOS, home
+paths normally start `/Users/you`; configuration files generally do not expand
+`~` or `$HOME`. Omit `ABLER_SESSION_FILE` to use
+`$XDG_CONFIG_HOME/abler-mcp/session.json`, defaulting to
+`~/.config/abler-mcp/session.json`. Stdout is reserved for the MCP protocol.
 
 ## Authenticate once, then run headlessly
 
@@ -218,9 +205,10 @@ The server uses the [official MCP TypeScript SDK](https://ts.sdk.modelcontextpro
 From the monorepo root:
 
 ```sh
-bun install --frozen-lockfile
-bunx turbo run build typecheck lint format:check test --filter=abler-mcp --force
-bunx turbo run test:dist test:binary test:installer --filter=abler-mcp
+bun install
+bun run check
+bun run test
+bunx turbo run test:binary test:installer --filter=abler-mcp --force
 ```
 
 `bun test` runs the eight offline integration tests, including the MCP stdio,
@@ -257,7 +245,7 @@ from the process environment. GitHub Actions builds and checks macOS 15 and
 Ubuntu 24.04 on both CPU architectures, including a copied executable running
 outside the checkout without the repository toolchain.
 
-Installer regressions run separately as `test:installer`; package and native MCP
-smokes run as `test:dist` and `test:binary`. The shared builder generates notices
-from the actual bundle. Run `release:sync` after editing the package version;
-CI checks that generated installers and documented URLs are current.
+Installer regressions run as `test:installer`; native MCP smokes run as
+`test:binary`. The shared builder generates notices from the actual bundle. Run
+`release:sync` after editing the package version; CI checks that generated
+installers and documented URLs are current.
