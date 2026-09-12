@@ -1,5 +1,11 @@
 # family-mcp
 
+## Documentation
+
+Keep the root [README](README.md) as the short user-facing setup guide; detailed
+server instructions belong in the package READMEs. Agents operating a configured
+server must also read [docs/AGENTS.md](docs/AGENTS.md).
+
 ## Commands
 
 ```sh

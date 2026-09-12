@@ -2,9 +2,81 @@
 
 Unofficial, read-only [Abler](https://www.abler.io) MCP server. Written in TypeScript and compiled with Bun into a single executable, including its runtime and dependencies. The running MCP server uses HTTP and needs no browser.
 
-For installation, host configuration, and the short agent checklist, start with the root [Abler MCP section](../../README.md#abler-mcp).
-
 For agent setup and reporting rules, read **[docs/AGENTS.md](docs/AGENTS.md)**.
+
+## Quick start
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.4.0/packages/abler-mcp/install.sh | sh
+```
+
+```sh
+abler-mcp auth login
+```
+
+Expected output: `Sign in to Abler in the browser window that opened.`
+
+## Install and connect
+
+The installer verifies the archive checksum and executable version, then installs
+`abler-mcp` under `~/.local/bin`. Set `ABLER_PREFIX` to an absolute installation
+prefix or `ABLER_VERSION` to a released version before running it. Verify an install:
+
+```sh
+/absolute/path/to/.local/bin/abler-mcp --version
+```
+
+Expected output:
+
+```text
+0.4.0
+```
+
+Run the Quick start installer again to upgrade; the session file stays in place.
+To uninstall the command and release directories while retaining the session:
+
+```sh
+rm -f /absolute/path/to/.local/bin/abler-mcp
+rm -rf /absolute/path/to/.local/share/abler-mcp
+```
+
+Paths written as `/absolute/path/...` are on the computer running the MCP host;
+configuration files do not reliably expand `~` or `$HOME`.
+
+### Connect to your MCP host
+
+**Claude Desktop** — add only this Abler entry to its MCP JSON configuration.
+
+```json
+{
+  "mcpServers": {
+    "abler": {
+      "command": "/absolute/path/to/.local/bin/abler-mcp",
+      "args": ["serve"],
+      "env": {
+        "ABLER_SESSION_FILE": "/absolute/path/abler-session.json"
+      }
+    }
+  }
+}
+```
+
+**Claude Code** — run this in the project where Claude Code should use Abler.
+
+```sh
+claude mcp add abler -e ABLER_SESSION_FILE=/absolute/path/abler-session.json -- /absolute/path/to/.local/bin/abler-mcp serve
+```
+
+**Codex** — add only this Abler entry to `/absolute/path/to/.codex/config.toml`.
+
+```toml
+[mcp_servers.abler]
+command = "/absolute/path/to/.local/bin/abler-mcp"
+args = ["serve"]
+
+[mcp_servers.abler.env]
+ABLER_SESSION_FILE = "/absolute/path/abler-session.json"
+```
 
 ## Authenticate once, then run headlessly
 
