@@ -153,6 +153,35 @@ export const timetableEntrySchema = z.object({
   establishmentName: z.string().nullable(),
 });
 
+const skippedSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .describe('Number of malformed upstream items omitted from this output.');
+
+function parseItems<T>(items: unknown[], schema: z.ZodType<T>) {
+  const parsed: T[] = [];
+  let skipped = 0;
+
+  for (const item of items) {
+    const result = schema.safeParse(item);
+
+    if (result.success) parsed.push(result.data);
+    else skipped++;
+  }
+
+  return { items: parsed, skipped };
+}
+
+export const timetableSchema = z.object({
+  items: z.array(timetableEntrySchema),
+  skipped: skippedSchema,
+});
+
+export const timetableResponseSchema = z
+  .object({ items: z.array(z.unknown()) })
+  .transform(({ items }) => parseItems(items, timetableEntrySchema));
+
 export const overviewSchema = z.object({
   title: z.string(),
   text: z.string(),
@@ -160,6 +189,7 @@ export const overviewSchema = z.object({
   retrievedAt: z.iso.datetime(),
   children: z.array(pupilSchema),
   timetable: z.array(timetableEntrySchema).nullable(),
+  skipped: skippedSchema,
 });
 
 export type Overview = z.infer<typeof overviewSchema>;
@@ -186,7 +216,7 @@ export const notificationsRequestSchema = z
   })
   .strict();
 
-const messageUserSchema = z.object({ id: z.number().int(), displayName: z.string() });
+const messageUserSchema = z.object({ id: z.number().int(), displayName: z.string().nullable() });
 
 export const messageSummarySchema = z.object({
   id: z.number().int().positive(),
@@ -206,7 +236,12 @@ export const messageDetailSchema = messageSummarySchema.extend({
 export const messagesPageSchema = z.object({
   items: z.array(messageSummarySchema),
   more: z.boolean(),
+  skipped: skippedSchema,
 });
+
+export const messagesPageResponseSchema = z
+  .object({ items: z.array(z.unknown()), more: z.boolean() })
+  .transform(({ items, more }) => ({ ...parseItems(items, messageSummarySchema), more }));
 
 export const messagesSchema = messagesPageSchema.extend({
   page: z.number().int().positive(),
@@ -227,7 +262,11 @@ export const notificationSchema = z.object({
   subjectsCourses: z.string(),
   dateSent: z.string(),
   appType: z.string(),
-  state: z.enum(['New', 'Seen', 'Read', 'Cleared']),
+  state: z
+    .string()
+    .describe(
+      'Common values are New, Seen, Read, and Cleared; other upstream values pass through.',
+    ),
   type: z.string(),
   url: z.string(),
   pupilIM2Id: z.number().int(),
@@ -235,7 +274,18 @@ export const notificationSchema = z.object({
   currentlySelectedPupil: z.boolean(),
 });
 
-export const notificationsDataSchema = z.object({ notifications: z.array(notificationSchema) });
+export const notificationsDataSchema = z.object({
+  notifications: z.array(notificationSchema),
+  skipped: skippedSchema,
+});
+
+export const notificationsResponseSchema = z
+  .object({ notifications: z.array(z.unknown()) })
+  .transform(({ notifications }) => {
+    const parsed = parseItems(notifications, notificationSchema);
+
+    return { notifications: parsed.items, skipped: parsed.skipped };
+  });
 
 export const notificationsSchema = notificationsDataSchema.extend({
   selectedChildOnly: z.boolean(),

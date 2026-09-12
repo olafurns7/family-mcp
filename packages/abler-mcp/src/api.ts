@@ -1,4 +1,4 @@
-import { SafeError } from '@family-mcp/mcp-runtime';
+import { readBody, SafeError } from '@family-mcp/mcp-runtime';
 import { Cookie, type CookieJar } from 'tough-cookie';
 import * as z from 'zod/v4';
 
@@ -12,6 +12,8 @@ import {
 } from './auth.js';
 
 const id = z.string().min(1).max(256);
+
+const MAX_RESPONSE_BODY_BYTES = 4 * 1024 * 1024;
 
 const date = z.iso.date();
 
@@ -244,6 +246,18 @@ export class AblerClient {
     return response;
   }
 
+  private async readJson(response: Response): Promise<JsonValue> {
+    try {
+      return z
+        .json()
+        .parse(
+          JSON.parse(await readBody(response, MAX_RESPONSE_BODY_BYTES, this.lifecycle.signal)),
+        );
+    } catch {
+      return null;
+    }
+  }
+
   private async refresh(jar: CookieJar): Promise<void> {
     const response = await this.post(jar, '/oauth/token');
 
@@ -257,7 +271,7 @@ export class AblerClient {
 
     const result = z
       .object({ access_token: z.string().min(1), error: z.unknown().optional() })
-      .safeParse(await response.json().catch(() => null));
+      .safeParse(await this.readJson(response));
 
     if (!result.success || result.data.error)
       throw new SafeError('Abler returned an invalid session refresh response.');
@@ -279,7 +293,7 @@ export class AblerClient {
     if (forceRefresh || !access || access.TTL() < 60000) await this.refresh(jar);
     const body = { operationName, query, variables };
     let response = await this.post(jar, '/graphql', body);
-    let result = graphqlResponseSchema.safeParse(await response.json().catch(() => null));
+    let result = graphqlResponseSchema.safeParse(await this.readJson(response));
 
     if (
       response.status === 401 ||
@@ -288,7 +302,7 @@ export class AblerClient {
     ) {
       await this.refresh(jar);
       response = await this.post(jar, '/graphql', body);
-      result = graphqlResponseSchema.safeParse(await response.json().catch(() => null));
+      result = graphqlResponseSchema.safeParse(await this.readJson(response));
     }
 
     if (!response.ok) throw new SafeError('Abler returned an error for the requested operation.');

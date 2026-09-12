@@ -53,7 +53,10 @@ export async function withSessionLock<T>(
 }
 
 export async function removeSession(path: string): Promise<void> {
-  await withSessionLock(path, () => rm(path, { force: true }));
+  await withSessionLock(path, async () => {
+    await rm(path, { force: true });
+    await prunePendingCandidates(path);
+  });
 }
 
 /** A verified import supersedes the candidates that earlier failed imports retained. */
