@@ -4,15 +4,18 @@ Unofficial, read-only [Abler](https://www.abler.io) MCP server. Written in TypeS
 
 For agent setup and reporting rules, read **[docs/AGENTS.md](docs/AGENTS.md)**.
 
-## Quick start
+## Quick start (0.5.0+)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.4.0/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.0/packages/abler-mcp/install.sh | sh
 ```
 
 ```sh
 abler-mcp auth login
 ```
+
+`auth login` is available from 0.5.0. With 0.4.0, use `auth capture` or
+`auth import` below.
 
 Expected output: `Sign in to Abler in the browser window that opened.`
 
@@ -29,7 +32,7 @@ prefix or `ABLER_VERSION` to a released version before running it. Verify an ins
 Expected output:
 
 ```text
-0.4.0
+0.5.0
 ```
 
 Run the Quick start installer again to upgrade; the session file stays in place.
@@ -90,13 +93,19 @@ Run the primary sign-in command:
 abler-mcp auth login
 ```
 
-It opens a fresh browser profile, waits up to 300 seconds for sign-in, captures
-only the `refreshToken` and `id_token` cookies, verifies the session, and saves
-it. The profile is created with mode `0700` under the OS temporary directory,
-then the browser is closed and the profile is deleted on success, timeout, or
-cancellation. Set `ABLER_BROWSER` or pass `--browser /path/to/chromium` to choose
-a browser; `--timeout <seconds>` changes the wait. `--keep-browser` leaves the
-browser and profile open for debugging; that profile contains live credentials.
+It opens a fresh browser profile and waits up to 15 seconds for the browser to
+start. `--timeout <seconds>` sets the cookie wait (300 seconds by default). It
+captures only the `refreshToken` and `id_token` cookies; the browser and profile
+are closed before session verification and saving. Verification adds network
+time after the cookie wait. At startup, login removes abandoned
+`abler-login-*` profiles older than one hour. Profiles use mode `0700` under
+the OS temporary directory. Set `ABLER_BROWSER` or pass
+`--browser /path/to/chromium` to choose a browser. `--keep-browser` is a
+debugging exception that leaves the browser and credential-bearing profile
+open. On Bun runtimes that support extra child-process file descriptors,
+Chrome uses a private `--remote-debugging-pipe`; older runtimes and
+`--keep-browser` use the profile-owned `DevToolsActivePort` endpoint on
+loopback.
 
 ### Capture from Chrome
 
