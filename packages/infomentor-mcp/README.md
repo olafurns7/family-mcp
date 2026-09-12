@@ -16,7 +16,120 @@ happen through the CLI, so an agent that has read untrusted school text cannot
 log the parent out or replace the account. This is an unofficial integration;
 it is not affiliated with InfoMentor.
 
-For installation, WARP choice, and host configuration, start with the root [InfoMentor MCP section](../../README.md#infomentor-mcp).
+## Quick start
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh
+```
+
+```sh
+infomentor-mcp login --credentials /absolute/path/credentials.json
+```
+
+Expected output starts with `Signed in. Session saved to`.
+
+## Install, WARP, and connect
+
+The installer verifies the archive checksum and executable version, then installs
+`infomentor-mcp` under `~/.local/bin`. Set `INFOMENTOR_PREFIX` to an absolute
+installation prefix or `INFOMENTOR_VERSION` to a released version before running
+it. Verify an install:
+
+```sh
+/absolute/path/to/.local/bin/infomentor-mcp --version
+```
+
+Expected output:
+
+```text
+0.6.0
+```
+
+Run the Quick start installer again to upgrade; the session file stays in place.
+To uninstall the command and release directories while retaining the session:
+
+```sh
+rm -f /absolute/path/to/.local/bin/infomentor-mcp
+rm -rf /absolute/path/to/.local/share/infomentor-mcp
+```
+
+Paths written as `/absolute/path/...` are on the computer running the MCP host;
+configuration files do not reliably expand `~` or `$HOME`.
+
+### Remote machines and WARP
+
+Use the standard install on your own laptop or desktop. Use `--with-warp`
+**only** on a remote Debian 13 x64 machine, such as a VPS or the Grok bot VM,
+when its network path to `infomentor.is` fails before HTTP.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
+```
+
+It requires administrator or `sudo` access and acceptance of
+[Cloudflare's terms](https://www.cloudflare.com/application/terms/). It sets up
+Cloudflare WARP in local-proxy mode, and only this MCP command uses that proxy.
+It does not change the default route or Tailscale settings. To revert to direct
+access:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh -s -- --without-warp
+```
+
+Do not use WARP on a normal working connection, on a non-Debian-13-x64 machine,
+or as a workaround for credentials or a failed login. Read the
+[connectivity guide](docs/CONNECTIVITY.md) before using it on a remote host.
+
+### Connect to your MCP host
+
+**Claude Desktop** — add only this InfoMentor entry to its MCP JSON configuration.
+
+```json
+{
+  "mcpServers": {
+    "infomentor": {
+      "command": "/absolute/path/to/.local/bin/infomentor-mcp",
+      "args": ["serve"],
+      "env": {
+        "INFOMENTOR_SESSION_PATH": "/absolute/path/infomentor-session.json",
+        "INFOMENTOR_CREDENTIALS_FILE": "/absolute/path/credentials.json"
+      }
+    }
+  }
+}
+```
+
+**Claude Code** — run this in the project where Claude Code should use InfoMentor.
+
+```sh
+claude mcp add infomentor -e INFOMENTOR_SESSION_PATH=/absolute/path/infomentor-session.json -e INFOMENTOR_CREDENTIALS_FILE=/absolute/path/credentials.json -- /absolute/path/to/.local/bin/infomentor-mcp serve
+```
+
+**Codex** — add only this InfoMentor entry to `/absolute/path/to/.codex/config.toml`.
+
+```toml
+[mcp_servers.infomentor]
+command = "/absolute/path/to/.local/bin/infomentor-mcp"
+args = ["serve"]
+
+[mcp_servers.infomentor.env]
+INFOMENTOR_SESSION_PATH = "/absolute/path/infomentor-session.json"
+INFOMENTOR_CREDENTIALS_FILE = "/absolute/path/credentials.json"
+```
+
+To expose the opt-in setup tools, append `--allow-setup-tools` to the configured
+`serve` arguments.
+
+### Setup options
+
+| Flag                     | Use it when                                                    | Effect                                                              |
+| ------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `--local-form`           | A user explicitly wants same-computer browser login            | Opens a private loopback form; never use it on a remote VM          |
+| `--allow-account-change` | The user explicitly wants to replace a different saved account | Allows login or import to replace that account's session            |
+| `--allow-setup-tools`    | The MCP host must expose setup operations to an agent          | Adds login, setup status, cancellation, and logout tools to `serve` |
+
+The setup tools are absent by default. Do not expose `--allow-setup-tools` or
+use `--allow-account-change` without that explicit user request.
 
 ## Sign in from any agent
 
