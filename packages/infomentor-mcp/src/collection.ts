@@ -53,11 +53,18 @@ const skippedSchema = z
   .nonnegative()
   .describe('Number of malformed upstream items omitted from this output.');
 
+const skippedByFeedSchema = z.object({
+  timetable: skippedSchema,
+  messages: skippedSchema,
+  notifications: skippedSchema,
+});
+
 export const collectionSchema = z.object({
   baseline: z.boolean(),
   cursor: z.uuid(),
   retrievedAt: z.iso.datetime(),
-  skipped: skippedSchema,
+  skipped: skippedSchema.describe('Total malformed upstream items omitted from all feeds.'),
+  skippedByFeed: skippedByFeedSchema,
   children: z.array(childSchema),
   updates: z.array(
     z.discriminatedUnion('kind', [
@@ -83,6 +90,17 @@ export type CollectRequest = z.input<typeof collectRequestSchema>;
 export type Collection = z.infer<typeof collectionSchema>;
 
 type Update = Collection['updates'][number];
+
+type Feed = keyof Collection['skippedByFeed'];
+
+const feedNames: readonly Feed[] = ['timetable', 'messages', 'notifications'];
+
+const feedForKind: Record<Update['kind'], Feed | undefined> = {
+  child: undefined,
+  timetable: 'timetable',
+  message: 'messages',
+  notification: 'notifications',
+};
 
 type Folder = z.infer<typeof folderSchema>;
 
@@ -346,7 +364,7 @@ export async function collectUpdates(
   const current = new Map<string, Fingerprint>();
   const updates = new Map<string, Update>();
   let outputBytes = 0;
-  let skipped = 0;
+  const skippedByFeed = { timetable: 0, messages: 0, notifications: 0 };
   let collectionError: InfoMentorError | undefined;
 
   function add(update: Update, childId: string): void {
@@ -413,7 +431,7 @@ export async function collectUpdates(
         .nullable()
         .parse(await source.readTimetable(parent, signal));
 
-      skipped += timetableFeed?.skipped ?? 0;
+      skippedByFeed.timetable += timetableFeed?.skipped ?? 0;
       const timetable = timetableFeed?.items ?? null;
 
       const sortedTimetable =
@@ -424,7 +442,7 @@ export async function collectUpdates(
         child.id,
       );
 
-      skipped += await collectMessagesForChild(
+      skippedByFeed.messages += await collectMessagesForChild(
         source,
         child.id,
         input.maxMessagePages,
@@ -433,7 +451,7 @@ export async function collectUpdates(
       );
 
       const notificationFeed = notificationsDataSchema.parse(await source.getNotifications(signal));
-      skipped += notificationFeed.skipped;
+      skippedByFeed.notifications += notificationFeed.skipped;
 
       for (const item of notificationFeed.notifications) {
         add(
@@ -494,9 +512,36 @@ export async function collectUpdates(
 
   if (collectionError) throw collectionError;
   throwIfAborted(signal);
+
+  const incompleteFeeds = new Set(feedNames.filter((feed) => skippedByFeed[feed] > 0));
+
+  for (const [key, update] of updates) {
+    const feed = feedForKind[update.kind];
+
+    if (feed !== undefined && incompleteFeeds.has(feed)) updates.delete(key);
+  }
+
+  const nextBaseline = new Map(
+    [...current].filter(([, item]) => {
+      const feed = feedForKind[item.kind];
+
+      return feed === undefined || !incompleteFeeds.has(feed);
+    }),
+  );
+
+  for (const [key, item] of previousItems) {
+    const feed = feedForKind[item.kind];
+
+    if (feed !== undefined && incompleteFeeds.has(feed)) nextBaseline.set(key, item);
+  }
+
   const missing = new Map<string, Collection['missing'][number]>();
 
   for (const [key, item] of previousItems) {
+    const feed = feedForKind[item.kind];
+
+    if (feed !== undefined && incompleteFeeds.has(feed)) continue;
+
     if (current.has(key)) continue;
     const groupedKey = referenceKey(item);
     const grouped = missing.get(groupedKey);
@@ -516,8 +561,8 @@ export async function collectUpdates(
 
   const unchanged =
     previous &&
-    current.size === previousItems.size &&
-    [...current].every(([key, item]) => previousItems.get(key)?.hash === item.hash);
+    nextBaseline.size === previousItems.size &&
+    [...nextBaseline].every(([key, item]) => previousItems.get(key)?.hash === item.hash);
 
   const cursor = unchanged && input.cursor ? input.cursor : randomUUID();
 
@@ -525,7 +570,8 @@ export async function collectUpdates(
     baseline: !previous,
     cursor,
     retrievedAt: new Date().toISOString(),
-    skipped,
+    skipped: Object.values(skippedByFeed).reduce((total, count) => total + count, 0),
+    skippedByFeed,
     children: initial.account.pupils.map(({ id, name }) => ({ id, name })),
     updates: [...updates.values()],
     missing: [...missing.values()],
@@ -542,7 +588,7 @@ export async function collectUpdates(
       await saveSnapshot(
         directory,
         cursor,
-        { version: 1, accountHash: owner, fingerprints: [...current.values()] },
+        { version: 1, accountHash: owner, fingerprints: [...nextBaseline.values()] },
         signal,
       );
 

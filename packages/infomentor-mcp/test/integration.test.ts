@@ -792,7 +792,13 @@ test('InfoMentor skips malformed feed items and preserves nullable and unknown v
 
     const collection = await client.collectUpdates({ includeExisting: true });
     assert.equal(collection.skipped, 8);
-    assert.ok(collection.updates.some((update) => update.kind === 'message'));
+    assert.deepEqual(collection.skippedByFeed, {
+      timetable: 2,
+      messages: 4,
+      notifications: 2,
+    });
+    assert.deepEqual(collection.missing, []);
+    assert.ok(collection.updates.every((update) => update.kind === 'child'));
   } finally {
     await client.close();
     routes.restore();

@@ -30,7 +30,7 @@ function sourceFor(sessionFile: string) {
     duplicateNoticeId: false,
     renameDuringScan: false,
     detailReads: 0,
-    skipped: 0,
+    skipped: { timetable: 0, messages: 0, notifications: 0 },
   };
 
   const children = [
@@ -62,23 +62,27 @@ function sourceFor(sessionFile: string) {
 
       return source.getParent(signal);
     },
-    async readTimetable(_parent, signal) {
+    async readTimetable(parent, signal) {
       throwIfAborted(signal);
+      const selected = parent.account.pupils.find((child) => child.selected)?.id;
+      const skipped = selected === 'first' ? state.skipped.timetable : 0;
 
       return {
-        items: [
-          {
-            start: '2026-09-11T09:00:00',
-            end: '2026-09-11T10:00:00',
-            title: 'Synthetic timetable',
-            startTime: '09:00',
-            endTime: '10:00',
-            notes: { roomInfo: '', timetableNotes: '', tutors: '' },
-            allDay: false,
-            establishmentName: 'Synthetic school',
-          },
-        ],
-        skipped: state.skipped,
+        items: skipped
+          ? []
+          : [
+              {
+                start: '2026-09-11T09:00:00',
+                end: '2026-09-11T10:00:00',
+                title: 'Synthetic timetable',
+                startTime: '09:00',
+                endTime: '10:00',
+                notes: { roomInfo: '', timetableNotes: '', tutors: '' },
+                allDay: false,
+                establishmentName: 'Synthetic school',
+              },
+            ],
+        skipped,
       };
     },
     async getMessages(folder, page, signal) {
@@ -91,10 +95,13 @@ function sourceFor(sessionFile: string) {
 
       const id = folder === 'sent' ? 21 : page === 1 ? 11 : 12;
 
+      const skipped =
+        state.selected === 'first' && folder === 'inbox' && page === 1 ? state.skipped.messages : 0;
+
       return {
-        items: state.removed && id === 12 ? [] : [summary(id)],
+        items: state.removed && id === 12 ? [] : skipped ? [] : [summary(id)],
         more: folder === 'inbox' && page === 1,
-        skipped: state.skipped,
+        skipped,
       };
     },
     async getMessage(id, signal) {
@@ -140,7 +147,9 @@ function sourceFor(sessionFile: string) {
 
       if (state.duplicateNoticeId) notices.push({ ...notice, pupilSourceId: 'second' });
 
-      return { notifications: notices, skipped: state.skipped };
+      const skipped = state.selected === 'first' ? state.skipped.notifications : 0;
+
+      return { notifications: skipped ? [] : notices, skipped };
     },
   };
 
@@ -327,12 +336,56 @@ test('collection reports skipped upstream items while retaining valid feed data'
 
   try {
     const { source, state } = sourceFor(join(directory, 'session.json'));
-    state.skipped = 1;
+    state.skipped.timetable = 1;
     const collection = await collectUpdates({ includeExisting: true }, source);
 
     collectionSchema.parse(collection);
-    assert.equal(collection.skipped, 10);
+    assert.equal(collection.skipped, 1);
+    assert.deepEqual(collection.skippedByFeed, {
+      timetable: 1,
+      messages: 0,
+      notifications: 0,
+    });
     assert.ok(collection.updates.some((update) => update.kind === 'message'));
+    assert.ok(!collection.updates.some((update) => update.kind === 'timetable'));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('partial feeds preserve their baselines through unchanged recovery', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-collection-partial-history-'));
+
+  try {
+    const sessionFile = join(directory, 'session.json');
+    const { source, state } = sourceFor(sessionFile);
+    const baseline = await collectUpdates({}, source);
+
+    state.skipped = { timetable: 1, messages: 1, notifications: 1 };
+    const partial = await collectUpdates({ cursor: baseline.cursor }, source);
+
+    assert.equal(partial.skipped, 3);
+    assert.deepEqual(partial.skippedByFeed, {
+      timetable: 1,
+      messages: 1,
+      notifications: 1,
+    });
+    assert.deepEqual(partial.missing, []);
+    assert.deepEqual(partial.updates, []);
+    assert.equal(partial.cursor, baseline.cursor);
+
+    state.skipped = { timetable: 0, messages: 0, notifications: 0 };
+    const recovered = await collectUpdates({ cursor: partial.cursor }, source);
+
+    assert.equal(recovered.skipped, 0);
+    assert.deepEqual(recovered.missing, []);
+    assert.deepEqual(recovered.updates, []);
+    assert.equal(recovered.cursor, baseline.cursor);
+
+    const repeated = await collectUpdates({ cursor: recovered.cursor }, source);
+    assert.deepEqual(repeated.missing, []);
+    assert.deepEqual(repeated.updates, []);
+    assert.equal(repeated.cursor, baseline.cursor);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
