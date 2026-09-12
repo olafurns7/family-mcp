@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -14,8 +14,26 @@ const turboDryRun = z.object({
   tasks: z.array(z.object({ taskId: z.string(), hash: z.string() })),
 });
 
+/** @param {string} repository @param {string} workspace */
+async function copyTrackedFiles(repository, workspace) {
+  const result = spawnSync('git', ['ls-files', '-z'], { cwd: repository, encoding: 'buffer' });
+  assert.equal(result.status, 0, result.stderr.toString());
+
+  for (const file of result.stdout.toString('utf8').split('\0')) {
+    if (!file) continue;
+    const destination = join(workspace, file);
+    await mkdir(dirname(destination), { recursive: true });
+    await cp(join(repository, file), destination);
+  }
+}
+
 await test('release generation, version tags, and package-specific assets stay consistent', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'family-release-test-'));
+
+  const rootReadme = [
+    'https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.0.1/packages/abler-mcp/install.sh',
+    'https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh',
+  ].join('\n');
 
   try {
     for (const name of ['abler-mcp', 'infomentor-mcp']) {
@@ -41,11 +59,6 @@ await test('release generation, version tags, and package-specific assets stay c
 
       for (const file of docs) await writeFile(join(root, file), stale);
 
-      const rootReadme = [
-        'https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.0.1/packages/abler-mcp/install.sh',
-        'https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh',
-      ].join('\n');
-
       await writeFile(join(directory, 'README.md'), rootReadme);
       await writeFile(join(root, 'install.sh'), 'stale installer\n');
       const sync = fileURLToPath(new URL('./sync-version.mjs', import.meta.url));
@@ -62,10 +75,6 @@ await test('release generation, version tags, and package-specific assets stay c
 
       for (const file of docs)
         assert.equal(await readFile(join(root, file), 'utf8'), stale.replaceAll('0.0.1', '9.8.7'));
-      assert.equal(
-        await readFile(join(directory, 'README.md'), 'utf8'),
-        rootReadme.replaceAll(`${name}@0.0.1`, `${name}@9.8.7`),
-      );
       assert.equal(spawnSync(process.execPath, [sync, '--package', root, '--check']).status, 0);
       assert.equal(spawnSync(process.execPath, [sync, '--package', root]).status, 0);
       assert.equal(await readFile(join(root, 'install.sh'), 'utf8'), generated);
@@ -183,6 +192,16 @@ await test('release generation, version tags, and package-specific assets stay c
         0,
       );
     }
+
+    const rootSync = fileURLToPath(new URL('./sync-root-readme.mjs', import.meta.url));
+    assert.equal(spawnSync(process.execPath, [rootSync], { cwd: directory }).status, 0);
+    assert.equal(
+      await readFile(join(directory, 'README.md'), 'utf8'),
+      rootReadme
+        .replaceAll('abler-mcp@0.0.1', 'abler-mcp@9.8.7')
+        .replaceAll('infomentor-mcp@0.0.1', 'infomentor-mcp@9.8.7'),
+    );
+    assert.equal(spawnSync(process.execPath, [rootSync, '--check'], { cwd: directory }).status, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -192,25 +211,25 @@ await test('shared source changes invalidate server quality task hashes', async 
   const repository = fileURLToPath(new URL('../../', import.meta.url));
   const directory = await mkdtemp(join(tmpdir(), 'family-cache-key-test-'));
   const workspace = join(directory, 'workspace');
-  const ignored = new Set(['.git', 'node_modules', '.turbo']);
 
   try {
-    await cp(repository, workspace, {
-      recursive: true,
-      filter: (source) => !ignored.has(relative(repository, source).split(sep)[0] ?? ''),
-    });
+    await copyTrackedFiles(repository, workspace);
 
     const turbo = join(repository, 'node_modules', '.bin', 'turbo');
 
-    const taskIds = ['abler-mcp', 'infomentor-mcp'].flatMap((name) =>
+    const qualityTaskIds = ['abler-mcp', 'infomentor-mcp'].flatMap((name) =>
       ['test', 'typecheck', 'lint'].map((task) => `${name}#${task}`),
     );
 
+    const releaseTaskIds = ['abler-mcp', 'infomentor-mcp'].map((name) => `${name}#release:check`);
+    const taskIds = [...qualityTaskIds, ...releaseTaskIds];
+
     const hashes = () => {
-      const result = spawnSync(turbo, ['run', 'test', 'typecheck', 'lint', '--dry=json'], {
-        cwd: workspace,
-        encoding: 'utf8',
-      });
+      const result = spawnSync(
+        turbo,
+        ['run', 'test', 'typecheck', 'lint', 'release:check', '--dry=json'],
+        { cwd: workspace, encoding: 'utf8' },
+      );
 
       assert.equal(result.status, 0, result.stderr);
 
@@ -231,7 +250,7 @@ await test('shared source changes invalidate server quality task hashes', async 
       await writeFile(file, `${original}\n// cache-key regression probe\n`);
       const changed = hashes();
 
-      for (const taskId of taskIds)
+      for (const taskId of qualityTaskIds)
         assert.notEqual(
           changed.get(taskId),
           baseline.get(taskId),
@@ -240,6 +259,66 @@ await test('shared source changes invalidate server quality task hashes', async 
 
       await writeFile(file, original);
     }
+
+    const rootReadme = join(workspace, 'README.md');
+    const original = await readFile(rootReadme, 'utf8');
+    await writeFile(rootReadme, `${original}\n<!-- cache-key regression probe -->\n`);
+    const changed = hashes();
+
+    for (const taskId of releaseTaskIds)
+      assert.notEqual(
+        changed.get(taskId),
+        baseline.get(taskId),
+        `${taskId} was not invalidated by README.md`,
+      );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+await test('Turbo release synchronization preserves root README pins', async () => {
+  const repository = fileURLToPath(new URL('../../', import.meta.url));
+  const directory = await mkdtemp(join(tmpdir(), 'family-release-race-test-'));
+  const workspace = join(directory, 'workspace');
+
+  try {
+    await copyTrackedFiles(repository, workspace);
+    await symlink(join(repository, 'node_modules'), join(workspace, 'node_modules'), 'dir');
+
+    const turbo = join(repository, 'node_modules', '.bin', 'turbo');
+
+    const synchronize = () => {
+      const result = spawnSync(
+        turbo,
+        ['run', 'release:sync', '--filter=abler-mcp', '--filter=infomentor-mcp', '--force'],
+        { cwd: workspace, encoding: 'utf8' },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+    };
+
+    /** @param {string} name @param {string} version */
+    const setVersion = async (name, version) => {
+      const file = join(workspace, 'packages', name, 'package.json');
+      const original = await readFile(file, 'utf8');
+      const updated = original.replace(/"version": "\d+\.\d+\.\d+"/, `"version": "${version}"`);
+      assert.notEqual(updated, original);
+      await writeFile(file, updated);
+    };
+
+    const rootReadme = join(workspace, 'README.md');
+
+    await setVersion('abler-mcp', '0.3.2');
+    synchronize();
+    let output = await readFile(rootReadme, 'utf8');
+    assert.match(output, /abler-mcp@0\.3\.2\/packages\/abler-mcp\/install\.sh/);
+    assert.match(output, /infomentor-mcp@0\.5\.0\/packages\/infomentor-mcp\/install\.sh/);
+
+    await setVersion('infomentor-mcp', '0.5.1');
+    synchronize();
+    output = await readFile(rootReadme, 'utf8');
+    assert.match(output, /abler-mcp@0\.3\.2\/packages\/abler-mcp\/install\.sh/);
+    assert.match(output, /infomentor-mcp@0\.5\.1\/packages\/infomentor-mcp\/install\.sh/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

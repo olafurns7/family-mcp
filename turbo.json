@@ -68,10 +68,21 @@
     },
     "release:sync": {
       "cache": false,
+      "outputs": [],
+      "dependsOn": ["//#release:sync:root"]
+    },
+    "//#release:sync:root": {
+      "cache": false,
       "outputs": []
     },
     "release:check": {
-      "outputs": []
+      "outputs": [],
+      "dependsOn": ["//#release:check:root"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/README.md"]
+    },
+    "//#release:check:root": {
+      "outputs": [],
+      "inputs": ["$TURBO_DEFAULT$", "README.md", "packages/*/package.json"]
     },
     "@family-mcp/release-tooling#test": {
       "outputs": [],
