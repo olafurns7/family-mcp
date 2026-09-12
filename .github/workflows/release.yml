@@ -63,7 +63,7 @@ jobs:
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { createHash } from 'node:crypto';
-          import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+          import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
           import { join } from 'node:path';
           const name = process.env.RELEASE_PACKAGE;
           const version = process.env.RELEASE_VERSION;
@@ -93,12 +93,19 @@ jobs:
           }
           copyFileSync(`packages/${name}/install.sh`, join(output, 'install.sh'));
           const repo = 'olafurns7/family-mcp';
+          let changelog = '';
+          const changelogPath = `packages/${name}/CHANGELOG.md`;
+          if (existsSync(changelogPath)) {
+            const section = readFileSync(changelogPath, 'utf8').split(/^## /m).find(part => part.startsWith(`${version}\n`));
+            if (section) changelog = section.slice(version.length).trim();
+          }
           writeFileSync(join(process.env.RUNNER_TEMP, 'release-notes.md'), [
             `${name} ${version} (preview)`, '',
             'Install the verified standalone executable (macOS/Linux, arm64/x64):', '',
             '```sh', `curl -fsSL https://raw.githubusercontent.com/${repo}/${tag}/packages/${name}/install.sh | sh`, '```', '',
             'macOS/Linux arm64/x64 standalone installer checks passed in this workflow. Live account connectivity was not tested.', '',
             `Setup: https://github.com/${repo}/blob/${tag}/packages/${name}/README.md`,
+            ...(changelog ? ['', '## Changes', '', changelog] : []),
           ].join('\n'));
           NODE
       - name: Create a draft prerelease for the verified existing tag
