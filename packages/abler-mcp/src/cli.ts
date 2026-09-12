@@ -24,7 +24,7 @@ const help = `abler-mcp — unofficial read-only Abler MCP server
   abler-mcp auth capture [URL]      Capture a signed-in Chrome tab (default http://127.0.0.1:9222)
   abler-mcp auth import FILE        Import browser cookie JSON; use - for stdin
   abler-mcp auth status             Verify the saved session against Abler
-  abler-mcp auth logout             Remove this machine's saved session
+  abler-mcp auth logout             Remove the saved session and failed-import candidates
   abler-mcp --version               Print the installed version
 
 Set ABLER_SESSION_FILE to choose the private session file.
@@ -108,7 +108,9 @@ async function main() {
     console.log(JSON.stringify(await new AblerClient(path).status()));
   } else if (action === 'logout' && !argument) {
     await removeSession(path);
-    console.log('Local Abler session removed. This does not sign out other devices.');
+    console.log(
+      'Local Abler session and failed-import candidates removed. This does not sign out other devices.',
+    );
   } else throw new Error(help);
 }
 

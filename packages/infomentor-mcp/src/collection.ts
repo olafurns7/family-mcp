@@ -13,9 +13,11 @@ import {
   PARENT_URL,
   messageDetailSchema,
   messagesPageSchema,
+  notificationsDataSchema,
   notificationSchema,
   pupilSchema,
   sessionPath,
+  timetableSchema,
   throwIfAborted,
   timetableEntrySchema,
 } from './session.js';
@@ -45,10 +47,17 @@ const referenceSchema = z.object({
 
 const updateFields = referenceSchema.omit({ kind: true }).shape;
 
+const skippedSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .describe('Number of malformed upstream items omitted from this output.');
+
 export const collectionSchema = z.object({
   baseline: z.boolean(),
   cursor: z.uuid(),
   retrievedAt: z.iso.datetime(),
+  skipped: skippedSchema,
   children: z.array(childSchema),
   updates: z.array(
     z.discriminatedUnion('kind', [
@@ -95,14 +104,14 @@ export type CollectionSource = {
   readTimetable(
     parent: CollectionParent,
     signal: AbortSignal,
-  ): Promise<z.infer<typeof timetableEntrySchema>[] | null>;
+  ): Promise<z.infer<typeof timetableSchema> | null>;
   getMessages(
     folder: Folder,
     page: number,
     signal: AbortSignal,
   ): Promise<z.infer<typeof messagesPageSchema>>;
   getMessage(id: number, signal: AbortSignal): Promise<z.infer<typeof messageDetailSchema>>;
-  getNotifications(signal: AbortSignal): Promise<z.infer<typeof notificationSchema>[]>;
+  getNotifications(signal: AbortSignal): Promise<z.infer<typeof notificationsDataSchema>>;
 };
 
 const fingerprintSchema = referenceSchema.omit({ childIds: true }).extend({
@@ -257,9 +266,13 @@ async function collectMessagesForChild(
   maxPages: number,
   signal: AbortSignal,
   add: (update: Update, childId: string) => void,
-): Promise<void> {
+): Promise<number> {
+  let skipped = 0;
+
   for (const folder of ['inbox', 'sent'] as const)
-    await collectFolderMessages(source, childId, folder, maxPages, signal, add);
+    skipped += await collectFolderMessages(source, childId, folder, maxPages, signal, add);
+
+  return skipped;
 }
 
 async function collectFolderMessages(
@@ -269,11 +282,13 @@ async function collectFolderMessages(
   maxPages: number,
   signal: AbortSignal,
   add: (update: Update, childId: string) => void,
-): Promise<void> {
+): Promise<number> {
   const seen = new Set<number>();
+  let skipped = 0;
 
   for (let page = 1; page <= maxPages; page++) {
     const messages = messagesPageSchema.parse(await source.getMessages(folder, page, signal));
+    skipped += messages.skipped;
 
     for (const summary of messages.items) {
       if (seen.has(summary.id))
@@ -295,14 +310,16 @@ async function collectFolderMessages(
       );
     }
 
-    if (!messages.more) return;
+    if (!messages.more) return skipped;
 
-    if (!messages.items.length || page === maxPages)
+    if ((!messages.items.length && messages.skipped === 0) || page === maxPages)
       throw new InfoMentorError(
         'UNEXPECTED_PAGE',
         'The complete message history could not be collected within maxMessagePages. Increase the limit and retry; no cursor was advanced.',
       );
   }
+
+  return skipped;
 }
 
 /** The caller holds the authenticated account lock for this entire operation. */
@@ -329,6 +346,7 @@ export async function collectUpdates(
   const current = new Map<string, Fingerprint>();
   const updates = new Map<string, Update>();
   let outputBytes = 0;
+  let skipped = 0;
   let collectionError: InfoMentorError | undefined;
 
   function add(update: Update, childId: string): void {
@@ -391,10 +409,12 @@ export async function collectUpdates(
         child.id,
       );
 
-      const timetable = z
-        .array(timetableEntrySchema)
+      const timetableFeed = timetableSchema
         .nullable()
         .parse(await source.readTimetable(parent, signal));
+
+      skipped += timetableFeed?.skipped ?? 0;
+      const timetable = timetableFeed?.items ?? null;
 
       const sortedTimetable =
         timetable?.toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) ?? null;
@@ -404,9 +424,18 @@ export async function collectUpdates(
         child.id,
       );
 
-      await collectMessagesForChild(source, child.id, input.maxMessagePages, signal, add);
+      skipped += await collectMessagesForChild(
+        source,
+        child.id,
+        input.maxMessagePages,
+        signal,
+        add,
+      );
 
-      for (const item of z.array(notificationSchema).parse(await source.getNotifications(signal))) {
+      const notificationFeed = notificationsDataSchema.parse(await source.getNotifications(signal));
+      skipped += notificationFeed.skipped;
+
+      for (const item of notificationFeed.notifications) {
         add(
           {
             kind: 'notification',
@@ -496,6 +525,7 @@ export async function collectUpdates(
     baseline: !previous,
     cursor,
     retrievedAt: new Date().toISOString(),
+    skipped,
     children: initial.account.pupils.map(({ id, name }) => ({ id, name })),
     updates: [...updates.values()],
     missing: [...missing.values()],

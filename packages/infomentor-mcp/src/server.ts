@@ -57,7 +57,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
     'infomentor_get_overview',
     {
       description:
-        'Read the child list and currently selected child’s timetable through direct HTTPS. Does not switch children or include homework, attendance, or grades.',
+        'Read the child list and currently selected child’s timetable through direct HTTPS. Malformed timetable items are skipped and counted in skipped. Does not switch children or include homework, attendance, or grades.',
       inputSchema: z.object({}).strict(),
       outputSchema: overviewSchema,
       annotations: READ_ONLY,
@@ -79,7 +79,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
     'infomentor_get_messages',
     {
       description:
-        'List messages available to the current parent session. Supports inbox/sent folders, text search, and 1-based paging (default 20, maximum 100 per page). Returns subjects, senders, IDs, and original isNew flags; use infomentor_get_message for a body. Does not switch children or mark messages read.',
+        'List messages available to the current parent session. Supports inbox/sent folders, text search, and 1-based paging (default 20, maximum 100 per page). Malformed message items are skipped and counted in skipped. Returns subjects, senders, IDs, and original isNew flags; use infomentor_get_message for a body. Does not switch children or mark messages read.',
       inputSchema: messagesRequestSchema,
       outputSchema: messagesSchema,
       annotations: READ_ONLY,
@@ -101,7 +101,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
     'infomentor_get_notifications',
     {
       description:
-        'Read the notifications currently supplied by InfoMentor, including title, subtitle, link, pupil IDs, and New/Seen/Read/Cleared state. Cleared items are excluded by default; optionally select only the currently selected child. This is the available feed, not a complete historical archive. Does not mark notifications seen/read or clear them.',
+        'Read the notifications currently supplied by InfoMentor, including title, subtitle, link, pupil IDs, and state. Common states are New, Seen, Read, and Cleared; other values pass through unchanged. Malformed items are skipped and counted in skipped. Cleared items are excluded by default; optionally select only the currently selected child. This is the available feed, not a complete historical archive. Does not mark notifications seen/read or clear them.',
       inputSchema: notificationsRequestSchema,
       outputSchema: notificationsSchema,
       annotations: READ_ONLY,
@@ -112,7 +112,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
     'infomentor_collect_updates',
     {
       description:
-        'Collect all registered children’s available timetables, complete inbox/sent message bodies, and notifications for scheduled checks. Restores the original selected child. First call establishes a quiet baseline unless includeExisting is true. Pass the last successfully handled cursor to return only new/changed items and missing feed references; missing does not mean deleted. Save the returned cursor only after processing/delivering the results; retry the old cursor after failure. Cursors expire after 90 days without use and stay on this MCP host. Scans every message body; does not mark messages or notifications read. Maximum 20 pages of 100 messages per folder/child by default; incomplete scans fail without advancing. childIds describe the contexts where an item was visible, not its recipients or ownership. Same-session local MCP calls are locked; other apps may still change the selected child. The scan has a five-minute deadline and 8 MiB response limit. Covers these supported feeds, not homework, attendance, grades, or attachments.',
+        'Collect all registered children’s available timetables, complete inbox/sent message bodies, and notifications for scheduled checks. Malformed feed items are skipped and counted in skipped. Restores the original selected child. First call establishes a quiet baseline unless includeExisting is true. Pass the last successfully handled cursor to return only new/changed items and missing feed references; missing does not mean deleted. Save the returned cursor only after processing/delivering the results; retry the old cursor after failure. Cursors expire after 90 days without use and stay on this MCP host. Scans every message body; does not mark messages or notifications read. Maximum 20 pages of 100 messages per folder/child by default; incomplete scans fail without advancing. childIds describe the contexts where an item was visible, not its recipients or ownership. Same-session local MCP calls are locked; other apps may still change the selected child. The scan has a five-minute deadline and 8 MiB response limit. Covers these supported feeds, not homework, attendance, grades, or attachments.',
       inputSchema: collectRequestSchema,
       outputSchema: collectionSchema,
       annotations: { ...LOCAL_WRITE, readOnlyHint: false },

@@ -1,14 +1,15 @@
 import { Parser } from 'htmlparser2';
 import { CookieJar } from 'tough-cookie';
 import { z } from 'zod';
+import { readBody, ResponseBodyTooLargeError } from '@family-mcp/mcp-runtime';
 import {
   InfoMentorError,
   LOGIN_REQUIRED,
+  MAX_RATE_LIMIT_MS,
   PARENT_URL,
   pupilSchema,
   type HttpFetch,
   throwIfAborted,
-  timetableEntrySchema,
   trustedUrl,
 } from './session.js';
 
@@ -150,15 +151,27 @@ export class InfoMentorHttp {
                 : NaN;
 
           const wait = Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 60_000;
-          this.cooldownUntil = Date.now() + wait;
+          const now = Date.now();
+          const cooldown = Math.min(wait, MAX_RATE_LIMIT_MS);
+          this.cooldownUntil = now + cooldown;
           throw new InfoMentorError(
             'RATE_LIMITED',
             'InfoMentor is limiting requests. No automatic retry was made.',
-            wait,
+            cooldown,
           );
         }
 
-        const text = await readBody(response, requestSignal);
+        let text: string;
+
+        try {
+          text = await readBody(response, 8 * 1024 * 1024, requestSignal);
+        } catch (error) {
+          if (!(error instanceof ResponseBodyTooLargeError)) throw error;
+          throw new InfoMentorError(
+            'UNEXPECTED_PAGE',
+            'InfoMentor returned an unexpectedly large response.',
+          );
+        }
 
         if (
           /challenge-running|challenge-stage|challenges\.cloudflare\.com|<title[^>]*>\s*(?:just a moment|security check|verify you are human)/i.test(
@@ -319,35 +332,6 @@ function requireSchoolPage(page: HttpPage): void {
     throw new InfoMentorError('LOGIN_REQUIRED', LOGIN_REQUIRED);
 }
 
-async function readBody(response: Response, signal: AbortSignal): Promise<string> {
-  const reader = response.body?.getReader();
-
-  if (!reader) return '';
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-
-  try {
-    for (;;) {
-      throwIfAborted(signal);
-      const { done, value } = await reader.read();
-
-      if (done) break;
-      size += value.byteLength;
-
-      if (size > 8 * 1024 * 1024)
-        throw new InfoMentorError(
-          'UNEXPECTED_PAGE',
-          'InfoMentor returned an unexpectedly large response.',
-        );
-      chunks.push(value);
-    }
-
-    return Buffer.concat(chunks).toString('utf8');
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-}
-
 export const parentSchema = z.object({
   account: z.object({
     currentUser: z.object({ id: z.string().min(1) }),
@@ -355,8 +339,6 @@ export const parentSchema = z.object({
   }),
   apps: z.array(z.object({ codeName: z.string() })),
 });
-
-export const timetableSchema = z.object({ items: z.array(timetableEntrySchema) });
 
 /** Read the JSON assignment; never evaluate scripts returned by the school site. */
 export function parseParent(html: string): z.infer<typeof parentSchema> {
