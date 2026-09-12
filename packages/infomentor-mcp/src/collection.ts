@@ -485,7 +485,7 @@ export async function collectUpdates(
         const restoreError = error instanceof InfoMentorError ? error : undefined;
         collectionError = new InfoMentorError(
           collectionError?.code ?? restoreError?.code ?? 'UNEXPECTED_PAGE',
-          `${collectionError?.message ?? ''} Collection could not confirm restoration of the original child. No cursor was advanced. Check the overview before continuing.`.trim(),
+          'InfoMentor could not confirm restoration of the original child. No cursor was advanced. Check the overview before continuing.',
           collectionError?.retryAfterMs ?? restoreError?.retryAfterMs,
         );
       }

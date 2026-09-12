@@ -348,7 +348,7 @@ export class InfoMentorClient {
 
       throw new InfoMentorError(
         error?.code ?? 'UNEXPECTED_PAGE',
-        `${error?.message ?? 'InfoMentor could not load the selected child.'} Selection may have changed; refresh infomentor_get_overview before continuing.`,
+        'InfoMentor could not load the selected child. Selection may have changed; refresh infomentor_get_overview before continuing.',
         error?.retryAfterMs,
       );
     }
