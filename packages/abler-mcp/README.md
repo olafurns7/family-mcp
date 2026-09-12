@@ -7,7 +7,7 @@ Unofficial, read-only [Abler](https://www.abler.io) MCP server. Written in TypeS
 On macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.3.1/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.4.0/packages/abler-mcp/install.sh | sh
 ```
 
 No runtime, checkout, build step, sudo, or browser download is needed.
@@ -22,7 +22,7 @@ Set `ABLER_VERSION` to select another released package version.
 Supported downloads: macOS arm64 (Apple Silicon) and x64 (Intel), and Linux
 arm64 and x64 with glibc. Alpine/musl and Windows standalone binaries are not
 provided. The executable includes its Bun runtime and dependencies.
-See [release assets and checksums](https://github.com/olafurns7/family-mcp/releases/tag/abler-mcp@0.3.1).
+See [release assets and checksums](https://github.com/olafurns7/family-mcp/releases/tag/abler-mcp@0.4.0).
 
 Then run `"$HOME/.local/bin/abler-mcp" --version`. Add `$HOME/.local/bin` to your
 PATH to use `abler-mcp` directly. Use the full executable path printed by the
@@ -30,7 +30,7 @@ installer in your MCP configuration. The installer leaves shell settings and
 Abler sessions alone.
 
 To choose another installation directory, pass an absolute `ABLER_PREFIX` to
-`sh`, for example `curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.3.1/packages/abler-mcp/install.sh | ABLER_PREFIX="/absolute/path" sh`.
+`sh`, for example `curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.4.0/packages/abler-mcp/install.sh | ABLER_PREFIX="/absolute/path" sh`.
 
 For agent setup and reporting rules, read **[docs/AGENTS.md](docs/AGENTS.md)**.
 

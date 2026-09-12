@@ -13,8 +13,8 @@ macOS and glibc Linux on arm64/x64 are supported. Run the installer for each
 server you use:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.3.1/packages/abler-mcp/install.sh | sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.5.0/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.4.0/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh
 ```
 
 Each installer downloads the matching archive, verifies its SHA-256 checksum and
@@ -184,8 +184,8 @@ InfoMentor services. Native checks build and exercise the standalone releases.
 
 ## Releases
 
-Releases use per-package tags such as `abler-mcp@0.3.1` and
-`infomentor-mcp@0.5.0`. Before a maintainer tags a selected package version, run
+Releases use per-package tags such as `abler-mcp@0.4.0` and
+`infomentor-mcp@0.6.0`. Before a maintainer tags a selected package version, run
 its `release:sync` task to refresh its installer and documentation pins, then
 run `release:check`. The release workflow validates the matching native assets
 and creates a draft release; it does not publish a package to npm.
