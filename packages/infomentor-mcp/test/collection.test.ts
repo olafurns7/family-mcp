@@ -2,11 +2,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
-import { collectUpdates, collectionSchema } from '../src/collection.js';
-import type { CollectionSource } from '../src/collection.js';
-import { InfoMentorError, throwIfAborted } from '../src/session.js';
-import type { Notifications } from '../src/session.js';
+import { test } from 'bun:test';
+import { collectUpdates, collectionSchema, type CollectionSource } from '../src/collection.js';
+import { InfoMentorError, throwIfAborted, type Notifications } from '../src/session.js';
 
 const summary = (id: number) => ({
   id,
@@ -144,11 +142,13 @@ function sourceFor(sessionFile: string) {
   return { source, state };
 }
 
-test('collection snapshots replay deltas, preserve context, and fail without advancing', async (t) => {
+const subtest = async (_name: string, work: () => Promise<void>): Promise<void> => work();
+
+test('collection snapshots replay deltas, preserve context, and fail without advancing', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-collection-'));
 
   try {
-    await t.test(
+    await subtest(
       'baseline, identical grouping, full body edits, replay, and missing references',
       async () => {
         const sessionFile = join(directory, 'normal.json');
@@ -188,18 +188,22 @@ test('collection snapshots replay deltas, preserve context, and fail without adv
         const existing = await collectUpdates({ includeExisting: true }, source);
         assert.equal(existing.updates.length, 7);
         const timetable = existing.updates.find((item) => item.kind === 'timetable');
-        assert.deepEqual(timetable?.childIds, ['first', 'second']);
+        assert.ok(timetable);
+        assert.deepEqual(timetable.childIds, ['first', 'second']);
         const notification = existing.updates.find((item) => item.kind === 'notification');
-        assert.deepEqual(notification?.childIds, ['first', 'second']);
-        assert.equal(notification?.data.state, 'Cleared');
-        assert.ok(notification && !('currentlySelectedPupil' in notification.data));
+        assert.ok(notification);
+        assert.deepEqual(notification.childIds, ['first', 'second']);
+        assert.equal(notification.data.state, 'Cleared');
+        assert.ok(!('currentlySelectedPupil' in notification.data));
 
         state.duplicateNoticeId = true;
         const duplicateId = await collectUpdates({ cursor: baseline.cursor }, source);
         assert.equal(duplicateId.updates.length, 1);
-        assert.equal(duplicateId.updates[0]?.kind, 'notification');
-        assert.equal(duplicateId.updates[0]?.sourceId, '["second",1]');
-        assert.deepEqual(duplicateId.updates[0]?.childIds, ['first', 'second']);
+        const duplicate = duplicateId.updates[0];
+        assert.ok(duplicate);
+        assert.equal(duplicate.kind, 'notification');
+        assert.equal(duplicate.sourceId, '["second",1]');
+        assert.deepEqual(duplicate.childIds, ['first', 'second']);
         state.duplicateNoticeId = false;
 
         state.body = 'Changed body with an unchanged summary';
@@ -207,7 +211,7 @@ test('collection snapshots replay deltas, preserve context, and fail without adv
         assert.notEqual(delta.cursor, baseline.cursor);
         assert.equal(delta.updates.length, 1);
         assert.equal(delta.updates[0]?.kind, 'message');
-        assert.deepEqual(delta.updates[0]?.childIds, ['first', 'second']);
+        assert.deepEqual(delta.updates[0].childIds, ['first', 'second']);
         const replay = await collectUpdates({ cursor: baseline.cursor }, source);
         assert.deepEqual(replay.updates, delta.updates);
         assert.equal(
@@ -226,7 +230,7 @@ test('collection snapshots replay deltas, preserve context, and fail without adv
       },
     );
 
-    await t.test('pagination limit restores selection and writes no snapshot', async () => {
+    await subtest('pagination limit restores selection and writes no snapshot', async () => {
       const sessionFile = join(directory, 'limit.json');
       const { source, state } = sourceFor(sessionFile);
       state.selected = 'second';
@@ -235,7 +239,7 @@ test('collection snapshots replay deltas, preserve context, and fail without adv
       await assert.rejects(stat(sessionFile + '.collections'), { code: 'ENOENT' });
     });
 
-    await t.test(
+    await subtest(
       'selection interference and cancellation restore with a fresh signal',
       async () => {
         const sessionFile = join(directory, 'drift.json');
@@ -252,7 +256,7 @@ test('collection snapshots replay deltas, preserve context, and fail without adv
       },
     );
 
-    await t.test(
+    await subtest(
       'restoration failure prevents a cursor and preserves authentication errors',
       async () => {
         const sessionFile = join(directory, 'restore.json');
@@ -268,7 +272,7 @@ test('collection snapshots replay deltas, preserve context, and fail without adv
       },
     );
 
-    await t.test(
+    await subtest(
       'account mismatch and expired cursors require an explicit new baseline',
       async () => {
         const sessionFile = join(directory, 'account.json');
@@ -288,7 +292,7 @@ test('collection snapshots replay deltas, preserve context, and fail without adv
       },
     );
 
-    await t.test('oversized output fails without a snapshot', async () => {
+    await subtest('oversized output fails without a snapshot', async () => {
       const sessionFile = join(directory, 'large.json');
       const { source, state } = sourceFor(sessionFile);
       state.body = 'x'.repeat(8 * 1024 * 1024);
@@ -297,7 +301,7 @@ test('collection snapshots replay deltas, preserve context, and fail without adv
       await assert.rejects(stat(sessionFile + '.collections'), { code: 'ENOENT' });
     });
 
-    await t.test(
+    await subtest(
       'roster edits abort collection but still restore the available original child',
       async () => {
         const sessionFile = join(directory, 'rename.json');

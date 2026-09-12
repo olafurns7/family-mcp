@@ -11,6 +11,8 @@ export const credentialsSchema = z
 
 export type Credentials = z.infer<typeof credentialsSchema>;
 
+export type OpenBrowser = (url: string) => void;
+
 /** The file must be a regular, owner-only file owned by this user; symlinked secret mounts are refused. */
 export async function readCredentials(file: string, signal?: AbortSignal): Promise<Credentials> {
   throwIfAborted(signal);
@@ -55,6 +57,7 @@ export async function readCredentials(file: string, signal?: AbortSignal): Promi
 export async function promptCredentials(
   signal: AbortSignal,
   onReady?: (url: string) => void,
+  openBrowser: OpenBrowser = openBrowserDefault,
 ): Promise<Credentials> {
   throwIfAborted(signal);
   const pending = Promise.withResolvers<Credentials>();
@@ -101,7 +104,7 @@ export async function promptCredentials(
       let size = 0;
 
       for await (const chunk of request) {
-        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
         size += bytes.length;
 
         if (size > 16_384) {
@@ -175,15 +178,7 @@ export async function promptCredentials(
       process.env['DISPLAY'] ||
       process.env['WAYLAND_DISPLAY']
     ) {
-      const child =
-        process.platform === 'darwin'
-          ? spawn('open', [url], { stdio: 'ignore' })
-          : process.platform === 'win32'
-            ? spawn('rundll32', ['url.dll,FileProtocolHandler', url], { stdio: 'ignore' })
-            : spawn('xdg-open', [url], { stdio: 'ignore' });
-
-      child.on('error', () => {});
-      child.unref();
+      openBrowser(url);
     }
   });
 
@@ -196,4 +191,16 @@ export async function promptCredentials(
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+}
+
+function openBrowserDefault(url: string): void {
+  const child =
+    process.platform === 'darwin'
+      ? spawn('open', [url], { stdio: 'ignore' })
+      : process.platform === 'win32'
+        ? spawn('rundll32', ['url.dll,FileProtocolHandler', url], { stdio: 'ignore' })
+        : spawn('xdg-open', [url], { stdio: 'ignore' });
+
+  child.on('error', () => {});
+  child.unref();
 }

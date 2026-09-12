@@ -251,6 +251,60 @@ async function pruneSnapshots(directory: string): Promise<void> {
   }
 }
 
+async function collectMessagesForChild(
+  source: CollectionSource,
+  childId: string,
+  maxPages: number,
+  signal: AbortSignal,
+  add: (update: Update, childId: string) => void,
+): Promise<void> {
+  for (const folder of ['inbox', 'sent'] as const)
+    await collectFolderMessages(source, childId, folder, maxPages, signal, add);
+}
+
+async function collectFolderMessages(
+  source: CollectionSource,
+  childId: string,
+  folder: Folder,
+  maxPages: number,
+  signal: AbortSignal,
+  add: (update: Update, childId: string) => void,
+): Promise<void> {
+  const seen = new Set<number>();
+
+  for (let page = 1; page <= maxPages; page++) {
+    const messages = messagesPageSchema.parse(await source.getMessages(folder, page, signal));
+
+    for (const summary of messages.items) {
+      if (seen.has(summary.id))
+        throw new InfoMentorError(
+          'UNEXPECTED_PAGE',
+          'InfoMentor message pages overlap or changed during collection. No cursor was advanced.',
+        );
+      seen.add(summary.id);
+      const detail = messageDetailSchema.parse(await source.getMessage(summary.id, signal));
+
+      if (detail.id !== summary.id)
+        throw new InfoMentorError(
+          'UNEXPECTED_PAGE',
+          'InfoMentor returned a different message than requested. No cursor was advanced.',
+        );
+      add(
+        { kind: 'message', sourceId: String(detail.id), folder, childIds: [], data: detail },
+        childId,
+      );
+    }
+
+    if (!messages.more) return;
+
+    if (!messages.items.length || page === maxPages)
+      throw new InfoMentorError(
+        'UNEXPECTED_PAGE',
+        'The complete message history could not be collected within maxMessagePages. Increase the limit and retry; no cursor was advanced.',
+      );
+  }
+}
+
 /** The caller holds the authenticated account lock for this entire operation. */
 export async function collectUpdates(
   request: CollectRequest,
@@ -350,41 +404,7 @@ export async function collectUpdates(
         child.id,
       );
 
-      for (const folder of ['inbox', 'sent'] as const) {
-        const seen = new Set<number>();
-
-        for (let page = 1; page <= input.maxMessagePages; page++) {
-          const messages = messagesPageSchema.parse(await source.getMessages(folder, page, signal));
-
-          for (const summary of messages.items) {
-            if (seen.has(summary.id))
-              throw new InfoMentorError(
-                'UNEXPECTED_PAGE',
-                'InfoMentor message pages overlap or changed during collection. No cursor was advanced.',
-              );
-            seen.add(summary.id);
-            const detail = messageDetailSchema.parse(await source.getMessage(summary.id, signal));
-
-            if (detail.id !== summary.id)
-              throw new InfoMentorError(
-                'UNEXPECTED_PAGE',
-                'InfoMentor returned a different message than requested. No cursor was advanced.',
-              );
-            add(
-              { kind: 'message', sourceId: String(detail.id), folder, childIds: [], data: detail },
-              child.id,
-            );
-          }
-
-          if (!messages.more) break;
-
-          if (!messages.items.length || page === input.maxMessagePages)
-            throw new InfoMentorError(
-              'UNEXPECTED_PAGE',
-              'The complete message history could not be collected within maxMessagePages. Increase the limit and retry; no cursor was advanced.',
-            );
-        }
-      }
+      await collectMessagesForChild(source, child.id, input.maxMessagePages, signal, add);
 
       for (const item of z.array(notificationSchema).parse(await source.getNotifications(signal))) {
         add(

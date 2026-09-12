@@ -47,7 +47,13 @@ export class InfoMentorError extends Error {
   }
 }
 
-export type SessionOptions = { sessionFile?: string; credentialsFile?: string };
+export type HttpFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+export type WriteSession = (
+  session: SavedSession,
+  path?: string,
+  signal?: AbortSignal,
+) => Promise<void>;
 
 const isInfoMentorHost = (host: string): boolean =>
   host === 'infomentor.is' || host.endsWith('.infomentor.is');
@@ -115,6 +121,13 @@ export const savedSessionSchema = z.object({
 });
 
 export type SavedSession = z.infer<typeof savedSessionSchema>;
+
+export type SessionOptions = {
+  sessionFile?: string;
+  credentialsFile?: string;
+  fetch?: HttpFetch;
+  writeSession?: WriteSession;
+};
 
 /** Epoch milliseconds until which every process sharing this session must pause; 0 when none. */
 export function rateLimitCooldown(session: SavedSession): number {
