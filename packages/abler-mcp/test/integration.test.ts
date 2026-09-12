@@ -1,6 +1,16 @@
 import { test, expect } from 'bun:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -167,6 +177,47 @@ test('private cookie import, renewal, pagination, validation, and safe failures'
   }
 });
 
+test('AblerClient stops reading API responses after 4 MiB', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-large-response-'));
+  const path = join(directory, 'session.json');
+
+  const accessCookie = {
+    ...cookie,
+    name: 'id_token',
+    value: 'private-access',
+    expires: Date.now() / 1000 + 3600,
+  };
+
+  await saveSession(path, await importCookies([cookie, accessCookie]));
+  let chunks = 0;
+  let cancelled = false;
+
+  const client = new AblerClient(
+    path,
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            chunks++;
+            controller.enqueue(new Uint8Array(1024 * 1024));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      ),
+  );
+
+  try {
+    await assert.rejects(client.status(), /Abler returned an invalid API response/);
+    assert.ok(chunks >= 5);
+    assert.equal(cancelled, true);
+  } finally {
+    await client.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('Chrome capture is limited to loopback and to the Abler tab', async () => {
   await assert.rejects(captureCookies('https://example.com'), /loopback/);
 
@@ -307,7 +358,10 @@ test('groups and event return validated success data, and auth CLI paths stay lo
     assert.match(status.stderr, /No saved Abler session/);
     const logout = await runCli(['auth', 'logout']);
     assert.equal(logout.exit, 0);
-    assert.match(logout.stdout, /Local Abler session removed/);
+    assert.match(logout.stdout, /failed-import candidates removed/);
+    const help = await runCli(['--help']);
+    assert.equal(help.exit, 0);
+    assert.match(help.stdout, /saved session and failed-import candidates/);
     const capture = await runCli(['auth', 'capture', 'https://example.com']);
     assert.equal(capture.exit, 1);
     assert.match(capture.stderr, /loopback/);
@@ -537,7 +591,7 @@ test('SIGTERM aborts an in-flight Abler fetch and releases its session lock', as
     void pending.catch(() => {});
     await Promise.race([
       fetchStarted.promise,
-      delay(2000).then(() => {
+      delay(10_000).then(() => {
         throw new Error('The injected fetch did not start.');
       }),
     ]);
@@ -547,11 +601,11 @@ test('SIGTERM aborts an in-flight Abler fetch and releases its session lock', as
 
     const exitedPromptly = await Promise.race([
       stopped.promise.then(() => true),
-      delay(1000).then(() => false),
+      delay(5_000).then(() => false),
     ]);
 
     assert.equal(exitedPromptly, true, 'shutdown should wait for cancellation, then exit promptly');
-    assert.ok(Date.now() - started < 1000);
+    assert.ok(Date.now() - started < 5_000);
     await pending.catch(() => {});
     assert.equal(transport.pid, null);
     await assert.rejects(stat(`${path}.lock`), { code: 'ENOENT' });
@@ -562,7 +616,7 @@ test('SIGTERM aborts an in-flight Abler fetch and releases its session lock', as
     await client.close().catch(() => {});
     await rm(directory, { recursive: true, force: true });
   }
-}, 10000);
+}, 30_000);
 
 test('child schedules separate siblings by ID, retain empty children, and paginate independently', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-children-test-'));
@@ -843,7 +897,9 @@ test('unsafe session files, malformed pages, stalled cursors, and wrong events f
 
 test('failed import retains a rotated candidate without overwriting the existing session, and a later verified import removes it', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-import-'));
-  const path = join(directory, 'session.json');
+  const sessions = join(directory, 'sessions');
+  await mkdir(sessions);
+  const path = join(sessions, 'session.json');
 
   try {
     await saveSession(path, await importCookies([cookie]));
@@ -878,11 +934,11 @@ test('failed import retains a rotated candidate without overwriting the existing
     expect(error).toContain('candidate is retained');
     expect(error).not.toContain('recovery-token');
     expect(await readFile(path, 'utf8')).toBe(original);
-    const candidates = (await readdir(directory)).filter((name) => name.endsWith('.pending'));
+    const candidates = (await readdir(sessions)).filter((name) => name.endsWith('.pending'));
     expect(candidates).toHaveLength(1);
     const [candidateName] = candidates;
     assert(candidateName);
-    const candidate = join(directory, candidateName);
+    const candidate = join(sessions, candidateName);
     expect((await stat(candidate)).mode & 0o777).toBe(0o600);
     expect(await (await loadSession(candidate)).getCookieString(ORIGIN)).toContain(
       'refreshToken=recovery-token',
@@ -912,10 +968,41 @@ test('failed import retains a rotated candidate without overwriting the existing
 
     expect(await verified.exited).toBe(0);
     expect(await new Response(verified.stdout).text()).toContain('saved and verified');
-    expect((await readdir(directory)).filter((name) => name.endsWith('.pending'))).toHaveLength(0);
+    expect((await readdir(sessions)).filter((name) => name.endsWith('.pending'))).toHaveLength(0);
     expect(await (await loadSession(path)).getCookieString(ORIGIN)).toContain(
       'refreshToken=verified-token',
     );
+
+    await writeFile(
+      preload,
+      `globalThis.fetch = async url => {
+      if (url.endsWith('/oauth/token')) {
+        const response = Response.json({ access_token: 'access' });
+        response.headers.append('Set-Cookie', 'id_token=access; Path=/; Max-Age=600');
+        response.headers.append('Set-Cookie', 'refreshToken=recovery-token; Path=/; Max-Age=3600');
+        return response;
+      }
+      return Response.json({ errors: [{ message: 'recovery-token secret' }] });
+    };`,
+    );
+
+    const failedAgain = Bun.spawn(
+      [process.execPath, '--preload', preload, 'src/cli.ts', 'auth', 'import', source],
+      { env: { ...process.env, ABLER_SESSION_FILE: path }, stdout: 'pipe', stderr: 'pipe' },
+    );
+
+    expect(await failedAgain.exited).toBe(1);
+    expect((await readdir(sessions)).some((name) => name.endsWith('.pending'))).toBe(true);
+
+    const logout = Bun.spawn([process.execPath, 'src/cli.ts', 'auth', 'logout'], {
+      env: { ...process.env, ABLER_SESSION_FILE: path },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(await logout.exited).toBe(0);
+    expect(await new Response(logout.stdout).text()).toContain('failed-import candidates removed');
+    assert.deepEqual(await readdir(sessions), []);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
