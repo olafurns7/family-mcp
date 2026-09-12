@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
+import { startStdio } from '@family-mcp/mcp-runtime';
 import { importSession, login } from './login.js';
 import { InfoMentorClient } from './client.js';
-import { createServer, packageInfo } from './server.js';
-import type { ServerOptions } from './server.js';
+import { createServer, packageInfo, type ServerOptions } from './server.js';
 import { InfoMentorError, sessionPath } from './session.js';
 
 const help = [
@@ -36,6 +35,14 @@ const help = [
   '             INFOMENTOR_USERNAME (kennitala or username), INFOMENTOR_PASSWORD',
 ].join('\n');
 
+const stdout = (message: string): void => {
+  process.stdout.write(message + '\n');
+};
+
+const stderr = (message: string): void => {
+  process.stderr.write(message + '\n');
+};
+
 async function main(): Promise<void> {
   let parsed;
 
@@ -64,13 +71,13 @@ async function main(): Promise<void> {
   const { values, positionals } = parsed;
 
   if (values.help) {
-    console.log(help);
+    stdout(help);
 
     return;
   }
 
   if (values.version) {
-    console.log(packageInfo.version);
+    stdout(packageInfo.version);
 
     return;
   }
@@ -104,19 +111,7 @@ async function main(): Promise<void> {
   if (values['allow-setup-tools']) options.allowSetupTools = true;
 
   if (command === 'serve') {
-    const server = createServer(options);
-
-    const stop = (): void => {
-      void server.close().catch(() => {
-        process.exitCode = 1;
-      });
-    };
-
-    // Stdio EOF and process termination cancel network requests and local login setup.
-    process.stdin.once('end', stop);
-    process.once('SIGINT', stop);
-    process.once('SIGTERM', stop);
-    await server.connect(new StdioServerTransport());
+    startStdio(() => createServer(options));
 
     return;
   }
@@ -135,7 +130,7 @@ async function main(): Promise<void> {
             { ...options, allowAccountChange: values['allow-account-change'] ?? false },
             controller.signal,
           );
-          console.error('Session imported and verified.');
+          stderr('Session imported and verified.');
 
           return;
         }
@@ -160,7 +155,7 @@ async function main(): Promise<void> {
           allowAccountChange: values['allow-account-change'] ?? false,
           timeoutMs: timeout.data * 1000,
           onProgress(stage: 'waiting' | 'saved', url?: string): void {
-            console.error(
+            stderr(
               stage === 'saved'
                 ? 'Signed in. Session saved to ' + sessionPath(options.sessionFile)
                 : 'Open the private sign-in form: ' + url,
@@ -182,7 +177,11 @@ async function main(): Promise<void> {
 
         try {
           const status = await client.getSessionStatus(controller.signal);
-          console.error(status.authenticated ? 'InfoMentor session is active.' : status.nextStep);
+          stderr(
+            status.authenticated
+              ? 'InfoMentor session is active.'
+              : (status.nextStep ?? 'Sign in with infomentor_login.'),
+          );
 
           if (!status.authenticated) process.exitCode = 1;
         } finally {
@@ -201,7 +200,7 @@ async function main(): Promise<void> {
           await client.close();
         }
 
-        console.error('Local InfoMentor session removed.');
+        stderr('Local InfoMentor session removed.');
 
         return;
       }
@@ -219,7 +218,7 @@ async function main(): Promise<void> {
 }
 
 void main().catch((cause: unknown) => {
-  console.error(
+  stderr(
     cause instanceof InfoMentorError
       ? cause.message
       : 'InfoMentor operation failed. Check the network and session-file permissions.',

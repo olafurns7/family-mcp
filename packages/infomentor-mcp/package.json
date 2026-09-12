@@ -49,7 +49,7 @@
     "format": "oxfmt -c ../../.oxfmtrc.json --write .",
     "format:check": "oxfmt -c ../../.oxfmtrc.json --check .",
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
-    "test": "bun run build && bun build ./test/*.test.ts --target=node --packages=external --outdir=.test-build && node --test .test-build/*.test.js",
+    "test": "bun test",
     "prepack": "bun run check && bun run build",
     "prepublishOnly": "bun run validate",
     "validate": "bun run format:check && bun run lint && bun run check && bun run test",
@@ -64,6 +64,7 @@
     "release:sync": "node ../../tooling/release/sync-version.mjs --package ."
   },
   "dependencies": {
+    "@family-mcp/mcp-runtime": "workspace:^",
     "@family-mcp/session-store": "workspace:*",
     "@modelcontextprotocol/server": "^2.0.0",
     "htmlparser2": "^12.0.0",
@@ -75,6 +76,7 @@
     "@family-mcp/release-tooling": "workspace:*",
     "@family-mcp/tsconfig": "workspace:*",
     "@modelcontextprotocol/client": "^2.0.0",
+    "@types/bun": "^1.2.19",
     "@types/node": "^22.20.2"
   },
   "engines": {
