@@ -34,13 +34,17 @@ runs the MCP host. Configuration files do not reliably expand `~` or `$HOME`.
    0.4.0
    ```
 
-3. **Sign in on a computer with Chrome, then capture its loopback-only profile.**
+3. **Sign in in the browser window opened by `auth login`.**
 
    ```sh
-   /absolute/path/to/.local/bin/abler-mcp auth capture http://127.0.0.1:9222
+   /absolute/path/to/.local/bin/abler-mcp auth login
    ```
 
-   Expected output starts with `Abler session saved and verified:`.
+   It prints `Sign in to Abler in the browser window that opened.` and, after
+   verification, `Abler session saved and verified: /path/to/session.json`.
+   The temporary profile is removed when login finishes. For an existing
+   debugging browser, use `auth capture`; for a private cookie export, use
+   `auth import`.
 
 4. **Configure one MCP host** with the Abler-only Claude Desktop, Claude Code, or Codex block in [Abler MCP](#abler-mcp).
 
@@ -111,8 +115,24 @@ rm -rf /absolute/path/to/.local/share/abler-mcp
 
 ### Sign in
 
-**Start a separate Chrome profile with loopback debugging.** Sign in normally
-at Abler and leave the signed-in tab open.
+**Use the temporary-browser login.** Run the command, sign in normally in the
+window it opens, and wait for the verified-session message:
+
+```sh
+/absolute/path/to/.local/bin/abler-mcp auth login
+```
+
+`auth login` finds Chrome, Chromium, Brave, or Edge, opens a fresh profile with
+a random debugging port bound to `127.0.0.1`, and removes that profile after
+capturing and verifying the session. It waits 300 seconds by default; use
+`--timeout <seconds>` to change that or `--browser /path/to/chromium` to choose
+an executable. `ABLER_BROWSER` is the environment-variable alternative.
+`--keep-browser` leaves the browser and profile open for debugging; the profile
+contains live credentials and should be removed when no longer needed.
+
+**Capture from an existing debugging browser** when you need a non-default
+browser or already have a separate profile open. Sign in normally at Abler and
+leave the signed-in tab open.
 
 ```sh
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir=/absolute/path/abler-chrome-profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 https://www.abler.io/sign-on/login
@@ -120,7 +140,7 @@ at Abler and leave the signed-in tab open.
 
 On Linux, use the Chrome or Chromium executable with the same flags.
 
-**Capture the signed-in browser session.**
+Then capture the signed-in browser session:
 
 ```sh
 /absolute/path/to/.local/bin/abler-mcp auth capture http://127.0.0.1:9222

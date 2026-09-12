@@ -194,7 +194,7 @@ export async function saveSession(path: string, jar: CookieJar): Promise<void> {
 }
 
 /** Attach to an existing Chromium page; the server itself never needs a browser. */
-export async function captureCookies(endpoint: string): Promise<CookieJar> {
+export async function captureCookies(endpoint: string, signal?: AbortSignal): Promise<CookieJar> {
   const url = new URL(endpoint);
 
   if (
@@ -208,7 +208,9 @@ export async function captureCookies(endpoint: string): Promise<CookieJar> {
 
   const response = await fetch(new URL('/json/list', url), {
     redirect: 'error',
-    signal: AbortSignal.timeout(10000),
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(10000)])
+      : AbortSignal.timeout(10000),
   });
 
   if (!response.ok) throw new SafeError('Cannot list Chrome debugging tabs.');
@@ -236,8 +238,11 @@ export async function captureCookies(endpoint: string): Promise<CookieJar> {
     throw new SafeError('Chrome returned an unexpected debugging address.');
   }
 
+  signal?.throwIfAborted();
+
   const result = await new Promise<CookieInput>((accept, reject) => {
     const socket = new WebSocket(socketUrl);
+    let settled = false;
 
     const timer = setTimeout(
       () => finish(new SafeError('Chrome session capture timed out.')),
@@ -245,13 +250,20 @@ export async function captureCookies(endpoint: string): Promise<CookieJar> {
     );
 
     const finish = (error?: Error, value?: CookieInput) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
 
       if (error) reject(error);
       else if (value) accept(value);
       else reject(new SafeError('Chrome returned no cookies.'));
       socket.close();
     };
+
+    const abort = () => finish(new SafeError('Chrome session capture was cancelled.'));
+
+    signal?.addEventListener('abort', abort, { once: true });
 
     socket.addEventListener('open', () =>
       socket.send(
@@ -286,10 +298,11 @@ export async function captureCookies(endpoint: string): Promise<CookieJar> {
     socket.addEventListener('error', () =>
       finish(new SafeError('Cannot connect to Chrome debugging.')),
     );
-    socket.addEventListener('close', () => {
-      clearTimeout(timer);
-      reject(new SafeError('Chrome debugging connection closed.'));
-    });
+    socket.addEventListener('close', () =>
+      finish(new SafeError('Chrome debugging connection closed.')),
+    );
+
+    if (signal?.aborted) abort();
   });
 
   return importCookies(cookieInputSchema.parse(result));

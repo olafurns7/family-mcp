@@ -8,9 +8,28 @@ For agent setup and reporting rules, read **[docs/AGENTS.md](docs/AGENTS.md)**.
 
 ## Authenticate once, then run headlessly
 
-Initial sign-in happens in Abler's own browser UI using phone/email and a code, or Google. After importing the session, the package renews the access cookie automatically and saves cookie rotation. The refresh credential is an Abler session; no Google credentials are collected.
+Initial sign-in happens in Abler's own browser UI using phone/email and a code, or Google. After sign-in, the package renews the access cookie automatically and saves cookie rotation. The refresh credential is an Abler session; no Google credentials are collected.
+
+### Sign in with a temporary browser
+
+Run the primary sign-in command:
+
+```sh
+abler-mcp auth login
+```
+
+It opens a fresh browser profile, waits up to 300 seconds for sign-in, captures
+only the `refreshToken` and `id_token` cookies, verifies the session, and saves
+it. The profile is created with mode `0700` under the OS temporary directory,
+then the browser is closed and the profile is deleted on success, timeout, or
+cancellation. Set `ABLER_BROWSER` or pass `--browser /path/to/chromium` to choose
+a browser; `--timeout <seconds>` changes the wait. `--keep-browser` leaves the
+browser and profile open for debugging; that profile contains live credentials.
 
 ### Capture from Chrome
+
+Use this when Chrome is already running with a debugging port or you need a
+browser other than the automatically discovered one.
 
 Start a separate Chrome profile with a debugging port bound to loopback. For example, on macOS:
 
