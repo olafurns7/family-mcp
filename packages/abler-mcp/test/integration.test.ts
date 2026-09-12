@@ -3,14 +3,16 @@ import assert from 'node:assert/strict';
 import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
-import { Client } from '@modelcontextprotocol/client';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import * as z from 'zod/v4';
 
 import { AblerClient, childSchedulesInput, scheduleInput } from '../src/api.js';
 import { captureCookies, importCookies, loadSession, ORIGIN, saveSession } from '../src/auth.js';
+import { createServer } from '../src/server.js';
 
 const requestBodySchema = z.object({
   operationName: z.string(),
@@ -40,7 +42,7 @@ const cookie = {
   expires: Date.now() / 1000 + 3600,
 };
 
-test('private cookie import, renewal, pagination, validation, and redacted failures', async () => {
+test('private cookie import, renewal, pagination, validation, and safe failures', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-test-'));
   const path = join(directory, 'session.json');
 
@@ -143,7 +145,7 @@ test('private cookie import, renewal, pagination, validation, and redacted failu
     await assert.rejects(client.schedule({ first: 101 }));
     assert.throws(() => scheduleInput.parse({ participantId: 'child-a' }));
     await assert.rejects(client.schedule({ participantIds: [] }));
-    await assert.rejects(client.status(), /Abler rejected SessionStatus/);
+    await assert.rejects(client.status(), /Abler rejected the request/);
     const stored = await loadSession(path);
     const access = (await stored.getCookies(ORIGIN)).find((c) => c.key === 'id_token');
     assert(access);
@@ -314,6 +316,138 @@ test('groups and event return validated success data, and auth CLI paths stay lo
   }
 });
 
+test('all six Abler tools complete MCP round trips with optional and null upstream fields', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-mcp-roundtrip-'));
+  const path = join(directory, 'session.json');
+
+  const children = [
+    { id: 'child-a', displayName: 'Alex' },
+    { id: 'child-b', displayName: 'Jamie' },
+  ];
+
+  const event = {
+    eventId: 'event-a',
+    name: 'Practice',
+    description: null,
+    from: '2026-09-11T16:00:00Z',
+    to: null,
+    arrivalTime: null,
+    locationDetails: null,
+    locationAddress: null,
+    locationLink: null,
+    ageGroup: { id: 'age-group', name: 'U12' },
+    groups: [{ id: 'subgroup', name: 'Blue' }],
+    currentPlayerAttendance: children.map((player) => ({
+      player,
+      status: null,
+      coachStatus: null,
+    })),
+  };
+
+  const request = async (_url: string, init: RequestInit): Promise<Response> => {
+    const { operationName } = z
+      .object({ operationName: z.string(), variables: z.record(z.string(), z.unknown()) })
+      .parse(await new Request('https://example.test', init).json());
+
+    switch (operationName) {
+      case 'SessionStatus':
+        return Response.json({ data: { me: { id: 'parent', displayName: 'Parent' } } });
+      case 'Profile':
+        return Response.json({
+          data: { me: { id: 'parent', displayName: 'Parent', children } },
+        });
+      case 'Groups':
+        return Response.json({
+          data: {
+            me: {
+              userAgeGroups: [
+                {
+                  id: 'age-group',
+                  name: 'U12',
+                  groups: [{ id: 'subgroup', name: 'Blue', label: null }],
+                  sport: null,
+                },
+              ],
+            },
+          },
+        });
+      case 'Schedule':
+        return Response.json({
+          data: {
+            schedule: {
+              edges: [{ node: event }],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        });
+      case 'Event':
+        return Response.json({
+          data: {
+            event: {
+              edges: [{ node: event }],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        });
+      default:
+        throw new Error('Unexpected Abler operation.');
+    }
+  };
+
+  const accessCookie = {
+    ...cookie,
+    name: 'id_token',
+    value: 'private-access',
+    expires: Date.now() / 1000 + 3600,
+  };
+
+  await saveSession(path, await importCookies([cookie, accessCookie]));
+
+  const abler = new AblerClient(path, request);
+  const server = createServer(abler);
+  const client = new Client({ name: 'abler-roundtrip', version: '1.0.0' });
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const results = new Map<string, Awaited<ReturnType<typeof client.callTool>>>();
+
+    for (const [name, args] of [
+      ['auth_status', {}],
+      ['get_profile', {}],
+      ['list_groups', {}],
+      ['list_schedule', {}],
+      ['list_child_schedules', {}],
+      ['get_event', { eventId: 'event-a', ageGroupId: 'age-group' }],
+    ] as const) {
+      const result = await client.callTool({ name, arguments: args });
+      assert.notEqual(result.isError, true, `${name}: ${JSON.stringify(result.content)}`);
+      assert.ok(result.structuredContent, `${name} should return structured output`);
+      results.set(name, result);
+    }
+
+    assert.equal(results.size, 6);
+    assert.deepEqual(
+      z
+        .object({ events: z.array(z.object({ description: z.null(), to: z.null() })) })
+        .parse(results.get('list_schedule')?.structuredContent).events,
+      [{ description: null, to: null }],
+    );
+    assert.equal(
+      z
+        .object({ groups: z.array(z.object({ sport: z.null() })) })
+        .parse(results.get('list_groups')?.structuredContent).groups[0]?.sport,
+      null,
+    );
+  } finally {
+    await client.close();
+    await server.close();
+    await abler.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('MCP executable exposes only read tools and reports missing auth without protocol noise', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-mcp-test-'));
   const client = new Client({ name: 'abler-check', version: '1.0.0' });
@@ -355,6 +489,80 @@ test('MCP executable exposes only read tools and reports missing auth without pr
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('SIGTERM aborts an in-flight Abler fetch and releases its session lock', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-shutdown-'));
+  const path = join(directory, 'session.json');
+  const preload = join(directory, 'never-fetch.js');
+  await saveSession(
+    path,
+    await importCookies([cookie, { ...cookie, name: 'id_token', value: 'private-access' }]),
+  );
+  await writeFile(
+    preload,
+    `globalThis.fetch = (_input, init) => new Promise((_resolve, reject) => {
+      process.stderr.write('FETCH_STARTED\\n');
+      const signal = init?.signal;
+      const abort = () => reject(new DOMException('Aborted', 'AbortError'));
+      if (signal?.aborted) abort();
+      else signal?.addEventListener('abort', abort, { once: true });
+    });\n`,
+    { mode: 0o600 },
+  );
+  const client = new Client({ name: 'abler-shutdown-test', version: '1.0.0' });
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ['--preload', preload, 'src/cli.ts'],
+    cwd: resolve('.'),
+    env: { ...process.env, ABLER_SESSION_FILE: path },
+    stderr: 'pipe',
+  });
+
+  const fetchStarted = Promise.withResolvers<void>();
+  const stopped = Promise.withResolvers<void>();
+  transport.stderr?.on('data', (chunk) => {
+    if (String(chunk).includes('FETCH_STARTED')) fetchStarted.resolve();
+  });
+  // oxlint-disable-next-line unicorn/prefer-add-event-listener -- The SDK transport exposes only onclose.
+  transport.onclose = () => stopped.resolve();
+
+  let pending: Promise<unknown> | undefined;
+
+  try {
+    await client.connect(transport);
+    const pid = transport.pid;
+    assert.ok(pid);
+    pending = client.callTool({ name: 'auth_status', arguments: {} });
+    void pending.catch(() => {});
+    await Promise.race([
+      fetchStarted.promise,
+      delay(2000).then(() => {
+        throw new Error('The injected fetch did not start.');
+      }),
+    ]);
+    await stat(`${path}.lock`);
+    const started = Date.now();
+    process.kill(pid, 'SIGTERM');
+
+    const exitedPromptly = await Promise.race([
+      stopped.promise.then(() => true),
+      delay(1000).then(() => false),
+    ]);
+
+    assert.equal(exitedPromptly, true, 'shutdown should wait for cancellation, then exit promptly');
+    assert.ok(Date.now() - started < 1000);
+    await pending.catch(() => {});
+    assert.equal(transport.pid, null);
+    await assert.rejects(stat(`${path}.lock`), { code: 'ENOENT' });
+    assert.deepEqual((await readdir(directory)).toSorted(), ['never-fetch.js', 'session.json']);
+  } finally {
+    if (transport.pid !== null) process.kill(transport.pid, 'SIGKILL');
+    await pending?.catch(() => {});
+    await client.close().catch(() => {});
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 10000);
 
 test('child schedules separate siblings by ID, retain empty children, and paginate independently', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-children-test-'));

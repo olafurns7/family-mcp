@@ -20,10 +20,7 @@ export const VERSION = manifest.version;
 
 export const packageInfo = { name: manifest.name, version: VERSION };
 
-const result = <T extends Record<string, unknown>>(work: () => Promise<T>) =>
-  toolResult(work, {
-    onUnknownError: (error) => (error instanceof Error ? error.message : 'Abler request failed.'),
-  });
+const result = <T extends Record<string, unknown>>(work: () => Promise<T>) => toolResult(work);
 
 export function createServer(client = new AblerClient()) {
   const server = new McpServer(packageInfo, {
