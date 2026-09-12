@@ -19,7 +19,7 @@ test('HTTP responses over 8 MiB are rejected before buffering', async () => {
 });
 
 test('Retry-After HTTP-date produces a bounded cooldown', async () => {
-  const retryAt = new Date(Date.now() + 5000).toUTCString();
+  const retryAt = new Date(Date.now() + 60_000).toUTCString();
 
   const fetcher = async (): Promise<Response> =>
     new Response(null, { status: 429, headers: { 'Retry-After': retryAt } });
@@ -30,8 +30,8 @@ test('Retry-After HTTP-date produces a bounded cooldown', async () => {
     return (
       error instanceof InfoMentorError &&
       error.code === 'RATE_LIMITED' &&
-      (error.retryAfterMs ?? 0) > 3000 &&
-      (error.retryAfterMs ?? 0) <= 5000
+      (error.retryAfterMs ?? 0) > 55_000 &&
+      (error.retryAfterMs ?? 0) <= 60_000
     );
   });
 });

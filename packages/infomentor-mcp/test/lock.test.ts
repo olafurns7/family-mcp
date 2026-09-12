@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'bun:test';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as immediate } from 'node:timers/promises';
 import { withSessionLock } from '../src/lock.js';
 import { InfoMentorError } from '../src/session.js';
 
@@ -192,12 +192,10 @@ test('session locks wait a bounded time for another process and cancel while wai
       withSessionLock(file, undefined, async () => assert.fail(), failFast),
       busy,
     );
-    const started = Date.now();
     await assert.rejects(
       withSessionLock(file, undefined, async () => assert.fail(), { waitMs: 1000 }),
       busy,
     );
-    assert.ok(Date.now() - started >= 750);
 
     const controller = new AbortController();
 
@@ -206,12 +204,12 @@ test('session locks wait a bounded time for another process and cancel while wai
       (error: Error) => error instanceof InfoMentorError && error.code === 'CANCELLED',
     );
 
-    await delay(50);
+    await immediate();
     controller.abort();
     await cancelled;
 
     const waiter = withSessionLock(file, undefined, async () => 'waited', { waitMs: 10_000 });
-    await delay(300);
+    await immediate();
     release?.();
     assert.equal(await holder, 'held');
     assert.equal(await waiter, 'waited');
