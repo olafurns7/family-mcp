@@ -162,41 +162,6 @@
       }
     },
     {
-      "files": ["packages/abler-mcp/**"],
-      "rules": {
-        "anti-slop/no-conditional-empty-object-spread": "off",
-        "anti-slop/no-known-value-widening": "off",
-        "anti-slop/no-runtime-typeof": "off",
-        "anti-slop/no-unknown-parameters": "off",
-        "anti-slop/no-unknown-returns": "off",
-        "anti-slop/no-unsafe-dictionary-type": "off",
-        "anti-slop/require-readable-spacing": "off"
-      }
-    },
-    {
-      "files": ["packages/infomentor-mcp/src/**"],
-      "rules": {
-        "eslint/max-depth": "off",
-        "eslint/no-console": "off",
-        "eslint/no-duplicate-imports": "off",
-        "promise/always-return": "off",
-        "typescript/no-unnecessary-condition": "off",
-        "typescript/no-unsafe-argument": "off"
-      }
-    },
-    {
-      "files": ["packages/infomentor-mcp/test/**"],
-      "rules": {
-        "eslint/no-duplicate-imports": "off",
-        "oxc/no-map-spread": "off",
-        "typescript/no-base-to-string": "off",
-        "typescript/no-floating-promises": "off",
-        "typescript/no-non-null-assertion": "off",
-        "typescript/no-unnecessary-condition": "off",
-        "typescript/no-unsafe-argument": "off"
-      }
-    },
-    {
       "files": ["tooling/release/*.mjs"],
       "rules": {
         "no-console": "off"
