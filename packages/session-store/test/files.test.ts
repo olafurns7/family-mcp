@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import {
   chmod,
+  link,
   mkdir,
   mkdtemp,
   readdir,
@@ -25,11 +26,21 @@ import {
   sweepTempInDirectory,
   writePrivateFile,
 } from '../src/index.js';
+import { fileChanged } from '../src/files.js';
 
 const hasCode =
   (code: string) =>
   (cause: unknown): boolean =>
     cause instanceof SessionStoreError && cause.code === code;
+
+test('detects inode, size, and modification-time changes between read stats', () => {
+  const before = { ino: 1, size: 6, mtimeMs: 1000 };
+
+  expect(fileChanged(before, before)).toBe(false);
+  expect(fileChanged(before, { ...before, ino: 2 })).toBe(true);
+  expect(fileChanged(before, { ...before, size: 7 })).toBe(true);
+  expect(fileChanged(before, { ...before, mtimeMs: 1001 })).toBe(true);
+});
 
 test('private files are written atomically with owner-only permissions and read back', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'session-store-files-'));
@@ -84,6 +95,40 @@ test('private files are written atomically with owner-only permissions and read 
       expect(await readPrivateFile(join(directory, 'link.json'), { maxBytes: 8 })).toBe('unlinked');
     }
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('rejects hard-linked session files', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'session-store-hard-link-'));
+  const file = join(directory, 'session.json');
+
+  try {
+    await writePrivateFile(file, 'private');
+    await link(file, join(directory, 'alias.json'));
+    await assert.rejects(readPrivateFile(file, { maxBytes: 1024 }), hasCode('UNSAFE_FILE'));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('rejects files owned by another user', async () => {
+  const getuid = process.getuid;
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'getuid');
+
+  if (getuid === undefined || descriptor === undefined) return;
+  const directory = await mkdtemp(join(tmpdir(), 'session-store-foreign-owner-'));
+  const file = join(directory, 'session.json');
+
+  try {
+    await writePrivateFile(file, 'private');
+    Object.defineProperty(process, 'getuid', {
+      ...descriptor,
+      value: () => getuid() + 1,
+    });
+    await assert.rejects(readPrivateFile(file, { maxBytes: 1024 }), hasCode('UNSAFE_FILE'));
+  } finally {
+    Object.defineProperty(process, 'getuid', descriptor);
     await rm(directory, { recursive: true, force: true });
   }
 });
