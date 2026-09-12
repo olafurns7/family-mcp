@@ -38,6 +38,9 @@ export async function withSessionLock<T>(path: string, work: () => Promise<T>): 
       throw new Error('Another process took over the Abler session lock. Retry the request.');
     }
 
+    if (error.code === 'UNSAFE_FILE')
+      throw new Error('The Abler session file has hard links, which are unsupported.');
+
     throw new Error(
       'Cannot lock the Abler session. Another request may be busy; retry shortly and check directory permissions.',
     );
@@ -143,7 +146,7 @@ export async function loadSession(path: string): Promise<CookieJar> {
     }
 
     throw new Error(
-      'Cannot read the Abler session file. Use a regular file that you own with owner-only permissions (chmod 600 on Unix), not a symlink.',
+      'Cannot read the Abler session file. Use a regular file that you own with owner-only permissions (chmod 600 on Unix), not a symlink or hard link.',
     );
   }
 

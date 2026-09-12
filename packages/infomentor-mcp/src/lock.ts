@@ -33,6 +33,12 @@ export async function withSessionLock<T>(
 
     if (!(error instanceof SessionStoreError)) throw error;
 
+    if (error.code === 'UNSAFE_FILE')
+      throw new InfoMentorError(
+        'INVALID_CONFIGURATION',
+        'The InfoMentor session file has hard links, which are unsupported.',
+      );
+
     if (error.code === 'BUSY')
       throw new InfoMentorError(
         'OPERATION_IN_PROGRESS',
