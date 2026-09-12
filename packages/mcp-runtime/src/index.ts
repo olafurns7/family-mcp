@@ -6,19 +6,20 @@ import type {
 } from '@modelcontextprotocol/server';
 import { ZodError } from 'zod/v4';
 
-export type UnknownErrorHandler = (error: Error) => string;
-
-export type ToolResultOptions = {
-  onUnknownError?: UnknownErrorHandler;
-};
-
 const UNKNOWN_ERROR = 'The operation failed. Check the server logs for details.';
 
 const ZOD_ERROR = 'Invalid input or unexpected upstream data.';
 
+/** An error whose fixed, reviewed message is safe to show to an MCP caller. */
+export class SafeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SafeError';
+  }
+}
+
 export async function toolResult<T extends Record<string, unknown>>(
   work: () => Promise<T>,
-  options: ToolResultOptions = {},
 ): Promise<CallToolResult> {
   try {
     const output = await work();
@@ -31,19 +32,15 @@ export async function toolResult<T extends Record<string, unknown>>(
     const text =
       error instanceof ZodError
         ? ZOD_ERROR
-        : error instanceof Error
-          ? (options.onUnknownError?.(error) ?? UNKNOWN_ERROR)
+        : error instanceof SafeError
+          ? error.message
           : UNKNOWN_ERROR;
 
     return {
       isError: true,
-      content: [{ type: 'text', text: redact(text) }],
+      content: [{ type: 'text', text }],
     };
   }
-}
-
-function redact(text: string): string {
-  return text.replace(/https?:\/\/[^\s)]+/gi, '[redacted URL]');
 }
 
 export const READ_ONLY = {
@@ -66,7 +63,7 @@ export const DESTRUCTIVE = {
 
 export function startStdio(
   factory: McpServerFactory,
-  options: { onClose?: () => void } = {},
+  options: { onClose?: () => void | Promise<void> } = {},
 ): StdioServerHandle {
   const handle = serveStdio(factory);
   let closed = false;
@@ -79,9 +76,9 @@ export function startStdio(
     process.removeListener('SIGTERM', onSignal);
 
     try {
-      await handle.close();
+      await options.onClose?.();
     } finally {
-      options.onClose?.();
+      await handle.close();
     }
   };
 

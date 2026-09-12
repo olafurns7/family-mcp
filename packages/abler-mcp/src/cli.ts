@@ -56,7 +56,8 @@ async function main() {
   const [command = 'serve', action, argument] = positionals;
 
   if (command === 'serve' && positionals.length <= 1) {
-    startStdio(() => createServer());
+    const client = new AblerClient();
+    startStdio(() => createServer(client), { onClose: () => client.close() });
 
     return;
   }

@@ -96,7 +96,7 @@ test('real loopback HTTP covers cookies, redirects, rate limits, and large bodie
     }
 
     mode = 'rate';
-    await assert.rejects(client.status(true), /HTTP 429/);
+    await assert.rejects(client.status(true), /Abler returned an error/);
     mode = 'large';
     await assert.rejects(client.status(true), /invalid API response/);
   } finally {
