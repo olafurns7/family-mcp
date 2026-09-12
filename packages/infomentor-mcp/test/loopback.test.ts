@@ -72,7 +72,7 @@ test('real loopback HTTP covers login redirects, cookies, rate limits, and body 
       if (url.pathname === '/rate-date')
         return new Response(null, {
           status: 429,
-          headers: { 'Retry-After': new Date(Date.now() + 5000).toUTCString() },
+          headers: { 'Retry-After': new Date(Date.now() + 60_000).toUTCString() },
         });
 
       if (url.pathname === '/large') return new Response(new Uint8Array(8 * 1024 * 1024 + 1));
@@ -117,7 +117,7 @@ test('real loopback HTTP covers login redirects, cookies, rate limits, and body 
       (error: Error) =>
         error instanceof InfoMentorError &&
         error.code === 'RATE_LIMITED' &&
-        (error.retryAfterMs ?? 0) > 3000,
+        (error.retryAfterMs ?? 0) > 55_000,
     );
     await assert.rejects(
       new InfoMentorHttp(undefined, 0, fetcher).request(`${PARENT_URL}large`),
