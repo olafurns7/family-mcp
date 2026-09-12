@@ -16,16 +16,17 @@ import {
   type CollectRequest,
   type Collection,
 } from './collection.js';
-import { timetableSchema, type InfoMentorHttp } from './http.js';
+import type { InfoMentorHttp } from './http.js';
 import {
   InfoMentorError,
   selectChildRequestSchema,
   messagesRequestSchema,
   messageRequestSchema,
   notificationsRequestSchema,
-  messagesPageSchema,
+  messagesPageResponseSchema,
   messageDetailSchema,
-  notificationsDataSchema,
+  notificationsResponseSchema,
+  timetableResponseSchema,
   readSession,
   sessionPath,
   throwIfAborted,
@@ -256,14 +257,12 @@ export class InfoMentorClient {
         selectChild: (childId, nextSignal) => http.readParent(nextSignal, childId),
         readTimetable: async (parent, nextSignal) =>
           parent.apps.some((app) => app.codeName === 'timetable')
-            ? (
-                await http.readAppData(
-                  'timetable/timetable/appData',
-                  {},
-                  timetableSchema,
-                  nextSignal,
-                )
-              ).items
+            ? await http.readAppData(
+                'timetable/timetable/appData',
+                {},
+                timetableResponseSchema,
+                nextSignal,
+              )
             : null,
         getMessages: (folder, page, nextSignal) =>
           http.readAppData(
@@ -275,7 +274,7 @@ export class InfoMentorClient {
               inbox: String(folder === 'inbox'),
               sentItems: String(folder === 'sent'),
             },
-            messagesPageSchema,
+            messagesPageResponseSchema,
             nextSignal,
           ),
         getMessage: (id, nextSignal) =>
@@ -285,15 +284,13 @@ export class InfoMentorClient {
             messageDetailSchema,
             nextSignal,
           ),
-        getNotifications: async (nextSignal) =>
-          (
-            await http.readAppData(
-              'NotificationApp/NotificationApp/appData',
-              {},
-              notificationsDataSchema,
-              nextSignal,
-            )
-          ).notifications,
+        getNotifications: (nextSignal) =>
+          http.readAppData(
+            'NotificationApp/NotificationApp/appData',
+            {},
+            notificationsResponseSchema,
+            nextSignal,
+          ),
       });
     }, collectionSignal);
   }
@@ -313,11 +310,18 @@ export class InfoMentorClient {
 
       const hasTimetable = parent.apps.some((app) => app.codeName === 'timetable');
       let timetable: Overview['timetable'] = null;
+      let skipped = 0;
 
       if (hasTimetable) {
-        timetable = (
-          await http.readAppData('timetable/timetable/appData', {}, timetableSchema, signal)
-        ).items;
+        const feed = await http.readAppData(
+          'timetable/timetable/appData',
+          {},
+          timetableResponseSchema,
+          signal,
+        );
+
+        timetable = feed.items;
+        skipped = feed.skipped;
       }
 
       const lines = parent.account.pupils.map(
@@ -335,6 +339,7 @@ export class InfoMentorClient {
         truncated: text.length > 40_000,
         children: parent.account.pupils.map(({ id, name, selected }) => ({ id, name, selected })),
         timetable,
+        skipped,
         retrievedAt: new Date().toISOString(),
       };
     } catch (cause) {
@@ -362,7 +367,7 @@ export class InfoMentorClient {
           inbox: String(input.folder === 'inbox'),
           sentItems: String(input.folder === 'sent'),
         },
-        messagesPageSchema,
+        messagesPageResponseSchema,
         activeSignal,
       );
 
@@ -404,7 +409,7 @@ export class InfoMentorClient {
       const data = await http.readAppData(
         'NotificationApp/NotificationApp/appData',
         {},
-        notificationsDataSchema,
+        notificationsResponseSchema,
         activeSignal,
       );
 
@@ -414,6 +419,7 @@ export class InfoMentorClient {
             (input.includeCleared || item.state !== 'Cleared') &&
             (!input.selectedChildOnly || item.currentlySelectedPupil),
         ),
+        skipped: data.skipped,
         ...input,
         retrievedAt: new Date().toISOString(),
       };

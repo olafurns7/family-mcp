@@ -1,4 +1,6 @@
 import { resolve } from 'node:path';
+import { SessionStoreError, readPrivateFile } from '@family-mcp/session-store';
+import { z } from 'zod';
 import { InfoMentorHttp, parseForms } from './http.js';
 import { withSessionLock } from './lock.js';
 import {
@@ -12,10 +14,11 @@ import {
   captureSession,
   InfoMentorError,
   LOGIN_URL,
-  MAX_RATE_LIMIT_MS,
   rateLimitCooldown,
   readSession,
   restoreCookies,
+  savedSessionSchema,
+  SESSION_MAX_BYTES,
   sessionPath,
   throwIfAborted,
   trustedUrl,
@@ -205,12 +208,8 @@ export function sessionFromHttp(http: InfoMentorHttp): SavedSession {
     if (selected.length === 1 && selected[0]) session.selectedChildId = selected[0].id;
   }
 
-  const now = Date.now();
-
-  if (http.rateLimitedUntil > now)
-    session.rateLimitedUntil = new Date(
-      Math.min(http.rateLimitedUntil, now + MAX_RATE_LIMIT_MS),
-    ).toISOString();
+  if (http.rateLimitedUntil > Date.now())
+    session.rateLimitedUntil = new Date(http.rateLimitedUntil).toISOString();
 
   return session;
 }
@@ -226,7 +225,8 @@ export function httpFromSession(
 /**
  * An explicit login or import must not silently switch the saved account: a local attacker who
  * hijacks the loopback form, or a mistaken credentials file, would otherwise take over the MCP.
- * Missing, unreadable, and legacy files protect nothing and may be replaced.
+ * Missing and legacy-v1 files protect nothing. An unsafe or unrecognized existing file cannot
+ * safely establish which account it represents, so replacement requires an explicit override.
  */
 async function requireSameAccount(
   file: string,
@@ -234,13 +234,41 @@ async function requireSameAccount(
   allowAccountChange: boolean | undefined,
 ): Promise<void> {
   if (allowAccountChange) return;
-  let previous: SavedSession;
+  let text: string;
 
   try {
-    previous = await readSession(file);
-  } catch {
-    return;
+    text = await readPrivateFile(file, { maxBytes: SESSION_MAX_BYTES });
+  } catch (error) {
+    if (error instanceof SessionStoreError && error.code === 'NOT_FOUND') return;
+    throw new InfoMentorError(
+      'INVALID_CONFIGURATION',
+      'The existing InfoMentor session cannot be verified. The previous session was kept. Log out first, or pass allowAccountChange to replace it.',
+    );
   }
+
+  let value: unknown;
+
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new InfoMentorError(
+      'INVALID_CONFIGURATION',
+      'The existing InfoMentor session cannot be verified. The previous session was kept. Log out first, or pass allowAccountChange to replace it.',
+    );
+  }
+
+  const checked = z
+    .union([z.object({ version: z.literal(1) }).passthrough(), savedSessionSchema])
+    .safeParse(value);
+
+  if (!checked.success)
+    throw new InfoMentorError(
+      'INVALID_CONFIGURATION',
+      'The existing InfoMentor session cannot be verified. The previous session was kept. Log out first, or pass allowAccountChange to replace it.',
+    );
+
+  if (checked.data.version === 1) return;
+  const previous = checked.data;
 
   if (
     previous.accountId !== undefined &&

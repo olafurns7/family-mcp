@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  link,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'bun:test';
@@ -24,6 +34,7 @@ import {
   notificationsSchema,
   PARENT_URL,
   readSession,
+  SESSION_MAX_BYTES,
   sessionStatusSchema,
   writeSession,
 } from '../src/session.js';
@@ -69,7 +80,7 @@ const message = {
   timeSent: '11.09.2026 09:00',
 };
 
-const notifications = ['New', 'Seen', 'Read', 'Cleared'].map((state, index) => ({
+const notificationItems = ['New', 'Seen', 'Read', 'Cleared'].map((state, index) => ({
   id: index + 1,
   title: 'Synthetic notification',
   subTitle: 'Bring lunch',
@@ -92,6 +103,7 @@ function fixture() {
     overrideUrl: '',
     ignoreSwitch: false,
     failTimetable: false,
+    oddItems: false,
     // Called on the parent read, which is the last request before a login or import commits.
     onParent: (): void => {},
   };
@@ -234,7 +246,16 @@ function fixture() {
       if (selection.id !== 'child-1')
         assert.ok(cookies.includes(`selectedChild=${encodeURIComponent(selection.id)}`));
 
-      return Response.json({ items: [selection.id === 'child-1' ? entry : siblingEntry] });
+      const timetableEntry = selection.id === 'child-1' ? entry : siblingEntry;
+
+      return Response.json({
+        items: selection.oddItems
+          ? [
+              { ...timetableEntry, establishmentName: null },
+              { ...timetableEntry, title: null },
+            ]
+          : [timetableEntry],
+      });
     }
 
     if (input.pathname === '/Message/message/GetMessages') {
@@ -249,8 +270,16 @@ function fixture() {
         assert.equal(fields.get('pageSize'), '100');
         assert.equal(fields.get('page'), '1');
 
+        const messageItem = selection.oddItems
+          ? { ...message, sentUser: { ...message.sentUser, displayName: null } }
+          : message;
+
+        const items: unknown[] = fields.get('inbox') === 'true' ? [messageItem] : [];
+
+        if (selection.oddItems) items.push({ ...messageItem, id: 'invalid' });
+
         return Response.json({
-          items: fields.get('inbox') === 'true' ? [message] : [],
+          items,
           more: false,
         });
       }
@@ -261,7 +290,15 @@ function fixture() {
       assert.equal(fields.get('page'), '2');
       assert.equal(fields.get('pageSize'), '1');
 
-      return Response.json({ items: [message], page: 0, more: true });
+      const messageItem = selection.oddItems
+        ? { ...message, sentUser: { ...message.sentUser, displayName: null } }
+        : message;
+
+      const items: unknown[] = [messageItem];
+
+      if (selection.oddItems) items.push({ ...messageItem, id: 'invalid' });
+
+      return Response.json({ items, page: 0, more: true });
     }
 
     if (input.pathname === '/Message/message/GetMessage') {
@@ -270,9 +307,17 @@ function fixture() {
 
       return Response.json({
         ...message,
+        sentUser: selection.oddItems
+          ? { ...message.sentUser, displayName: null }
+          : message.sentUser,
         messageBody: '<p>Bring lunch</p>',
         messageBodyPlainText: 'Bring lunch',
-        toUsers: [{ id: 13, displayName: 'Synthetic parent' }],
+        toUsers: [
+          {
+            id: 13,
+            displayName: selection.oddItems ? null : 'Synthetic parent',
+          },
+        ],
         messageFolder: 'Inbox',
       });
     }
@@ -280,16 +325,21 @@ function fixture() {
     if (input.pathname === '/NotificationApp/NotificationApp/appData') {
       assert.equal(method, 'POST');
 
-      return Response.json({
-        notifications: notifications.map((item) =>
-          Object.assign({}, item, {
-            currentlySelectedPupil:
-              selection.id === 'child-1'
-                ? item.currentlySelectedPupil
-                : !item.currentlySelectedPupil,
-          }),
-        ),
-      });
+      const feed: unknown[] = notificationItems.map((item) =>
+        Object.assign({}, item, {
+          currentlySelectedPupil:
+            selection.id === 'child-1' ? item.currentlySelectedPupil : !item.currentlySelectedPupil,
+        }),
+      );
+
+      if (selection.oddItems) {
+        const first = notificationItems[0];
+        assert.ok(first);
+        feed.push({ ...first, id: 5, state: 'FutureState' });
+        feed.push({ ...first, id: 'invalid' });
+      }
+
+      return Response.json({ notifications: feed });
     }
 
     throw new Error('Unexpected synthetic endpoint');
@@ -706,6 +756,50 @@ test('private login and eleven MCP tools select children and read school data wi
   }
 });
 
+test('InfoMentor skips malformed feed items and preserves nullable and unknown values', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-tolerant-feeds-'));
+  const file = join(directory, 'session.json');
+  await writeSession(await savedSession(), file);
+  const routes = fixture();
+  routes.selection.oddItems = true;
+  const client = new InfoMentorClient({ sessionFile: file, fetch: routes.fetch });
+
+  try {
+    const overview = await client.getOverview();
+    assert.equal(overview.skipped, 1);
+    assert.equal(overview.timetable?.[0]?.establishmentName, null);
+
+    const messages = await client.getMessages({
+      folder: 'sent',
+      search: 'Skólaferð & nesti',
+      page: 2,
+      pageSize: 1,
+    });
+
+    assert.equal(messages.skipped, 1);
+    assert.equal(messages.items[0]?.sentUser.displayName, null);
+
+    const detail = await client.getMessage({ id: 41 });
+    assert.equal(detail.message.sentUser.displayName, null);
+    assert.equal(detail.message.toUsers[0]?.displayName, null);
+
+    const notificationResult = await client.getNotifications({ includeCleared: true });
+    assert.equal(notificationResult.skipped, 1);
+    assert.equal(
+      notificationResult.notifications.find((item) => item.id === 5)?.state,
+      'FutureState',
+    );
+
+    const collection = await client.collectUpdates({ includeExisting: true });
+    assert.equal(collection.skipped, 8);
+    assert.ok(collection.updates.some((update) => update.kind === 'message'));
+  } finally {
+    await client.close();
+    routes.restore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('expired sessions renew once with private credentials, preserve account and child, and persist cookies', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-refresh-'));
   const file = join(directory, 'session.json');
@@ -1065,11 +1159,11 @@ test('session and credential files that are world-readable or symlinked are refu
       unsafe(/chmod 600/),
     );
     await chmod(file, 0o600);
-    const link = join(directory, 'link.json');
-    await symlink(file, link);
-    await assert.rejects(readSession(link), unsafe(/symlink/));
+    const symlinkPath = join(directory, 'link.json');
+    await symlink(file, symlinkPath);
+    await assert.rejects(readSession(symlinkPath), unsafe(/symlink/));
     await assert.rejects(
-      importSession(link, { sessionFile: destination, fetch: routes.fetch }),
+      importSession(symlinkPath, { sessionFile: destination, fetch: routes.fetch }),
       unsafe(/symlink/),
     );
     await assert.rejects(stat(destination), { code: 'ENOENT' });
@@ -1166,6 +1260,57 @@ test('explicit login or import cannot silently replace a session verified for an
   }
 });
 
+test('explicit login refuses unreadable saved sessions unless account change is allowed', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-unreadable-account-'));
+  const file = join(directory, 'session.json');
+  const credentialsFile = join(directory, 'credentials.json');
+  const alias = join(directory, 'alias.json');
+  const routes = fixture();
+  await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
+
+  const replace = (allowAccountChange = false) =>
+    login({ sessionFile: file, credentialsFile, fetch: routes.fetch, allowAccountChange });
+
+  const cannotVerify = {
+    code: 'INVALID_CONFIGURATION',
+    message: /cannot be verified/,
+  };
+
+  try {
+    await writeSession(await savedSession('other'), file);
+
+    if (process.platform !== 'win32') {
+      await chmod(file, 0o644);
+      const before = await readFile(file, 'utf8');
+      await assert.rejects(replace(), cannotVerify);
+      assert.equal(await readFile(file, 'utf8'), before);
+      await replace(true);
+      assert.equal((await readSession(file)).accountId, 'parent-1');
+    }
+
+    await writeFile(file, 'x'.repeat(SESSION_MAX_BYTES + 1), { mode: 0o600 });
+    const oversized = await readFile(file, 'utf8');
+    await assert.rejects(replace(), cannotVerify);
+    assert.equal(await readFile(file, 'utf8'), oversized);
+    await replace(true);
+    assert.equal((await readSession(file)).accountId, 'parent-1');
+
+    if (process.platform !== 'win32') {
+      await writeSession(await savedSession('other'), file);
+      await link(file, alias);
+      const before = await readFile(file, 'utf8');
+      await assert.rejects(replace());
+      // The shared lock rejects hard-linked targets even when account changes are allowed.
+      await assert.rejects(replace(true));
+      assert.equal(await readFile(file, 'utf8'), before);
+      await rm(alias);
+    }
+  } finally {
+    routes.restore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('a rate-limit pause is saved with the session and honoured by other processes without contacting InfoMentor', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-rate-'));
   const file = join(directory, 'session.json');
@@ -1236,21 +1381,34 @@ test('a rate-limit pause is saved with the session and honoured by other process
 test('an oversized Retry-After is capped with rotated cookies and honoured by another client', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-rate-cap-'));
   const file = join(directory, 'session.json');
+  const actualNow = Date.now;
+  let now = actualNow();
   await writeSession(await savedSession(), file);
   let calls = 0;
 
-  const fetcher = async (): Promise<Response> => {
+  const fetcher = async (input: string | URL | Request): Promise<Response> => {
     calls++;
 
-    return new Response('', {
-      status: 429,
-      headers: {
-        'Retry-After': '9999999999999',
-        'Set-Cookie': 'IMHome=rotated; Secure; HttpOnly; Path=/',
-      },
-    });
+    if (calls === 1)
+      return new Response('', {
+        status: 429,
+        headers: {
+          'Retry-After': '9999999999999',
+          'Set-Cookie': 'IMHome=rotated; Secure; HttpOnly; Path=/',
+        },
+      });
+
+    const url = input instanceof Request ? new URL(input.url) : new URL(input.toString());
+
+    if (url.href === PARENT_URL)
+      return new Response(
+        `<script>IMHome.home.homeData = ${JSON.stringify(parent)}; IMHome.home.init(IMHome.home.homeData);</script>`,
+      );
+
+    return Response.json({ items: [] });
   };
 
+  Date.now = () => now;
   const first = new InfoMentorClient({ sessionFile: file, fetch: fetcher });
 
   try {
@@ -1276,7 +1434,21 @@ test('an oversized Retry-After is capped with rotated cookies and honoured by an
     } finally {
       await second.close();
     }
+
+    now = until + 1;
+    await first.getOverview();
+    assert.equal(
+      calls,
+      3,
+      'the originating client makes requests after the fixed cooldown expires',
+    );
+    assert.equal(
+      (await readSession(file)).rateLimitedUntil,
+      undefined,
+      'an expired cooldown is cleared instead of being re-armed from the retry time',
+    );
   } finally {
+    Date.now = actualNow;
     await first.close();
     await rm(directory, { recursive: true, force: true });
   }
