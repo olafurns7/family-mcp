@@ -21,7 +21,7 @@ it is not affiliated with InfoMentor.
 On macOS or Linux, including a headless VM:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.5.0/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh
 ```
 
 The installer chooses macOS/Linux and arm64/x64, verifies the SHA-256 checksum,
@@ -34,7 +34,7 @@ Use the absolute command path printed by the installer in your MCP client.
 A different location can be selected with `INFOMENTOR_PREFIX`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.5.0/packages/infomentor-mcp/install.sh |
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh |
   INFOMENTOR_PREFIX="$HOME/tools" sh
 ```
 
@@ -52,7 +52,7 @@ Cloudflare WARP for this MCP. This removes the need for your own Tailscale exit
 node while still using Cloudflare as a network provider:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.5.0/packages/infomentor-mcp/install.sh |
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh |
   sh -s -- --with-warp
 ```
 
@@ -380,7 +380,9 @@ instead of retrying. See automatic session renewal above for expired sessions.
 
 ### Upgrade notes
 
-The phase 2 changes below warrant a minor version bump before the next tag:
+Version 0.6.0 is the first release from the `family-mcp` monorepo (see
+`CHANGELOG.md`). Install URLs changed; releases under the old repository are not
+updated. Behaviour changes:
 
 - `infomentor_login`, `infomentor_setup_status`, `infomentor_cancel_setup`, and
   `infomentor_logout` are absent unless `serve` receives `--allow-setup-tools`.
