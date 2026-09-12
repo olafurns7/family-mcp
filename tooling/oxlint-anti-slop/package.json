@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "exports": "./index.ts",
+  "scripts": {
+    "test": "node --experimental-strip-types --test"
+  },
   "dependencies": {
     "@oxlint/plugins": "1.82.0"
   }
