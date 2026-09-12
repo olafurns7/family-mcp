@@ -3,11 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { readFile, rename } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 
-import { serveStdio } from '@modelcontextprotocol/server/stdio';
+import { startStdio } from '@family-mcp/mcp-runtime';
 
 import { AblerClient } from './api.js';
 import {
   captureCookies,
+  cookieInputSchema,
   importCookies,
   prunePendingCandidates,
   removeSession,
@@ -39,41 +40,55 @@ async function main() {
       version: { type: 'boolean', short: 'v' },
     },
   });
+
   if (values.help) {
     console.log(help);
+
     return;
   }
+
   if (values.version) {
     console.log(VERSION);
+
     return;
   }
+
   const [command = 'serve', action, argument] = positionals;
+
   if (command === 'serve' && positionals.length <= 1) {
-    serveStdio(() => createServer());
+    startStdio(() => createServer());
+
     return;
   }
+
   if (command !== 'auth' || positionals.length > 3) throw new Error(help);
   const path = sessionPath();
+
   if (action === 'capture' || action === 'import') {
     let jar;
+
     if (action === 'capture') jar = await captureCookies(argument || 'http://127.0.0.1:9222');
     else {
       if (!argument) throw new Error('Provide a cookie JSON file, or - for stdin.');
       let raw = '';
+
       if (argument === '-') {
         for await (const chunk of process.stdin) raw += chunk;
       } else raw = await readFile(argument, 'utf8');
+
       try {
-        jar = await importCookies(JSON.parse(raw));
+        jar = await importCookies(cookieInputSchema.parse(JSON.parse(raw)));
       } catch {
         throw new Error(
           'Import failed: provide valid browser cookie JSON containing an unexpired Abler refreshToken.',
         );
       }
     }
+
     await withSessionLock(path, async () => {
       const pending = `${path}.${randomUUID()}.pending`;
       await saveSession(pending, jar);
+
       try {
         await new AblerClient(pending).status(true);
         await rename(pending, path);
@@ -83,6 +98,7 @@ async function main() {
           `Session verification failed. The previous file was kept; a possibly rotated candidate is retained at ${pending}. Retry with ABLER_SESSION_FILE pointing there and auth status, or capture a fresh session. Treat both files as credentials.`,
         );
       }
+
       // The verified session supersedes candidates retained by earlier failed imports.
       await prunePendingCandidates(path);
     });

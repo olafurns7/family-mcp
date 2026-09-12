@@ -10,10 +10,13 @@ import {
   sessionFromHttp,
 } from './login.js';
 import { withSessionLock } from './lock.js';
-import { collectUpdates, collectRequestSchema } from './collection.js';
-import type { CollectRequest, Collection } from './collection.js';
-import type { InfoMentorHttp } from './http.js';
-import { timetableSchema } from './http.js';
+import {
+  collectUpdates,
+  collectRequestSchema,
+  type CollectRequest,
+  type Collection,
+} from './collection.js';
+import { timetableSchema, type InfoMentorHttp } from './http.js';
 import {
   InfoMentorError,
   selectChildRequestSchema,
@@ -27,19 +30,17 @@ import {
   sessionPath,
   throwIfAborted,
   writeSession,
-} from './session.js';
-import type {
-  Overview,
-  SelectChildRequest,
-  SessionOptions,
-  SessionStatus,
-  MessagesRequest,
-  MessageRequest,
-  NotificationsRequest,
-  Messages,
-  Message,
-  Notifications,
-  SavedSession,
+  type Overview,
+  type SelectChildRequest,
+  type SessionOptions,
+  type SessionStatus,
+  type MessagesRequest,
+  type MessageRequest,
+  type NotificationsRequest,
+  type Messages,
+  type Message,
+  type Notifications,
+  type SavedSession,
 } from './session.js';
 
 export const loginRequestSchema = z
@@ -115,12 +116,15 @@ export class InfoMentorClient {
         let saved = await readSession(file);
 
         if (this.active?.serializedSession !== JSON.stringify(saved))
-          this.active = { http: httpFromSession(saved), serializedSession: JSON.stringify(saved) };
+          this.active = {
+            http: httpFromSession(saved, this.options.fetch),
+            serializedSession: JSON.stringify(saved),
+          };
         let http = this.active.http;
         let preserveSession = false;
 
         try {
-          await http.requireAuthentication(combined);
+          // A validated parent page already proves authentication and is reused by the read below.
           const parent = await http.readParent(combined);
 
           if (saved.accountId && parent.account.currentUser.id !== saved.accountId)
@@ -175,8 +179,8 @@ export class InfoMentorClient {
     });
 
     this.pending = result.then(
-      () => {},
-      () => {},
+      () => undefined,
+      () => undefined,
     );
 
     return result;
@@ -206,7 +210,11 @@ export class InfoMentorClient {
       return previous;
     }
 
-    await writeSession(current, sessionPath(this.options.sessionFile), signal);
+    await (this.options.writeSession ?? writeSession)(
+      current,
+      sessionPath(this.options.sessionFile),
+      signal,
+    );
     this.active = { http, serializedSession: JSON.stringify(current) };
 
     return current;
@@ -227,56 +235,67 @@ export class InfoMentorClient {
     const deadline = AbortSignal.timeout(5 * 60_000);
     const collectionSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
 
-    return this.read(
-      (http, activeSignal) =>
-        collectUpdates(input, {
-          sessionFile: sessionPath(this.options.sessionFile),
-          signal: activeSignal,
-          getParent: (nextSignal) => http.readParent(nextSignal),
-          selectChild: (childId, nextSignal) => http.readParent(nextSignal, childId),
-          readTimetable: async (parent, nextSignal) =>
-            parent.apps.some((app) => app.codeName === 'timetable')
-              ? (
-                  await http.readAppData(
-                    'timetable/timetable/appData',
-                    {},
-                    timetableSchema,
-                    nextSignal,
-                  )
-                ).items
-              : null,
-          getMessages: (folder, page, nextSignal) =>
-            http.readAppData(
-              'Message/message/GetMessages',
-              {
-                page: String(page),
-                pageSize: '100',
-                messageText: '',
-                inbox: String(folder === 'inbox'),
-                sentItems: String(folder === 'sent'),
-              },
-              messagesPageSchema,
+    return this.read((http, activeSignal) => {
+      let cachedParent = http.parent;
+
+      const getParent = (nextSignal: AbortSignal) => {
+        if (cachedParent) {
+          const parent = cachedParent;
+          cachedParent = undefined;
+
+          return Promise.resolve(parent);
+        }
+
+        return http.readParent(nextSignal);
+      };
+
+      return collectUpdates(input, {
+        sessionFile: sessionPath(this.options.sessionFile),
+        signal: activeSignal,
+        getParent,
+        selectChild: (childId, nextSignal) => http.readParent(nextSignal, childId),
+        readTimetable: async (parent, nextSignal) =>
+          parent.apps.some((app) => app.codeName === 'timetable')
+            ? (
+                await http.readAppData(
+                  'timetable/timetable/appData',
+                  {},
+                  timetableSchema,
+                  nextSignal,
+                )
+              ).items
+            : null,
+        getMessages: (folder, page, nextSignal) =>
+          http.readAppData(
+            'Message/message/GetMessages',
+            {
+              page: String(page),
+              pageSize: '100',
+              messageText: '',
+              inbox: String(folder === 'inbox'),
+              sentItems: String(folder === 'sent'),
+            },
+            messagesPageSchema,
+            nextSignal,
+          ),
+        getMessage: (id, nextSignal) =>
+          http.readAppData(
+            'Message/message/GetMessage',
+            { id: String(id) },
+            messageDetailSchema,
+            nextSignal,
+          ),
+        getNotifications: async (nextSignal) =>
+          (
+            await http.readAppData(
+              'NotificationApp/NotificationApp/appData',
+              {},
+              notificationsDataSchema,
               nextSignal,
-            ),
-          getMessage: (id, nextSignal) =>
-            http.readAppData(
-              'Message/message/GetMessage',
-              { id: String(id) },
-              messageDetailSchema,
-              nextSignal,
-            ),
-          getNotifications: async (nextSignal) =>
-            (
-              await http.readAppData(
-                'NotificationApp/NotificationApp/appData',
-                {},
-                notificationsDataSchema,
-                nextSignal,
-              )
-            ).notifications,
-        }),
-      collectionSignal,
-    );
+            )
+          ).notifications,
+      });
+    }, collectionSignal);
   }
 
   private async overview(
@@ -436,52 +455,51 @@ export class InfoMentorClient {
       message: 'Setup started. Check infomentor_setup_status for progress.',
     };
 
-    const promise = Promise.resolve()
-      .then(async () => {
-        await this.pending;
-        throwIfAborted(controller.signal);
-        this.active = undefined;
+    const promise = (async () => {
+      await this.pending;
+      throwIfAborted(controller.signal);
+      this.active = undefined;
 
-        if (parsed.importFile)
-          await importSession(
-            parsed.importFile,
-            { ...this.options, allowAccountChange: parsed.allowAccountChange ?? false },
-            controller.signal,
-          );
-        else {
-          const options = {
-            ...this.options,
-            signal: controller.signal,
-            localForm: parsed.localForm ?? false,
-            allowAccountChange: parsed.allowAccountChange ?? false,
-            timeoutMs: parsed.timeoutSeconds * 1000,
-            onProgress: (stage: 'waiting' | 'saved', loginUrl?: string): void => {
-              if (stage === 'saved') return;
-              this.setupStatus = {
-                operation,
-                state: 'waiting',
-                message:
-                  'Open the private local sign-in form that was opened in a browser on this computer. Never send passwords or session cookies to the agent.',
-              };
+      if (parsed.importFile)
+        await importSession(
+          parsed.importFile,
+          { ...this.options, allowAccountChange: parsed.allowAccountChange ?? false },
+          controller.signal,
+        );
+      else {
+        const options = {
+          ...this.options,
+          signal: controller.signal,
+          localForm: parsed.localForm ?? false,
+          allowAccountChange: parsed.allowAccountChange ?? false,
+          timeoutMs: parsed.timeoutSeconds * 1000,
+          onProgress: (stage: 'waiting' | 'saved', loginUrl?: string): void => {
+            if (stage === 'saved') return;
+            this.setupStatus = {
+              operation,
+              state: 'waiting',
+              message:
+                'Open the private local sign-in form that was opened in a browser on this computer. Never send passwords or session cookies to the agent.',
+            };
 
-              // The URL goes to the host's log only; through MCP it would reach the model.
-              if (loginUrl) console.error('Open the private sign-in form: ' + loginUrl);
-            },
-          };
-
-          await login(
-            parsed.credentialsFile
-              ? { ...options, credentialsFile: parsed.credentialsFile }
-              : options,
-          );
-        }
-
-        this.setupStatus = {
-          operation,
-          state: 'succeeded',
-          message: 'Session saved. Call infomentor_session_status to verify access.',
+            // The URL goes to the host's log only; through MCP it would reach the model.
+            if (loginUrl) process.stderr.write('Open the private sign-in form: ' + loginUrl + '\n');
+          },
         };
-      })
+
+        await login(
+          parsed.credentialsFile
+            ? { ...options, credentialsFile: parsed.credentialsFile }
+            : options,
+        );
+      }
+
+      this.setupStatus = {
+        operation,
+        state: 'succeeded',
+        message: 'Session saved. Call infomentor_session_status to verify access.',
+      };
+    })()
       .catch((cause: unknown) => {
         this.setupStatus = {
           operation,

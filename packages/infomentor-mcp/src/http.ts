@@ -6,6 +6,7 @@ import {
   LOGIN_REQUIRED,
   PARENT_URL,
   pupilSchema,
+  type HttpFetch,
   throwIfAborted,
   timetableEntrySchema,
   trustedUrl,
@@ -56,6 +57,7 @@ export class InfoMentorHttp {
   constructor(
     readonly jar = new CookieJar(),
     cooldownUntil = 0,
+    readonly fetch: HttpFetch = globalThis.fetch,
   ) {
     this.cooldownUntil = cooldownUntil;
   }
@@ -101,7 +103,7 @@ export class InfoMentorHttp {
           headers.set('Origin', previous.origin);
         }
 
-        const response = await fetch(url, {
+        const response = await this.fetch(url, {
           method: body === undefined ? 'GET' : 'POST',
           body: body ?? null,
           headers,
@@ -325,7 +327,7 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
   let size = 0;
 
   try {
-    while (true) {
+    for (;;) {
       throwIfAborted(signal);
       const { done, value } = await reader.read();
 

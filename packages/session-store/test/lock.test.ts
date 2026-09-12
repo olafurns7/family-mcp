@@ -242,15 +242,16 @@ test('waiters poll for a busy lock up to waitMs and abandoned owners expire by a
     assert.deepEqual(await readdir(directory), []);
 
     // A live holder keeps refreshing its owner file, so long operations are never expired.
-    const long = withFileLock(file, { staleMs: 600 }, async () => {
-      await delay(1500);
+    // The wide margin keeps this property deterministic on a loaded hosted runner.
+    const long = withFileLock(file, { staleMs: 5000 }, async () => {
+      await delay(8000);
 
       return 'long';
     });
 
-    await delay(900);
+    await delay(5500);
     await assert.rejects(
-      withFileLock(file, { ...failFast, staleMs: 600 }, async () => assert.fail()),
+      withFileLock(file, { ...failFast, staleMs: 5000 }, async () => assert.fail()),
       busy,
     );
     expect(await long).toBe('long');

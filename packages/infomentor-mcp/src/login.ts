@@ -1,8 +1,13 @@
 import { resolve } from 'node:path';
 import { InfoMentorHttp, parseForms } from './http.js';
 import { withSessionLock } from './lock.js';
-import { credentialsSchema, promptCredentials, readCredentials } from './credentials.js';
-import type { Credentials } from './credentials.js';
+import {
+  credentialsSchema,
+  promptCredentials,
+  readCredentials,
+  type Credentials,
+  type OpenBrowser,
+} from './credentials.js';
 import {
   captureSession,
   InfoMentorError,
@@ -14,8 +19,9 @@ import {
   throwIfAborted,
   trustedUrl,
   writeSession,
+  type SavedSession,
+  type SessionOptions,
 } from './session.js';
-import type { SavedSession, SessionOptions } from './session.js';
 
 export type ImportOptions = SessionOptions & {
   /** Replace a saved session that belongs to a different verified account. Default false. */
@@ -27,6 +33,7 @@ export type LoginOptions = ImportOptions & {
   timeoutMs?: number;
   signal?: AbortSignal;
   onProgress?: (stage: 'waiting' | 'saved', loginUrl?: string) => void;
+  openBrowser?: OpenBrowser;
 };
 
 /** One credential submission, then the observed hidden-form relay. No page JavaScript runs. */
@@ -132,14 +139,18 @@ export async function createAuthenticatedHttp(options: LoginOptions): Promise<In
         );
       credentials = configured.data;
     } else if (options.localForm) {
-      credentials = await promptCredentials(signal, (url) => options.onProgress?.('waiting', url));
+      credentials = await promptCredentials(
+        signal,
+        (url) => options.onProgress?.('waiting', url),
+        options.openBrowser,
+      );
     } else
       throw new InfoMentorError(
         'INVALID_CONFIGURATION',
         'Credentials required. Use the app’s private secret input for INFOMENTOR_USERNAME (kennitala or InfoMentor username; no email required) and INFOMENTOR_PASSWORD, then run infomentor-mcp login with those secrets injected into its environment. If the MCP process already has them, call infomentor_login. Alternatively supply credentialsFile or importFile. Never put secret values in chat or MCP arguments. Browser login is opt-in with localForm; do not use it on a remote VM.',
       );
 
-    const http = new InfoMentorHttp();
+    const http = new InfoMentorHttp(undefined, 0, options.fetch);
     await authenticate(http, credentials, signal);
     credentials.password = '';
     await http.readParent(signal);
@@ -164,7 +175,7 @@ export async function login(options: LoginOptions = {}): Promise<void> {
     const http = await createAuthenticatedHttp(options);
     const session = sessionFromHttp(http);
     await requireSameAccount(file, session, options.allowAccountChange);
-    await writeSession(session, file, options.signal);
+    await (options.writeSession ?? writeSession)(session, file, options.signal);
     options.onProgress?.('saved');
   });
 }
@@ -186,8 +197,11 @@ export function sessionFromHttp(http: InfoMentorHttp): SavedSession {
 }
 
 /** Cookies plus the pause InfoMentor requested, so every process sharing the file honours it. */
-export function httpFromSession(session: SavedSession): InfoMentorHttp {
-  return new InfoMentorHttp(restoreCookies(session), rateLimitCooldown(session));
+export function httpFromSession(
+  session: SavedSession,
+  fetcher?: SessionOptions['fetch'],
+): InfoMentorHttp {
+  return new InfoMentorHttp(restoreCookies(session), rateLimitCooldown(session), fetcher);
 }
 
 /**
@@ -229,11 +243,11 @@ export async function importSession(
   const destination = sessionPath(options.sessionFile);
   await withSessionLock(destination, signal, async () => {
     const imported = await readSession(resolve(file));
-    const http = httpFromSession(imported);
+    const http = httpFromSession(imported, options.fetch);
     await http.requireAuthentication(signal);
     await http.readParent(signal);
     const session = sessionFromHttp(http);
     await requireSameAccount(destination, session, options.allowAccountChange);
-    await writeSession(session, destination, signal);
+    await (options.writeSession ?? writeSession)(session, destination, signal);
   });
 }
