@@ -1,7 +1,5 @@
 node_modules/
-dist/
 release/
-*.tgz
 .env*
 .abler/
 *session*.json
@@ -10,6 +8,4 @@ release/
 *.pending
 *.tmp
 *.lock/
-SHA256SUMS
-pack.json
 .DS_Store

@@ -68,7 +68,7 @@ jobs:
           const name = process.env.RELEASE_PACKAGE;
           const version = process.env.RELEASE_VERSION;
           const tag = process.env.RELEASE_TAG;
-          const assets = [`${name}-${version}.tgz`];
+          const assets = [];
           for (const os of ['darwin', 'linux']) for (const arch of ['arm64', 'x64']) assets.push(`${name}-${version}-${os}-${arch}.tar.gz`);
           const expected = new Set(assets.flatMap(file => [file, `${file}.sha256`]));
           const found = new Set();
@@ -97,9 +97,7 @@ jobs:
             `${name} ${version} (preview)`, '',
             'Install the verified standalone executable (macOS/Linux, arm64/x64):', '',
             '```sh', `curl -fsSL https://raw.githubusercontent.com/${repo}/${tag}/packages/${name}/install.sh | sh`, '```', '',
-            'Or install the prebuilt npm tarball with Node.js 22+:', '',
-            '```sh', `npm install --global --ignore-scripts https://github.com/${repo}/releases/download/${tag}/${name}-${version}.tgz`, '```', '',
-            'Node 22/24 package checks and macOS/Linux arm64/x64 standalone installer checks passed in this workflow. Live account connectivity was not tested. No npm registry publication is performed.', '',
+            'macOS/Linux arm64/x64 standalone installer checks passed in this workflow. Live account connectivity was not tested.', '',
             `Setup: https://github.com/${repo}/blob/${tag}/packages/${name}/README.md`,
           ].join('\n'));
           NODE

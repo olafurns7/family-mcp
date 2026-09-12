@@ -1,4 +1,4 @@
-# Release review — 0.3.0
+# Release review — 0.3.1
 
 Reviewed on 2026-09-11. Scope: all authentication, HTTP/API, child reporting,
 MCP registration, CLI, tests, package metadata, and consumer instructions.
@@ -20,12 +20,12 @@ This is a source and executable review, not an Abler security certification.
 
 ## Validation record
 
-- Offline suite: **7 tests, 105 assertions**, passing on macOS with Bun 1.2.19.
+- Offline suite: **7 tests, 85 expectations**, passing on macOS with Bun 1.4.2.
   Covers HTTP-only cookie refresh, auth retry, redacted failures, date and
   pagination filters, local Chrome capture transport, real MCP stdio, sibling
   identity/attendance, independent cursors, concurrent processes, logout,
   permissions, malformed responses, and failed-import recovery.
-- TypeScript check and clean compilation: passed.
+- TypeScript check, lint, formatting, and native binary/installer checks: passed.
 - Runtime dependency audit: **0 known advisories** in the resolved production
   dependency tree on 2026-09-11. This is a registry advisory snapshot, not proof
   that dependencies are vulnerability-free.
@@ -33,17 +33,15 @@ This is a source and executable review, not an Abler security certification.
   date-filtered schedule, three separately filtered child schedules, pagination,
   and event lookup worked. The new ID/name map matched Abler's assigned IDs.
   Live proof is separate from synthetic tests; account data is not included here.
-- Installed-package checks: passed on Node 24.12.0 from a clean temporary
-  installation of the compiled archive with lifecycle scripts disabled.
-  `test/pack-smoke.ts` checks version, actual Node
-  stdio handshake, all six read tools, missing auth, and rejection of a typo.
-  Its server PATH contains Node without Bun or developer checkout tools.
-- Archive inspection: exactly the ten allowed package files, with no source
-  sessions, tests, exports, or development dependencies included. npm publish
-  dry-run accepted the archive and metadata; no registry publish was performed.
-- GitHub Actions runs the package checks and installed Node executable check
-  on Linux with Node 22 and 24. Check the repository's Actions result for the
-  exact commit; this document is not a claim about a later commit's CI status.
+- Native checks build the standalone executable, copy it outside the checkout,
+  run the MCP stdio smoke, and exercise the piped installer against a real
+  archive. Its PATH contains neither Node nor Bun.
+- Archive inspection covers the executable, README, LICENSE, and generated
+  third-party notices. The release draft contains only four native archives,
+  their checksums, and `install.sh`.
+- GitHub Actions runs package checks and native installer checks. Check the
+  repository's Actions result for the exact commit; this document is not a claim
+  about a later commit's CI status.
 
 ## Deliberate limits
 
@@ -64,6 +62,5 @@ This is a source and executable review, not an Abler security certification.
 - Page calls are not a server-side snapshot; events may change between pages.
   Agents must follow each cursor, deduplicate by stable IDs, and disclose a
   partial or failed report. No schedule data is cached on disk.
-- No npm publication occurred. The prepared metadata, license, publishing
-  guide, and compiled GitHub archive are separate from reserving an npm name,
-  configuring a publisher, or publishing a registry version.
+- Only native archives are distributed. Windows and Alpine/musl remain
+  unsupported for the standalone executable.

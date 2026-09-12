@@ -147,9 +147,8 @@ includes documentation and license notices. Working-directory `.env` and
 
 Five focused checks cover the HTTP login/MCP flow, rejected or unsafe responses,
 atomic cancellation during login/import, request cancellation, and the private
-loopback credential form. Packaging checks exercise clean npm installation and
-consumer types; the native installer check copies the binary away from its
-package and uses a PATH without Node or Bun.
+loopback credential form. Native binary and installer checks copy the executable
+away from its package and use a PATH without Node or Bun.
 
 Real-account investigation verified password login, the hidden-form relay,
 persisted-session reuse, child lists, and timetable retrieval without a browser.
@@ -185,8 +184,8 @@ code and its tests were deleted in 0.2.0.
 
 The selected child's timetable is an overview, not a complete school record.
 The package does not provide homework, attendance, grades, or message sending.
-Collection and renewal live validation is in progress. Other apps sharing the
+Collection and renewal live validation remains unverified. Other apps sharing the
 upstream session can interfere despite the local lock and selection readbacks.
 Other SSO/MFA paths,
 challenge-protected accounts, long-term session lifetime, and direct connectivity
-from the Grok VM remain unverified. The npm registry remains unpublished.
+from the Grok VM remain unverified.

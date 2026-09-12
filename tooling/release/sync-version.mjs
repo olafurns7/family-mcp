@@ -33,13 +33,6 @@ for (const file of files) {
   );
   text = text.replace(
     new RegExp(
-      `https://github\\.com/olafurns7/(?:${pkg.name}|family-mcp)/releases/download/[^/]+/(${pkg.name})-[0-9][^/\\s\\x60]*?\\.tgz`,
-      'g',
-    ),
-    `https://github.com/olafurns7/family-mcp/releases/download/${tag}/${pkg.name}-${pkg.version}.tgz`,
-  );
-  text = text.replace(
-    new RegExp(
       `https://github\\.com/olafurns7/(?:${pkg.name}|family-mcp)/releases/tag/[^\\s)\\x60]+`,
       'g',
     ),
@@ -50,8 +43,11 @@ for (const file of files) {
     tag,
   );
   text = text.replace(
-    new RegExp(`${pkg.name}-\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?\\.tgz`, 'g'),
-    `${pkg.name}-${pkg.version}.tgz`,
+    new RegExp(
+      `${pkg.name}-\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?-(darwin|linux)-(arm64|x64)\\.tar\\.gz`,
+      'g',
+    ),
+    `${pkg.name}-${pkg.version}-$1-$2.tar.gz`,
   );
   outputs.set(file, text);
 }
