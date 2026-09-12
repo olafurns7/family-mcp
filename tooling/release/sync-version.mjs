@@ -16,14 +16,9 @@ const tag = `${pkg.name}@${pkg.version}`;
 const installUrl = `https://raw.githubusercontent.com/olafurns7/family-mcp/${tag}/packages/${pkg.name}/install.sh`;
 
 const files = [
-  ...[
-    'README.md',
-    ...(pkg.name === 'abler-mcp'
-      ? ['docs/AGENTS.md', 'docs/PUBLISHING.md']
-      : ['docs/RELEASING.md']),
-  ].map((file) => join(pkg.root, file)),
-  join(pkg.root, '..', '..', 'README.md'),
-];
+  'README.md',
+  ...(pkg.name === 'abler-mcp' ? ['docs/AGENTS.md', 'docs/PUBLISHING.md'] : ['docs/RELEASING.md']),
+].map((file) => join(pkg.root, file));
 
 const outputs = new Map([[join(pkg.root, 'install.sh'), await renderInstall(pkg)]]);
 
