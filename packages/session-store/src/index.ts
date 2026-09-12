@@ -13,7 +13,7 @@ export {
 
 export type { DirectoryOptions, ReadOptions, SweepOptions, WriteOptions } from './files.js';
 
-export { DEFAULT_STALE_MS, DEFAULT_WAIT_MS, withFileLock } from './lock.js';
+export { DEFAULT_WAIT_MS, withFileLock } from './lock.js';
 
 export type { LockOptions } from './lock.js';
 

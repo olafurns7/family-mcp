@@ -1,13 +1,7 @@
 import manifest from '../package.json' with { type: 'json' };
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import {
-  DESTRUCTIVE,
-  LOCAL_WRITE,
-  READ_ONLY,
-  packageVersion,
-  toolResult,
-} from '@family-mcp/mcp-runtime';
+import { DESTRUCTIVE, LOCAL_WRITE, READ_ONLY, toolResult } from '@family-mcp/mcp-runtime';
 import { InfoMentorClient, loginRequestSchema, setupStatusSchema } from './client.js';
 import { collectRequestSchema, collectionSchema } from './collection.js';
 import {
@@ -24,7 +18,7 @@ import {
   type SessionOptions,
 } from './session.js';
 
-export const packageInfo = { name: manifest.name, version: packageVersion(import.meta.url) };
+export const packageInfo = { name: manifest.name, version: manifest.version };
 
 export type ServerOptions = SessionOptions & {
   /** Register the login, setup-status, cancel, and logout tools. Default false: setup uses the CLI. */

@@ -44,9 +44,20 @@ const TEMPORARY_SUFFIX = '.tmp';
 // O_NOFOLLOW refuses symbolic links and O_NONBLOCK keeps a FIFO from blocking the open.
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0);
 
+export function assertNoHardLinks(nlink: number): void {
+  if (nlink > 1)
+    throw new SessionStoreError('UNSAFE_FILE', 'Files with hard links are not supported.');
+}
+
+type FileState = { ino: number; size: number; mtimeMs: number };
+
+export function fileChanged(before: FileState, after: FileState): boolean {
+  return before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs;
+}
+
 /**
- * Read a file that must be a regular, owner-only file owned by this user.
- * Symbolic links, group or world access bits, foreign owners, and oversized files are rejected.
+ * Read a file that must be a regular, single-link, owner-only file owned by this user.
+ * Symbolic links, group or world access bits, foreign owners, and oversized or changing files are rejected.
  */
 export async function readPrivateFile(path: string, options: ReadOptions): Promise<string> {
   const { maxBytes } = options;
@@ -84,6 +95,7 @@ export async function readPrivateFile(path: string, options: ReadOptions): Promi
 
     if (!info.isFile())
       throw new SessionStoreError('UNSAFE_FILE', 'The path is not a regular file.');
+    assertNoHardLinks(info.nlink);
 
     if (process.platform !== 'win32') {
       if ((info.mode & 0o077) !== 0)
@@ -110,7 +122,12 @@ export async function readPrivateFile(path: string, options: ReadOptions): Promi
       length += bytesRead;
     }
 
-    if (length > info.size)
+    if (length !== info.size)
+      throw new SessionStoreError('IO', 'The file changed while it was being read.');
+
+    const after = await handle.stat();
+
+    if (fileChanged(info, after))
       throw new SessionStoreError('IO', 'The file changed while it was being read.');
 
     return buffer.toString('utf8', 0, length);

@@ -57,3 +57,52 @@ type-aware lint command reports zero findings.
 
 No live login, merge, or push was performed. No `abler-mcp` or `infomentor-mcp`
 version was changed.
+
+## Phase 4 fixes
+
+- **Item 0 — native binary startup:** Both servers now statically import their
+  own `package.json` and pass its name/version to `McpServer`. The runtime's
+  filesystem-based package-version lookup is removed. The pinned binary smoke
+  tests prove both standalone servers start and report their versions.
+- **High — live owner expiry:** Removed `staleMs` and the owner-mtime refresh
+  loop. Live PIDs remain busy regardless of owner-file age; dead PIDs still
+  recover. Tests: `waiters poll for a busy lock and a live PID never expires by
+  age` (mtime set ten minutes back) and `locks exclude live owners, recover dead
+  owners safely, and release only their own token` (dead owner plus concurrent
+  recovery).
+- **Medium — owner refresh failures:** The refresh loop and `utimes` call no
+  longer exist, so the refresh-error path is moot and has no separate test.
+- **Medium — hard links:** Both `readPrivateFile` and `withFileLock` reject
+  multi-link files with `UNSAFE_FILE`. Tests: `rejects hard-linked session
+  files` and `rejects hard-linked session targets before running work`.
+- **Low — file mutation during reads:** The open handle is re-statted after the
+  read and its inode, size, and mtime are compared. The
+  `detects inode, size, and modification-time changes between read stats` test
+  covers each comparison; the private-file readback test covers the unchanged
+  path.
+- **Low — foreign owner:** `rejects files owned by another user` mocks
+  `process.getuid()` and verifies `UNSAFE_FILE`.
+- **Low — in-flight `LOCK_LOST`:** `reports in-flight lock loss without
+  deleting the replacement owner` replaces ownership while work is held, then
+  checks the error after work completes and verifies the replacement remains.
+- **Windows:** Existing platform branches remain. The session-store and
+  InfoMentor READMEs state that Windows is unsupported and unverified; Windows
+  was not tested.
+
+## Phase 4 verification
+
+The final acceptance command passed with both Bun versions:
+
+```sh
+bunx turbo run typecheck lint format:check test --force
+PATH=${TMPDIR}/family-mcp-phase1-runtime/node_modules/.bin:$PATH bunx turbo run typecheck lint format:check test --force
+```
+
+Each run completed with 20/20 Turbo tasks. The required pinned native checks
+also passed:
+
+```sh
+PATH=${TMPDIR}/family-mcp-phase1-runtime/node_modules/.bin:$PATH bunx turbo run test:binary test:installer --force
+```
+
+All six binary and installer tasks passed under Bun 1.4.2.

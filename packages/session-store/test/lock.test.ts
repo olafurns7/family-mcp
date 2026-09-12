@@ -6,6 +6,7 @@ import { once } from 'node:events';
 import {
   mkdir,
   mkdtemp,
+  link,
   readdir,
   rename,
   rm,
@@ -55,7 +56,7 @@ test('locks exclude live owners, recover dead owners safely, and release only th
     child.kill();
     await childExit;
 
-    // Concurrent stale recovery must not delete the first newly acquired owner's directory.
+    // Concurrent dead-owner recovery must not delete the first newly acquired owner's directory.
     const held = Promise.withResolvers<void>();
     const attemptsFinished = Promise.withResolvers<void>();
     let entered = 0;
@@ -150,18 +151,6 @@ test('locks exclude live owners, recover dead owners safely, and release only th
       await rm(join(directory, 'real'), { recursive: true, force: true });
       await rm(join(directory, 'alias'), { force: true });
     }
-
-    // A holder whose ownership was replaced never removes the replacement and reports the loss.
-    const replacement = `${process.pid}-${randomUUID()}`;
-    await assert.rejects(
-      withFileLock(file, failFast, async () => {
-        await rename(lock, `${lock}.previous`);
-        await mkdir(lock, { mode: 0o700 });
-        await writeFile(join(lock, replacement), '', { mode: 0o600 });
-      }),
-      hasCode('LOCK_LOST'),
-    );
-    assert.deepEqual(await readdir(lock), [replacement]);
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill();
     await childExit;
@@ -169,7 +158,7 @@ test('locks exclude live owners, recover dead owners safely, and release only th
   }
 }, 15_000);
 
-test('waiters poll for a busy lock up to waitMs and abandoned owners expire by age', async () => {
+test('waiters poll for a busy lock and a live PID never expires by age', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'session-store-wait-'));
   const file = join(directory, 'session.json');
   const lock = `${file}.lock`;
@@ -224,39 +213,72 @@ test('waiters poll for a busy lock up to waitMs and abandoned owners expire by a
     expect(waited).toBeLessThan(5000);
     assert.deepEqual(await readdir(directory), []);
 
-    // A live PID that never refreshes its owner file, such as a crashed owner's reused PID,
-    // stops blocking once the file is older than staleMs.
-    const reused = `${process.pid}-${randomUUID()}`;
+    // A live PID remains busy even if an owner file's mtime is arbitrarily old.
+    const oldOwner = `${process.pid}-${randomUUID()}`;
     await mkdir(lock, { mode: 0o700 });
-    await writeFile(join(lock, reused), '', { mode: 0o600 });
-    const old = new Date(Date.now() - 10_000);
-    await utimes(join(lock, reused), old, old);
+    await writeFile(join(lock, oldOwner), '', { mode: 0o600 });
+    const old = new Date(Date.now() - 600_000);
+    await utimes(join(lock, oldOwner), old, old);
     await assert.rejects(
       withFileLock(file, failFast, async () => assert.fail()),
       busy,
     );
-    assert.equal(
-      await withFileLock(file, { ...failFast, staleMs: 5000 }, async () => 'expired'),
-      'expired',
-    );
-    assert.deepEqual(await readdir(directory), []);
-
-    // A live holder keeps refreshing its owner file, so long operations are never expired.
-    // The wide margin keeps this property deterministic on a loaded hosted runner.
-    const long = withFileLock(file, { staleMs: 5000 }, async () => {
-      await delay(8000);
-
-      return 'long';
-    });
-
-    await delay(5500);
-    await assert.rejects(
-      withFileLock(file, { ...failFast, staleMs: 5000 }, async () => assert.fail()),
-      busy,
-    );
-    expect(await long).toBe('long');
-    assert.deepEqual(await readdir(directory), []);
+    assert.deepEqual(await readdir(lock), [oldOwner]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 }, 15_000);
+
+test('reports in-flight lock loss without deleting the replacement owner', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'session-store-lock-lost-'));
+  const file = join(directory, 'session.json');
+  const lock = `${file}.lock`;
+
+  try {
+    const workStarted = Promise.withResolvers<void>();
+    const finishWork = Promise.withResolvers<void>();
+
+    const holder = withFileLock(file, failFast, async () => {
+      workStarted.resolve();
+      await finishWork.promise;
+    });
+
+    await workStarted.promise;
+    const [owner] = await readdir(lock);
+    assert.ok(owner);
+
+    const replacement = `${process.pid}-${randomUUID()}`;
+    await rename(lock, `${lock}.previous`);
+    await mkdir(lock, { mode: 0o700 });
+    await writeFile(join(lock, replacement), '', { mode: 0o600 });
+    finishWork.resolve();
+
+    await assert.rejects(holder, hasCode('LOCK_LOST'));
+    assert.deepEqual(await readdir(lock), [replacement]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('rejects hard-linked session targets before running work', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'session-store-hard-link-'));
+  const file = join(directory, 'session.json');
+  const alias = join(directory, 'alias.json');
+
+  try {
+    await writeFile(file, 'private session', { mode: 0o600 });
+    await link(file, alias);
+    let workRan = false;
+
+    await assert.rejects(
+      withFileLock(file, failFast, async () => {
+        workRan = true;
+      }),
+      hasCode('UNSAFE_FILE'),
+    );
+    expect(workRan).toBe(false);
+    assert.deepEqual((await readdir(directory)).toSorted(), ['alias.json', 'session.json']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
