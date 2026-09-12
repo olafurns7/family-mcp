@@ -2,44 +2,9 @@
 
 Unofficial, read-only [Abler](https://www.abler.io) MCP server. Written in TypeScript and compiled with Bun into a single executable, including its runtime and dependencies. The running MCP server uses HTTP and needs no browser.
 
-## Install the prebuilt release
-
-On macOS or Linux:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.4.0/packages/abler-mcp/install.sh | sh
-```
-
-No runtime, checkout, build step, sudo, or browser download is needed.
-The installer selects your operating system and CPU, downloads the standalone
-release, verifies its SHA-256 checksum and executable version, then installs
-`~/.local/bin/abler-mcp`. Existing installations are replaced only after validation.
-Temporary downloads are removed. The command is a symlink into
-`~/.local/share/abler-mcp/<version>-<checksum>/bin/`; license notices are stored
-in that versioned directory. Previous version directories are retained.
-Set `ABLER_VERSION` to select another released package version.
-
-Supported downloads: macOS arm64 (Apple Silicon) and x64 (Intel), and Linux
-arm64 and x64 with glibc. Alpine/musl and Windows standalone binaries are not
-provided. The executable includes its Bun runtime and dependencies.
-See [release assets and checksums](https://github.com/olafurns7/family-mcp/releases/tag/abler-mcp@0.4.0).
-
-Then run `"$HOME/.local/bin/abler-mcp" --version`. Add `$HOME/.local/bin` to your
-PATH to use `abler-mcp` directly. Use the full executable path printed by the
-installer in your MCP configuration. The installer leaves shell settings and
-Abler sessions alone.
-
-To choose another installation directory, pass an absolute `ABLER_PREFIX` to
-`sh`, for example `curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.4.0/packages/abler-mcp/install.sh | ABLER_PREFIX="/absolute/path" sh`.
+For installation, host configuration, and the short agent checklist, start with the root [Abler MCP section](../../README.md#abler-mcp).
 
 For agent setup and reporting rules, read **[docs/AGENTS.md](docs/AGENTS.md)**.
-
-For Claude Desktop, Claude Code, and Codex configuration, see the root
-[connection guide](../../README.md#connect-to-your-mcp-host). On macOS, home
-paths normally start `/Users/you`; configuration files generally do not expand
-`~` or `$HOME`. Omit `ABLER_SESSION_FILE` to use
-`$XDG_CONFIG_HOME/abler-mcp/session.json`, defaulting to
-`~/.config/abler-mcp/session.json`. Stdout is reserved for the MCP protocol.
 
 ## Authenticate once, then run headlessly
 
