@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
-- Added `auth login` to open a temporary Chromium profile, capture and verify
-  the Abler session, then close the browser and remove the profile. The
-  `--keep-browser` debugging option leaves live credentials in that profile.
+- Added `auth login` with isolated temporary profiles, a private CDP pipe when
+  Bun supports it, and the profile-owned `DevToolsActivePort` fallback.
+- Close the browser before verification, keep signal cleanup idempotent through
+  profile removal, and sweep abandoned login profiles older than one hour.
+- Keep `--keep-browser` available for debugging while detaching the CLI.
 
 ## 0.4.0
 
