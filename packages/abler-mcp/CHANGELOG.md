@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added `auth login` to open a temporary Chromium profile, capture and verify
+  the Abler session, then close the browser and remove the profile. The
+  `--keep-browser` debugging option leaves live credentials in that profile.
+
 ## 0.4.0
 
 First release from the `family-mcp` monorepo. Install URLs moved to
