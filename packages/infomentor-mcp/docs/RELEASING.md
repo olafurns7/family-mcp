@@ -4,22 +4,14 @@ Source: https://github.com/olafurns7/family-mcp/tree/main/packages/infomentor-mc
 Tags use `infomentor-mcp@<version>`; the current version is `infomentor-mcp@0.5.0`.
 Native binaries are the only distribution.
 
-1. With Bun 1.4.2 on PATH, review the intended commit, update only this
-   package's version when authorized, then run:
-
-   ```sh
-   bun install --frozen-lockfile
-   bunx turbo run release:sync --filter=infomentor-mcp
-   bunx turbo run check test --filter=infomentor-mcp
-   bunx turbo run test:binary test:installer --filter=infomentor-mcp
-   ```
-
-2. `release:sync` regenerates `install.sh` and version-pinned package docs.
-   Commit those generated files. Inspect the diff and native archive before
-   pushing an exact-commit `infomentor-mcp@<version>` tag.
-3. The Release workflow verifies the tag and installer pin, reuses CI, and
-   drafts a prerelease containing four native archives, their SHA-256 files,
-   and `install.sh`. Verify the draft before authorizing it.
+1. Bump this package's `version` in `package.json`.
+2. From the repository root, run `bun run release:sync`.
+3. Commit the version and synchronized files.
+4. Create the matching `infomentor-mcp@<version>` tag.
+5. Push the tag.
+6. Wait for the draft release to appear.
+7. Verify its four native archives, SHA-256 files, and `install.sh` asset.
+8. Publish the draft release.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.5.0/packages/infomentor-mcp/install.sh | sh

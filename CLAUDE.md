@@ -17,8 +17,11 @@ Turbo filters when possible. Tests must not contact live Abler or InfoMentor.
 
 - `packages/abler-mcp`: read-only Abler native MCP server.
 - `packages/infomentor-mcp`: read-only InfoMentor native MCP server.
+- `packages/mcp-runtime`: shared MCP server runtime and safe error boundary.
 - `packages/session-store`: private shared session locking/storage.
+- `tooling/oxlint-anti-slop`: local Oxlint JS-plugin rules.
 - `tooling/release`: native archive, installer, and release verification.
+- `tooling/tsconfig`: shared TypeScript configuration.
 - `docs/analysis`: investigations and review reports.
 
 ## Conventions

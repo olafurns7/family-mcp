@@ -197,9 +197,9 @@ must be a regular file owned by you with mode `0600`, not a symlink. Session
 cookies grant account access; treat the transferred file as a credential.
 Cross-machine acceptance and session lifetime remain subject to InfoMentor.
 
-A login or import whose verified account differs from the account of the saved
-session is refused and the saved session is kept. Log out first, or pass
-`--allow-account-change` (MCP: `"allowAccountChange": true`) to replace it
+A login or import is refused when the saved session cannot be read safely or
+its verified account differs, and the saved session is kept. Log out first, or
+pass `--allow-account-change` (MCP: `"allowAccountChange": true`) to replace it
 deliberately.
 
 ## MCP tools
@@ -368,9 +368,9 @@ only when no process is using that session file. Hard-linked session
 files are unsupported. Do not remove an active lock: a request whose lock is
 taken away fails and must be retried. Temporary files left by a crash are removed
 after five minutes. When
-InfoMentor answers with a rate limit, the requested pause is saved with the
-session, so every local process sharing the file waits instead of retrying. See
-automatic session renewal above for expired sessions.
+InfoMentor answers with a rate limit, the requested pause is capped at one hour
+and saved with the session, so every local process sharing the file waits
+instead of retrying. See automatic session renewal above for expired sessions.
 
 ### Upgrade notes
 
