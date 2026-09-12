@@ -9,13 +9,16 @@
   ],
   "tasks": {
     "test": {
-      "outputs": []
+      "outputs": [],
+      "dependsOn": ["^typecheck"]
     },
     "lint": {
-      "outputs": []
+      "outputs": [],
+      "dependsOn": ["^typecheck"]
     },
     "typecheck": {
-      "outputs": []
+      "outputs": [],
+      "dependsOn": ["^typecheck"]
     },
     "format:check": {
       "outputs": [],
