@@ -10,6 +10,42 @@ const UNKNOWN_ERROR = 'The operation failed. Check the server logs for details.'
 
 const ZOD_ERROR = 'Invalid input or unexpected upstream data.';
 
+export class ResponseBodyTooLargeError extends Error {
+  constructor() {
+    super('Response body exceeded its size limit.');
+    this.name = 'ResponseBodyTooLargeError';
+  }
+}
+
+export async function readBody(
+  response: Response,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  const reader = response.body?.getReader();
+
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+
+  try {
+    for (;;) {
+      signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+
+      if (done) break;
+      size += value.byteLength;
+
+      if (size > maxBytes) throw new ResponseBodyTooLargeError();
+      chunks.push(value);
+    }
+
+    return Buffer.concat(chunks).toString('utf8');
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
+
 /** An error whose fixed, reviewed message is safe to show to an MCP caller. */
 export class SafeError extends Error {
   constructor(message: string) {
