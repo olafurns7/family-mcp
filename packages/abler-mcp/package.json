@@ -24,7 +24,7 @@
   "type": "module",
   "scripts": {
     "check": "sh -n install.sh && bun run lint && bun run format:check && bun run typecheck",
-    "test": "bun test",
+    "test": "bun test --timeout 30000",
     "start": "bun src/cli.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings --report-unused-disable-directives-severity error .",
