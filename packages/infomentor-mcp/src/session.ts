@@ -14,9 +14,6 @@ export const LOGIN_URL = 'https://im1.infomentor.is/production/mentor/';
 
 export const PARENT_URL = 'https://minn.infomentor.is/';
 
-export const LOGIN_REQUIRED =
-  'Sign in first: run infomentor-mcp login on the MCP host, or call infomentor_login when the server was started with --allow-setup-tools.';
-
 /** A session file holds a cookie jar and identifiers; anything larger is not one. */
 export const SESSION_MAX_BYTES = 1_048_576;
 
@@ -46,6 +43,13 @@ export class InfoMentorError extends SafeError {
     super(message);
     this.name = 'InfoMentorError';
   }
+}
+
+export function loginRequiredError(): InfoMentorError {
+  return new InfoMentorError(
+    'LOGIN_REQUIRED',
+    'Sign in first: run infomentor-mcp login on the MCP host, or call infomentor_login when the server was started with --allow-setup-tools.',
+  );
 }
 
 export type HttpFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -340,7 +344,7 @@ export async function readSession(path = sessionPath()): Promise<SavedSession> {
   } catch (error) {
     const code = error instanceof SessionStoreError ? error.code : 'IO';
 
-    if (code === 'NOT_FOUND') throw new InfoMentorError('LOGIN_REQUIRED', LOGIN_REQUIRED);
+    if (code === 'NOT_FOUND') throw loginRequiredError();
 
     if (code === 'UNSAFE_FILE')
       throw new InfoMentorError(
