@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 import { readPackage } from './package.mjs';
 import { renderInstall } from './render-install.mjs';
+
+const turboDryRun = z.object({
+  tasks: z.array(z.object({ taskId: z.string(), hash: z.string() })),
+});
 
 await test('release generation, version tags, and package-specific assets stay consistent', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'family-release-test-'));
@@ -35,6 +40,13 @@ await test('release generation, version tags, and package-specific assets stay c
       ];
 
       for (const file of docs) await writeFile(join(root, file), stale);
+
+      const rootReadme = [
+        'https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.0.1/packages/abler-mcp/install.sh',
+        'https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh',
+      ].join('\n');
+
+      await writeFile(join(directory, 'README.md'), rootReadme);
       await writeFile(join(root, 'install.sh'), 'stale installer\n');
       const sync = fileURLToPath(new URL('./sync-version.mjs', import.meta.url));
       assert.equal(spawnSync(process.execPath, [sync, '--package', root, '--check']).status, 1);
@@ -50,6 +62,10 @@ await test('release generation, version tags, and package-specific assets stay c
 
       for (const file of docs)
         assert.equal(await readFile(join(root, file), 'utf8'), stale.replaceAll('0.0.1', '9.8.7'));
+      assert.equal(
+        await readFile(join(directory, 'README.md'), 'utf8'),
+        rootReadme.replaceAll(`${name}@0.0.1`, `${name}@9.8.7`),
+      );
       assert.equal(spawnSync(process.execPath, [sync, '--package', root, '--check']).status, 0);
       assert.equal(spawnSync(process.execPath, [sync, '--package', root]).status, 0);
       assert.equal(await readFile(join(root, 'install.sh'), 'utf8'), generated);
@@ -166,6 +182,63 @@ await test('release generation, version tags, and package-specific assets stay c
         }).status,
         0,
       );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+await test('shared source changes invalidate server quality task hashes', async () => {
+  const repository = fileURLToPath(new URL('../../', import.meta.url));
+  const directory = await mkdtemp(join(tmpdir(), 'family-cache-key-test-'));
+  const workspace = join(directory, 'workspace');
+  const ignored = new Set(['.git', 'node_modules', '.turbo']);
+
+  try {
+    await cp(repository, workspace, {
+      recursive: true,
+      filter: (source) => !ignored.has(relative(repository, source).split(sep)[0] ?? ''),
+    });
+
+    const turbo = join(repository, 'node_modules', '.bin', 'turbo');
+
+    const taskIds = ['abler-mcp', 'infomentor-mcp'].flatMap((name) =>
+      ['test', 'typecheck', 'lint'].map((task) => `${name}#${task}`),
+    );
+
+    const hashes = () => {
+      const result = spawnSync(turbo, ['run', 'test', 'typecheck', 'lint', '--dry=json'], {
+        cwd: workspace,
+        encoding: 'utf8',
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+
+      const dryRun = turboDryRun.parse(JSON.parse(result.stdout));
+      const hashesByTask = new Map(dryRun.tasks.map(({ taskId, hash }) => [taskId, hash]));
+
+      return new Map(taskIds.map((taskId) => [taskId, hashesByTask.get(taskId)]));
+    };
+
+    const baseline = hashes();
+
+    for (const source of [
+      'packages/mcp-runtime/src/index.ts',
+      'packages/session-store/src/index.ts',
+    ]) {
+      const file = join(workspace, source);
+      const original = await readFile(file, 'utf8');
+      await writeFile(file, `${original}\n// cache-key regression probe\n`);
+      const changed = hashes();
+
+      for (const taskId of taskIds)
+        assert.notEqual(
+          changed.get(taskId),
+          baseline.get(taskId),
+          `${taskId} was not invalidated by ${source}`,
+        );
+
+      await writeFile(file, original);
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
