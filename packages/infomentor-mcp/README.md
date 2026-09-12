@@ -68,25 +68,12 @@ registration installed. On VMs without systemd, daemon recovery happens when
 the MCP starts and uses the host's existing noninteractive `sudo` access. The installer does not add
 sudo permissions. See [connection setup and verification](docs/CONNECTIVITY.md).
 
-## Connect an MCP client
+## Sign in from any agent
 
-Use your actual home directory, not the example path:
-
-```json
-{
-  "mcpServers": {
-    "infomentor": {
-      "command": "/home/your-user/.local/bin/infomentor-mcp",
-      "args": ["serve"]
-    }
-  }
-}
-```
-
-The MCP server uses standard input/output. Human-readable CLI messages go to
-standard error. Restart the MCP client after upgrading the executable.
-
-### Sign in from any agent
+For Claude Desktop, Claude Code, and Codex configuration, see the root
+[connection guide](../../README.md#connect-to-your-mcp-host). The MCP server
+uses standard input/output; human-readable CLI messages go to standard error.
+Restart the MCP client after upgrading the executable.
 
 Login uses direct HTTPS and **does not open a browser or listen on loopback by
 default**. It accepts your InfoMentor username or kennitala (Icelandic identity
@@ -430,53 +417,6 @@ Version-1 browser snapshots are not HTTP session files. Run `login` again to
 create a version-2 session. An older snapshot is rejected with an actionable
 message, rather than silently treated as authenticated.
 
-## TypeScript API
-
-```ts
-import { InfoMentorClient } from 'infomentor-mcp';
-
-const client = new InfoMentorClient({ sessionFile: '/absolute/path/session.json' });
-try {
-  const status = await client.getSessionStatus();
-  if (status.authenticated) {
-    const overview = await client.getOverview();
-    console.log(overview.children);
-    // Example: select another child returned by this account.
-    const otherChild = overview.children.find((child) => !child.selected);
-    if (otherChild) {
-      const selected = await client.selectChild({ childId: otherChild.id });
-      console.log(selected.children, selected.timetable);
-    }
-    const messages = await client.getMessages({ folder: 'inbox', page: 1 });
-    if (messages.items[0]) {
-      const detail = await client.getMessage({ id: messages.items[0].id });
-      console.log(detail.message.messageBodyPlainText);
-    }
-    const notifications = await client.getNotifications();
-    console.log(notifications.notifications);
-    const collected = await client.collectUpdates({ includeExisting: true });
-    console.log(collected.updates);
-    // After handling the result, save collected.cursor for the next scheduled run.
-  }
-} finally {
-  await client.close();
-}
-```
-
-`login`, `importSession`, `createServer`, input/output schemas, and their types
-are also exported. `createServer({ allowSetupTools: true })` registers the
-setup tools; `login` and `importSession` accept `allowAccountChange`. Public
-operations accept an `AbortSignal` where applicable.
-School responses and session files are validated before use.
-
-Library compatibility: `createServer()` returns the v2 `McpServer` from
-`@modelcontextprotocol/server`. Consumers typed against the v1 SDK must migrate
-their SDK imports and transport types to v2.
-
-For subsequent collection runs, call `client.collectUpdates({ cursor })` with the
-last handled cursor. `InfoMentorClient` also accepts a `credentialsFile` option
-for automatic renewal.
-
 ## Development and release
 
 Use the pinned **Bun 1.4.2** for package management, tests, and executable builds.
@@ -485,9 +425,10 @@ Consumers run the standalone Bun executable.
 From the monorepo root:
 
 ```sh
-bun install --frozen-lockfile
-bunx turbo run build typecheck lint format:check test --filter=infomentor-mcp --force
-bunx turbo run test:dist test:binary test:installer --filter=infomentor-mcp
+bun install
+bun run check
+bun run test
+bunx turbo run test:binary test:installer --filter=infomentor-mcp --force
 ```
 
 `bun test` runs the HTTP/login, collection, session-lock, and loopback fixtures.
