@@ -1,6 +1,5 @@
 {
   "lockfileVersion": 1,
-  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "family-mcp",
@@ -36,9 +35,6 @@
     "packages/infomentor-mcp": {
       "name": "infomentor-mcp",
       "version": "0.5.0",
-      "bin": {
-        "infomentor-mcp": "dist/cli.js",
-      },
       "dependencies": {
         "@family-mcp/mcp-runtime": "workspace:^",
         "@family-mcp/session-store": "workspace:*",
@@ -52,6 +48,7 @@
         "@family-mcp/release-tooling": "workspace:*",
         "@family-mcp/tsconfig": "workspace:*",
         "@modelcontextprotocol/client": "^2.0.0",
+        "@types/bun": "^1.2.19",
         "@types/node": "^22.20.2",
       },
     },
