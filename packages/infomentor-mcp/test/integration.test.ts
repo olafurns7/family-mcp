@@ -11,11 +11,13 @@ import { collectionSchema } from '../src/collection.js';
 import { promptCredentials, readCredentials } from '../src/credentials.js';
 import { InfoMentorHttp, parseForms } from '../src/http.js';
 import { authenticate, importSession, login } from '../src/login.js';
+import { withSessionLock } from '../src/lock.js';
 import { createServer } from '../src/server.js';
 import {
   captureSession,
   InfoMentorError,
   LOGIN_URL,
+  MAX_RATE_LIMIT_MS,
   overviewSchema,
   messagesSchema,
   messageSchema,
@@ -960,8 +962,8 @@ test('cancelled login/import cannot replace the previous account, even after the
     for (const request of [{ credentialsFile }, { importFile: transfer }]) {
       const client = new InfoMentorClient({ sessionFile: file, fetch: routes.fetch });
       const cancelling = Promise.withResolvers<SetupStatus>();
-      // The verified parent read is the final request; the cancellation lands after it, so only
-      // the session-store commit check stands between the candidate and the file.
+      // Cancelling from the final parent-read callback preserves the existing session; this does
+      // not instrument the session-store adapter's own rename check.
       routes.selection.onParent = () => cancelling.resolve(client.cancelSetup());
 
       try {
@@ -981,6 +983,59 @@ test('cancelled login/import cannot replace the previous account, even after the
     }
   } finally {
     routes.restore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('login timeout includes session-lock contention and makes no HTTP request', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-login-lock-timeout-'));
+  const file = join(directory, 'session.json');
+  const credentialsFile = join(directory, 'credentials.json');
+  await writeSession(await savedSession(), file);
+  await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let requests = 0;
+
+  const holding = withSessionLock(file, undefined, async () => {
+    entered.resolve();
+    await release.promise;
+  });
+
+  try {
+    await entered.promise;
+    const started = Date.now();
+
+    const pending = login({
+      sessionFile: file,
+      credentialsFile,
+      timeoutMs: 1,
+      fetch: async (_input, init) => {
+        requests++;
+        await delay(60_000, undefined, { signal: init?.signal ?? undefined });
+
+        return new Response('unexpected');
+      },
+    });
+
+    const rejectedWhileLocked = await Promise.race([
+      pending.then(
+        () => true,
+        () => true,
+      ),
+      delay(200).then(() => false),
+    ]);
+
+    release.resolve();
+    await holding;
+    await assert.rejects(pending, { code: 'LOGIN_TIMEOUT' });
+    assert.equal(rejectedWhileLocked, true);
+    assert.ok(Date.now() - started < 1000);
+    assert.equal(requests, 0);
+    assert.deepEqual((await readdir(directory)).toSorted(), ['credentials.json', 'session.json']);
+  } finally {
+    release.resolve();
+    await holding;
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -1171,6 +1226,55 @@ test('a rate-limit pause is saved with the session and honoured by other process
     } finally {
       await fourth.close();
       await fifth.close();
+    }
+  } finally {
+    await first.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('an oversized Retry-After is capped with rotated cookies and honoured by another client', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-rate-cap-'));
+  const file = join(directory, 'session.json');
+  await writeSession(await savedSession(), file);
+  let calls = 0;
+
+  const fetcher = async (): Promise<Response> => {
+    calls++;
+
+    return new Response('', {
+      status: 429,
+      headers: {
+        'Retry-After': '9999999999999',
+        'Set-Cookie': 'IMHome=rotated; Secure; HttpOnly; Path=/',
+      },
+    });
+  };
+
+  const first = new InfoMentorClient({ sessionFile: file, fetch: fetcher });
+
+  try {
+    await assert.rejects(first.getOverview(), { code: 'RATE_LIMITED' });
+    assert.equal(calls, 1);
+    const saved = await readSession(file);
+    assert.ok(saved.rateLimitedUntil);
+    const until = Date.parse(saved.rateLimitedUntil);
+    assert.ok(until > Date.now() + MAX_RATE_LIMIT_MS - 10_000);
+    assert.ok(until <= Date.now() + MAX_RATE_LIMIT_MS);
+    assert.ok(
+      saved.cookies.some((cookie) => cookie.key === 'IMHome' && cookie.value === 'rotated'),
+    );
+
+    const second = new InfoMentorClient({ sessionFile: file, fetch: fetcher });
+
+    try {
+      await assert.rejects(
+        second.getOverview(),
+        limited(MAX_RATE_LIMIT_MS - 10_000, MAX_RATE_LIMIT_MS),
+      );
+      assert.equal(calls, 1, 'the saved cooldown prevents a second upstream request');
+    } finally {
+      await second.close();
     }
   } finally {
     await first.close();

@@ -5,7 +5,6 @@ import { DESTRUCTIVE, LOCAL_WRITE, READ_ONLY, toolResult } from '@family-mcp/mcp
 import { InfoMentorClient, loginRequestSchema, setupStatusSchema } from './client.js';
 import { collectRequestSchema, collectionSchema } from './collection.js';
 import {
-  InfoMentorError,
   overviewSchema,
   selectChildRequestSchema,
   sessionStatusSchema,
@@ -27,13 +26,7 @@ export type ServerOptions = SessionOptions & {
 
 const result = <T extends Record<string, unknown>>(
   action: () => Promise<T>,
-): ReturnType<typeof toolResult<T>> =>
-  toolResult(action, {
-    onUnknownError: (error) =>
-      error instanceof InfoMentorError
-        ? error.message
-        : 'InfoMentor operation failed. Check infomentor_setup_status or infomentor_session_status for the next step.',
-  });
+): ReturnType<typeof toolResult<T>> => toolResult(action);
 
 export function createServer(options: ServerOptions = {}): McpServer {
   const client = new InfoMentorClient(options);

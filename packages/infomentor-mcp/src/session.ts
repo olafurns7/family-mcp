@@ -6,6 +6,7 @@ import {
   readPrivateFile,
   writePrivateFile,
 } from '@family-mcp/session-store';
+import { SafeError } from '@family-mcp/mcp-runtime';
 import { CookieJar } from 'tough-cookie';
 import { z } from 'zod';
 
@@ -36,7 +37,7 @@ export type ErrorCode =
   | 'OPERATION_IN_PROGRESS';
 
 /** Only these messages are safe for CLI/MCP output; never forward upstream bodies or URLs. */
-export class InfoMentorError extends Error {
+export class InfoMentorError extends SafeError {
   constructor(
     public readonly code: ErrorCode,
     message: string,
