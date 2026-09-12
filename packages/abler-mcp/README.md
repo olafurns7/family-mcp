@@ -211,9 +211,9 @@ bun run test
 bunx turbo run test:binary test:installer --filter=abler-mcp --force
 ```
 
-`bun test` runs the eight offline integration tests, including the MCP stdio,
-Chrome protocol, and loopback HTTP fixtures. Build/release output and the Bun lockfile are
-excluded from formatting; runtime dependencies are excluded from linting.
+Offline tests include MCP stdio, Chrome protocol, and loopback HTTP fixtures.
+Build/release output and the Bun lockfile are excluded from formatting; runtime
+dependencies are excluded from linting.
 
 Use `bun run lint:fix` for safe lint fixes and `bun run format` to format files
 and sort imports. `bun run lint`, `bun run format:check`, and
