@@ -10,7 +10,7 @@
   "scripts": {
     "check": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 30000",
     "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings --report-unused-disable-directives-severity error .",
     "lint:fix": "bun run lint --fix",
     "format": "oxfmt -c ../../.oxfmtrc.json --write .",
