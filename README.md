@@ -6,7 +6,7 @@ executable, so the MCP host does not need Node, npm, or Bun at runtime.
 
 | Server | Best for | What you get | Login | Platforms |
 | --- | --- | --- | --- | --- |
-| **Abler** ([abler.io](https://www.abler.io)) | Sports schedules | Linked children, groups, events, and attendance records | Sign in in Chrome once, then capture or import its Abler session | macOS or glibc Linux, arm64/x64 |
+| **Abler** ([abler.io](https://www.abler.io)) | Sports schedules | Linked children, groups, events, and attendance records | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
 | **InfoMentor** | Icelandic school portal | Children, timetables, messages, notifications, and updates | Private credentials, a private file, or an imported session | macOS or glibc Linux, arm64/x64 |
 
 ## Abler
@@ -24,7 +24,19 @@ Expected output: `Sign in to Abler in the browser window that opened.`
 **Claude Desktop**
 
 ```json
-{"mcpServers":{"abler":{"command":"/absolute/path/to/.local/bin/abler-mcp","args":["serve"],"env":{"ABLER_SESSION_FILE":"/absolute/path/abler-session.json"}}}}
+{
+  "mcpServers": {
+    "abler": {
+      "command": "/absolute/path/to/.local/bin/abler-mcp",
+      "args": [
+        "serve"
+      ],
+      "env": {
+        "ABLER_SESSION_FILE": "/absolute/path/abler-session.json"
+      }
+    }
+  }
+}
 ```
 
 **Claude Code**
@@ -63,7 +75,20 @@ Expected output starts with `Signed in. Session saved to`.
 **Claude Desktop**
 
 ```json
-{"mcpServers":{"infomentor":{"command":"/absolute/path/to/.local/bin/infomentor-mcp","args":["serve"],"env":{"INFOMENTOR_SESSION_PATH":"/absolute/path/infomentor-session.json","INFOMENTOR_CREDENTIALS_FILE":"/absolute/path/credentials.json"}}}}
+{
+  "mcpServers": {
+    "infomentor": {
+      "command": "/absolute/path/to/.local/bin/infomentor-mcp",
+      "args": [
+        "serve"
+      ],
+      "env": {
+        "INFOMENTOR_SESSION_PATH": "/absolute/path/infomentor-session.json",
+        "INFOMENTOR_CREDENTIALS_FILE": "/absolute/path/credentials.json"
+      }
+    }
+  }
+}
 ```
 
 **Claude Code**
