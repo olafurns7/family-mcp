@@ -31,7 +31,7 @@ const help = `abler-mcp — unofficial read-only Abler MCP server
   abler-mcp --version               Print the installed version
 
 Login options: --timeout <seconds> (default 300), --browser <path>, --keep-browser
-The temporary profile is deleted after login; --keep-browser leaves live credentials in it.
+The temporary profile is deleted after login; --keep-browser leaves live credentials in it without a debugging endpoint.
 Set ABLER_SESSION_FILE to choose the private session file.
 Transfer the saved session file securely to use it on a headless machine.
 `;

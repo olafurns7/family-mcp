@@ -103,10 +103,11 @@ Verification adds network time after the cookie wait. At startup, login removes 
 the OS temporary directory. Set `ABLER_BROWSER` or pass
 `--browser /path/to/chromium` to choose a browser. `--keep-browser` is a
 debugging exception that leaves the browser and credential-bearing profile
-open. On Bun runtimes that support extra child-process file descriptors,
-Chrome uses a private `--remote-debugging-pipe`; older runtimes and
-`--keep-browser` use the profile-owned `DevToolsActivePort` endpoint on
-loopback.
+open. Login uses only a private `--remote-debugging-pipe` over inherited file
+descriptors; no debugging port is opened. If that pipe cannot be established,
+login closes the browser, removes the profile, and suggests `abler-mcp auth
+capture` or `abler-mcp auth import` instead. The retained browser's pipe closes
+when the CLI exits, so it has no debugging endpoint afterwards.
 
 ### Capture from Chrome
 
