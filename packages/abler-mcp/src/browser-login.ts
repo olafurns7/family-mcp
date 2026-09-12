@@ -18,7 +18,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { CookieJar } from 'tough-cookie';
 import * as z from 'zod/v4';
 
-import { captureCookies, importCookies, ORIGIN } from './auth.js';
+import { importCookies, ORIGIN } from './auth.js';
 
 const macBrowsers = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -66,11 +66,16 @@ type PortDebugging = {
   kind: 'port';
   endpoint: DebugEndpoint;
   socket: WebSocket;
+  nextRequestId: number;
+  owned: boolean;
+  closedByPeer: boolean;
+  closedLocally: boolean;
 };
 
 type PipeDebugging = {
   kind: 'pipe';
   connection: CdpPipe;
+  owned: boolean;
 };
 
 type BrowserDebugging = PortDebugging | PipeDebugging;
@@ -87,6 +92,7 @@ type CdpMethod =
   | 'Browser.close'
   | 'Browser.getVersion'
   | 'Network.getCookies'
+  | 'SystemInfo.getProcessInfo'
   | 'Target.attachToTarget'
   | 'Target.getTargets';
 
@@ -103,13 +109,28 @@ const jsonValueSchema = z.json();
 
 const cdpEnvelopeSchema = z.object({
   id: z.number().optional(),
-  error: jsonValueSchema.optional(),
+  method: z.string().optional(),
+  params: jsonValueSchema.optional(),
+  error: z.object({ code: z.number(), message: z.string() }).optional(),
   result: jsonValueSchema.optional(),
 });
 
 type CdpValue = z.infer<typeof jsonValueSchema>;
 
 const versionSchema = z.object({ product: z.string().min(1) });
+
+const processInfoSchema = z.object({
+  processes: z.array(z.object({ type: z.string(), id: z.number().int().positive() })),
+});
+
+class CdpProtocolError extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 class CdpPipe {
   private readonly input;
@@ -118,6 +139,7 @@ class CdpPipe {
   private readonly pending = new Map<number, PendingRequest>();
   private buffer = '';
   private closed = false;
+  private closedByPeer = false;
   private nextId = 0;
   private sessionId: string | undefined;
 
@@ -126,8 +148,8 @@ class CdpPipe {
     this.output = connect({ fd: outputFd, port: 0 });
 
     this.output.on('data', (chunk) => this.receive(chunk.toString()));
-    this.output.on('close', () => this.markClosed());
-    this.output.on('end', () => this.markClosed());
+    this.output.on('close', () => this.markClosed(true));
+    this.output.on('end', () => this.markClosed(true));
     this.output.on('error', () => this.markClosed());
     this.input.on('close', () => this.markClosed());
     this.input.on('error', () => this.markClosed());
@@ -135,6 +157,10 @@ class CdpPipe {
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  get isClosedByPeer(): boolean {
+    return this.closedByPeer;
   }
 
   async captureCookies(signal: AbortSignal): Promise<CookieJar> {
@@ -164,16 +190,27 @@ class CdpPipe {
         ).sessionId;
     }
 
-    const result = z
-      .object({ cookies: z.array(jsonValueSchema) })
-      .parse(
-        await this.request(
-          'Network.getCookies',
-          { urls: [`${ORIGIN}/oauth/token`, `${ORIGIN}/graphql`] },
-          signal,
-          this.sessionId,
-        ),
+    let value: CdpValue;
+
+    try {
+      value = await this.request(
+        'Network.getCookies',
+        { urls: [`${ORIGIN}/oauth/token`, `${ORIGIN}/graphql`] },
+        signal,
+        this.sessionId,
       );
+    } catch (error) {
+      if (
+        error instanceof CdpProtocolError &&
+        (error.code === -32001 ||
+          /(?:session.*(?:not found|does not exist)|no session)/i.test(error.message))
+      )
+        this.sessionId = undefined;
+
+      throw error;
+    }
+
+    const result = z.object({ cookies: z.array(jsonValueSchema) }).parse(value);
 
     return importCookies(result.cookies);
   }
@@ -274,12 +311,19 @@ class CdpPipe {
         return;
       }
 
-      const { id, error, result } = parsed.data;
+      const { id, error, result, method, params } = parsed.data;
+
+      if (id === undefined && method === 'Target.detachedFromTarget' && params !== undefined) {
+        const detached = z.object({ sessionId: z.string() }).safeParse(params);
+
+        if (detached.success && detached.data.sessionId === this.sessionId)
+          this.sessionId = undefined;
+      }
 
       if (id !== undefined)
         this.finish(
           id,
-          error === undefined ? undefined : new Error('Chrome rejected a debugging command.'),
+          error === undefined ? undefined : new CdpProtocolError(error.code, error.message),
           result,
         );
 
@@ -304,7 +348,9 @@ class CdpPipe {
     for (const id of this.pending.keys()) this.finish(id, error);
   }
 
-  private markClosed(): void {
+  private markClosed(byPeer = false): void {
+    if (byPeer) this.closedByPeer = true;
+
     if (this.closed) return;
     this.closed = true;
     this.rejectPending(new Error('Chrome debugging connection closed.'));
@@ -421,23 +467,34 @@ async function endpointResponds(endpoint: DebugEndpoint): Promise<boolean> {
   }
 }
 
-async function portBrowserIsGone(endpoint: DebugEndpoint, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+function processIsRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
 
-  while (Date.now() < deadline) {
-    let fileExists = true;
-
-    try {
-      await lstat(endpoint.activePortFile);
-    } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') fileExists = false;
-    }
-
-    if (!fileExists && !(await endpointResponds(endpoint))) return true;
-    await delay(POLL_INTERVAL_MS);
+    return true;
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'EPERM';
   }
+}
 
-  return false;
+function processGroupIsRunning(pid: number): boolean {
+  if (process.platform === 'win32') return processIsRunning(pid);
+
+  try {
+    process.kill(-pid, 0);
+
+    return true;
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'EPERM';
+  }
+}
+
+function browserProcessesAreGone(browser: Bun.Subprocess, browserPid: number | undefined): boolean {
+  return (
+    browserExited(browser) &&
+    (browserPid === undefined || browserPid === browser.pid || !processIsRunning(browserPid)) &&
+    (process.platform === 'win32' || !processGroupIsRunning(browser.pid))
+  );
 }
 
 async function profileHasLiveBrowser(profile: string): Promise<boolean> {
@@ -541,8 +598,10 @@ async function waitForSocketOpen(socket: WebSocket, signal: AbortSignal): Promis
 async function webSocketRequest(
   socket: WebSocket,
   id: number,
-  method: 'Browser.close' | 'Browser.getVersion',
+  method: CdpMethod,
   signal: AbortSignal,
+  params?: CdpParams,
+  sessionId?: string,
   timeoutMs = 1000,
 ): Promise<CdpValue> {
   return new Promise((resolve, reject) => {
@@ -584,18 +643,19 @@ async function webSocketRequest(
 
       if (response.id !== id) return;
 
+      if (response.error !== undefined) {
+        finish(new CdpProtocolError(response.error.code, response.error.message));
+
+        return;
+      }
+
       if (response.result === undefined) {
         finish(new Error('Invalid Chrome debugging response.'));
 
         return;
       }
 
-      finish(
-        response.error === undefined
-          ? undefined
-          : new Error('Chrome rejected a debugging command.'),
-        response.result,
-      );
+      finish(undefined, response.result);
     };
 
     const failed = () => finish(new Error('Chrome debugging connection failed.'));
@@ -614,11 +674,34 @@ async function webSocketRequest(
     }
 
     try {
-      socket.send(JSON.stringify({ id, method }));
+      const command: CdpCommand = { id, method };
+
+      if (params) command.params = params;
+
+      if (sessionId) command.sessionId = sessionId;
+
+      socket.send(JSON.stringify(command));
     } catch {
       finish(new Error('Cannot communicate with Chrome debugging.'));
     }
   });
+}
+
+function portRequest(
+  debugging: PortDebugging,
+  method: CdpMethod,
+  signal: AbortSignal,
+  params?: CdpParams,
+  sessionId?: string,
+): Promise<CdpValue> {
+  return webSocketRequest(
+    debugging.socket,
+    debugging.nextRequestId++,
+    method,
+    signal,
+    params,
+    sessionId,
+  );
 }
 
 async function waitForPortDebugging(
@@ -636,7 +719,20 @@ async function waitForPortDebugging(
 
     if (endpoint) {
       const socket = new WebSocket(endpoint.webSocketUrl);
-      const debugging = { kind: 'port' as const, endpoint, socket };
+
+      const debugging: PortDebugging = {
+        kind: 'port',
+        endpoint,
+        socket,
+        nextRequestId: 1,
+        owned: false,
+        closedByPeer: false,
+        closedLocally: false,
+      };
+
+      socket.addEventListener('close', () => {
+        if (!debugging.closedLocally) debugging.closedByPeer = true;
+      });
       let invalidResponse = false;
       retain(debugging);
 
@@ -644,13 +740,15 @@ async function waitForPortDebugging(
         await waitForSocketOpen(socket, signal);
 
         const version = versionSchema.safeParse(
-          await webSocketRequest(socket, 1, 'Browser.getVersion', signal),
+          await portRequest(debugging, 'Browser.getVersion', signal),
         );
 
         if (!version.success) {
           invalidResponse = true;
           throw new Error('Invalid Chrome debugging response.');
         }
+
+        debugging.owned = true;
 
         return debugging;
       } catch (error) {
@@ -660,7 +758,7 @@ async function waitForPortDebugging(
 
         if (socket.readyState === WebSocket.OPEN) throw error;
 
-        await closeSocket(socket);
+        await closeSocket(debugging);
       }
     }
 
@@ -701,6 +799,63 @@ async function waitForPipeDebugging(connection: CdpPipe, signal: AbortSignal): P
   throw new Error('Timed out waiting for browser debugging to start.');
 }
 
+async function browserProcessId(debugging: BrowserDebugging): Promise<number | undefined> {
+  try {
+    const result =
+      debugging.kind === 'pipe'
+        ? await debugging.connection.request(
+            'SystemInfo.getProcessInfo',
+            undefined,
+            undefined,
+            undefined,
+            1000,
+          )
+        : await portRequest(debugging, 'SystemInfo.getProcessInfo', new AbortController().signal);
+
+    return processInfoSchema.parse(result).processes.find(({ type }) => type === 'browser')?.id;
+  } catch {
+    return undefined;
+  }
+}
+
+async function capturePortCookies(
+  debugging: PortDebugging,
+  signal: AbortSignal,
+): Promise<CookieJar> {
+  const targets = z
+    .object({
+      targetInfos: z.array(z.object({ targetId: z.string(), type: z.string(), url: z.string() })),
+    })
+    .parse(await portRequest(debugging, 'Target.getTargets', signal));
+
+  const page = targets.targetInfos.find(
+    (target) => target.type === 'page' && target.url.startsWith(`${ORIGIN}/`),
+  );
+
+  if (!page) throw new Error('Open www.abler.io and sign in in that browser first.');
+
+  const sessionId = z.object({ sessionId: z.string() }).parse(
+    await portRequest(debugging, 'Target.attachToTarget', signal, {
+      targetId: page.targetId,
+      flatten: true,
+    }),
+  ).sessionId;
+
+  const result = z
+    .object({ cookies: z.array(jsonValueSchema) })
+    .parse(
+      await portRequest(
+        debugging,
+        'Network.getCookies',
+        signal,
+        { urls: [`${ORIGIN}/oauth/token`, `${ORIGIN}/graphql`] },
+        sessionId,
+      ),
+    );
+
+  return importCookies(result.cookies);
+}
+
 async function waitForCookies(
   debugging: BrowserDebugging,
   timeoutSeconds: number,
@@ -726,7 +881,7 @@ async function waitForCookies(
       const jar =
         debugging.kind === 'pipe'
           ? await debugging.connection.captureCookies(attemptSignal)
-          : await captureCookies(debugging.endpoint.httpUrl, attemptSignal);
+          : await capturePortCookies(debugging, attemptSignal);
 
       const [refreshCookies, accessCookies] = await Promise.all([
         jar.getCookies(`${ORIGIN}/oauth/token`),
@@ -752,8 +907,11 @@ async function waitForCookies(
   );
 }
 
-function closeSocket(socket: WebSocket): Promise<void> {
+function closeSocket(debugging: PortDebugging): Promise<void> {
+  const { socket } = debugging;
+
   if (socket.readyState === WebSocket.CLOSED) return Promise.resolve();
+  debugging.closedLocally = true;
 
   return new Promise((resolve) => {
     let settled = false;
@@ -782,7 +940,7 @@ async function closeDebugging(debugging: BrowserDebugging | undefined): Promise<
   if (!debugging) return;
 
   if (debugging.kind === 'pipe') debugging.connection.close();
-  else await closeSocket(debugging.socket);
+  else await closeSocket(debugging);
 }
 
 async function sendBrowserClose(debugging: BrowserDebugging): Promise<void> {
@@ -793,7 +951,7 @@ async function sendBrowserClose(debugging: BrowserDebugging): Promise<void> {
   }
 
   try {
-    await webSocketRequest(debugging.socket, 2, 'Browser.close', new AbortController().signal);
+    await portRequest(debugging, 'Browser.close', new AbortController().signal);
   } catch {
     // Chromium may close the owned CDP channel before replying to Browser.close.
   }
@@ -801,81 +959,108 @@ async function sendBrowserClose(debugging: BrowserDebugging): Promise<void> {
 
 async function debuggingIsGone(
   browser: Bun.Subprocess,
+  browserPid: number | undefined,
   debugging: BrowserDebugging | undefined,
   timeoutMs: number,
 ): Promise<boolean> {
-  if (!debugging) return waitForProcessExit(browser, timeoutMs);
-
-  if (debugging.kind === 'port') return portBrowserIsGone(debugging.endpoint, timeoutMs);
-
   const deadline = Date.now() + timeoutMs;
 
-  while (Date.now() < deadline) {
-    if (debugging.connection.isClosed && browserExited(browser)) return true;
-    await delay(POLL_INTERVAL_MS);
-  }
+  for (;;) {
+    if (browserProcessesAreGone(browser, browserPid)) {
+      if (!debugging?.owned) return true;
 
-  return debugging.connection.isClosed && browserExited(browser);
-}
+      const closedByPeer =
+        debugging.kind === 'pipe' ? debugging.connection.isClosedByPeer : debugging.closedByPeer;
 
-async function waitForProcessExit(browser: Bun.Subprocess, timeoutMs: number): Promise<boolean> {
-  if (browserExited(browser)) {
-    await browser.exited;
+      const endpointUnresponsive =
+        debugging.kind === 'pipe' || !(await endpointResponds(debugging.endpoint));
 
-    return true;
-  }
+      if (closedByPeer && endpointUnresponsive) return true;
+    }
 
-  const timeout = new AbortController();
+    if (Date.now() >= deadline) return false;
 
-  try {
-    return await Promise.race([
-      browser.exited.then(
-        () => true,
-        () => false,
-      ),
-      delay(timeoutMs, false, { signal: timeout.signal }),
-    ]);
-  } finally {
-    timeout.abort();
+    await delay(Math.min(POLL_INTERVAL_MS, deadline - Date.now()));
   }
 }
 
-async function terminateSpawnedBrowser(browser: Bun.Subprocess): Promise<boolean> {
-  if (await waitForProcessExit(browser, 0)) return true;
+async function waitForBrowserExit(
+  browser: Bun.Subprocess,
+  browserPid: number | undefined,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
 
-  try {
-    browser.kill('SIGTERM');
-  } catch {
-    return waitForProcessExit(browser, PROCESS_TERM_TIMEOUT_MS);
+  while (!browserProcessesAreGone(browser, browserPid) && Date.now() < deadline)
+    await delay(Math.min(POLL_INTERVAL_MS, deadline - Date.now()));
+
+  return browserProcessesAreGone(browser, browserPid);
+}
+
+function signalBrowserTree(
+  browser: Bun.Subprocess,
+  browserPid: number | undefined,
+  signal: 'SIGTERM' | 'SIGKILL',
+): void {
+  let groupSignalled = false;
+
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-browser.pid, signal);
+      groupSignalled = true;
+    } catch {
+      // The process group may already have exited.
+    }
   }
 
-  if (await waitForProcessExit(browser, PROCESS_TERM_TIMEOUT_MS)) return true;
-
-  try {
-    browser.kill('SIGKILL');
-  } catch {
-    return waitForProcessExit(browser, PROCESS_TERM_TIMEOUT_MS);
+  if (browserPid !== undefined && browserPid !== browser.pid && processIsRunning(browserPid)) {
+    try {
+      process.kill(browserPid, signal);
+    } catch {
+      // The browser may have exited between the liveness check and signal.
+    }
   }
 
-  return waitForProcessExit(browser, PROCESS_TERM_TIMEOUT_MS);
+  if (!groupSignalled && !browserExited(browser)) {
+    try {
+      browser.kill(signal);
+    } catch {
+      // The spawned process may have exited between the check and signal.
+    }
+  }
+}
+
+async function terminateSpawnedBrowser(
+  browser: Bun.Subprocess,
+  browserPid: number | undefined,
+): Promise<boolean> {
+  if (await waitForBrowserExit(browser, browserPid, 0)) return true;
+
+  signalBrowserTree(browser, browserPid, 'SIGTERM');
+
+  if (await waitForBrowserExit(browser, browserPid, PROCESS_TERM_TIMEOUT_MS)) return true;
+
+  signalBrowserTree(browser, browserPid, 'SIGKILL');
+
+  return waitForBrowserExit(browser, browserPid, PROCESS_TERM_TIMEOUT_MS);
 }
 
 async function closeBrowser(
   browser: Bun.Subprocess,
+  browserPid: number | undefined,
   debugging: BrowserDebugging | undefined,
 ): Promise<boolean> {
   try {
-    if (debugging) {
+    if (debugging?.owned) {
       await sendBrowserClose(debugging);
 
-      if (await debuggingIsGone(browser, debugging, BROWSER_CLOSE_TIMEOUT_MS)) {
-        if (await terminateSpawnedBrowser(browser)) return true;
-      }
+      if (await debuggingIsGone(browser, browserPid, debugging, BROWSER_CLOSE_TIMEOUT_MS))
+        return true;
     }
 
-    if (!(await terminateSpawnedBrowser(browser))) return false;
+    if (!(await terminateSpawnedBrowser(browser, browserPid))) return false;
 
-    return debuggingIsGone(browser, debugging, BROWSER_CLOSE_TIMEOUT_MS);
+    return await debuggingIsGone(browser, browserPid, debugging, BROWSER_CLOSE_TIMEOUT_MS);
   } finally {
     await closeDebugging(debugging);
   }
@@ -898,6 +1083,7 @@ function spawnBrowser(browserPath: string, profile: string, usePipe: boolean): B
       stdio: usePipe
         ? ['ignore', 'ignore', 'ignore', 'socket-fd', 'socket-fd']
         : ['ignore', 'ignore', 'ignore'],
+      detached: process.platform !== 'win32',
     });
   } catch {
     throw new Error('Could not start the selected browser.');
@@ -929,6 +1115,7 @@ export async function loginInBrowser(options: {
   let profile: string | undefined;
   let browser: Bun.Subprocess | undefined;
   let debugging: BrowserDebugging | undefined;
+  let browserPid: number | undefined;
   let result: CookieJar | undefined;
   let loginError: Error | undefined;
   let cleanupError: Error | undefined;
@@ -957,12 +1144,15 @@ export async function loginInBrowser(options: {
 
     if (usePipe) {
       const connection = pipeConnection(browser);
-      debugging = { kind: 'pipe', connection };
+      debugging = { kind: 'pipe', connection, owned: false };
       await waitForPipeDebugging(connection, controller.signal);
+      debugging.owned = true;
     } else
       debugging = await waitForPortDebugging(profile, browser, controller.signal, (candidate) => {
         debugging = candidate;
       });
+
+    browserPid = await browserProcessId(debugging);
 
     process.stdout.write('Sign in to Abler in the browser window that opened.\n');
     result = await waitForCookies(debugging, timeoutSeconds, controller.signal);
@@ -983,7 +1173,7 @@ export async function loginInBrowser(options: {
       );
       keepProfile = true;
     } else if (profile && browser) {
-      if (!(await closeBrowser(browser, debugging)))
+      if (!(await closeBrowser(browser, browserPid, debugging)))
         cleanupError = new Error(
           'A browser process may still be running; its temporary profile was removed.',
         );
