@@ -16,10 +16,6 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
-    "infomentor-mcp#test": {
-      "dependsOn": ["build"],
-      "outputs": [".test-build/**"]
-    },
     "lint": {
       "dependsOn": ["^build"],
       "outputs": []
