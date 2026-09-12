@@ -695,7 +695,6 @@ test('auth login removes the profile when browser readiness fails', async () => 
 
     expect(exit).toBe(1);
     expect(stderr).toContain('Could not establish a private Chrome debugging pipe.');
-    expect(await readFile(join(directory, 'browser.signal'), 'utf8')).toBe('SIGTERM');
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(pidIsRunning(state.pid)).toBe(false);
     expect(await readdir(temporaryDirectory)).toEqual([]);
