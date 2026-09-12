@@ -50,14 +50,22 @@ const {
 
 if (process.env.ABLER_FAKE_LAUNCHER === '1') {
   const command = [process.execPath, resolve(import.meta.path), ...args];
-  const env = { ...process.env, ABLER_FAKE_LAUNCHER: '0' };
+
+  const env = {
+    ...process.env,
+    ABLER_FAKE_LAUNCHER: '0',
+    ABLER_FAKE_LAUNCHER_CHILD: '1',
+  };
+
+  const detached = process.env.ABLER_FAKE_IGNORE_BROWSER_CLOSE === '1';
 
   const child = usePipe
     ? Bun.spawn(command, {
         env,
         stdio: ['ignore', 'ignore', 'ignore', 3, 4],
+        detached,
       })
-    : Bun.spawn(command, { env, stdio: ['ignore', 'ignore', 'ignore'] });
+    : Bun.spawn(command, { env, stdio: ['ignore', 'ignore', 'ignore'], detached });
 
   child.unref();
   process.exitCode = 0;
@@ -88,7 +96,9 @@ if (process.env.ABLER_FAKE_LAUNCHER === '1') {
   async function closeFakeBrowser() {
     if (closed) return;
     closed = true;
-    await rm(activePortFile, { force: true });
+
+    if (process.env.ABLER_FAKE_PRESERVE_PORT_FILE !== '1')
+      await rm(activePortFile, { force: true });
     await writeFile(exitFile, 'closed');
     await Promise.all(mocks.map((mock) => mock.server.stop(true)));
     input?.destroy();
@@ -128,25 +138,57 @@ if (process.env.ABLER_FAKE_LAUNCHER === '1') {
     input.on('error', () => undefined);
     output.on('error', () => undefined);
 
+    let currentTarget = 'fake-page';
+
     function handlePipeCommand(raw: string): void {
-      const command = z.object({ id: z.number(), method: z.string() }).parse(JSON.parse(raw));
+      const command = z
+        .object({
+          id: z.number(),
+          method: z.string(),
+          params: z.object({ targetId: z.string().optional() }).optional(),
+          sessionId: z.string().optional(),
+        })
+        .parse(JSON.parse(raw));
 
       let result = {};
 
       if (command.method === 'Browser.getVersion')
         result = process.env.ABLER_FAKE_BAD_READINESS === '1' ? {} : { product: 'Chrome/1.0' };
+      else if (command.method === 'SystemInfo.getProcessInfo')
+        result = {
+          processes:
+            process.env.ABLER_FAKE_LAUNCHER_CHILD === '1' &&
+            process.env.ABLER_FAKE_IGNORE_BROWSER_CLOSE === '1'
+              ? []
+              : [{ type: 'browser', id: process.pid, cpuTime: 0 }],
+        };
       else if (command.method === 'Target.getTargets')
         result = {
           targetInfos: [
             {
-              targetId: 'fake-page',
+              targetId: currentTarget,
               type: 'page',
               url: 'https://www.abler.io/coach',
             },
           ],
         };
-      else if (command.method === 'Target.attachToTarget') result = { sessionId: 'fake-page' };
+      else if (command.method === 'Target.attachToTarget')
+        result = { sessionId: command.params?.targetId ?? currentTarget };
       else if (command.method === 'Network.getCookies') {
+        if (
+          process.env.ABLER_FAKE_DETACH_ON_EMPTY_POLL === '1' &&
+          command.sessionId !== currentTarget
+        ) {
+          output?.write(
+            `${JSON.stringify({
+              id: command.id,
+              error: { code: -32001, message: 'Session with given id not found.' },
+            })}\0`,
+          );
+
+          return;
+        }
+
         polls++;
         result = {
           cookies:
@@ -173,6 +215,19 @@ if (process.env.ABLER_FAKE_LAUNCHER === '1') {
                     : []),
                 ],
         };
+
+        if (process.env.ABLER_FAKE_DETACH_ON_EMPTY_POLL === '1' && polls === 1) {
+          currentTarget = 'replacement-page';
+          output?.write(`${JSON.stringify({ id: command.id, result })}\0`);
+          output?.write(
+            `${JSON.stringify({
+              method: 'Target.detachedFromTarget',
+              params: { sessionId: 'fake-page' },
+            })}\0`,
+          );
+
+          return;
+        }
       }
 
       output?.write(`${JSON.stringify({ id: command.id, result })}\0`);
@@ -185,12 +240,33 @@ if (process.env.ABLER_FAKE_LAUNCHER === '1') {
         }, 10);
     }
   } else {
+    let substitutionMarked = false;
+
+    const browserPid =
+      process.env.ABLER_FAKE_LAUNCHER_CHILD === '1' &&
+      process.env.ABLER_FAKE_IGNORE_BROWSER_CLOSE === '1'
+        ? null
+        : process.pid;
+
     const actual = createCdpMock({
       hostname: debugAddress,
       port: 0,
       emptyPolls: Number(process.env.ABLER_FAKE_EMPTY_POLLS),
       includeIdToken: process.env.ABLER_FAKE_ID_TOKEN === '1',
       invalidVersion: process.env.ABLER_FAKE_BAD_READINESS === '1',
+      ignoreBrowserClose: process.env.ABLER_FAKE_IGNORE_BROWSER_CLOSE === '1',
+      browserPid,
+      substituteDiscoveryAfterProcessInfo: process.env.ABLER_FAKE_SUBSTITUTE_AFTER_READY === '1',
+      onSubstituteRequest: markDecoyRequest,
+      onProcessInfo: async () => {
+        if (process.env.ABLER_FAKE_SUBSTITUTE_AFTER_READY !== '1' || substitutionMarked) return;
+
+        substitutionMarked = true;
+
+        const marker = process.env.ABLER_FAKE_SUBSTITUTION_FILE;
+
+        if (marker) await writeFile(marker, 'substituted');
+      },
       onBrowserClose: () => {
         setTimeout(() => {
           closeFakeBrowser().catch(() => {
@@ -248,8 +324,11 @@ if (process.env.ABLER_FAKE_LAUNCHER === '1') {
   process.on('SIGTERM', () => {
     writeFile(signalFile, 'SIGTERM')
       .then(async () => {
+        if (process.env.ABLER_FAKE_IGNORE_SIGTERM === '1') return;
+
         if (process.env.ABLER_FAKE_DELAY_SIGTERM === '1') {
-          await rm(activePortFile, { force: true });
+          if (process.env.ABLER_FAKE_PRESERVE_PORT_FILE !== '1')
+            await rm(activePortFile, { force: true });
           setTimeout(() => {
             closeFakeBrowser().catch(() => {
               process.exitCode = 1;
