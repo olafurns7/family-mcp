@@ -18,11 +18,14 @@ let output = await readFile(file, 'utf8');
 
 for (const pkg of packages) {
   const tag = `${pkg.name}@${pkg.version}`;
-  output = output.replace(
-    new RegExp(
-      `https://raw\\.githubusercontent\\.com/olafurns7/family-mcp/${pkg.name}@\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?/packages/${pkg.name}/install\\.sh`,
-      'g',
-    ),
+
+  const installUrlPattern = new RegExp(
+    `https://raw\\.githubusercontent\\.com/olafurns7/family-mcp/${pkg.name}@\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?/packages/${pkg.name}/install\\.sh`,
+    'g',
+  );
+
+  output = output.replaceAll(
+    installUrlPattern,
     `https://raw.githubusercontent.com/olafurns7/family-mcp/${tag}/packages/${pkg.name}/install.sh`,
   );
 }

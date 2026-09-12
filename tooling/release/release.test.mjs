@@ -31,8 +31,11 @@ await test('release generation, version tags, and package-specific assets stay c
   const directory = await mkdtemp(join(tmpdir(), 'family-release-test-'));
 
   const rootReadme = [
-    'https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.0.1/packages/abler-mcp/install.sh',
-    'https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh',
+    'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.0.1/packages/abler-mcp/install.sh | sh',
+    'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.0.1/packages/abler-mcp/install.sh | sh',
+    'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh',
+    'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh -s -- --with-warp',
+    'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh -s -- --without-warp',
   ].join('\n');
 
   try {

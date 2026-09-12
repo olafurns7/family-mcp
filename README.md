@@ -18,7 +18,9 @@ runs the MCP host. Configuration files do not reliably expand `~` or `$HOME`.
 
 1. **Install.**
 
-   Run the canonical command in [Abler MCP](#abler-mcp).
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.4.0/packages/abler-mcp/install.sh | sh
+   ```
 
 2. **Verify the installed version.**
 
@@ -48,7 +50,9 @@ runs the MCP host. Configuration files do not reliably expand `~` or `$HOME`.
 
 1. **Install.**
 
-   Run the canonical command in [InfoMentor MCP](#infomentor-mcp).
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh
+   ```
 
 2. **Verify the installed version.**
 
@@ -88,9 +92,14 @@ The installer verifies the archive checksum and executable version, then install
 `abler-mcp` under `~/.local/bin`. Set `ABLER_PREFIX` to an absolute installation
 prefix or `ABLER_VERSION` to a released version before running the installer.
 
-**Upgrade** by running the same install command. The session file stays in
-place. **Uninstall** the command and release directories; this keeps the session
-file so a later reinstall can reuse it.
+**Upgrade.** The session file stays in place.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.4.0/packages/abler-mcp/install.sh | sh
+```
+
+**Uninstall** the command and release directories; this keeps the session file
+so a later reinstall can reuse it.
 
 ```sh
 rm -f /absolute/path/to/.local/bin/abler-mcp
@@ -198,7 +207,15 @@ curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp
 The installer verifies the archive checksum and executable version, then installs
 `infomentor-mcp` under `~/.local/bin`. Set `INFOMENTOR_PREFIX` to an absolute
 installation prefix or `INFOMENTOR_VERSION` to a released version before running
-the installer. **Upgrade** by running the same command. **Uninstall** with:
+the installer.
+
+**Upgrade.** The session file stays in place.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh
+```
+
+**Uninstall** with:
 
 ```sh
 rm -f /absolute/path/to/.local/bin/infomentor-mcp
@@ -216,11 +233,10 @@ Use the standard install on your own laptop or desktop. Use `--with-warp` **only
 on a remote Debian 13 x64 machine, such as a VPS or the Grok bot VM, when its
 network path to `infomentor.is` fails before HTTP.
 
-**Install WARP mode** by replacing `sh` at the end of the canonical InfoMentor
-installer with this installer invocation:
+**Install WARP mode.**
 
 ```sh
-sh -s -- --with-warp
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
 ```
 
 It requires administrator or `sudo` access and acceptance of
@@ -228,11 +244,10 @@ It requires administrator or `sudo` access and acceptance of
 Cloudflare WARP in local-proxy mode, and only this MCP command uses that proxy.
 It does not change the default route or Tailscale settings.
 
-**Revert to direct access** by replacing `sh` at the end of the canonical
-InfoMentor installer with this installer invocation:
+**Revert to direct access.**
 
 ```sh
-sh -s -- --without-warp
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh -s -- --without-warp
 ```
 
 **Do not use WARP** on a normal working connection, on a non-Debian-13-x64
