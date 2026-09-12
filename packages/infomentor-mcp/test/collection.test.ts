@@ -30,6 +30,7 @@ function sourceFor(sessionFile: string) {
     duplicateNoticeId: false,
     renameDuringScan: false,
     detailReads: 0,
+    skipped: 0,
   };
 
   const children = [
@@ -64,18 +65,21 @@ function sourceFor(sessionFile: string) {
     async readTimetable(_parent, signal) {
       throwIfAborted(signal);
 
-      return [
-        {
-          start: '2026-09-11T09:00:00',
-          end: '2026-09-11T10:00:00',
-          title: 'Synthetic timetable',
-          startTime: '09:00',
-          endTime: '10:00',
-          notes: { roomInfo: '', timetableNotes: '', tutors: '' },
-          allDay: false,
-          establishmentName: 'Synthetic school',
-        },
-      ];
+      return {
+        items: [
+          {
+            start: '2026-09-11T09:00:00',
+            end: '2026-09-11T10:00:00',
+            title: 'Synthetic timetable',
+            startTime: '09:00',
+            endTime: '10:00',
+            notes: { roomInfo: '', timetableNotes: '', tutors: '' },
+            allDay: false,
+            establishmentName: 'Synthetic school',
+          },
+        ],
+        skipped: state.skipped,
+      };
     },
     async getMessages(folder, page, signal) {
       throwIfAborted(signal);
@@ -90,6 +94,7 @@ function sourceFor(sessionFile: string) {
       return {
         items: state.removed && id === 12 ? [] : [summary(id)],
         more: folder === 'inbox' && page === 1,
+        skipped: state.skipped,
       };
     },
     async getMessage(id, signal) {
@@ -135,7 +140,7 @@ function sourceFor(sessionFile: string) {
 
       if (state.duplicateNoticeId) notices.push({ ...notice, pupilSourceId: 'second' });
 
-      return notices;
+      return { notifications: notices, skipped: state.skipped };
     },
   };
 
@@ -312,6 +317,22 @@ test('collection snapshots replay deltas, preserve context, and fail without adv
         await assert.rejects(stat(sessionFile + '.collections'), { code: 'ENOENT' });
       },
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('collection reports skipped upstream items while retaining valid feed data', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-collection-skipped-'));
+
+  try {
+    const { source, state } = sourceFor(join(directory, 'session.json'));
+    state.skipped = 1;
+    const collection = await collectUpdates({ includeExisting: true }, source);
+
+    collectionSchema.parse(collection);
+    assert.equal(collection.skipped, 10);
+    assert.ok(collection.updates.some((update) => update.kind === 'message'));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
