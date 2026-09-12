@@ -2,11 +2,12 @@
 
 ## 0.5.0
 
-- Added `auth login` with isolated temporary profiles, a private CDP pipe when
-  Bun supports it, and the profile-owned `DevToolsActivePort` fallback.
+- Added `auth login` with isolated temporary profiles: browser login uses a
+  private pipe transport; no debugging port is opened.
 - Close the browser before verification, keep signal cleanup idempotent through
   profile removal, and sweep abandoned login profiles older than one hour.
-- Keep `--keep-browser` available for debugging while detaching the CLI.
+- Keep `--keep-browser` available for debugging while detaching the CLI; its
+  retained browser has no debugging endpoint after the pipe closes.
 
 ## 0.4.0
 
