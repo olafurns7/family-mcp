@@ -4,9 +4,9 @@ import { z } from 'zod';
 import { readBody, ResponseBodyTooLargeError } from '@family-mcp/mcp-runtime';
 import {
   InfoMentorError,
-  LOGIN_REQUIRED,
   MAX_RATE_LIMIT_MS,
   PARENT_URL,
+  loginRequiredError,
   pupilSchema,
   type HttpFetch,
   throwIfAborted,
@@ -183,7 +183,7 @@ export class InfoMentorHttp {
             'InfoMentor requires an interactive security check. Direct HTTP login cannot complete it; no automatic retry was made.',
           );
 
-        if (response.status === 401) throw new InfoMentorError('LOGIN_REQUIRED', LOGIN_REQUIRED);
+        if (response.status === 401) throw loginRequiredError();
 
         if (response.status === 403)
           throw new InfoMentorError(
@@ -205,12 +205,10 @@ export class InfoMentorHttp {
       throwIfAborted(signal);
 
       if (error instanceof InfoMentorError) throw error;
-      throw new InfoMentorError(
-        'NETWORK_ERROR',
-        deadline.aborted
-          ? 'InfoMentor request timed out.'
-          : 'InfoMentor request failed. Check the network.',
-      );
+
+      if (deadline.aborted)
+        throw new InfoMentorError('NETWORK_ERROR', 'InfoMentor request timed out.');
+      throw new InfoMentorError('NETWORK_ERROR', 'InfoMentor request failed. Check the network.');
     }
   }
 
@@ -232,8 +230,7 @@ export class InfoMentorHttp {
   }
 
   async requireAuthentication(signal?: AbortSignal): Promise<void> {
-    if (!(await this.isAuthenticated(signal)))
-      throw new InfoMentorError('LOGIN_REQUIRED', LOGIN_REQUIRED);
+    if (!(await this.isAuthenticated(signal))) throw loginRequiredError();
   }
 
   /** InfoMentor's read endpoints use form POSTs, including paging and search. */
@@ -301,7 +298,7 @@ export class InfoMentorHttp {
           const error = cause instanceof InfoMentorError ? cause : undefined;
           throw new InfoMentorError(
             error?.code ?? 'UNEXPECTED_PAGE',
-            `${error?.message ?? 'InfoMentor could not select the child.'} Selection may have changed; refresh infomentor_get_overview before continuing.`,
+            'InfoMentor could not select the child. Selection may have changed; refresh infomentor_get_overview before continuing.',
             error?.retryAfterMs,
           );
         }
@@ -329,7 +326,7 @@ function requireSchoolPage(page: HttpPage): void {
     url.origin !== new URL(PARENT_URL).origin ||
     /^\/authentication\/authentication\/login(?:callback)?\b/i.test(url.pathname)
   )
-    throw new InfoMentorError('LOGIN_REQUIRED', LOGIN_REQUIRED);
+    throw loginRequiredError();
 }
 
 export const parentSchema = z.object({
