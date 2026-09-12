@@ -12,6 +12,7 @@ import {
   captureSession,
   InfoMentorError,
   LOGIN_URL,
+  MAX_RATE_LIMIT_MS,
   rateLimitCooldown,
   readSession,
   restoreCookies,
@@ -35,6 +36,19 @@ export type LoginOptions = ImportOptions & {
   onProgress?: (stage: 'waiting' | 'saved', loginUrl?: string) => void;
   openBrowser?: OpenBrowser;
 };
+
+function loginDeadline(timeoutMs = 300_000): AbortSignal {
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 3_600_000)
+    throw new InfoMentorError(
+      'INVALID_CONFIGURATION',
+      'Login timeout must be between 1 millisecond and one hour.',
+    );
+
+  return AbortSignal.timeout(timeoutMs);
+}
+
+const loginTimedOut = () =>
+  new InfoMentorError('LOGIN_TIMEOUT', 'Sign-in timed out. The previous saved session was kept.');
 
 /** One credential submission, then the observed hidden-form relay. No page JavaScript runs. */
 export async function authenticate(
@@ -106,20 +120,15 @@ export function hasConfiguredCredentials(options: SessionOptions): boolean {
 }
 
 /** Build a verified candidate; the caller commits only after checking account/context. */
-export async function createAuthenticatedHttp(options: LoginOptions): Promise<InfoMentorHttp> {
-  const timeout = options.timeoutMs ?? 300_000;
-
-  if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 3_600_000)
-    throw new InfoMentorError(
-      'INVALID_CONFIGURATION',
-      'Login timeout must be between 1 millisecond and one hour.',
-    );
-  throwIfAborted(options.signal);
-  const deadline = AbortSignal.timeout(timeout);
+export async function createAuthenticatedHttp(
+  options: LoginOptions,
+  deadline = loginDeadline(options.timeoutMs),
+): Promise<InfoMentorHttp> {
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   let credentials: Credentials | undefined;
 
   try {
+    throwIfAborted(signal);
     const file = options.credentialsFile ?? process.env['INFOMENTOR_CREDENTIALS_FILE'];
 
     if (file) credentials = await readCredentials(resolve(file), signal);
@@ -157,11 +166,7 @@ export async function createAuthenticatedHttp(options: LoginOptions): Promise<In
 
     return http;
   } catch (error) {
-    if (deadline.aborted && !options.signal?.aborted)
-      throw new InfoMentorError(
-        'LOGIN_TIMEOUT',
-        'Sign-in timed out. The previous saved session was kept.',
-      );
+    if (deadline.aborted && !options.signal?.aborted) throw loginTimedOut();
     throwIfAborted(options.signal);
     throw error;
   } finally {
@@ -171,13 +176,23 @@ export async function createAuthenticatedHttp(options: LoginOptions): Promise<In
 
 export async function login(options: LoginOptions = {}): Promise<void> {
   const file = sessionPath(options.sessionFile);
-  await withSessionLock(file, options.signal, async () => {
-    const http = await createAuthenticatedHttp(options);
-    const session = sessionFromHttp(http);
-    await requireSameAccount(file, session, options.allowAccountChange);
-    await (options.writeSession ?? writeSession)(session, file, options.signal);
-    options.onProgress?.('saved');
-  });
+  const deadline = loginDeadline(options.timeoutMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+
+  try {
+    await withSessionLock(file, signal, async () => {
+      const http = await createAuthenticatedHttp(options, deadline);
+      const session = sessionFromHttp(http);
+      await requireSameAccount(file, session, options.allowAccountChange);
+      throwIfAborted(signal);
+      await (options.writeSession ?? writeSession)(session, file, signal);
+      options.onProgress?.('saved');
+    });
+  } catch (error) {
+    if (deadline.aborted && !options.signal?.aborted) throw loginTimedOut();
+    throwIfAborted(options.signal);
+    throw error;
+  }
 }
 
 export function sessionFromHttp(http: InfoMentorHttp): SavedSession {
@@ -190,8 +205,12 @@ export function sessionFromHttp(http: InfoMentorHttp): SavedSession {
     if (selected.length === 1 && selected[0]) session.selectedChildId = selected[0].id;
   }
 
-  if (http.rateLimitedUntil > Date.now())
-    session.rateLimitedUntil = new Date(http.rateLimitedUntil).toISOString();
+  const now = Date.now();
+
+  if (http.rateLimitedUntil > now)
+    session.rateLimitedUntil = new Date(
+      Math.min(http.rateLimitedUntil, now + MAX_RATE_LIMIT_MS),
+    ).toISOString();
 
   return session;
 }

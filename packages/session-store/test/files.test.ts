@@ -188,6 +188,8 @@ test('sweeping removes only old temporaries that belong to the target', async ()
     );
     expect(await sweepTemp(file)).toBe(0);
     expect(await sweepTempInDirectory(directory)).toBe(1);
+
+    await utimes(fresh, old, old);
     expect(await sweepTempInDirectory(directory, { olderThanMs: 0 })).toBe(1);
     assert.deepEqual(
       (await readdir(directory)).toSorted(),
