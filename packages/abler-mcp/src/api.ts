@@ -1,3 +1,4 @@
+import { SafeError } from '@family-mcp/mcp-runtime';
 import { Cookie, type CookieJar } from 'tough-cookie';
 import * as z from 'zod/v4';
 
@@ -175,13 +176,29 @@ export const childSchedulesResultSchema = z.object({
 });
 
 export class AblerClient {
+  private readonly lifecycle = new AbortController();
+  private readonly active = new Set<Promise<unknown>>();
+
   constructor(
     private readonly path = sessionPath(),
     private readonly request: (url: string, options: RequestInit) => Promise<Response> = fetch,
   ) {}
 
   private session<T>(work: (jar: CookieJar) => Promise<T>): Promise<T> {
-    return withSessionLock(this.path, async () => work(await loadSession(this.path)));
+    const operation = withSessionLock(
+      this.path,
+      async () => work(await loadSession(this.path)),
+      this.lifecycle.signal,
+    );
+
+    this.active.add(operation);
+
+    return operation.finally(() => this.active.delete(operation));
+  }
+
+  async close(): Promise<void> {
+    this.lifecycle.abort();
+    await Promise.allSettled(this.active);
   }
 
   private async post(
@@ -190,12 +207,13 @@ export class AblerClient {
     body?: GraphqlBody,
   ): Promise<Response> {
     let response: Response;
+    const signal = AbortSignal.any([this.lifecycle.signal, AbortSignal.timeout(20000)]);
 
     try {
       const options: RequestInit = {
         method: 'POST',
         redirect: 'error',
-        signal: AbortSignal.timeout(20000),
+        signal,
         headers: {
           Cookie: await jar.getCookieString(`${ORIGIN}${path}`),
           Accept: 'application/json',
@@ -206,7 +224,7 @@ export class AblerClient {
       if (body !== undefined) options.body = JSON.stringify(body);
       response = await this.request(`${ORIGIN}${path}`, options);
     } catch {
-      throw new Error('Abler request failed or timed out. Check the connection and try again.');
+      throw new SafeError('Abler request failed or timed out. Check the connection and try again.');
     }
 
     let changed = false;
@@ -230,19 +248,22 @@ export class AblerClient {
     const response = await this.post(jar, '/oauth/token');
 
     if ([401, 403].includes(response.status))
-      throw new Error('Abler session expired or was revoked. Sign in again and capture/import it.');
+      throw new SafeError(
+        'Abler session expired or was revoked. Sign in again and capture/import it.',
+      );
 
-    if (!response.ok) throw new Error(`Abler session refresh failed (HTTP ${response.status}).`);
+    if (!response.ok)
+      throw new SafeError('Abler session refresh failed. Check your session and try again.');
 
     const result = z
       .object({ access_token: z.string().min(1), error: z.unknown().optional() })
       .safeParse(await response.json().catch(() => null));
 
     if (!result.success || result.data.error)
-      throw new Error('Abler returned an invalid session refresh response.');
+      throw new SafeError('Abler returned an invalid session refresh response.');
 
     if (!(await jar.getCookies(`${ORIGIN}/graphql`)).some((c) => c.key === 'id_token')) {
-      throw new Error('Abler did not issue an access cookie. Capture a fresh session.');
+      throw new SafeError('Abler did not issue an access cookie. Capture a fresh session.');
     }
   }
 
@@ -270,18 +291,18 @@ export class AblerClient {
       result = graphqlResponseSchema.safeParse(await response.json().catch(() => null));
     }
 
-    if (!response.ok) throw new Error(`Abler ${operationName} failed (HTTP ${response.status}).`);
+    if (!response.ok) throw new SafeError('Abler returned an error for the requested operation.');
 
-    if (!result.success) throw new Error('Abler returned an invalid API response.');
+    if (!result.success) throw new SafeError('Abler returned an invalid API response.');
 
     if (result.data.errors?.length) {
       // Server messages may contain private values. Never echo raw response bodies.
-      throw new Error(
-        `Abler rejected ${operationName}. The session may lack permission, or the API may have changed.`,
+      throw new SafeError(
+        'Abler rejected the request. The session may lack permission, or the API may have changed.',
       );
     }
 
-    if (!result.data.data) throw new Error('Abler returned no data.');
+    if (!result.data.data) throw new SafeError('Abler returned no data.');
 
     return result.data.data;
   }
@@ -312,7 +333,7 @@ export class AblerClient {
       `query Profile { me { id displayName children { id displayName } } }`,
     );
 
-    if (!data.me) throw new Error('Abler returned no signed-in user.');
+    if (!data.me) throw new SafeError('Abler returned no signed-in user.');
     const profile = profileSchema.parse(data.me);
 
     return profileResultSchema.parse({
@@ -379,7 +400,7 @@ export class AblerClient {
     const page = pageSchema.parse(data.schedule);
 
     if (page.pageInfo.hasNextPage && page.pageInfo.endCursor === after) {
-      throw new Error(
+      throw new SafeError(
         'Abler pagination did not advance. Retry later; do not report this schedule as complete.',
       );
     }
@@ -397,7 +418,7 @@ export class AblerClient {
       const profile = await this.profileWithSession(jar);
 
       if (childIds?.some((childId) => !Object.hasOwn(profile.childNamesById, childId))) {
-        throw new Error('Unknown child ID. Use get_profile to choose linked children.');
+        throw new SafeError('Unknown child ID. Use get_profile to choose linked children.');
       }
 
       const selected = profile.children.filter((child) => !childIds || childIds.includes(child.id));
@@ -405,7 +426,7 @@ export class AblerClient {
       if (
         Object.keys(afterByChild).some((childId) => !selected.some((child) => child.id === childId))
       ) {
-        throw new Error(
+        throw new SafeError(
           'A cursor was supplied for an unselected child. Match afterByChild keys to childIds.',
         );
       }
@@ -453,10 +474,10 @@ export class AblerClient {
       const page = pageSchema.parse(data.event);
       const event = page.edges[0]?.node;
 
-      if (!event) throw new Error('Event not found or not accessible with this session.');
+      if (!event) throw new SafeError('Event not found or not accessible with this session.');
 
       if (event.eventId !== eventId || event.ageGroup.id !== ageGroupId) {
-        throw new Error('Abler returned a different event than requested.');
+        throw new SafeError('Abler returned a different event than requested.');
       }
 
       return eventSchema.parse(event);
