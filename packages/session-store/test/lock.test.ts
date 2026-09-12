@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { SessionStoreError, withFileLock } from '../src/index.js';
+import { SessionStoreError, sweepTemp, withFileLock } from '../src/index.js';
 
 const hasCode =
   (code: string) =>
@@ -225,6 +225,56 @@ test('waiters poll for a busy lock and a live PID never expires by age', async (
     );
     assert.deepEqual(await readdir(lock), [oldOwner]);
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("a holder's sweep leaves an old live waiter's lock temporary alone", async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'session-store-sweep-waiter-'));
+  const file = join(directory, 'session.json');
+  const entered = Promise.withResolvers<void>();
+  const sweepNow = Promise.withResolvers<void>();
+  const swept = Promise.withResolvers<number>();
+  const release = Promise.withResolvers<void>();
+
+  const holder = withFileLock(file, {}, async () => {
+    entered.resolve();
+    await sweepNow.promise;
+    swept.resolve(await sweepTemp(file));
+    await release.promise;
+  });
+
+  let waiter: Promise<string> | undefined;
+
+  try {
+    await entered.promise;
+    waiter = withFileLock(file, { waitMs: 10_000 }, async () => 'waited');
+    let temporary: string | undefined;
+
+    for (let attempt = 0; attempt < 100 && !temporary; attempt++) {
+      temporary = (await readdir(directory)).find((name) =>
+        name.startsWith('session.json.lock-tmp.'),
+      );
+
+      if (!temporary) await delay(10);
+    }
+
+    assert.ok(temporary, 'the waiter publishes its temporary before polling');
+    const temporaryPath = join(directory, temporary);
+    const old = new Date(Date.now() - 600_000);
+    await utimes(temporaryPath, old, old);
+    sweepNow.resolve();
+    assert.equal(await swept.promise, 0);
+    await stat(temporaryPath);
+
+    release.resolve();
+    await holder;
+    assert.equal(await waiter, 'waited');
+    assert.deepEqual(await readdir(directory), []);
+  } finally {
+    sweepNow.resolve();
+    release.resolve();
+    await Promise.allSettled([holder, ...(waiter ? [waiter] : [])]);
     await rm(directory, { recursive: true, force: true });
   }
 }, 15_000);

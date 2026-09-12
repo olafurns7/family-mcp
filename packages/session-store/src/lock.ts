@@ -68,7 +68,7 @@ async function acquire(path: string, options: LockOptions): Promise<Release> {
   const directory = await lockDirectory(path);
   await rejectHardLinkedTarget(path);
   const owner = `${process.pid}-${randomUUID()}`;
-  const temporary = `${directory}.${owner}.tmp`;
+  const temporary = join(dirname(directory), `${basename(path)}.lock-tmp.${owner}`);
   const deadline = Date.now() + waitMs;
   let pollMs = 25;
   let spins = 0;
