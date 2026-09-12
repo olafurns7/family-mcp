@@ -266,10 +266,16 @@ The first call with `{}` establishes a quiet baseline. Use
 `{"includeExisting":true}` to return existing data on that first call instead.
 Later calls pass `{"cursor":"the previously handled cursor"}` and return:
 
-- `baseline`, `cursor`, `retrievedAt`, and the current `children` list.
+- `baseline`, `cursor`, `retrievedAt`, the current `children` list, and `skipped`
+  (the total omitted malformed rows) with `skippedByFeed` counts for
+  `timetable`, `messages`, and `notifications`.
 - `updates`: new or changed child metadata, complete timetables, full messages,
   and notifications, grouped by identical payload and source identity.
-- `missing`: references no longer present in a feed, which does not prove deletion.
+- `missing`: references absent from complete feeds; this does not prove deletion.
+
+A feed with a nonzero `skippedByFeed` count is partial. Its prior fingerprints
+remain in the cursor snapshot, and updates and missing references from that feed
+are withheld until a complete read. Other complete feeds can still advance.
 
 An update's `childIds` identify the selected-child contexts in which it was
 observed, not proven ownership. Shared messages or notifications can appear in
