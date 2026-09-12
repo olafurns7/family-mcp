@@ -63,8 +63,8 @@ await withFileLock(path, { waitMs: 30_000 }, async () => {
 `ensurePrivateDir(path, { enforceMode? })` creates directories with `0700` and leaves an existing
 directory's mode alone unless `enforceMode` is set. `sweepTemp(path)` and
 `sweepTempInDirectory(directory)` remove `*.tmp` files and directories left by a hard crash once
-they are older than five minutes; call them under the lock so a waiter's lock temporary is never
-mistaken for an orphan. `defaultSessionPath(appName, { legacy? })` returns
+they are older than five minutes. Lock temporaries use `<file>.lock-tmp.<owner>`, which `sweepTemp`
+does not match; sweeps should still run under the lock. `defaultSessionPath(appName, { legacy? })` returns
 `$XDG_CONFIG_HOME/<app>/session.json` (default `~/.config/<app>/session.json`), keeping an existing
 legacy file's path when one is given.
 
