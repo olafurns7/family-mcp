@@ -97,6 +97,12 @@
   },
   "overrides": [
     {
+      "files": ["packages/**/*.ts"],
+      "rules": {
+        "anti-slop/safe-error-literal-message": "error"
+      }
+    },
+    {
       "files": ["packages/abler-mcp/src/cli.ts"],
       "rules": {
         "no-console": "off"
