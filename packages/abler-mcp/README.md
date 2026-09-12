@@ -95,9 +95,10 @@ abler-mcp auth login
 
 It opens a fresh browser profile and waits up to 15 seconds for the browser to
 start. `--timeout <seconds>` sets the cookie wait (300 seconds by default). It
-captures only the `refreshToken` and `id_token` cookies; the browser and profile
-are closed before session verification and saving. Verification adds network
-time after the cookie wait. At startup, login removes abandoned
+captures only the `refreshToken` and `id_token` cookies; login confirms the
+browser is closed before session verification and saving. If closure cannot be
+confirmed, login exits with an error and still removes the temporary profile.
+Verification adds network time after the cookie wait. At startup, login removes abandoned
 `abler-login-*` profiles older than one hour. Profiles use mode `0700` under
 the OS temporary directory. Set `ABLER_BROWSER` or pass
 `--browser /path/to/chromium` to choose a browser. `--keep-browser` is a

@@ -3,7 +3,14 @@ import * as z from 'zod/v4';
 const requestSchema = z.object({
   id: z.number(),
   method: z.string(),
-  params: z.object({ urls: z.array(z.string()).default([]) }).default({ urls: [] }),
+  params: z
+    .object({
+      urls: z.array(z.string()).optional(),
+      targetId: z.string().optional(),
+      flatten: z.literal(true).optional(),
+    })
+    .default({}),
+  sessionId: z.string().optional(),
 });
 
 const refreshCookie = {
@@ -30,6 +37,10 @@ export function createCdpMock(
     includeIdToken?: boolean;
     invalidVersion?: boolean;
     ignoreBrowserClose?: boolean;
+    browserPid?: number | null;
+    substituteDiscoveryAfterProcessInfo?: boolean;
+    onSubstituteRequest?: () => void;
+    onProcessInfo?: () => void | Promise<void>;
     onBrowserClose?: () => void | Promise<void>;
     onRequest?: () => void;
   } = {},
@@ -39,8 +50,9 @@ export function createCdpMock(
   const hostname = options.hostname ?? '127.0.0.1';
   const refreshCookieValue = options.refreshToken ?? 'private-refresh';
   const idTokenValue = options.idToken ?? 'private-access';
+  let substituteDiscovery = false;
 
-  const mockServer = Bun.serve({
+  const mockServer = Bun.serve<{ pathname: string }>({
     hostname,
     port: options.port ?? 0,
     fetch(request, server) {
@@ -53,7 +65,9 @@ export function createCdpMock(
           webSocketDebuggerUrl: `ws://${hostname}:${server.port}/devtools/browser/fake-browser`,
         });
 
-      if (path === '/json/list')
+      if (path === '/json/list') {
+        if (substituteDiscovery) options.onSubstituteRequest?.();
+
         return Response.json([
           {
             type: 'page',
@@ -63,11 +77,14 @@ export function createCdpMock(
           {
             type: 'page',
             url: 'https://www.abler.io/coach',
-            webSocketDebuggerUrl: `ws://${hostname}:${server.port}/devtools/page/1`,
+            webSocketDebuggerUrl: `ws://${hostname}:${server.port}${
+              substituteDiscovery ? '/devtools/page/substitute' : '/devtools/page/1'
+            }`,
           },
         ]);
+      }
 
-      if (server.upgrade(request)) return undefined;
+      if (server.upgrade(request, { data: { pathname: path } })) return undefined;
 
       return new Response('Not found', { status: 404 });
     },
@@ -95,6 +112,54 @@ export function createCdpMock(
           return;
         }
 
+        if (request.method === 'SystemInfo.getProcessInfo') {
+          socket.send(
+            JSON.stringify({
+              id: request.id,
+              result: {
+                processes:
+                  options.browserPid === null
+                    ? []
+                    : [{ type: 'browser', id: options.browserPid ?? process.pid, cpuTime: 0 }],
+              },
+            }),
+          );
+          substituteDiscovery = options.substituteDiscoveryAfterProcessInfo === true;
+          await options.onProcessInfo?.();
+
+          return;
+        }
+
+        if (request.method === 'Target.getTargets') {
+          socket.send(
+            JSON.stringify({
+              id: request.id,
+              result: {
+                targetInfos: [
+                  {
+                    targetId: 'fake-page',
+                    type: 'page',
+                    url: 'https://www.abler.io/coach',
+                  },
+                ],
+              },
+            }),
+          );
+
+          return;
+        }
+
+        if (request.method === 'Target.attachToTarget') {
+          socket.send(
+            JSON.stringify({
+              id: request.id,
+              result: { sessionId: request.params.targetId ?? 'fake-page' },
+            }),
+          );
+
+          return;
+        }
+
         if (request.method === 'Browser.close') {
           if (!options.ignoreBrowserClose) await options.onBrowserClose?.();
           socket.send(JSON.stringify({ id: request.id, result: {} }));
@@ -106,12 +171,27 @@ export function createCdpMock(
 
         polls++;
 
+        const substitutedPage =
+          substituteDiscovery && socket.data.pathname === '/devtools/page/substitute';
+
+        if (substitutedPage) options.onSubstituteRequest?.();
+
         const cookies =
           polls <= (options.emptyPolls ?? 0)
             ? []
             : [
-                { ...refreshCookie, value: refreshCookieValue },
-                ...(options.includeIdToken ? [{ ...accessCookie, value: idTokenValue }] : []),
+                {
+                  ...refreshCookie,
+                  value: substitutedPage ? 'decoy-refresh' : refreshCookieValue,
+                },
+                ...(options.includeIdToken
+                  ? [
+                      {
+                        ...accessCookie,
+                        value: substitutedPage ? 'decoy-access' : idTokenValue,
+                      },
+                    ]
+                  : []),
               ];
 
         socket.send(JSON.stringify({ id: request.id, result: { cookies } }));

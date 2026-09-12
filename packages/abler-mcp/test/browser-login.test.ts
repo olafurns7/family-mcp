@@ -134,6 +134,7 @@ function browserEnvironment(
     ABLER_FAKE_BROWSER_EXIT: join(directory, 'browser.closed'),
     ABLER_FAKE_BROWSER_SIGNAL: join(directory, 'browser.signal'),
     ABLER_FAKE_BROWSER_DECOY_REQUEST: join(directory, 'decoy.requested'),
+    ABLER_FAKE_SUBSTITUTION_FILE: join(directory, 'browser.substituted'),
     ABLER_FAKE_EMPTY_POLLS: String(emptyPolls),
     ABLER_FAKE_ID_TOKEN: '1',
     ABLER_FAKE_LAUNCHER: '0',
@@ -166,19 +167,28 @@ function spawnLogin(
   });
 }
 
-async function makePreload(directory: string): Promise<string> {
+async function makePreload(directory: string, forcePort = false): Promise<string> {
   const path = join(directory, 'upstream.js');
 
-  await writeFile(
-    path,
-    `const originalFetch = globalThis.fetch;
+  const source = `const originalFetch = globalThis.fetch;
 globalThis.fetch = (input, init) => {
   const url = input instanceof Request ? new URL(input.url) : new URL(input);
   if (url.origin !== 'https://www.abler.io') return originalFetch(input, init);
   return originalFetch(new URL(url.pathname + url.search, process.env.ABLER_TEST_ORIGIN), init);
 };
-`,
-  );
+${
+  forcePort
+    ? `const originalSpawn = Bun.spawn.bind(Bun);
+Bun.spawn = (command, options) => {
+  if (Array.isArray(command) && command.includes('--remote-debugging-pipe'))
+    throw new Error('force the DevToolsActivePort fallback');
+  return originalSpawn(command, options);
+};
+`
+    : ''
+}`;
+
+  await writeFile(path, source);
 
   return path;
 }
@@ -349,12 +359,16 @@ test('auth login uses its private CDP endpoint and ignores decoy cookies', async
     const { exit, stdout, stderr } = await collectProcess(child);
     const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
     const savedCookies = new Map(saved.cookies.map(({ name, value }) => [name, value]));
+    const savedMode = (await stat(sessionPath)).mode & 0o777;
     const jar = await loadSession(sessionPath);
 
-    expect(exit).toBe(0);
     expect(stderr).toBe('');
+    expect(exit).toBe(0);
     expect(stdout).toContain('Sign in to Abler in the browser window that opened.');
     expect(stdout).toContain(`Abler session saved and verified: ${sessionPath}`);
+    expect(stdout).not.toMatch(/private-refresh|private-access|verified-refresh|verified-access/);
+    expect(saved.cookies.map(({ name }) => name).toSorted()).toEqual(['id_token', 'refreshToken']);
+    expect(savedMode).toBe(0o600);
     expect(savedCookies.get('refreshToken')).toBe('verified-refresh');
     expect(savedCookies.get('id_token')).toBe('verified-access');
     expect(await jar.getCookieString('https://www.abler.io')).toContain(
@@ -663,8 +677,7 @@ test('auth login removes the profile when browser readiness fails', async () => 
 
     expect(exit).toBe(1);
     expect(stderr).toContain('Invalid Chrome debugging response.');
-    expect(await readFile(join(directory, 'browser.closed'), 'utf8')).toBe('closed');
-    await assert.rejects(stat(join(directory, 'browser.signal')), { code: 'ENOENT' });
+    expect(await readFile(join(directory, 'browser.signal'), 'utf8')).toBe('SIGTERM');
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(await readdir(temporaryDirectory)).toEqual([]);
   } finally {
@@ -776,6 +789,206 @@ test('auth login sweeps abandoned profiles but preserves recent and live profile
   }
 });
 
+test('auth login uses its readiness WebSocket after the fallback port is substituted', async () => {
+  const { directory, temporaryDirectory } = await makeTestDirectory('abler-login-substitute-');
+  const sessions = join(directory, 'sessions');
+  await mkdir(sessions);
+  const sessionPath = join(sessions, 'session.json');
+  const browser = await makeFakeBrowser(directory);
+  const stateFile = join(directory, 'browser.json');
+  const exitFile = join(directory, 'browser.closed');
+  const preload = await makePreload(directory, true);
+
+  const upstream = createUpstream({
+    valid: true,
+    browserStateFile: stateFile,
+    browserExitFile: exitFile,
+    assertBrowserClosed: true,
+  });
+
+  let child: Bun.Subprocess | undefined;
+  let state: z.infer<typeof browserStateSchema> | undefined;
+
+  try {
+    child = spawnLogin(
+      browser,
+      {
+        ...browserEnvironment(directory, temporaryDirectory, sessionPath, 0, {
+          ABLER_FAKE_SUBSTITUTE_AFTER_READY: '1',
+        }),
+        ABLER_TEST_ORIGIN: `http://127.0.0.1:${upstream.server.port}`,
+      },
+      20,
+      preload,
+    );
+    state = await waitForBrowserState(stateFile);
+    const { exit, stdout, stderr } = await collectProcess(child);
+
+    expect(stderr).toBe('');
+    expect(exit).toBe(0);
+
+    const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
+
+    expect(state.transport).toBe('port');
+    expect(await readFile(join(directory, 'browser.substituted'), 'utf8')).toBe('substituted');
+    expect(saved.cookies.map(({ name }) => name).toSorted()).toEqual(['id_token', 'refreshToken']);
+    expect(saved.cookies.map(({ name, value }) => [name, value])).toContainEqual([
+      'refreshToken',
+      'verified-refresh',
+    ]);
+    expect(stdout).not.toMatch(/decoy-refresh|decoy-access|private-refresh|private-access/);
+    await assert.rejects(stat(join(directory, 'decoy.requested')), { code: 'ENOENT' });
+    await assert.rejects(stat(state.profile), { code: 'ENOENT' });
+    expect(pidIsRunning(state.pid)).toBe(false);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await child.exited;
+    }
+
+    if (state && pidIsRunning(state.pid)) await killPid(state.pid);
+    await upstream.server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('auth login errors when an ignored launcher child may still be running', async () => {
+  const { directory, temporaryDirectory } = await makeTestDirectory('abler-login-orphan-');
+  const sessionPath = join(directory, 'session.json');
+  const browser = await makeFakeBrowser(directory);
+  let child: Bun.Subprocess | undefined;
+  let state: z.infer<typeof browserStateSchema> | undefined;
+
+  try {
+    child = spawnLogin(
+      browser,
+      browserEnvironment(directory, temporaryDirectory, sessionPath, 0, {
+        ABLER_FAKE_LAUNCHER: '1',
+        ABLER_FAKE_IGNORE_BROWSER_CLOSE: '1',
+      }),
+      20,
+    );
+    state = await waitForBrowserState(join(directory, 'browser.json'));
+    const { exit, stdout, stderr } = await collectProcess(child);
+
+    expect(exit).toBe(1);
+    expect(stderr).toContain(
+      'A browser process may still be running; its temporary profile was removed.',
+    );
+    expect(stdout).not.toContain('Abler session saved and verified');
+    await assert.rejects(stat(state.profile), { code: 'ENOENT' });
+    expect(pidIsRunning(state.pid)).toBe(true);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await child.exited;
+    }
+
+    if (state && pidIsRunning(state.pid)) await killPid(state.pid);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('auth login rediscovers an Abler tab after its pipe session detaches', async () => {
+  const { directory, temporaryDirectory } = await makeTestDirectory('abler-login-detached-');
+  const sessionPath = join(directory, 'session.json');
+  const browser = await makeFakeBrowser(directory);
+  const stateFile = join(directory, 'browser.json');
+  const exitFile = join(directory, 'browser.closed');
+  const preload = await makePreload(directory);
+
+  const upstream = createUpstream({
+    valid: true,
+    browserStateFile: stateFile,
+    browserExitFile: exitFile,
+    assertBrowserClosed: true,
+  });
+
+  let child: Bun.Subprocess | undefined;
+  let state: z.infer<typeof browserStateSchema> | undefined;
+
+  try {
+    child = spawnLogin(
+      browser,
+      {
+        ...browserEnvironment(directory, temporaryDirectory, sessionPath, 1, {
+          ABLER_FAKE_DETACH_ON_EMPTY_POLL: '1',
+        }),
+        ABLER_TEST_ORIGIN: `http://127.0.0.1:${upstream.server.port}`,
+      },
+      10,
+      preload,
+    );
+    state = await waitForBrowserState(stateFile);
+    const { exit, stderr } = await collectProcess(child);
+    const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
+
+    expect(exit).toBe(0);
+    expect(stderr).toBe('');
+    expect(saved.cookies.map(({ name }) => name).toSorted()).toEqual(['id_token', 'refreshToken']);
+    expect(upstream.requests).toEqual(['/oauth/token', '/graphql']);
+    await assert.rejects(stat(state.profile), { code: 'ENOENT' });
+    expect(pidIsRunning(state.pid)).toBe(false);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await child.exited;
+    }
+
+    if (state && pidIsRunning(state.pid)) await killPid(state.pid);
+    await upstream.server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('auth login verifies captured cookies after SIGKILL leaves a stale port file', async () => {
+  const { directory, temporaryDirectory } = await makeTestDirectory('abler-login-stale-port-');
+  const sessionPath = join(directory, 'session.json');
+  const browser = await makeFakeBrowser(directory);
+  const preload = await makePreload(directory, true);
+  const upstream = createUpstream({ valid: true });
+  let child: Bun.Subprocess | undefined;
+  let state: z.infer<typeof browserStateSchema> | undefined;
+
+  try {
+    child = spawnLogin(
+      browser,
+      {
+        ...browserEnvironment(directory, temporaryDirectory, sessionPath, 0, {
+          ABLER_FAKE_IGNORE_BROWSER_CLOSE: '1',
+          ABLER_FAKE_DELAY_SIGTERM: '1',
+          ABLER_FAKE_PRESERVE_PORT_FILE: '1',
+        }),
+        ABLER_TEST_ORIGIN: `http://127.0.0.1:${upstream.server.port}`,
+      },
+      20,
+      preload,
+    );
+    state = await waitForBrowserState(join(directory, 'browser.json'));
+    await waitForFile(join(directory, 'browser.signal'));
+    expect(state.transport).toBe('port');
+    expect((await stat(join(state.profile, 'DevToolsActivePort'))).isFile()).toBe(true);
+    const { exit, stderr } = await collectProcess(child);
+    const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
+
+    expect(exit).toBe(0);
+    expect(stderr).toBe('');
+    expect(saved.cookies.map(({ name }) => name).toSorted()).toEqual(['id_token', 'refreshToken']);
+    expect(upstream.requests).toEqual(['/oauth/token', '/graphql']);
+    await assert.rejects(stat(state.profile), { code: 'ENOENT' });
+    expect(pidIsRunning(state.pid)).toBe(false);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await child.exited;
+    }
+
+    if (state && pidIsRunning(state.pid)) await killPid(state.pid);
+    await upstream.server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('README marks auth login as 0.5.0+ and documents cleanup order and timeouts', async () => {
   const readme = (await readFile(resolve('README.md'), 'utf8')).replaceAll(/\s+/g, ' ');
 
@@ -783,7 +996,12 @@ test('README marks auth login as 0.5.0+ and documents cleanup order and timeouts
   expect(readme).toContain('0.4.0');
   expect(readme).toContain('15 seconds');
   expect(readme).toContain('--timeout');
-  expect(readme).toContain('browser and profile are closed before session verification and saving');
+  expect(readme).toContain(
+    'login confirms the browser is closed before session verification and saving',
+  );
+  expect(readme).toContain(
+    'If closure cannot be confirmed, login exits with an error and still removes the temporary profile',
+  );
   expect(readme).toContain('Verification adds network time');
   expect(readme).toContain('abandoned `abler-login-*` profiles older than one hour');
   expect(readme).toContain('`--remote-debugging-pipe`');
