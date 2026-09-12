@@ -22,6 +22,7 @@ import * as z from 'zod/v4';
 import { AblerClient, childSchedulesInput, scheduleInput } from '../src/api.js';
 import { captureCookies, importCookies, loadSession, ORIGIN, saveSession } from '../src/auth.js';
 import { createServer } from '../src/server.js';
+import { createCdpMock } from './cdp-mock.js';
 
 const requestBodySchema = z.object({
   operationName: z.string(),
@@ -220,50 +221,19 @@ test('AblerClient stops reading API responses after 4 MiB', async () => {
 test('Chrome capture is limited to loopback and to the Abler tab', async () => {
   await assert.rejects(captureCookies('https://example.com'), /loopback/);
 
-  const mockChrome = Bun.serve({
-    hostname: '127.0.0.1',
-    port: 0,
-    fetch(request, server) {
-      if (new URL(request.url).pathname === '/json/list')
-        return Response.json([
-          {
-            type: 'page',
-            url: 'https://unrelated.example',
-            webSocketDebuggerUrl: 'ws://unrelated.example',
-          },
-          {
-            type: 'page',
-            url: `${ORIGIN}/coach`,
-            webSocketDebuggerUrl: `ws://127.0.0.1:${server.port}/devtools/page/1`,
-          },
-        ]);
-
-      if (server.upgrade(request)) return undefined;
-
-      return new Response('Not found', { status: 404 });
-    },
-    websocket: {
-      message(socket, message) {
-        const request = z
-          .object({
-            id: z.number(),
-            method: z.string(),
-            params: z.object({ urls: z.array(z.string()) }),
-          })
-          .parse(JSON.parse(String(message)));
-
-        expect(request.method).toBe('Network.getCookies');
-        expect(request.params.urls).toEqual([`${ORIGIN}/oauth/token`, `${ORIGIN}/graphql`]);
-        socket.send(JSON.stringify({ id: request.id, result: { cookies: [cookie] } }));
-      },
-    },
-  });
+  const mockChrome = createCdpMock();
 
   try {
-    const jar = await captureCookies(`http://127.0.0.1:${mockChrome.port}`);
+    const jar = await captureCookies(`http://127.0.0.1:${mockChrome.server.port}`);
+    expect(mockChrome.requests).toHaveLength(1);
+    expect(mockChrome.requests[0]?.method).toBe('Network.getCookies');
+    expect(mockChrome.requests[0]?.params.urls).toEqual([
+      `${ORIGIN}/oauth/token`,
+      `${ORIGIN}/graphql`,
+    ]);
     expect(await jar.getCookieString(ORIGIN)).toBe('refreshToken=private-refresh');
   } finally {
-    await mockChrome.stop(true);
+    await mockChrome.server.stop(true);
   }
 });
 
