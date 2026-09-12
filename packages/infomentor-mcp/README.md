@@ -359,11 +359,11 @@ infomentor-mcp [serve|login|status|logout] [options]
 `~/.infomentor-mcp/session.json` from an earlier version keeps being used while
 that file exists. New session directories use permissions `0700` and files
 `0600` on macOS/Linux, written to a temporary file that is flushed to disk and
-renamed into place. The session file is only read when it is a regular file
-owned by the current user with owner-only permissions and not a symbolic link;
+renamed into place. The session file is only read when it is a regular, single-link
+file owned by the current user with owner-only permissions and not a symbolic link;
 a copy transferred with wider permissions is refused with instructions. Windows
 access follows the user's directory ACLs and these checks are skipped there;
-Windows is unverified. Login/import replace the file atomically after
+Windows is unsupported and unverified. Login/import replace the file atomically after
 authentication succeeds. Failed or cancelled setup preserves the old file.
 Logout removes the local copy and its collection snapshots; it does not revoke
 the session at InfoMentor or stop another running MCP process.
@@ -374,9 +374,13 @@ reads, and logout coordinate through that same lock, so a competing local MCP
 request cannot recreate a logged-out session or overwrite a newer login. A
 request waits up to 30 seconds for another local process, then fails with
 "operation in progress"; retry it afterwards. A crashed process releases its lock
-as soon as it is gone, an abandoned lock expires after two minutes, and temporary
-files left by a crash are removed after five minutes. Do not remove an active
-lock: a request whose lock is taken away fails and must be retried. When
+as soon as its PID no longer exists. A live PID is never expired based on the
+lock's age, including while suspended. If the OS reuses a crashed owner's PID for
+another live process, the lock can remain busy; remove it with `rm -r <file>.lock`
+only when no process is using that session file. Hard-linked session
+files are unsupported. Do not remove an active lock: a request whose lock is
+taken away fails and must be retried. Temporary files left by a crash are removed
+after five minutes. When
 InfoMentor answers with a rate limit, the requested pause is saved with the
 session, so every local process sharing the file waits instead of retrying. See
 automatic session renewal above for expired sessions.

@@ -8,27 +8,22 @@ import {
   rmdir,
   stat,
   unlink,
-  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { SessionStoreError, ioError, systemErrorCode, throwIfAborted } from './errors.js';
-import { ensurePrivateDir } from './files.js';
+import { assertNoHardLinks, ensurePrivateDir } from './files.js';
 
 export type LockOptions = {
   /** Aborts waiting for the lock; work that already started is not interrupted. */
   signal?: AbortSignal | undefined;
   /** Longest wait for a busy lock before BUSY is thrown; 0 fails immediately. Default 30 s. */
   waitMs?: number | undefined;
-  /** Age after which an owner file that stopped being refreshed is presumed abandoned. Default 120 s. */
-  staleMs?: number | undefined;
 };
 
 export const DEFAULT_WAIT_MS = 30_000;
-
-export const DEFAULT_STALE_MS = 120_000;
 
 const MAX_POLL_MS = 250;
 
@@ -41,7 +36,7 @@ type Release = () => Promise<boolean>;
 /**
  * Run `work` while holding the lock for `path`, coordinating every process on this host that uses
  * the same file. Errors thrown by `work` propagate unchanged; after `work` succeeds, LOCK_LOST is
- * thrown when another process expired this holder's ownership in the meantime.
+ * thrown when another process removed or replaced this holder's owner file in the meantime.
  */
 export async function withFileLock<T>(
   path: string,
@@ -66,15 +61,12 @@ export async function withFileLock<T>(
 async function acquire(path: string, options: LockOptions): Promise<Release> {
   const { signal } = options;
   const waitMs = options.waitMs ?? DEFAULT_WAIT_MS;
-  const staleMs = options.staleMs ?? DEFAULT_STALE_MS;
 
   if (!Number.isFinite(waitMs) || waitMs < 0)
     throw new RangeError('waitMs must be a non-negative number.');
-
-  if (!Number.isFinite(staleMs) || staleMs <= 0)
-    throw new RangeError('staleMs must be a positive number.');
   throwIfAborted(signal);
   const directory = await lockDirectory(path);
+  await rejectHardLinkedTarget(path);
   const owner = `${process.pid}-${randomUUID()}`;
   const temporary = `${directory}.${owner}.tmp`;
   const deadline = Date.now() + waitMs;
@@ -98,7 +90,7 @@ async function acquire(path: string, options: LockOptions): Promise<Release> {
       const attempt = await publish(temporary, directory);
 
       if (attempt === 'acquired') break;
-      const occupant = await inspect(directory, staleMs);
+      const occupant = await inspect(directory);
 
       if (occupant === 'missing' && attempt === 'permission' && ++permissionMisses >= 3)
         throw new SessionStoreError(
@@ -128,16 +120,7 @@ async function acquire(path: string, options: LockOptions): Promise<Release> {
     throw error;
   }
 
-  const stop = new AbortController();
-  const keepAlive = refreshOwner(join(directory, owner), staleMs, stop.signal);
-
-  const release: Release = async () => {
-    stop.abort();
-    const lostWhileHeld = await keepAlive;
-    const missing = await removeOwner(directory, owner);
-
-    return lostWhileHeld || missing;
-  };
+  const release: Release = () => removeOwner(directory, owner);
 
   if (signal?.aborted) {
     await release();
@@ -157,6 +140,19 @@ async function lockDirectory(path: string): Promise<string> {
   } catch (error) {
     throw ioError(error, 'Cannot resolve the session directory.');
   }
+}
+
+async function rejectHardLinkedTarget(path: string): Promise<void> {
+  let info;
+
+  try {
+    info = await stat(path);
+  } catch (error) {
+    if (systemErrorCode(error) === 'ENOENT') return;
+    throw ioError(error, 'Cannot inspect the session file. Check its path and permissions.');
+  }
+
+  if (info.isFile()) assertNoHardLinks(info.nlink);
 }
 
 /** Publishing a complete, non-empty directory avoids partially written lock ownership. */
@@ -182,7 +178,7 @@ async function publish(
   }
 }
 
-async function inspect(directory: string, staleMs: number): Promise<'busy' | 'missing' | 'retry'> {
+async function inspect(directory: string): Promise<'busy' | 'missing' | 'retry'> {
   let owners: string[];
 
   try {
@@ -209,9 +205,9 @@ async function inspect(directory: string, staleMs: number): Promise<'busy' | 'mi
 
   if (!Number.isSafeInteger(pid) || pid < 1 || pid > MAX_PID) return 'busy';
 
-  if (isLive(pid) && !(await isStale(join(directory, previous), staleMs))) return 'busy';
+  if (isLive(pid)) return 'busy';
   // Remove only that owner's unique filename. A replacement directory is non-empty, so competing
-  // stale cleaners can neither rmdir it nor rename over it.
+  // recovery attempts can neither rmdir it nor rename over it.
   await removeOwner(directory, previous);
 
   return 'retry';
@@ -225,41 +221,6 @@ function isLive(pid: number): boolean {
   } catch (error) {
     // EPERM means the process exists but belongs to another user.
     return systemErrorCode(error) !== 'ESRCH';
-  }
-}
-
-/** A live holder refreshes its owner file; one that stopped is a crashed owner's reused PID or a stalled process. */
-async function isStale(file: string, staleMs: number): Promise<boolean> {
-  try {
-    const info = await stat(file);
-
-    return Date.now() - info.mtimeMs > staleMs;
-  } catch (error) {
-    if (systemErrorCode(error) === 'ENOENT') return false;
-    throw ioError(
-      error,
-      'Cannot inspect the session lock. Check the session directory permissions.',
-    );
-  }
-}
-
-/** Resolves to true when the owner file disappeared, meaning another process expired this holder. */
-async function refreshOwner(file: string, staleMs: number, signal: AbortSignal): Promise<boolean> {
-  const intervalMs = Math.max(50, Math.floor(staleMs / 6));
-
-  for (;;) {
-    try {
-      await delay(intervalMs, undefined, { signal });
-    } catch {
-      return false;
-    }
-
-    try {
-      const now = new Date();
-      await utimes(file, now, now);
-    } catch (error) {
-      if (systemErrorCode(error) === 'ENOENT') return true;
-    }
   }
 }
 

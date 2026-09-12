@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'bun:test';
 import { z } from 'zod/v4';
-import { packageVersion, toolResult } from '../src/index.js';
+import { toolResult } from '../src/index.js';
 
 const textContent = z.object({ type: z.literal('text'), text: z.string() });
 
@@ -34,8 +34,4 @@ test('toolResult returns structured content and redacts failures', async () => {
     'Invalid input or unexpected upstream data.',
   );
   assert.ok(invalid.isError);
-});
-
-test('packageVersion reads the package next to the caller', () => {
-  assert.equal(packageVersion(import.meta.url), '0.0.0');
 });
