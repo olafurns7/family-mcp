@@ -1,0 +1,36 @@
+{
+  "name": "@family-mcp/mcp-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Small shared MCP runtime helpers for the family MCP servers",
+  "author": "Ólafur Nils Sigurðsson",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings --report-unused-disable-directives-severity error .",
+    "lint:fix": "bun run lint --fix",
+    "format": "oxfmt -c ../../.oxfmtrc.json --write .",
+    "format:check": "oxfmt -c ../../.oxfmtrc.json --check ."
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@family-mcp/oxlint-anti-slop": "workspace:*",
+    "@family-mcp/tsconfig": "workspace:*",
+    "@types/bun": "^1.2.19"
+  },
+  "packageManager": "bun@1.4.2"
+}

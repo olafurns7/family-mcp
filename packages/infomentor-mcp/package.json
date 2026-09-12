@@ -37,6 +37,7 @@
     "release:sync": "node ../../tooling/release/sync-version.mjs --package ."
   },
   "dependencies": {
+    "@family-mcp/mcp-runtime": "workspace:^",
     "@family-mcp/session-store": "workspace:*",
     "@modelcontextprotocol/server": "^2.0.0",
     "htmlparser2": "^12.0.0",
@@ -48,6 +49,7 @@
     "@family-mcp/release-tooling": "workspace:*",
     "@family-mcp/tsconfig": "workspace:*",
     "@modelcontextprotocol/client": "^2.0.0",
+    "@types/bun": "^1.2.19",
     "@types/node": "^22.20.2"
   },
   "packageManager": "bun@1.4.2",

@@ -1,15 +1,12 @@
 import assert from 'node:assert/strict';
-import childProcess from 'node:child_process';
 import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test, mock } from 'node:test';
+import { test } from 'bun:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { CookieJar } from 'tough-cookie';
-import { InfoMentorClient, setupStatusSchema } from '../src/client.js';
-import type { SetupStatus } from '../src/client.js';
+import { InfoMentorClient, setupStatusSchema, type SetupStatus } from '../src/client.js';
 import { collectionSchema } from '../src/collection.js';
 import { promptCredentials, readCredentials } from '../src/credentials.js';
 import { InfoMentorHttp, parseForms } from '../src/http.js';
@@ -28,8 +25,6 @@ import {
   sessionStatusSchema,
   writeSession,
 } from '../src/session.js';
-
-const nativeFetch = globalThis.fetch;
 
 const credentials = { username: '0101991239', password: 'synthetic-password' };
 
@@ -99,114 +94,85 @@ function fixture() {
     onParent: (): void => {},
   };
 
-  const fetcher = mock.method(
-    globalThis,
-    'fetch',
-    async (input: string | URL | Request, init?: RequestInit) => {
-      assert.ok(input instanceof URL);
-      const headers = new Headers(init?.headers);
-      const method = init?.method ?? 'GET';
-      const body = String(init?.body ?? '');
-      const cookies = headers.get('cookie') ?? '';
-      requests.push({ url: input.href, method, body, cookies });
-      assert.equal(init?.redirect, 'manual');
+  const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    assert.ok(input instanceof URL);
+    const headers = new Headers(init?.headers);
+    const method = init?.method ?? 'GET';
+    const body = await new Response(init?.body ?? null).text();
+    const cookies = headers.get('cookie') ?? '';
+    requests.push({ url: input.href, method, body, cookies });
+    assert.equal(init?.redirect, 'manual');
 
-      if (input.href === LOGIN_URL && method === 'GET')
-        return new Response(loginHtml, {
-          headers: { 'Set-Cookie': 'preflight=synthetic; Secure; HttpOnly; Path=/' },
-        });
+    if (input.href === LOGIN_URL && method === 'GET')
+      return new Response(loginHtml, {
+        headers: { 'Set-Cookie': 'preflight=synthetic; Secure; HttpOnly; Path=/' },
+      });
 
-      if (input.href === LOGIN_URL && method === 'POST') {
-        const fields = new URLSearchParams(body);
-        assert.equal(fields.get('__VIEWSTATE'), 'fresh&state');
-        assert.equal(fields.get('__EVENTVALIDATION'), 'fresh-validation');
-        assert.equal(fields.get('login_ascx$txtNotandanafn'), credentials.username);
-        assert.equal(fields.get('login_ascx$txtLykilord'), credentials.password);
-        assert.equal(fields.get('login_ascx$btnLogin'), 'Innskrá');
-        assert.match(cookies, /preflight=synthetic/);
-        assert.equal(headers.get('origin'), new URL(LOGIN_URL).origin);
+    if (input.href === LOGIN_URL && method === 'POST') {
+      const fields = new URLSearchParams(body);
+      assert.equal(fields.get('__VIEWSTATE'), 'fresh&state');
+      assert.equal(fields.get('__EVENTVALIDATION'), 'fresh-validation');
+      assert.equal(fields.get('login_ascx$txtNotandanafn'), credentials.username);
+      assert.equal(fields.get('login_ascx$txtLykilord'), credentials.password);
+      assert.equal(fields.get('login_ascx$btnLogin'), 'Innskrá');
+      assert.match(cookies, /preflight=synthetic/);
+      assert.equal(headers.get('origin'), new URL(LOGIN_URL).origin);
 
-        return new Response(null, {
-          status: 302,
-          headers: { Location: PARENT_URL + 'authentication/authentication/login' },
-        });
-      }
+      return new Response(null, {
+        status: 302,
+        headers: { Location: PARENT_URL + 'authentication/authentication/login' },
+      });
+    }
 
-      if (input.pathname === '/authentication/authentication/login') {
-        assert.equal(method, 'GET');
-        assert.equal(cookies, ''); // Host-only cookies cannot leak across the parent/login hosts.
+    if (input.pathname === '/authentication/authentication/login') {
+      assert.equal(method, 'GET');
+      assert.equal(cookies, ''); // Host-only cookies cannot leak across the parent/login hosts.
 
-        return new Response(relayHtml);
-      }
+      return new Response(relayHtml);
+    }
 
-      if (input.pathname === '/Production/Mentor/') {
-        assert.equal(new URLSearchParams(body).get('oauth_token'), 'synthetic&token');
-        assert.equal(headers.get('origin'), new URL(PARENT_URL).origin);
+    if (input.pathname === '/Production/Mentor/') {
+      assert.equal(new URLSearchParams(body).get('oauth_token'), 'synthetic&token');
+      assert.equal(headers.get('origin'), new URL(PARENT_URL).origin);
 
-        return new Response(null, {
-          status: 303,
-          headers: {
-            Location: PARENT_URL + 'Authentication/Authentication/LoginCallback?token=synthetic',
-            'Set-Cookie': '.ASPXAUTH=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure',
-          },
-        });
-      }
+      return new Response(null, {
+        status: 303,
+        headers: {
+          Location: PARENT_URL + 'Authentication/Authentication/LoginCallback?token=synthetic',
+          'Set-Cookie': '.ASPXAUTH=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure',
+        },
+      });
+    }
 
-      if (input.pathname.includes('LoginCallback'))
-        return new Response(null, {
-          status: 302,
-          headers: {
-            Location: PARENT_URL,
-            'Set-Cookie': 'IMHome=synthetic; Secure; HttpOnly; Path=/',
-          },
-        });
+    if (input.pathname.includes('LoginCallback'))
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: PARENT_URL,
+          'Set-Cookie': 'IMHome=synthetic; Secure; HttpOnly; Path=/',
+        },
+      });
 
-      if (input.pathname.endsWith('/isauthenticated/')) {
-        assert.equal(method, 'POST');
+    if (input.pathname.endsWith('/isauthenticated/')) {
+      assert.equal(method, 'POST');
 
-        return Response.json(/(?:^|; )IMHome=(?:synthetic|other)(?:;|$)/.test(cookies));
-      }
+      return Response.json(/(?:^|; )IMHome=(?:synthetic|other)(?:;|$)/.test(cookies));
+    }
 
-      if (cookies.includes('IMHome=other')) {
-        if (input.href === PARENT_URL) {
-          const model = {
-            ...parent,
-            account: {
-              currentUser: { id: 'parent-2' },
-              pupils: [
-                {
-                  id: 'only-child',
-                  name: 'Another account child',
-                  selected: true,
-                  switchPupilUrl: null,
-                },
-              ],
-            },
-          };
-
-          return new Response(
-            `<script>IMHome.home.homeData = ${JSON.stringify(model)}; IMHome.home.init(IMHome.home.homeData);</script>`,
-          );
-        }
-
-        if (input.pathname === '/timetable/timetable/appData')
-          return Response.json({ items: [{ ...entry, title: 'Another account timetable' }] });
-        throw new Error('Unexpected request in the other account');
-      }
-
+    if (cookies.includes('IMHome=other')) {
       if (input.href === PARENT_URL) {
-        selection.onParent();
-
         const model = {
           ...parent,
           account: {
-            currentUser: { id: 'parent-1' },
-            pupils: parent.account.pupils.map((pupil, index) => ({
-              ...pupil,
-              selected: pupil.id === selection.id,
-              switchPupilUrl:
-                selection.overrideUrl || `/Account/PupilSwitcher/SwitchPupil/${101 + index}`,
-            })),
+            currentUser: { id: 'parent-2' },
+            pupils: [
+              {
+                id: 'only-child',
+                name: 'Another account child',
+                selected: true,
+                switchPupilUrl: null,
+              },
+            ],
           },
         };
 
@@ -215,93 +181,119 @@ function fixture() {
         );
       }
 
-      if (/^\/Account\/PupilSwitcher\/SwitchPupil\/(101|102)$/.test(input.pathname)) {
-        assert.equal(method, 'GET');
-        const pupil = parent.account.pupils[Number(input.pathname.split('/').at(-1)) - 101];
-        assert.ok(pupil);
+      if (input.pathname === '/timetable/timetable/appData')
+        return Response.json({ items: [{ ...entry, title: 'Another account timetable' }] });
+      throw new Error('Unexpected request in the other account');
+    }
 
-        if (!selection.ignoreSwitch) selection.id = pupil.id;
+    if (input.href === PARENT_URL) {
+      selection.onParent();
 
-        return new Response(null, {
-          status: 302,
-          headers: {
-            Location: PARENT_URL,
-            'Set-Cookie': `selectedChild=${encodeURIComponent(selection.id)}; Secure; HttpOnly; Path=/`,
-          },
+      const model = {
+        ...parent,
+        account: {
+          currentUser: { id: 'parent-1' },
+          pupils: parent.account.pupils.map((pupil, index) => ({
+            ...pupil,
+            selected: pupil.id === selection.id,
+            switchPupilUrl:
+              selection.overrideUrl || `/Account/PupilSwitcher/SwitchPupil/${101 + index}`,
+          })),
+        },
+      };
+
+      return new Response(
+        `<script>IMHome.home.homeData = ${JSON.stringify(model)}; IMHome.home.init(IMHome.home.homeData);</script>`,
+      );
+    }
+
+    if (/^\/Account\/PupilSwitcher\/SwitchPupil\/(101|102)$/.test(input.pathname)) {
+      assert.equal(method, 'GET');
+      const pupil = parent.account.pupils[Number(input.pathname.split('/').at(-1)) - 101];
+      assert.ok(pupil);
+
+      if (!selection.ignoreSwitch) selection.id = pupil.id;
+
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: PARENT_URL,
+          'Set-Cookie': `selectedChild=${encodeURIComponent(selection.id)}; Secure; HttpOnly; Path=/`,
+        },
+      });
+    }
+
+    if (input.pathname === '/timetable/timetable/appData') {
+      assert.equal(method, 'POST');
+      assert.match(cookies, /IMHome=synthetic/);
+
+      if (selection.failTimetable) return new Response('private-upstream-value', { status: 500 });
+
+      if (selection.id !== 'child-1')
+        assert.ok(cookies.includes(`selectedChild=${encodeURIComponent(selection.id)}`));
+
+      return Response.json({ items: [selection.id === 'child-1' ? entry : siblingEntry] });
+    }
+
+    if (input.pathname === '/Message/message/GetMessages') {
+      assert.equal(method, 'POST');
+      assert.match(cookies, /IMHome=synthetic/);
+      const fields = new URLSearchParams(body);
+
+      if (fields.get('messageText') === 'malformed')
+        return new Response('{"items":"private-upstream-value"}');
+
+      if (fields.get('messageText') === '') {
+        assert.equal(fields.get('pageSize'), '100');
+        assert.equal(fields.get('page'), '1');
+
+        return Response.json({
+          items: fields.get('inbox') === 'true' ? [message] : [],
+          more: false,
         });
       }
 
-      if (input.pathname === '/timetable/timetable/appData') {
-        assert.equal(method, 'POST');
-        assert.match(cookies, /IMHome=synthetic/);
+      assert.equal(fields.get('inbox'), 'false');
+      assert.equal(fields.get('sentItems'), 'true');
+      assert.equal(fields.get('messageText'), 'Skólaferð & nesti');
+      assert.equal(fields.get('page'), '2');
+      assert.equal(fields.get('pageSize'), '1');
 
-        if (selection.failTimetable) return new Response('private-upstream-value', { status: 500 });
+      return Response.json({ items: [message], page: 0, more: true });
+    }
 
-        if (selection.id !== 'child-1')
-          assert.ok(cookies.includes(`selectedChild=${encodeURIComponent(selection.id)}`));
+    if (input.pathname === '/Message/message/GetMessage') {
+      assert.equal(method, 'POST');
+      assert.equal(new URLSearchParams(body).get('id'), '41');
 
-        return Response.json({ items: [selection.id === 'child-1' ? entry : siblingEntry] });
-      }
+      return Response.json({
+        ...message,
+        messageBody: '<p>Bring lunch</p>',
+        messageBodyPlainText: 'Bring lunch',
+        toUsers: [{ id: 13, displayName: 'Synthetic parent' }],
+        messageFolder: 'Inbox',
+      });
+    }
 
-      if (input.pathname === '/Message/message/GetMessages') {
-        assert.equal(method, 'POST');
-        assert.match(cookies, /IMHome=synthetic/);
-        const fields = new URLSearchParams(body);
+    if (input.pathname === '/NotificationApp/NotificationApp/appData') {
+      assert.equal(method, 'POST');
 
-        if (fields.get('messageText') === 'malformed')
-          return new Response('{"items":"private-upstream-value"}');
-
-        if (fields.get('messageText') === '') {
-          assert.equal(fields.get('pageSize'), '100');
-          assert.equal(fields.get('page'), '1');
-
-          return Response.json({
-            items: fields.get('inbox') === 'true' ? [message] : [],
-            more: false,
-          });
-        }
-
-        assert.equal(fields.get('inbox'), 'false');
-        assert.equal(fields.get('sentItems'), 'true');
-        assert.equal(fields.get('messageText'), 'Skólaferð & nesti');
-        assert.equal(fields.get('page'), '2');
-        assert.equal(fields.get('pageSize'), '1');
-
-        return Response.json({ items: [message], page: 0, more: true });
-      }
-
-      if (input.pathname === '/Message/message/GetMessage') {
-        assert.equal(method, 'POST');
-        assert.equal(new URLSearchParams(body).get('id'), '41');
-
-        return Response.json({
-          ...message,
-          messageBody: '<p>Bring lunch</p>',
-          messageBodyPlainText: 'Bring lunch',
-          toUsers: [{ id: 13, displayName: 'Synthetic parent' }],
-          messageFolder: 'Inbox',
-        });
-      }
-
-      if (input.pathname === '/NotificationApp/NotificationApp/appData') {
-        assert.equal(method, 'POST');
-
-        return Response.json({
-          notifications: notifications.map((item) => ({
-            ...item,
+      return Response.json({
+        notifications: notifications.map((item) =>
+          Object.assign({}, item, {
             currentlySelectedPupil:
               selection.id === 'child-1'
                 ? item.currentlySelectedPupil
                 : !item.currentlySelectedPupil,
-          })),
-        });
-      }
+          }),
+        ),
+      });
+    }
 
-      throw new Error('Unexpected synthetic endpoint');
-    },
-  );
+    throw new Error('Unexpected synthetic endpoint');
+  };
 
-  return { requests, selection, restore: () => fetcher.mock.restore() };
+  return { requests, selection, fetch: fetcher, restore: () => {} };
 }
 
 const unsafe = (pattern: RegExp) => (cause: unknown) =>
@@ -340,7 +332,7 @@ test('private login and eleven MCP tools select children and read school data wi
   };
 
   const routes = fixture();
-  const server = createServer({ sessionFile: file, allowSetupTools: true });
+  const server = createServer({ sessionFile: file, allowSetupTools: true, fetch: routes.fetch });
   const client = new Client({ name: 'http-test', version: '1.0.0' });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
 
@@ -349,7 +341,7 @@ test('private login and eleven MCP tools select children and read school data wi
 
     // By default the server registers only the seven read and collection tools, and a missing
     // session points the user at the CLI.
-    const readOnlyServer = createServer({ sessionFile: file });
+    const readOnlyServer = createServer({ sessionFile: file, fetch: routes.fetch });
     const readOnlyClient = new Client({ name: 'default-test', version: '1.0.0' });
     const [readOnlyServerTransport, readOnlyClientTransport] = InMemoryTransport.createLinkedPair();
     await readOnlyServer.connect(readOnlyServerTransport);
@@ -391,12 +383,12 @@ test('private login and eleven MCP tools select children and read school data wi
       await readOnlyServer.close();
     }
 
-    await assert.rejects(login({ sessionFile: file, timeoutMs: 50 }), {
+    await assert.rejects(login({ sessionFile: file, timeoutMs: 50, fetch: routes.fetch }), {
       code: 'INVALID_CONFIGURATION',
     });
     assert.equal(routes.requests.length, 0);
     process.env['INFOMENTOR_USERNAME'] = credentials.username;
-    await assert.rejects(login({ sessionFile: file, timeoutMs: 50 }), {
+    await assert.rejects(login({ sessionFile: file, timeoutMs: 50, fetch: routes.fetch }), {
       code: 'INVALID_CONFIGURATION',
     });
     assert.equal(routes.requests.length, 0);
@@ -434,11 +426,16 @@ test('private login and eleven MCP tools select children and read school data wi
     assert.equal((await readFile(file, 'utf8')).includes(credentials.password), false);
 
     if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o600);
+    const beforeOverview: number = routes.requests.length;
     const result = await client.callTool({ name: 'infomentor_get_overview', arguments: {} });
     const overview = overviewSchema.parse(result.structuredContent);
     assert.deepEqual(overview.children, parent.account.pupils);
     assert.deepEqual(overview.timetable, [entry]);
     assert.match(overview.text, /Íslenska/);
+    assert.deepEqual(
+      routes.requests.slice(beforeOverview).map(({ url }) => url),
+      [PARENT_URL, PARENT_URL + 'timetable/timetable/appData'],
+    );
 
     const messagesResult = await client.callTool({
       name: 'infomentor_get_messages',
@@ -562,7 +559,7 @@ test('private login and eleven MCP tools select children and read school data wi
       assert.equal(switchRequests().length, 1);
       assert.deepEqual(
         routes.requests.slice(beforeRejectedUrl).map(({ url: requested }) => requested),
-        [PARENT_URL + 'authentication/authentication/isauthenticated/', PARENT_URL, PARENT_URL],
+        [PARENT_URL, PARENT_URL],
       );
     }
 
@@ -607,7 +604,7 @@ test('private login and eleven MCP tools select children and read school data wi
 
     const otherFile = join(directory, 'other/session.json');
     await writeSession(await savedSession('other'), otherFile);
-    const otherClient = new InfoMentorClient({ sessionFile: otherFile });
+    const otherClient = new InfoMentorClient({ sessionFile: otherFile, fetch: routes.fetch });
 
     try {
       const onlyChild = await otherClient.selectChild({ childId: 'only-child' });
@@ -649,7 +646,7 @@ test('private login and eleven MCP tools select children and read school data wi
         )
         .every((tool) => tool.annotations?.readOnlyHint),
     );
-    const freshClient = new InfoMentorClient({ sessionFile: file });
+    const freshClient = new InfoMentorClient({ sessionFile: file, fetch: routes.fetch });
 
     try {
       assert.equal((await freshClient.getSessionStatus()).authenticated, true);
@@ -713,7 +710,6 @@ test('expired sessions renew once with private credentials, preserve account and
   const credentialsFile = join(directory, 'credentials.json');
   await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
   const routes = fixture();
-  const fetchEndpoint = globalThis.fetch;
   let expired = false;
   let redirectParent = false;
   let expireMessage = false;
@@ -722,65 +718,62 @@ test('expired sessions renew once with private credentials, preserve account and
   let failureStatus = 0;
   let passwordSubmissions = 0;
 
-  const fetcher = mock.method(
-    globalThis,
-    'fetch',
-    async (input: string | URL | Request, init?: RequestInit) => {
-      assert.ok(input instanceof URL);
-      const body = String(init?.body ?? '');
+  const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    assert.ok(input instanceof URL);
+    const body = await new Response(init?.body ?? null).text();
 
-      if (body.includes('txtLykilord')) {
-        passwordSubmissions++;
+    if (body.includes('txtLykilord')) {
+      passwordSubmissions++;
 
-        if (rejectPassword) return new Response(loginHtml);
-        expired = false;
-        redirectParent = false;
-        routes.selection.id = 'child-1';
-      }
+      if (rejectPassword) return new Response(loginHtml);
+      expired = false;
+      redirectParent = false;
+      routes.selection.id = 'child-1';
+    }
 
-      if (input.pathname.endsWith('/isauthenticated/')) {
-        if (failureStatus) return new Response('', { status: failureStatus });
+    if (failureStatus && input.href === PARENT_URL)
+      return new Response('', { status: failureStatus });
 
-        if (expired) return Response.json(false);
-      }
+    if (input.pathname.endsWith('/isauthenticated/')) {
+      if (expired) return Response.json(false);
+    }
 
-      if (expired && input.href === PARENT_URL) return new Response('', { status: 401 });
+    if (expired && input.href === PARENT_URL) return new Response('', { status: 401 });
 
-      if (redirectParent && input.href === PARENT_URL)
-        return new Response(null, {
-          status: 302,
-          headers: { Location: PARENT_URL + 'authentication/authentication/login' },
-        });
+    if (redirectParent && input.href === PARENT_URL)
+      return new Response(null, {
+        status: 302,
+        headers: { Location: PARENT_URL + 'authentication/authentication/login' },
+      });
 
-      if (redirectParent && input.pathname === '/authentication/authentication/login')
-        return new Response(relayHtml);
+    if (redirectParent && input.pathname === '/authentication/authentication/login')
+      return new Response(relayHtml);
 
-      if (input.pathname === '/Message/message/GetMessage' && expireMessage) {
-        expireMessage = false;
-        expired = true;
+    if (input.pathname === '/Message/message/GetMessage' && expireMessage) {
+      expireMessage = false;
+      expired = true;
 
-        return new Response('', { status: 401 });
-      }
+      return new Response('', { status: 401 });
+    }
 
-      const response = await fetchEndpoint(input, init);
+    const response = await routes.fetch(input, init);
 
-      if (input.href === PARENT_URL && wrongAccount)
-        return new Response((await response.text()).replace('parent-1', 'different-parent'));
+    if (input.href === PARENT_URL && wrongAccount)
+      return new Response((await response.text()).replace('parent-1', 'different-parent'));
 
-      if (input.pathname === '/Message/message/GetMessage')
-        response.headers.append('Set-Cookie', 'rotation=kept; Secure; HttpOnly; Path=/');
+    if (input.pathname === '/Message/message/GetMessage')
+      response.headers.append('Set-Cookie', 'rotation=kept; Secure; HttpOnly; Path=/');
 
-      return response;
-    },
-  );
+    return response;
+  };
 
-  let client = new InfoMentorClient({ sessionFile: file, credentialsFile });
+  let client = new InfoMentorClient({ sessionFile: file, credentialsFile, fetch: fetcher });
 
   try {
     // A missing/deleted session needs explicit login, even when credentials are configured.
     assert.equal((await client.getSessionStatus()).authenticated, false);
     assert.equal(passwordSubmissions, 0);
-    await login({ sessionFile: file, credentialsFile });
+    await login({ sessionFile: file, credentialsFile, fetch: fetcher });
     assert.equal((await readSession(file)).accountId, 'parent-1');
     await client.selectChild({ childId: 'child-2 & sibling' });
     expired = true;
@@ -792,7 +785,7 @@ test('expired sessions renew once with private credentials, preserve account and
         (overview) => overview.children.find((child) => child.selected)?.id === 'child-2 & sibling',
       ),
     );
-    assert.deepEqual(overviews[0]?.timetable, [siblingEntry]);
+    assert.deepEqual(overviews[0].timetable, [siblingEntry]);
     expireMessage = true;
     const bodyBefore = passwordSubmissions;
     assert.equal((await client.getMessage({ id: 41 })).message.messageBodyPlainText, 'Bring lunch');
@@ -815,7 +808,7 @@ test('expired sessions renew once with private credentials, preserve account and
       collected.updates.some((update) => update.kind === 'message' && update.childIds.length === 2),
     );
     await client.close();
-    client = new InfoMentorClient({ sessionFile: file, credentialsFile });
+    client = new InfoMentorClient({ sessionFile: file, credentialsFile, fetch: fetcher });
     const restartBefore = passwordSubmissions;
     assert.equal((await client.getSessionStatus()).authenticated, true);
     assert.equal(
@@ -842,7 +835,7 @@ test('expired sessions renew once with private credentials, preserve account and
         'non-authentication failures never submit credentials',
       );
       await client.close();
-      client = new InfoMentorClient({ sessionFile: file, credentialsFile });
+      client = new InfoMentorClient({ sessionFile: file, credentialsFile, fetch: fetcher });
     }
 
     failureStatus = 0;
@@ -871,7 +864,7 @@ test('expired sessions renew once with private credentials, preserve account and
     await client.close();
     const legacyFile = join(directory, 'legacy.json');
     await writeSession(await savedSession(), legacyFile);
-    client = new InfoMentorClient({ sessionFile: legacyFile, credentialsFile });
+    client = new InfoMentorClient({ sessionFile: legacyFile, credentialsFile, fetch: fetcher });
     expired = true;
     const legacyCount = passwordSubmissions;
     await assert.rejects(client.getOverview(), { code: 'LOGIN_REQUIRED' });
@@ -885,7 +878,6 @@ test('expired sessions renew once with private credentials, preserve account and
     assert.equal((await readSession(legacyFile)).accountId, 'parent-1');
   } finally {
     await client.close();
-    fetcher.mock.restore();
     routes.restore();
     await rm(directory, { recursive: true, force: true });
   }
@@ -901,7 +893,7 @@ test('rejected login, unsafe redirects, challenges, rate limits and malformed au
     for (const mode of ['rejected', 'redirect', 'challenge', 'rate', 'malformed']) {
       let calls = 0;
 
-      const fetcher = mock.method(globalThis, 'fetch', async () => {
+      const fetcher = async (): Promise<Response> => {
         calls++;
 
         if (mode === 'redirect')
@@ -917,46 +909,37 @@ test('rejected login, unsafe redirects, challenges, rate limits and malformed au
           return new Response('', { status: 429, headers: { 'Retry-After': '120' } });
 
         return new Response(mode === 'malformed' ? '{bad-json}' : 'false');
-      });
+      };
 
-      try {
-        const http = new InfoMentorHttp();
+      const http = new InfoMentorHttp(undefined, 0, fetcher);
 
-        if (mode === 'rejected') assert.equal(await http.isAuthenticated(), false);
-        else
-          await assert.rejects(
-            http.isAuthenticated(),
-            (error: Error) => !error.message.includes('private=synthetic'),
-          );
+      if (mode === 'rejected') assert.equal(await http.isAuthenticated(), false);
+      else
+        await assert.rejects(
+          http.isAuthenticated(),
+          (error: Error) => !error.message.includes('private=synthetic'),
+        );
 
-        if (mode === 'rate') {
-          await assert.rejects(http.isAuthenticated(), { code: 'RATE_LIMITED' });
-          assert.equal(calls, 1);
-        }
-
-        await assert.rejects(importSession(file, { sessionFile: file }));
-        assert.equal(await readFile(file, 'utf8'), before);
-      } finally {
-        fetcher.mock.restore();
+      if (mode === 'rate') {
+        await assert.rejects(http.isAuthenticated(), { code: 'RATE_LIMITED' });
+        assert.equal(calls, 1);
       }
+
+      await assert.rejects(importSession(file, { sessionFile: file, fetch: fetcher }));
+      assert.equal(await readFile(file, 'utf8'), before);
     }
 
-    const fetcher = mock.method(
-      globalThis,
-      'fetch',
-      async () =>
-        new Response(
-          loginHtml.replace('action="./"', 'action="https://other.infomentor.is/password"'),
-        ),
-    );
+    const fetcher = async (): Promise<Response> =>
+      new Response(
+        loginHtml.replace('action="./"', 'action="https://other.infomentor.is/password"'),
+      );
 
-    try {
-      await assert.rejects(authenticate(new InfoMentorHttp(), { ...credentials }), {
+    await assert.rejects(
+      authenticate(new InfoMentorHttp(undefined, 0, fetcher), { ...credentials }),
+      {
         code: 'UNEXPECTED_PAGE',
-      });
-    } finally {
-      fetcher.mock.restore();
-    }
+      },
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -975,7 +958,7 @@ test('cancelled login/import cannot replace the previous account, even after the
 
   try {
     for (const request of [{ credentialsFile }, { importFile: transfer }]) {
-      const client = new InfoMentorClient({ sessionFile: file });
+      const client = new InfoMentorClient({ sessionFile: file, fetch: routes.fetch });
       const cancelling = Promise.withResolvers<SetupStatus>();
       // The verified parent read is the final request; the cancellation lands after it, so only
       // the session-store commit check stands between the candidate and the file.
@@ -1014,7 +997,7 @@ test('session and credential files that are world-readable or symlinked are refu
     await writeSession(await savedSession(), file);
     await chmod(file, 0o644);
     await assert.rejects(readSession(file), unsafe(/chmod 600/));
-    const client = new InfoMentorClient({ sessionFile: file });
+    const client = new InfoMentorClient({ sessionFile: file, fetch: routes.fetch });
 
     try {
       await assert.rejects(client.getOverview(), { code: 'INVALID_SESSION' });
@@ -1022,15 +1005,21 @@ test('session and credential files that are world-readable or symlinked are refu
       await client.close();
     }
 
-    await assert.rejects(importSession(file, { sessionFile: destination }), unsafe(/chmod 600/));
+    await assert.rejects(
+      importSession(file, { sessionFile: destination, fetch: routes.fetch }),
+      unsafe(/chmod 600/),
+    );
     await chmod(file, 0o600);
     const link = join(directory, 'link.json');
     await symlink(file, link);
     await assert.rejects(readSession(link), unsafe(/symlink/));
-    await assert.rejects(importSession(link, { sessionFile: destination }), unsafe(/symlink/));
+    await assert.rejects(
+      importSession(link, { sessionFile: destination, fetch: routes.fetch }),
+      unsafe(/symlink/),
+    );
     await assert.rejects(stat(destination), { code: 'ENOENT' });
     assert.equal(routes.requests.length, 0, 'refused files never reach InfoMentor');
-    await importSession(file, { sessionFile: destination });
+    await importSession(file, { sessionFile: destination, fetch: routes.fetch });
     assert.equal((await readSession(destination)).accountId, 'parent-1');
 
     await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o644 });
@@ -1059,7 +1048,7 @@ test('explicit login or import cannot silently replace a session verified for an
   await writeSession(await savedSession(), transfer);
   await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
   const before = await readFile(file, 'utf8');
-  const server = createServer({ sessionFile: file, allowSetupTools: true });
+  const server = createServer({ sessionFile: file, allowSetupTools: true, fetch: routes.fetch });
   const client = new Client({ name: 'account-test', version: '1.0.0' });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
 
@@ -1080,9 +1069,15 @@ test('explicit login or import cannot silently replace a session verified for an
   };
 
   try {
-    await assert.rejects(login({ sessionFile: file, credentialsFile }), mismatch);
+    await assert.rejects(
+      login({ sessionFile: file, credentialsFile, fetch: routes.fetch }),
+      mismatch,
+    );
     assert.equal(await readFile(file, 'utf8'), before);
-    await assert.rejects(importSession(transfer, { sessionFile: file }), mismatch);
+    await assert.rejects(
+      importSession(transfer, { sessionFile: file, fetch: routes.fetch }),
+      mismatch,
+    );
     assert.equal(await readFile(file, 'utf8'), before);
 
     await server.connect(serverTransport);
@@ -1101,12 +1096,12 @@ test('explicit login or import cannot silently replace a session verified for an
     assert.equal((await readSession(file)).accountId, 'parent-1');
 
     // The same account may sign in again, and files without a verified account are replaceable.
-    await login({ sessionFile: file, credentialsFile });
+    await login({ sessionFile: file, credentialsFile, fetch: routes.fetch });
     await writeSession(await savedSession('other'), file);
-    await login({ sessionFile: file, credentialsFile });
+    await login({ sessionFile: file, credentialsFile, fetch: routes.fetch });
     assert.equal((await readSession(file)).accountId, 'parent-1');
     await writeFile(file, '{"version":1}', { mode: 0o600 });
-    await importSession(transfer, { sessionFile: file });
+    await importSession(transfer, { sessionFile: file, fetch: routes.fetch });
     assert.equal((await readSession(file)).accountId, 'parent-1');
   } finally {
     await client.close();
@@ -1124,13 +1119,13 @@ test('a rate-limit pause is saved with the session and honoured by other process
   await writeSession(await savedSession(), otherFile);
   let calls = 0;
 
-  const fetcher = mock.method(globalThis, 'fetch', async () => {
+  const fetcher = async (): Promise<Response> => {
     calls++;
 
     return new Response('', { status: 429, headers: { 'Retry-After': '120' } });
-  });
+  };
 
-  const first = new InfoMentorClient({ sessionFile: file });
+  const first = new InfoMentorClient({ sessionFile: file, fetch: fetcher });
 
   try {
     await assert.rejects(first.getOverview(), limited(100_000, 120_000));
@@ -1140,7 +1135,7 @@ test('a rate-limit pause is saved with the session and honoured by other process
     const until = Date.parse(saved.rateLimitedUntil);
     assert.ok(until > Date.now() + 100_000 && until <= Date.now() + 120_000);
 
-    const second = new InfoMentorClient({ sessionFile: file });
+    const second = new InfoMentorClient({ sessionFile: file, fetch: fetcher });
 
     try {
       await assert.rejects(second.getOverview(), limited(100_000, 120_000));
@@ -1150,7 +1145,7 @@ test('a rate-limit pause is saved with the session and honoured by other process
       await second.close();
     }
 
-    const third = new InfoMentorClient({ sessionFile: otherFile });
+    const third = new InfoMentorClient({ sessionFile: otherFile, fetch: fetcher });
 
     try {
       await assert.rejects(third.getOverview(), { code: 'RATE_LIMITED' });
@@ -1165,8 +1160,8 @@ test('a rate-limit pause is saved with the session and honoured by other process
     const absurd = await savedSession();
     absurd.rateLimitedUntil = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString();
     await writeSession(absurd, file);
-    const fourth = new InfoMentorClient({ sessionFile: otherFile });
-    const fifth = new InfoMentorClient({ sessionFile: file });
+    const fourth = new InfoMentorClient({ sessionFile: otherFile, fetch: fetcher });
+    const fifth = new InfoMentorClient({ sessionFile: file, fetch: fetcher });
 
     try {
       await assert.rejects(fourth.getOverview(), { code: 'RATE_LIMITED' });
@@ -1179,7 +1174,6 @@ test('a rate-limit pause is saved with the session and honoured by other process
     }
   } finally {
     await first.close();
-    fetcher.mock.restore();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -1192,28 +1186,27 @@ test('HTTP cancellation and login deadlines abort in-flight requests; closing a 
   await writeSession(await savedSession(), file);
   let active = 0;
 
-  const fetcher = mock.method(
-    globalThis,
-    'fetch',
-    async (_input: string | URL | Request, init?: RequestInit) => {
-      active++;
+  const fetcher = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    active++;
 
-      try {
-        await delay(60_000, undefined, { signal: init?.signal ?? undefined });
+    try {
+      await delay(60_000, undefined, { signal: init?.signal ?? undefined });
 
-        return new Response('true');
-      } finally {
-        active--;
-      }
-    },
-  );
+      return new Response('true');
+    } finally {
+      active--;
+    }
+  };
 
   try {
-    await assert.rejects(login({ credentialsFile, sessionFile: file, timeoutMs: 30 }), {
-      code: 'LOGIN_TIMEOUT',
-    });
+    await assert.rejects(
+      login({ credentialsFile, sessionFile: file, timeoutMs: 30, fetch: fetcher }),
+      {
+        code: 'LOGIN_TIMEOUT',
+      },
+    );
     assert.equal(active, 0);
-    const client = new InfoMentorClient({ sessionFile: file });
+    const client = new InfoMentorClient({ sessionFile: file, fetch: fetcher });
 
     try {
       const reading = assert.rejects(client.getOverview(), { code: 'CANCELLED' });
@@ -1225,33 +1218,30 @@ test('HTTP cancellation and login deadlines abort in-flight requests; closing a 
       await client.close();
     }
   } finally {
-    fetcher.mock.restore();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
 test('private loopback login form rejects cross-origin submissions and closes after use or cancellation', async () => {
-  const spawn = childProcess.spawn.bind(childProcess);
-
-  const opener = mock.method(childProcess, 'spawn', () =>
-    spawn(process.execPath, ['-e', ''], { stdio: 'ignore' }),
-  );
-
-  syncBuiltinESMExports();
   const controller = new AbortController();
   const ready = Promise.withResolvers<string>();
-  const pending = promptCredentials(controller.signal, (url) => ready.resolve(url));
+
+  const pending = promptCredentials(
+    controller.signal,
+    (url) => ready.resolve(url),
+    () => {},
+  );
 
   try {
     const url = await ready.promise;
-    const page = await nativeFetch(url);
+    const page = await globalThis.fetch(url);
     assert.equal(page.headers.get('cache-control'), 'no-store');
     const form = parseForms(await page.text())[0];
     assert.ok(form);
     form.fields.set('username', credentials.username);
     form.fields.set('password', credentials.password);
 
-    const wrongOrigin = await nativeFetch(url, {
+    const wrongOrigin = await globalThis.fetch(url, {
       method: 'POST',
       headers: { Origin: 'https://evil.test' },
       body: form.fields,
@@ -1259,7 +1249,7 @@ test('private loopback login form rejects cross-origin submissions and closes af
 
     assert.equal(wrongOrigin.status, 403);
 
-    const posted = await nativeFetch(url, {
+    const posted = await globalThis.fetch(url, {
       method: 'POST',
       headers: { Origin: new URL(url).origin },
       body: form.fields,
@@ -1267,7 +1257,7 @@ test('private loopback login form rejects cross-origin submissions and closes af
 
     assert.equal(posted.status, 200);
     assert.deepEqual(await pending, credentials);
-    await assert.rejects(nativeFetch(url));
+    await assert.rejects(globalThis.fetch(url));
     const cancelled = new AbortController();
     const waiting = assert.rejects(promptCredentials(cancelled.signal), { code: 'CANCELLED' });
     cancelled.abort();
@@ -1275,7 +1265,5 @@ test('private loopback login form rejects cross-origin submissions and closes af
   } finally {
     controller.abort();
     await pending.catch(() => {});
-    opener.mock.restore();
-    syncBuiltinESMExports();
   }
 });

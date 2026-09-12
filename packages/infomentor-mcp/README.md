@@ -26,8 +26,8 @@ curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp
 
 The installer chooses macOS/Linux and arm64/x64, verifies the SHA-256 checksum,
 then installs under `~/.local`. Each archive contains **one executable with Bun
-embedded**, plus documentation and license notices. It needs no installed Node,
-Bun, npm dependencies, or browser. The executable can also be copied by itself.
+embedded**, plus documentation and license notices. It needs no separately
+installed runtime or browser. The executable can also be copied by itself.
 Linux builds target glibc; Alpine/musl is not included in these releases.
 
 Use the absolute command path printed by the installer in your MCP client.
@@ -67,20 +67,6 @@ direct access, rerun the installer with `--without-warp`; this leaves WARP and i
 registration installed. On VMs without systemd, daemon recovery happens when
 the MCP starts and uses the host's existing noninteractive `sudo` access. The installer does not add
 sudo permissions. See [connection setup and verification](docs/CONNECTIVITY.md).
-
-### npm-compatible package
-
-The npm registry has **not** been published to. With Node.js 22 or newer, install
-the prebuilt package from the GitHub release instead:
-
-```sh
-npm install --global --ignore-scripts https://github.com/olafurns7/family-mcp/releases/download/infomentor-mcp@0.5.0/infomentor-mcp-0.5.0.tgz
-```
-
-No build or install scripts are needed by consumers. The package contains ESM
-JavaScript, TypeScript declarations, and source maps. Windows executables are
-not released, and the Node package has not been verified on Windows: its
-session-file permission and ownership checks are skipped there.
 
 ## Connect an MCP client
 
@@ -395,16 +381,21 @@ InfoMentor answers with a rate limit, the requested pause is saved with the
 session, so every local process sharing the file waits instead of retrying. See
 automatic session renewal above for expired sessions.
 
-### Upgrading
+### Upgrade notes
 
-The next version registers the login, setup-status, cancel-setup, and logout
-tools only when `serve` receives `--allow-setup-tools`; add that flag to the MCP
-client configuration to keep signing in through MCP, or use `infomentor-mcp
-login`. New installs store the session under `~/.config/infomentor-mcp/`; an
-existing `~/.infomentor-mcp/session.json` keeps being used. Session, import, and
-credentials files must be regular files owned by you with mode `0600`. A login
-or import for a different account than the saved one needs
-`--allow-account-change`. Logout now also removes collection snapshots.
+The phase 2 changes below warrant a minor version bump before the next tag:
+
+- `infomentor_login`, `infomentor_setup_status`, `infomentor_cancel_setup`, and
+  `infomentor_logout` are absent unless `serve` receives `--allow-setup-tools`.
+- Explicit login or import refuses a different account unless
+  `--allow-account-change` is supplied.
+- New installs use `~/.config/infomentor-mcp/session.json`; an existing
+  `~/.infomentor-mcp/session.json` remains honoured.
+- `loginUrl` is no longer returned through MCP; the local form URL is printed
+  only on the server's standard error.
+
+Session, import, and credentials files must be regular files owned by you with
+mode `0600`. Logout also removes collection snapshots.
 
 Version 0.5.0 adds child selection, all-child collection with reusable cursors,
 and automatic session renewal using configured private credentials. Restart
@@ -484,19 +475,20 @@ for automatic renewal.
 
 ## Development and release
 
-Use the pinned **Bun 1.4.2** for package management and executable builds. Node
-22+ remains the runtime for the npm package and its checks.
+Use the pinned **Bun 1.4.2** for package management, tests, and executable builds.
+Consumers run the standalone Bun executable.
 
 From the monorepo root:
 
 ```sh
 bun install --frozen-lockfile
-bunx turbo run build check test --filter=infomentor-mcp
+bunx turbo run build typecheck lint format:check test --filter=infomentor-mcp --force
 bunx turbo run test:dist test:binary test:installer --filter=infomentor-mcp
 ```
 
-`validate` runs Oxfmt, Oxlint with the basic and vendored anti-slop rules, strict
-TypeScript, and focused HTTP/login, collection, and session-lock checks. The executable is built with
+`bun test` runs the HTTP/login, collection, session-lock, and loopback fixtures.
+Every tool declares an output schema and returns validated `structuredContent`.
+The executable is built with
 [Bun's single-file compiler](https://bun.com/docs/bundler/executables). It does
 not automatically load `.env` or `bunfig.toml` from the working directory.
 Archives include third-party license notices. Bun's license is pinned in
