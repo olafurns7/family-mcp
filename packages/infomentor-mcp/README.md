@@ -16,64 +16,12 @@ happen through the CLI, so an agent that has read untrusted school text cannot
 log the parent out or replace the account. This is an unofficial integration;
 it is not affiliated with InfoMentor.
 
-## Install the executable
-
-On macOS or Linux, including a headless VM:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh
-```
-
-The installer chooses macOS/Linux and arm64/x64, verifies the SHA-256 checksum,
-then installs under `~/.local`. Each archive contains **one executable with Bun
-embedded**, plus documentation and license notices. It needs no separately
-installed runtime or browser. The executable can also be copied by itself.
-Linux builds target glibc; Alpine/musl is not included in these releases.
-
-Use the absolute command path printed by the installer in your MCP client.
-A different location can be selected with `INFOMENTOR_PREFIX`:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh |
-  INFOMENTOR_PREFIX="$HOME/tools" sh
-```
-
-Reinstalling is safe. A failed download/checksum leaves the working command in
-place. Old release directories are retained under the selected prefix's
-`share/infomentor-mcp` directory. Set `INFOMENTOR_VERSION` to select another
-released package version.
-
-Releases: <https://github.com/olafurns7/family-mcp/releases>
-
-### Optional managed connection
-
-On Debian 13/x64, including the tested Grok Bot VM, the installer can set up
-Cloudflare WARP for this MCP. This removes the need for your own Tailscale exit
-node while still using Cloudflare as a network provider:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh |
-  sh -s -- --with-warp
-```
-
-This option requires administrator access, downloads and verifies the official
-headless WARP client, registers it under [Cloudflare's terms](https://www.cloudflare.com/application/terms/),
-and configures a local proxy used only by the installed MCP command. It does not
-change the VM's default route or its Tailscale settings. Existing WARP
-installations are left unchanged and require manual proxy configuration.
-
-Regular upgrades preserve the selected connection mode. To return the MCP to
-direct access, rerun the installer with `--without-warp`; this leaves WARP and its
-registration installed. On VMs without systemd, daemon recovery happens when
-the MCP starts and uses the host's existing noninteractive `sudo` access. The installer does not add
-sudo permissions. See [connection setup and verification](docs/CONNECTIVITY.md).
+For installation, WARP choice, and host configuration, start with the root [InfoMentor MCP section](../../README.md#infomentor-mcp).
 
 ## Sign in from any agent
 
-For Claude Desktop, Claude Code, and Codex configuration, see the root
-[connection guide](../../README.md#connect-to-your-mcp-host). The MCP server
-uses standard input/output; human-readable CLI messages go to standard error.
-Restart the MCP client after upgrading the executable.
+The MCP server uses standard input/output; human-readable CLI messages go to
+standard error. Restart the MCP client after upgrading the executable.
 
 Login uses direct HTTPS and **does not open a browser or listen on loopback by
 default**. It accepts your InfoMentor username or kennitala (Icelandic identity
