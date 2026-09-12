@@ -1,11 +1,10 @@
-import { readFileSync } from 'node:fs';
 import { serveStdio, type StdioServerHandle } from '@modelcontextprotocol/server/stdio';
 import type {
   CallToolResult,
   McpServerFactory,
   ToolAnnotations,
 } from '@modelcontextprotocol/server';
-import { ZodError, z } from 'zod/v4';
+import { ZodError } from 'zod/v4';
 
 export type UnknownErrorHandler = (error: Error) => string;
 
@@ -99,10 +98,4 @@ export function startStdio(
   process.once('SIGTERM', onSignal);
 
   return { close };
-}
-
-export function packageVersion(importMetaUrl: string): string {
-  return z
-    .object({ version: z.string().min(1) })
-    .parse(JSON.parse(readFileSync(new URL('../package.json', importMetaUrl), 'utf8'))).version;
 }
