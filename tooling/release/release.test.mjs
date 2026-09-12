@@ -25,7 +25,7 @@ await test('release generation, version tags, and package-specific assets stay c
       };
 
       await writeFile(join(root, 'package.json'), JSON.stringify(manifest));
-      const stale = `https://raw.githubusercontent.com/olafurns7/family-mcp/${name}@0.0.1/packages/${name}/install.sh\nhttps://github.com/olafurns7/family-mcp/releases/download/${name}@0.0.1/${name}-0.0.1.tgz\nCurrent ${name}@0.0.1 archive ${name}-0.0.1.tgz\n`;
+      const stale = `https://raw.githubusercontent.com/olafurns7/family-mcp/${name}@0.0.1/packages/${name}/install.sh\nhttps://github.com/olafurns7/family-mcp/releases/download/${name}@0.0.1/${name}-0.0.1-darwin-arm64.tar.gz\nCurrent ${name}@0.0.1 archive ${name}-0.0.1-darwin-arm64.tar.gz\n`;
 
       const docs = [
         'README.md',
@@ -122,7 +122,6 @@ await test('release generation, version tags, and package-specific assets stay c
 
       for (const packageName of ['abler-mcp', 'infomentor-mcp']) {
         const assets = [
-          '.tgz',
           '-darwin-arm64.tar.gz',
           '-darwin-x64.tar.gz',
           '-linux-arm64.tar.gz',
@@ -155,10 +154,10 @@ await test('release generation, version tags, and package-specific assets stay c
 
       assert.equal(selected.status, 0, selected.stderr);
       const files = await readdir(join(runner, 'release-assets'));
-      assert.equal(files.length, 11);
+      assert.equal(files.length, 9);
       assert.ok(files.every((file) => file === 'install.sh' || file.startsWith(`${name}-9.8.7`)));
       await rm(join(runner, 'release-assets'), { recursive: true });
-      await writeFile(join(artifacts, `${name}-9.8.7.tgz`), 'corrupt');
+      await writeFile(join(artifacts, `${name}-9.8.7-darwin-arm64.tar.gz`), 'corrupt');
       assert.notEqual(
         spawnSync(process.execPath, ['--input-type=module'], {
           input: scripts[1],
