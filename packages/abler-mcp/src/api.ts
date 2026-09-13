@@ -112,7 +112,8 @@ export const eventSchema = z.object({
   from: z.string(),
   to: z.string().nullable(),
   status: z.string().optional(),
-  arrivalTime: z.string().nullable().optional(),
+  // Abler sends this as a number (minutes before `from`); keep strings for older shapes.
+  arrivalTime: z.union([z.string(), z.number()]).nullable().optional(),
   locationDetails: z.string().nullable().optional(),
   locationAddress: z.string().nullable().optional(),
   locationLink: z.string().nullable().optional(),

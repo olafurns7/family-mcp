@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1
+
+- Fix `list_schedule`, `list_child_schedules`, and `get_event` rejecting every
+  event: Abler sends `arrivalTime` as a number (minutes before the start), and the
+  0.5.0 output schema only accepted a string. Numeric and string values are both
+  accepted now; the value is passed through unchanged.
+
 ## 0.5.0
 
 - Added `auth login` with isolated temporary profiles: browser login uses a
