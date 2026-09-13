@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmod,
@@ -10,6 +10,7 @@ import {
   readdir,
   readlink,
   rm,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -47,6 +48,21 @@ const env = {
   [pkg.envPrefix + '_PREFIX']: prefix,
   [pkg.envPrefix + '_VERSION']: pkg.version,
 };
+
+/** @param {import('node:child_process').ChildProcess} child */
+async function stopProcess(child) {
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  const pid = child.pid;
+  assert.ok(pid);
+
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    // The installer may have already stopped it.
+  }
+
+  await exited;
+}
 
 try {
   await mkdir(fakeBin);
@@ -188,6 +204,98 @@ esac
         );
     }
 
+    /** @param {string[]} [args] @param {NodeJS.ProcessEnv} [extraEnv] */
+    const runInstaller = (args = [], extraEnv = {}) =>
+      spawnSync('/bin/sh', args.length ? ['-s', '--', ...args] : [], {
+        input: script,
+        encoding: 'utf8',
+        timeout: 20_000,
+        env: { ...env, ...extraEnv },
+      });
+
+    /** @param {string} label @param {string} [contents] */
+    const startOldProcess = async (label, contents) => {
+      const oldDir = join(prefix, 'share', pkg.name, label);
+      const oldBinary = join(oldDir, 'bin', pkg.name);
+      await mkdir(join(oldDir, 'bin'), { recursive: true });
+      await writeFile(
+        oldBinary,
+        contents ?? "#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do /bin/sleep 1; done\n",
+        { mode: 0o755 },
+      );
+      await rm(binary, { force: true });
+      await symlink(oldBinary, binary);
+      const child = spawn(oldBinary, [], { stdio: 'ignore' });
+      const pid = child.pid;
+      assert.ok(pid);
+
+      return { child, oldDir, pid };
+    };
+
+    const noticed = await startOldProcess('0.0.0-old-notice');
+    const noticedExit = new Promise((resolve) => noticed.child.once('exit', resolve));
+    const notice = runInstaller();
+    assert.equal(notice.status, 0, notice.stderr);
+    assert.ok(notice.stdout.includes(`PID ${noticed.pid} (${noticed.oldDir})`));
+    assert.match(
+      notice.stdout,
+      /Restart your MCP host \(Claude Desktop \/ Claude Code \/ Codex \/ the bot\).*--stop-running/,
+    );
+    process.kill(noticed.pid, 'SIGTERM');
+    await noticedExit;
+
+    const stopped = await startOldProcess('0.0.0-old-stop');
+    const stoppedExit = new Promise((resolve) => stopped.child.once('exit', resolve));
+
+    const stop = runInstaller(
+      pkg.name === 'infomentor-mcp' ? ['--stop-running', '--without-warp'] : ['--stop-running'],
+    );
+
+    assert.equal(stop.status, 0, stop.stderr);
+    assert.ok(stop.stdout.includes(`Stopped old ${pkg.name} process: PID ${stopped.pid}`));
+    await stoppedExit;
+
+    const unrelatedPath = join(directory, 'unrelated', pkg.name);
+    await mkdir(join(unrelatedPath, '..'), { recursive: true });
+    await writeFile(unrelatedPath, '#!/bin/sh\nwhile :; do /bin/sleep 1; done\n', {
+      mode: 0o755,
+    });
+    const unrelated = spawn(unrelatedPath, [], { stdio: 'ignore' });
+    const unrelatedPid = unrelated.pid;
+    assert.ok(unrelatedPid);
+    const unrelatedExit = new Promise((resolve) => unrelated.once('exit', resolve));
+    const noFalsePositive = runInstaller();
+    assert.equal(noFalsePositive.status, 0, noFalsePositive.stderr);
+    assert.ok(!noFalsePositive.stdout.includes(`PID ${unrelatedPid}`));
+    process.kill(unrelatedPid, 'SIGTERM');
+    await unrelatedExit;
+
+    const ignored = await startOldProcess(
+      '0.0.0-old-ignore',
+      "#!/bin/sh\ntrap '' TERM\nwhile :; do /bin/sleep 1; done\n",
+    );
+
+    const ignoredExit = new Promise((resolve) => ignored.child.once('exit', resolve));
+
+    const ignore = runInstaller(
+      pkg.name === 'infomentor-mcp' ? ['--stop-running', '--without-warp'] : ['--stop-running'],
+    );
+
+    assert.equal(ignore.status, 1);
+    assert.ok(ignore.stdout.includes(`Old ${pkg.name} process still running after SIGTERM`));
+    assert.match(ignore.stderr, /Install succeeded, but old .* processes remained after SIGTERM/);
+    await stopProcess(ignored.child);
+    await ignoredExit;
+
+    if (pkg.name === 'infomentor-mcp') {
+      const composed = runInstaller(['--stop-running', '--with-warp'], {
+        TEST_FAILURE: 'checksum',
+      });
+
+      assert.notEqual(composed.status, 0);
+      assert.match(composed.stderr, /checksum verification failed/);
+    }
+
     // A piped truncation must not begin installation before the final main invocation.
     const truncated = spawnSync('/bin/sh', [], {
       input: script.slice(0, script.lastIndexOf('main "$@"')),
@@ -200,7 +308,9 @@ esac
     await rm(join(fakeBin, 'uname'));
     await rm(join(fakeBin, 'mv'));
     await rm(prefix, { recursive: true });
-    console.log(`${pkg.name}: all 12 piped-installer cases and truncated-script check passed.`);
+    console.log(
+      `${pkg.name}: all 12 piped-installer cases, old-process handling, and truncated-script check passed.`,
+    );
   }
 
   if (values.mode !== 'fake') {

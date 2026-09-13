@@ -8,9 +8,18 @@ main() {
   prefix=${INFOMENTOR_PREFIX:-${HOME:?Set HOME or INFOMENTOR_PREFIX}/.local}
   case "$version" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid INFOMENTOR_VERSION.' >&2; exit 1 ;; esac
   case "$prefix" in /*) ;; *) echo 'INFOMENTOR_PREFIX must be an absolute path.' >&2; exit 1 ;; esac
+  stop_running=false
   network=''
-  case "$*" in '') ;; --with-warp) network=warp ;; --without-warp) network=direct ;; *) echo 'Usage: install.sh [--with-warp|--without-warp]' >&2; exit 1 ;; esac
-  for tool in curl tar mktemp uname; do
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --stop-running) stop_running=true ;;
+      --with-warp) [ -z "$network" ] || { echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1; }; network=warp ;;
+      --without-warp) [ -z "$network" ] || { echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1; }; network=direct ;;
+      *) echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1 ;;
+    esac
+    shift
+  done
+  for tool in curl tar mktemp uname ps id readlink sleep tr; do
     command -v "$tool" >/dev/null 2>&1 || { printf 'Required command missing: %s\n' "$tool" >&2; exit 1; }
   done
   if command -v sha256sum >/dev/null 2>&1; then checksum_tool=sha256sum
@@ -19,6 +28,83 @@ main() {
   fi
   case "$(uname -s)" in Darwin) platform=darwin ;; Linux) platform=linux ;; *) echo 'Supported systems: macOS and Linux.' >&2; exit 1 ;; esac
   case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=x64 ;; *) echo 'Supported CPUs: arm64 and x64.' >&2; exit 1 ;; esac
+  package_dir="$prefix/share/infomentor-mcp"
+  current_uid=$(id -u)
+
+  process_is_current_user() {
+    [ "$(ps -o uid= -p "$1" 2>/dev/null | tr -d '[:space:]')" = "$current_uid" ]
+  }
+
+  is_old_install_dir() {
+    candidate=$1
+    case "$candidate" in "$package_dir/"*) ;; *) return 1 ;; esac
+    [ "$candidate" != "$install_dir" ] || return 1
+    candidate_name=${candidate#"$package_dir"/}
+    case "$candidate_name" in ''|.*|*/*) return 1 ;; esac
+    [ -d "$candidate" ]
+  }
+
+  command_matches_install() {
+    case "$1" in
+      "$2/bin/infomentor-mcp"|"$2/bin/infomentor-mcp "*|"$2/bin/infomentor-mcp-warp"|"$2/bin/infomentor-mcp-warp "*|\
+      /bin/sh\ "$2/bin/infomentor-mcp"|/bin/sh\ "$2/bin/infomentor-mcp "*|\
+      /bin/sh\ "$2/bin/infomentor-mcp-warp"|/bin/sh\ "$2/bin/infomentor-mcp-warp "*|\
+      sh\ "$2/bin/infomentor-mcp"|sh\ "$2/bin/infomentor-mcp "*|\
+      sh\ "$2/bin/infomentor-mcp-warp"|sh\ "$2/bin/infomentor-mcp-warp "*) return 0 ;;
+    esac
+    return 1
+  }
+
+  process_matches_install() {
+    process_is_current_user "$1" || return 1
+    if [ "$platform" = linux ]; then
+      executable=$(readlink "/proc/$1/exe" 2>/dev/null || true)
+      case "$executable" in "$2/bin/infomentor-mcp"|"$2/bin/infomentor-mcp-warp") return 0 ;; esac
+    fi
+    command=$(ps -p "$1" -o command= 2>/dev/null || true)
+    command_matches_install "$command" "$2"
+  }
+
+  record_old_process() {
+    while IFS="$(printf '\t')" read -r recorded_pid recorded_dir; do
+      [ "$recorded_pid" = "$1" ] && return 0
+    done < "$old_processes"
+    printf '%s\t%s\n' "$1" "$2" >> "$old_processes"
+  }
+
+  detect_linux_processes() {
+    for process_link in /proc/[0-9]*/exe; do
+      [ -e "$process_link" ] || continue
+      process_pid=${process_link#/proc/}
+      process_pid=${process_pid%/exe}
+      executable=$(readlink "$process_link" 2>/dev/null || true)
+      case "$executable" in
+        "$package_dir/"*/bin/infomentor-mcp|"$package_dir/"*/bin/infomentor-mcp-warp)
+          candidate=${executable%/bin/*}
+          ;;
+        *) continue ;;
+      esac
+      is_old_install_dir "$candidate" || continue
+      process_matches_install "$process_pid" "$candidate" || continue
+      record_old_process "$process_pid" "$candidate"
+    done
+  }
+
+  detect_command_processes() {
+    for candidate in "$previous_install_dir" "$package_dir"/*; do
+      is_old_install_dir "$candidate" || continue
+      ps -axo pid=,command= | while read -r process_pid command; do
+        case "$process_pid" in ''|*[!0-9]*) continue ;; esac
+        process_matches_install "$process_pid" "$candidate" || continue
+        record_old_process "$process_pid" "$candidate"
+      done
+    done
+  }
+
+  detect_old_processes() {
+    [ "$platform" != linux ] || detect_linux_processes
+    detect_command_processes
+  }
   [ -n "$network" ] || network=$(cat "$prefix/share/infomentor-mcp/network" 2>/dev/null || printf direct)
   case "$network" in direct|warp) ;; *) echo 'Invalid saved network setting.' >&2; exit 1 ;; esac
   if [ "$network" = warp ] && { [ "$platform" != linux ] || [ "$arch" != x64 ]; }; then echo 'Automatic WARP setup supports Debian 13 on x64.' >&2; exit 1; fi
@@ -34,9 +120,9 @@ main() {
   actual=$(cd "$temporary" && $checksum_tool "$archive")
   [ "$actual" = "$(cat "$temporary/checksum")" ] || { echo 'Release checksum verification failed; nothing was installed.' >&2; exit 1; }
   digest=${actual%% *}
-  mkdir -p "$prefix/share/infomentor-mcp" "$prefix/bin"
+  mkdir -p "$package_dir" "$prefix/bin"
   [ ! -d "$prefix/bin/infomentor-mcp" ] || { echo 'Install destination is a directory; nothing was replaced.' >&2; exit 1; }
-  staging=$(mktemp -d "$prefix/share/infomentor-mcp/.install.XXXXXX")
+  staging=$(mktemp -d "$package_dir/.install.XXXXXX")
   mkdir -p "$staging/bin"
   # Extract only named members to new regular files; never extract archive paths or links.
   tar -xOzf "$temporary/$archive" 'infomentor-mcp/bin/infomentor-mcp' > "$staging/bin/infomentor-mcp"
@@ -72,11 +158,60 @@ main() {
     mv "$staging" "$install_dir"
   fi
   staging=
+  previous_install_dir=
+  if [ -L "$prefix/bin/infomentor-mcp" ]; then
+    previous_target=$(readlink "$prefix/bin/infomentor-mcp" 2>/dev/null || true)
+    case "$previous_target" in
+      "$package_dir/"*/bin/infomentor-mcp|"$package_dir/"*/bin/infomentor-mcp-warp)
+        previous_install_dir=${previous_target%/bin/*}
+        ;;
+    esac
+  fi
   command_tmp=$(mktemp -d "$prefix/bin/.infomentor-mcp.XXXXXX")
   ln -s "$install_dir/bin/$entrypoint" "$command_tmp/command"
   mv -f "$command_tmp/command" "$prefix/bin/infomentor-mcp"
   printf '%s\n' "$network" > "$temporary/network"
   mv -f "$temporary/network" "$prefix/share/infomentor-mcp/network"
+  old_processes="$temporary/old-processes"
+  : > "$old_processes"
+  detect_old_processes
+  if [ -s "$old_processes" ]; then
+    if [ "$stop_running" = true ]; then
+      while IFS="$(printf '\t')" read -r process_pid candidate; do
+        process_matches_install "$process_pid" "$candidate" || continue
+        kill -TERM "$process_pid" 2>/dev/null || true
+      done < "$old_processes"
+      waited=0
+      while :; do
+        running=false
+        while IFS="$(printf '\t')" read -r process_pid candidate; do
+          process_matches_install "$process_pid" "$candidate" && running=true
+        done < "$old_processes"
+        [ "$running" = false ] && break
+        [ "$waited" -ge 10 ] && break
+        sleep 1
+        waited=$((waited + 1))
+      done
+      remaining=false
+      while IFS="$(printf '\t')" read -r process_pid candidate; do
+        if process_matches_install "$process_pid" "$candidate"; then
+          printf 'Old infomentor-mcp process still running after SIGTERM: PID %s (%s)\n' "$process_pid" "$candidate"
+          remaining=true
+        else
+          printf 'Stopped old infomentor-mcp process: PID %s (%s)\n' "$process_pid" "$candidate"
+        fi
+      done < "$old_processes"
+      if [ "$remaining" = true ]; then
+        printf 'Install succeeded, but old infomentor-mcp processes remained after SIGTERM. Restart your MCP host after stopping them.\n' >&2
+        return 1
+      fi
+    else
+      while IFS="$(printf '\t')" read -r process_pid candidate; do
+        printf 'Old infomentor-mcp process still running: PID %s (%s)\n' "$process_pid" "$candidate"
+      done < "$old_processes"
+      printf 'Restart your MCP host (Claude Desktop / Claude Code / Codex / the bot) so it starts the new version, or rerun this installer with --stop-running to send those processes SIGTERM.\n'
+    fi
+  fi
   printf 'Installed infomentor-mcp %s at %s/bin/infomentor-mcp\n' "$version" "$prefix"
   printf 'Use that absolute path in your MCP client. Setup: https://github.com/olafurns7/family-mcp/tree/infomentor-mcp@%s/packages/infomentor-mcp#readme\n' "$version"
   case ":${PATH:-}:" in *":$prefix/bin:"*) ;; *) printf 'For terminal use, add %s/bin to PATH.\n' "$prefix" ;; esac

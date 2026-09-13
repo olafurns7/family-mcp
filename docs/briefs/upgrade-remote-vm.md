@@ -9,7 +9,7 @@ below. Do not touch session or credential files except where stated. Never print
 ## 1. Upgrade InfoMentor (keeps WARP mode automatically)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh -s -- --stop-running
 ```
 
 - Same layout as before: `~/.local/share/infomentor-mcp/<version>-<digest>/`, symlink
@@ -21,12 +21,13 @@ curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp
 ## 2. Upgrade Abler (if installed)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.0/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.0/packages/abler-mcp/install.sh | sh -s -- --stop-running
 ```
 
 - Verify: `~/.local/bin/abler-mcp --version` prints `0.5.0`.
 - The VM keeps using the copied session file via `ABLER_SESSION_FILE`. Do not run
   `abler-mcp auth login` here; it needs a browser and is for a laptop.
+- Restart the bot after upgrading so its MCP host starts the new binaries.
 
 ## 3. Behaviour changes the bot must handle (InfoMentor)
 
