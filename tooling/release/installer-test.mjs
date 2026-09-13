@@ -33,6 +33,8 @@ const directory = await mkdtemp(join(tmpdir(), `${pkg.name}-installer-`));
 
 const fakeBin = join(directory, 'commands');
 
+const noLsofBin = join(directory, 'commands-no-lsof');
+
 const temporary = join(directory, 'temporary files');
 
 const prefix = join(directory, 'prefix with spaces');
@@ -72,6 +74,7 @@ async function stopProcess(child) {
 
 try {
   await mkdir(fakeBin);
+  await mkdir(noLsofBin);
   await mkdir(temporary);
   await mkdir(join(prefix, 'bin'), { recursive: true });
   await writeFile(lsofMap, '');
@@ -143,6 +146,39 @@ fi
     await writeFile(join(fakeBin, 'sudo'), '#!/bin/sh\necho "Unexpected sudo" >&2\nexit 1\n', {
       mode: 0o755,
     });
+
+    for (const command of [
+      'cat',
+      'chmod',
+      'cp',
+      'curl',
+      'id',
+      'ln',
+      'mkdir',
+      'mktemp',
+      'mv',
+      'ps',
+      'readlink',
+      'rm',
+      'sha256sum',
+      'shasum',
+      'sleep',
+      'tar',
+      'tr',
+      'uname',
+    ]) {
+      try {
+        const path = execFileSync('/bin/sh', ['-c', `command -v ${command}`], {
+          encoding: 'utf8',
+          env,
+        }).trim();
+
+        await symlink(path, join(noLsofBin, command));
+      } catch {
+        // sha256sum is absent on macOS and shasum is absent on some Linux images.
+      }
+    }
+
     const payload = join(directory, pkg.name);
     await mkdir(join(payload, 'bin'), { recursive: true });
 
@@ -288,12 +324,31 @@ fi
       return { child, oldDir, pid };
     };
 
+    /** @param {string} label */
+    const startNativeOldProcess = async (label) => {
+      const oldDir = join(prefix, 'share', pkg.name, label);
+      const oldBinary = join(oldDir, 'bin', pkg.name);
+      await mkdir(join(oldDir, 'bin'), { recursive: true });
+      await copyFile('/bin/sleep', oldBinary);
+      await chmod(oldBinary, 0o755);
+      await rm(binary, { force: true });
+      await symlink(oldBinary, binary);
+      const child = spawn(binary, ['60'], { stdio: 'ignore' });
+      const pid = child.pid;
+      assert.ok(pid);
+
+      return { child, oldDir, pid };
+    };
+
     const macosArgs = pkg.name === 'infomentor-mcp' ? ['--without-warp'] : [];
     const noticed = await startOldProcess('0.0.0-old-notice');
     const noticedExit = new Promise((resolve) => noticed.child.once('exit', resolve));
     const notice = runInstaller(macosArgs, { TEST_PLATFORM: 'Darwin' });
     assert.equal(notice.status, 0, notice.stderr);
-    assert.ok(notice.stdout.includes(`PID ${noticed.pid} (${noticed.oldDir})`));
+    assert.ok(
+      notice.stdout.includes(`PID ${noticed.pid} (${noticed.oldDir})`),
+      `stdout: ${notice.stdout}\nstderr: ${notice.stderr}`,
+    );
     assert.match(
       notice.stdout,
       /Restart your MCP host \(Claude Desktop \/ Claude Code \/ Codex \/ the bot\).*--stop-running/,
@@ -312,6 +367,26 @@ fi
     assert.equal(stop.status, 0, stop.stderr);
     assert.ok(stop.stdout.includes(`Stopped old ${pkg.name} process: PID ${stopped.pid}`));
     await stoppedExit;
+
+    if (process.platform === 'linux') {
+      const native = await startNativeOldProcess('0.0.0-old-linux-native');
+      const nativeExit = new Promise((resolve) => native.child.once('exit', resolve));
+
+      const nativeStop = runInstaller(
+        pkg.name === 'infomentor-mcp' ? ['--stop-running', '--without-warp'] : ['--stop-running'],
+        { TEST_PLATFORM: 'Linux' },
+      );
+
+      assert.equal(nativeStop.status, 0, nativeStop.stderr);
+      assert.equal(nativeStop.stderr, '');
+      assert.ok(
+        nativeStop.stdout.includes(
+          `Stopped old ${pkg.name} process: PID ${native.pid} (${native.oldDir})`,
+        ),
+        `stdout: ${nativeStop.stdout}\nstderr: ${nativeStop.stderr}`,
+      );
+      await nativeExit;
+    }
 
     const unrelatedPath = join(directory, 'unrelated', pkg.name);
     await mkdir(join(unrelatedPath, '..'), { recursive: true });
@@ -360,15 +435,21 @@ fi
     await stopProcess(ignored.child);
     await ignoredExit;
 
-    await rm(join(fakeBin, 'lsof'));
     const unknown = await startOldProcess('0.0.0-old-unknown');
     const unknownExit = new Promise((resolve) => unknown.child.once('exit', resolve));
-    const unknownNotice = runInstaller(macosArgs, { TEST_PLATFORM: 'Darwin' });
+
+    const unknownNotice = runInstaller(macosArgs, {
+      PATH: noLsofBin,
+      TEST_PLATFORM: 'Darwin',
+    });
+
     assert.equal(unknownNotice.status, 0, unknownNotice.stderr);
+    assert.equal(unknownNotice.stderr, '');
     assert.ok(
       unknownNotice.stdout.includes(
         `Possibly old ${pkg.name} process still running: PID ${unknown.pid} (version unknown)`,
       ),
+      `stdout: ${unknownNotice.stdout}\nstderr: ${unknownNotice.stderr}`,
     );
     process.kill(unknown.pid, 'SIGTERM');
     await unknownExit;
