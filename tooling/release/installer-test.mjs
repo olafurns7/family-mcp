@@ -39,12 +39,18 @@ const prefix = join(directory, 'prefix with spaces');
 
 const binary = join(prefix, 'bin', pkg.name);
 
+const lsofMap = join(directory, 'lsof-map');
+
 const env = {
   ...process.env,
   PATH: `${fakeBin}:/usr/bin:/bin`,
   TMPDIR: temporary,
   TEST_ASSETS: directory,
   TEST_FAILURE: '',
+  TEST_LSOF_MAP: lsofMap,
+  TEST_PROCESS_COMMAND: binary,
+  TEST_UNRELATED_COMMAND: '',
+  TEST_UNRELATED_PID: '',
   [pkg.envPrefix + '_PREFIX']: prefix,
   [pkg.envPrefix + '_VERSION']: pkg.version,
 };
@@ -68,6 +74,7 @@ try {
   await mkdir(fakeBin);
   await mkdir(temporary);
   await mkdir(join(prefix, 'bin'), { recursive: true });
+  await writeFile(lsofMap, '');
   await writeFile(
     join(fakeBin, 'curl'),
     `#!/bin/sh
@@ -89,9 +96,42 @@ cp "$TEST_ASSETS/\${url##*/}" "$output"
 case "$1:$TEST_FAILURE" in
   -s:platform) printf 'Unsupported\\n' ;;
   -m:arch) printf 'Unsupported\\n' ;;
-  -s:*) printf 'Linux\\n' ;;
+  -s:*) printf '%s\\n' "\${TEST_PLATFORM:-Linux}" ;;
   -m:*) printf 'x86_64\\n' ;;
 esac
+`,
+      { mode: 0o755 },
+    );
+    await writeFile(
+      join(fakeBin, 'lsof'),
+      `#!/bin/sh
+set -eu
+pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in -p) shift; pid=$1 ;; esac
+  shift
+done
+case "$(ps -p "$pid" -o stat= 2>/dev/null || true)" in *Z*) exit 0 ;; esac
+while IFS="$(printf '\\t')" read -r mapped_pid mapped_path; do
+  [ "$mapped_pid" = "$pid" ] || continue
+  printf 'n%s\\n' "$mapped_path"
+done < "$TEST_LSOF_MAP"
+`,
+      { mode: 0o755 },
+    );
+    await writeFile(
+      join(fakeBin, 'ps'),
+      `#!/bin/sh
+if [ "$1" = -axo ]; then
+  while IFS="$(printf '\\t')" read -r mapped_pid mapped_path; do
+    [ -n "$mapped_pid" ] && printf '%s %s serve\\n' "$mapped_pid" "$TEST_PROCESS_COMMAND"
+  done < "$TEST_LSOF_MAP"
+  if [ -n "\${TEST_UNRELATED_PID:-}" ]; then
+    printf '%s %s\\n' "$TEST_UNRELATED_PID" "$TEST_UNRELATED_COMMAND"
+  fi
+else
+  exec /bin/ps "$@"
+fi
 `,
       { mode: 0o755 },
     );
@@ -100,6 +140,9 @@ esac
       '#!/bin/sh\n[ "$TEST_FAILURE" != install ] || exit 17\nexec /bin/mv "$@"\n',
       { mode: 0o755 },
     );
+    await writeFile(join(fakeBin, 'sudo'), '#!/bin/sh\necho "Unexpected sudo" >&2\nexit 1\n', {
+      mode: 0o755,
+    });
     const payload = join(directory, pkg.name);
     await mkdir(join(payload, 'bin'), { recursive: true });
 
@@ -213,6 +256,18 @@ esac
         env: { ...env, ...extraEnv },
       });
 
+    const darwinArchive = `${pkg.name}-${pkg.version}-darwin-x64.tar.gz`;
+    await copyFile(join(directory, archive), join(directory, darwinArchive));
+
+    const darwinDigest = createHash('sha256')
+      .update(await readFile(join(directory, darwinArchive)))
+      .digest('hex');
+
+    await writeFile(
+      join(directory, darwinArchive + '.sha256'),
+      `${darwinDigest}  ${darwinArchive}\n`,
+    );
+
     /** @param {string} label @param {string} [contents] */
     const startOldProcess = async (label, contents) => {
       const oldDir = join(prefix, 'share', pkg.name, label);
@@ -225,16 +280,18 @@ esac
       );
       await rm(binary, { force: true });
       await symlink(oldBinary, binary);
-      const child = spawn(oldBinary, [], { stdio: 'ignore' });
+      const child = spawn(binary, [], { stdio: 'ignore' });
       const pid = child.pid;
       assert.ok(pid);
+      await writeFile(lsofMap, `${pid}\t${oldBinary}\n`, { flag: 'a' });
 
       return { child, oldDir, pid };
     };
 
+    const macosArgs = pkg.name === 'infomentor-mcp' ? ['--without-warp'] : [];
     const noticed = await startOldProcess('0.0.0-old-notice');
     const noticedExit = new Promise((resolve) => noticed.child.once('exit', resolve));
-    const notice = runInstaller();
+    const notice = runInstaller(macosArgs, { TEST_PLATFORM: 'Darwin' });
     assert.equal(notice.status, 0, notice.stderr);
     assert.ok(notice.stdout.includes(`PID ${noticed.pid} (${noticed.oldDir})`));
     assert.match(
@@ -249,6 +306,7 @@ esac
 
     const stop = runInstaller(
       pkg.name === 'infomentor-mcp' ? ['--stop-running', '--without-warp'] : ['--stop-running'],
+      { TEST_PLATFORM: 'Darwin' },
     );
 
     assert.equal(stop.status, 0, stop.stderr);
@@ -264,7 +322,13 @@ esac
     const unrelatedPid = unrelated.pid;
     assert.ok(unrelatedPid);
     const unrelatedExit = new Promise((resolve) => unrelated.once('exit', resolve));
-    const noFalsePositive = runInstaller();
+
+    const noFalsePositive = runInstaller(macosArgs, {
+      TEST_PLATFORM: 'Darwin',
+      TEST_UNRELATED_COMMAND: unrelatedPath,
+      TEST_UNRELATED_PID: String(unrelatedPid),
+    });
+
     assert.equal(noFalsePositive.status, 0, noFalsePositive.stderr);
     assert.ok(!noFalsePositive.stdout.includes(`PID ${unrelatedPid}`));
     process.kill(unrelatedPid, 'SIGTERM');
@@ -279,15 +343,39 @@ esac
 
     const ignore = runInstaller(
       pkg.name === 'infomentor-mcp' ? ['--stop-running', '--without-warp'] : ['--stop-running'],
+      { TEST_PLATFORM: 'Darwin' },
     );
 
     assert.equal(ignore.status, 1);
-    assert.ok(ignore.stdout.includes(`Old ${pkg.name} process still running after SIGTERM`));
-    assert.match(ignore.stderr, /Install succeeded, but old .* processes remained after SIGTERM/);
+    assert.ok(
+      ignore.stdout.includes(
+        `Old ${pkg.name} process still running after SIGTERM: PID ${ignored.pid} (${ignored.oldDir})`,
+      ),
+      `stdout: ${ignore.stdout}\nstderr: ${ignore.stderr}`,
+    );
+    assert.equal(
+      ignore.stderr,
+      `Install succeeded, but old ${pkg.name} processes remained after SIGTERM. Restart your MCP host after stopping them.\n`,
+    );
     await stopProcess(ignored.child);
     await ignoredExit;
 
+    await rm(join(fakeBin, 'lsof'));
+    const unknown = await startOldProcess('0.0.0-old-unknown');
+    const unknownExit = new Promise((resolve) => unknown.child.once('exit', resolve));
+    const unknownNotice = runInstaller(macosArgs, { TEST_PLATFORM: 'Darwin' });
+    assert.equal(unknownNotice.status, 0, unknownNotice.stderr);
+    assert.ok(
+      unknownNotice.stdout.includes(
+        `Possibly old ${pkg.name} process still running: PID ${unknown.pid} (version unknown)`,
+      ),
+    );
+    process.kill(unknown.pid, 'SIGTERM');
+    await unknownExit;
+
     if (pkg.name === 'infomentor-mcp') {
+      await writeFile(join(directory, archive + '.sha256'), `${'0'.repeat(64)}  ${archive}\n`);
+
       const composed = runInstaller(['--stop-running', '--with-warp'], {
         TEST_FAILURE: 'checksum',
       });
@@ -307,6 +395,9 @@ esac
     assert.deepEqual(await readdir(temporary), []);
     await rm(join(fakeBin, 'uname'));
     await rm(join(fakeBin, 'mv'));
+    await rm(join(fakeBin, 'lsof'), { force: true });
+    await rm(join(fakeBin, 'ps'));
+    await rm(join(fakeBin, 'sudo'));
     await rm(prefix, { recursive: true });
     console.log(
       `${pkg.name}: all 12 piped-installer cases, old-process handling, and truncated-script check passed.`,
