@@ -14,9 +14,14 @@ executable, so the MCP host does not need Node, npm, or Bun at runtime.
 ```sh
 curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.1/packages/abler-mcp/install.sh | sh
 ```
+
+Upgrading replaces the command but not a running server; restart the MCP host, or
+rerun with `--stop-running`.
+
 ```sh
 abler-mcp auth login
 ```
+
 Expected output: `Sign in to Abler in the browser window that opened.`
 <details>
 <summary>Connect to Claude Desktop, Claude Code, or Codex</summary>
@@ -65,9 +70,14 @@ Other sign-in paths (capture an existing Chrome session, import cookies), headle
 ```sh
 curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh
 ```
+
+Upgrading replaces the command but not a running server; restart the MCP host, or
+rerun with `--stop-running`.
+
 ```sh
 infomentor-mcp login --credentials /absolute/path/credentials.json
 ```
+
 Expected output starts with `Signed in. Session saved to`.
 <details>
 <summary>Connect to Claude Desktop, Claude Code, or Codex</summary>
