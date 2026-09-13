@@ -152,6 +152,7 @@ fi
       'chmod',
       'cp',
       'curl',
+      'gzip',
       'id',
       'ln',
       'mkdir',
