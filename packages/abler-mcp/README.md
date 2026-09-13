@@ -7,7 +7,7 @@ For agent setup and reporting rules, read **[docs/AGENTS.md](docs/AGENTS.md)**.
 ## Quick start (0.5.0+)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.0/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.1/packages/abler-mcp/install.sh | sh
 ```
 
 ```sh

@@ -354,7 +354,7 @@ test('all six Abler tools complete MCP round trips with optional and null upstre
     description: null,
     from: '2026-09-11T16:00:00Z',
     to: null,
-    arrivalTime: null,
+    arrivalTime: 15, // Abler sends minutes before start as a number
     locationDetails: null,
     locationAddress: null,
     locationLink: null,

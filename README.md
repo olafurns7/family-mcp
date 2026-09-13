@@ -12,7 +12,7 @@ executable, so the MCP host does not need Node, npm, or Bun at runtime.
 ## Abler
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.0/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.1/packages/abler-mcp/install.sh | sh
 ```
 ```sh
 abler-mcp auth login
