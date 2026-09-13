@@ -28,8 +28,20 @@ export async function renderInstall(pkg) {
     VERSION: pkg.version,
     OPTIONS: warp
       ? `  network=''
-  case "$*" in '') ;; --with-warp) network=warp ;; --without-warp) network=direct ;; *) echo 'Usage: install.sh [--with-warp|--without-warp]' >&2; exit 1 ;; esac`
-      : `  [ "$#" -eq 0 ] || { echo 'Usage: install.sh' >&2; exit 1; }`,
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --stop-running) stop_running=true ;;
+      --with-warp) [ -z "$network" ] || { echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1; }; network=warp ;;
+      --without-warp) [ -z "$network" ] || { echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1; }; network=direct ;;
+      *) echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1 ;;
+    esac
+    shift
+  done`
+      : `  case "$#" in
+    0) ;;
+    1) [ "$1" = --stop-running ] || { echo 'Usage: install.sh [--stop-running]' >&2; exit 1; }; stop_running=true ;;
+    *) echo 'Usage: install.sh [--stop-running]' >&2; exit 1 ;;
+  esac`,
     NETWORK: warp
       ? `  [ -n "$network" ] || network=$(cat "$prefix/share/${pkg.name}/network" 2>/dev/null || printf direct)
   case "$network" in direct|warp) ;; *) echo 'Invalid saved network setting.' >&2; exit 1 ;; esac
