@@ -25,7 +25,7 @@ main() {
   if [ "$platform" = darwin ] && command -v lsof >/dev/null 2>&1; then macos_lsof_available=true; fi
 
   process_is_current_user() {
-    [ "$(ps -o uid= -p "$1" 2>/dev/null | tr -d '[:space:]')" = "$current_uid" ]
+    [ "$(ps -p "$1" -o uid= 2>/dev/null | tr -d '[:space:]')" = "$current_uid" ]
   }
 
   is_old_install_dir() {
