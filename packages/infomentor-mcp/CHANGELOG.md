@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
 
 - Upgrades now report old running server processes and can stop them with
   `--stop-running`; otherwise restart the MCP host to use the new binary.

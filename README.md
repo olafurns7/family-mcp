@@ -12,7 +12,7 @@ executable, so the MCP host does not need Node, npm, or Bun at runtime.
 ## Abler
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.1/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.2/packages/abler-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server; restart the MCP host, or
@@ -68,7 +68,7 @@ Other sign-in paths (capture an existing Chrome session, import cookies), headle
 ## InfoMentor
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server; restart the MCP host, or
@@ -125,7 +125,7 @@ Flags (`--allow-setup-tools`, `--allow-account-change`, `--local-form`), file lo
 Remote machines (VPS, Grok bot VM): if the host's network path to `infomentor.is` fails before HTTP, use the WARP installer variant, Debian 13 x64 only:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
 ```
 
 Read the [WARP guidance](packages/infomentor-mcp/README.md#remote-machines-and-warp) and [connectivity guide](packages/infomentor-mcp/docs/CONNECTIVITY.md) first.

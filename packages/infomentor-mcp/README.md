@@ -19,7 +19,7 @@ it is not affiliated with InfoMentor.
 ## Quick start
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh
 ```
 
 ```sh
@@ -65,7 +65,7 @@ Use the standard install on your own laptop or desktop. Use `--with-warp`
 when its network path to `infomentor.is` fails before HTTP.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
 ```
 
 It requires administrator or `sudo` access and acceptance of
@@ -75,7 +75,7 @@ It does not change the default route or Tailscale settings. To revert to direct
 access:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.0/packages/infomentor-mcp/install.sh | sh -s -- --without-warp
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh -s -- --without-warp
 ```
 
 Do not use WARP on a normal working connection, on a non-Debian-13-x64 machine,
