@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Upgrades now report old running server processes and can stop them with
+  `--stop-running`; otherwise restart the MCP host to use the new binary.
+
 ## 0.6.0
 
 First release from the `family-mcp` monorepo. Install URLs moved to

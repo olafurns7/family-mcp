@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Upgrades now report old running server processes and can stop them with
+  `--stop-running`; otherwise restart the MCP host to use the new binary.
+
 ## 0.5.1
 
 - Fix `list_schedule`, `list_child_schedules`, and `get_event` rejecting every

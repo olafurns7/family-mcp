@@ -46,6 +46,8 @@ Expected output:
 ```
 
 Run the Quick start installer again to upgrade; the session file stays in place.
+Upgrading replaces the command but not a running server; restart the MCP host, or
+rerun with `--stop-running`.
 To uninstall the command and release directories while retaining the session:
 
 ```sh
