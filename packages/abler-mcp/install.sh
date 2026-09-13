@@ -25,6 +25,8 @@ main() {
   case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=x64 ;; *) echo 'Supported CPUs: arm64 and x64.' >&2; exit 1 ;; esac
   package_dir="$prefix/share/abler-mcp"
   current_uid=$(id -u)
+  macos_lsof_available=false
+  if [ "$platform" = darwin ] && command -v lsof >/dev/null 2>&1; then macos_lsof_available=true; fi
 
   process_is_current_user() {
     [ "$(ps -o uid= -p "$1" 2>/dev/null | tr -d '[:space:]')" = "$current_uid" ]
@@ -50,11 +52,27 @@ main() {
     return 1
   }
 
+  macos_executable_matches_install() {
+    mapped_executables=$(lsof -a -p "$1" -d txt -Fn 2>/dev/null || true)
+    case "
+$mapped_executables
+" in
+      *"
+n$2/bin/abler-mcp
+"*|*"
+n$2/bin/abler-mcp-warp
+"*) return 0 ;;
+    esac
+    return 1
+  }
+
   process_matches_install() {
     process_is_current_user "$1" || return 1
     if [ "$platform" = linux ]; then
       executable=$(readlink "/proc/$1/exe" 2>/dev/null || true)
       case "$executable" in "$2/bin/abler-mcp"|"$2/bin/abler-mcp-warp") return 0 ;; esac
+    elif [ "$macos_lsof_available" = true ]; then
+      macos_executable_matches_install "$1" "$2" && return 0
     fi
     command=$(ps -p "$1" -o command= 2>/dev/null || true)
     command_matches_install "$command" "$2"
@@ -96,9 +114,20 @@ main() {
     done
   }
 
+  detect_macos_symlink_processes() {
+    [ "$platform" = darwin ] && [ "$macos_lsof_available" = false ] || return 0
+    ps -axo pid=,command= | while read -r process_pid command; do
+      case "$process_pid" in ''|*[!0-9]*) continue ;; esac
+      process_is_current_user "$process_pid" || continue
+      case "$command" in "$prefix/bin/abler-mcp"|"$prefix/bin/abler-mcp "*) ;; *) continue ;; esac
+      record_old_process "$process_pid" ''
+    done
+  }
+
   detect_old_processes() {
     [ "$platform" != linux ] || detect_linux_processes
     detect_command_processes
+    detect_macos_symlink_processes
   }
 
   temporary=$(mktemp -d "${TMPDIR:-/tmp}/abler-install.XXXXXX")
@@ -154,23 +183,27 @@ main() {
   if [ -s "$old_processes" ]; then
     if [ "$stop_running" = true ]; then
       while IFS="$(printf '\t')" read -r process_pid candidate; do
+        [ -n "$candidate" ] || continue
         process_matches_install "$process_pid" "$candidate" || continue
         kill -TERM "$process_pid" 2>/dev/null || true
       done < "$old_processes"
       waited=0
       while :; do
-        running=false
-        while IFS="$(printf '\t')" read -r process_pid candidate; do
-          process_matches_install "$process_pid" "$candidate" && running=true
-        done < "$old_processes"
-        [ "$running" = false ] && break
-        [ "$waited" -ge 10 ] && break
+      running=false
+      while IFS="$(printf '\t')" read -r process_pid candidate; do
+          if [ -n "$candidate" ] && process_matches_install "$process_pid" "$candidate"; then running=true; fi
+      done < "$old_processes"
+        if [ "$running" = false ]; then break; fi
+        if [ "$waited" -ge 10 ]; then break; fi
         sleep 1
         waited=$((waited + 1))
       done
       remaining=false
       while IFS="$(printf '\t')" read -r process_pid candidate; do
-        if process_matches_install "$process_pid" "$candidate"; then
+        if [ -z "$candidate" ]; then
+          printf 'Possibly old abler-mcp process still running: PID %s (version unknown)\n' "$process_pid"
+          remaining=true
+        elif process_matches_install "$process_pid" "$candidate"; then
           printf 'Old abler-mcp process still running after SIGTERM: PID %s (%s)\n' "$process_pid" "$candidate"
           remaining=true
         else
@@ -183,7 +216,11 @@ main() {
       fi
     else
       while IFS="$(printf '\t')" read -r process_pid candidate; do
-        printf 'Old abler-mcp process still running: PID %s (%s)\n' "$process_pid" "$candidate"
+        if [ -n "$candidate" ]; then
+          printf 'Old abler-mcp process still running: PID %s (%s)\n' "$process_pid" "$candidate"
+        else
+          printf 'Possibly old abler-mcp process still running: PID %s (version unknown)\n' "$process_pid"
+        fi
       done < "$old_processes"
       printf 'Restart your MCP host (Claude Desktop / Claude Code / Codex / the bot) so it starts the new version, or rerun this installer with --stop-running to send those processes SIGTERM.\n'
     fi
