@@ -8,8 +8,18 @@ const relativeFile = z
   .regex(/^[\w.-]+(?:\/[\w.-]+)*$/)
   .refine((path) => !path.split('/').includes('..'));
 
+/** Every native server package, in the order the root README lists them. */
+export const PACKAGE_NAMES = /** @type {const} */ (['abler-mcp', 'infomentor-mcp', 'kronan-mcp']);
+
+/** Package documentation files that pin the release version alongside README.md. */
+export const DOCUMENTATION_FILES = /** @type {const} */ ({
+  'abler-mcp': ['docs/AGENTS.md', 'docs/PUBLISHING.md'],
+  'infomentor-mcp': ['docs/RELEASING.md'],
+  'kronan-mcp': ['docs/RELEASING.md'],
+});
+
 const manifestSchema = z.object({
-  name: z.enum(['abler-mcp', 'infomentor-mcp']),
+  name: z.enum(PACKAGE_NAMES),
   version: z.string().regex(/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/),
   packageManager: z.string().regex(/^bun@\d+\.\d+\.\d+$/),
   familyMcp: z.object({

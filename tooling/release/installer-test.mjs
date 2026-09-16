@@ -574,7 +574,7 @@ fi
       execFileSync(binary, ['--version'], { env, encoding: 'utf8' }).trim(),
       pkg.version,
     );
-    await smoke(binary, pkg.familyMcp.release.tools, pkg.version, true);
+    await smoke(binary, pkg.familyMcp.release.tools, pkg.version, true, pkg.name);
     console.log(
       `${pkg.name}: real archive installation, spaced prefix, reinstall, checksum rejection, previous-command preservation, and MCP smoke passed.`,
     );

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { readPackage } from './package.mjs';
+import { PACKAGE_NAMES, readPackage } from './package.mjs';
 
 const { values } = parseArgs({ options: { check: { type: 'boolean' } } });
 
@@ -11,7 +11,7 @@ const root = process.cwd();
 const file = join(root, 'README.md');
 
 const packages = await Promise.all(
-  ['abler-mcp', 'infomentor-mcp'].map((name) => readPackage(join(root, 'packages', name))),
+  PACKAGE_NAMES.map((name) => readPackage(join(root, 'packages', name))),
 );
 
 let output = await readFile(file, 'utf8');
