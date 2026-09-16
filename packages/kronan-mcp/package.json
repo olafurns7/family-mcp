@@ -24,11 +24,11 @@
   "type": "module",
   "scripts": {
     "check": "sh -n install.sh && bun run api:check && bun run lint && bun run format:check && bun run typecheck",
-    "api:generate": "bunx --bun openapi-typescript api/openapi.json -o api/kronan-api.d.ts",
-    "api:check": "bunx --bun openapi-typescript api/openapi.json -o api/kronan-api.d.ts --check",
+    "api:generate": "bun scripts/api-types.ts generate",
+    "api:check": "bun scripts/api-types.ts check",
     "test": "bun test --timeout 30000",
     "start": "bun src/cli.ts",
-    "typecheck": "../../node_modules/.bin/tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings --report-unused-disable-directives-severity error .",
     "lint:fix": "bun run lint --fix",
     "format": "oxfmt -c ../../.oxfmtrc.json --write .",
@@ -50,9 +50,7 @@
     "@family-mcp/release-tooling": "workspace:*",
     "@family-mcp/tsconfig": "workspace:*",
     "@modelcontextprotocol/client": "^2.0.0",
-    "@types/bun": "^1.2.19",
-    "openapi-typescript": "7.13.0",
-    "typescript": "5.9.3"
+    "@types/bun": "^1.2.19"
   },
   "packageManager": "bun@1.4.2",
   "familyMcp": {

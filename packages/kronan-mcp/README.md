@@ -187,8 +187,13 @@ Krónan's OpenAPI document is vendored at `api/openapi.json`, and
 [openapi-typescript](https://openapi-ts.dev). `test/api-types.test.ts` asserts
 at compile time that every response schema in `src/schemas.ts` accepts the
 documented component types and that request bodies match the documented inputs.
-Refresh the vendored document from `https://api.kronan.is/api/v1/schema/`, run
-`bun run api:generate`, and fix any type failures to adopt an upstream change.
+`api:check` compares the document's recorded digest in `api/openapi.sha256`
+with the current file, so CI never loads a second compiler. `api:generate`
+runs openapi-typescript through an isolated `npx` sandbox with the TypeScript 5
+compiler API it needs; the workspace itself stays on TypeScript 7. To adopt an
+upstream change, refresh the vendored document from
+`https://api.kronan.is/api/v1/schema/`, run `bun run api:generate`, and fix any
+type failures.
 
 Tests use synthetic tokens, injected fetch responses, and a loopback HTTP
 server. They never contact a live Krónan host. The server uses native
