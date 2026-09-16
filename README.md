@@ -10,7 +10,7 @@ at runtime.
 | **Abler** ([abler.io](https://www.abler.io))        | Sports schedules                    | Linked children, groups, events, and attendance records                                   | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
 | **InfoMentor**                                      | Icelandic school portal             | Children, timetables, messages, notifications, and updates                                | Private credentials, a private file, or an imported session                     | macOS or glibc Linux, arm64/x64 |
 | **Krónan** ([kronan.is](https://kronan.is))         | Icelandic grocery shopping          | Products, recipes, orders, purchase history, shopping notes, delivery slots, and checkout | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
-| **Domino’s** ([dominos.is](https://www.dominos.is)) | Pizza ordering (unreleased preview) | Menu, quotes, receipts, tracking, and confirmed saved-card checkout                       | SMS code entered locally with `dominos-mcp auth login`                          | macOS or glibc Linux, arm64/x64 |
+| **Domino’s** ([dominos.is](https://www.dominos.is)) | Pizza ordering (preview) | Menu, quotes, receipts, tracking, and confirmed saved-card checkout                       | SMS code entered locally with `dominos-mcp auth login`                          | macOS or glibc Linux, arm64/x64 |
 
 ## Abler
 
@@ -186,14 +186,14 @@ Token setup, file locations, and troubleshooting: see [packages/kronan-mcp/READM
 
 ## Dominos
 
-The new package is an unreleased preview. Build locally with Bun 1.4.2:
+Install the preview release:
 
 ```sh
-bunx turbo run build:binary --filter=dominos-mcp
-packages/dominos-mcp/release/native/dominos-mcp auth login
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/dominos-mcp@0.1.0/packages/dominos-mcp/install.sh | sh
+dominos-mcp auth login
 ```
 
-Configure the MCP host to run the absolute path to that executable with `serve`.
+Configure the MCP host to run the absolute path to `~/.local/bin/dominos-mcp` with `serve`.
 See [setup, tools, and payment behavior](packages/dominos-mcp/README.md).
 Live login, refresh, account reads, quotes, and unpaid saved-card retrieval have
 been verified. Charging remains untested; bank-verification continuation is not
@@ -234,4 +234,4 @@ See [CLAUDE.md](CLAUDE.md) for the full gate.
 
 Read the [Abler publishing guide](packages/abler-mcp/docs/PUBLISHING.md), [InfoMentor releasing guide](packages/infomentor-mcp/docs/RELEASING.md), [Krónan releasing guide](packages/kronan-mcp/docs/RELEASING.md), or [Domino’s releasing guide](packages/dominos-mcp/docs/RELEASING.md).
 
-Read the [Abler changelog](packages/abler-mcp/CHANGELOG.md), [InfoMentor changelog](packages/infomentor-mcp/CHANGELOG.md), or [Krónan changelog](packages/kronan-mcp/CHANGELOG.md).
+Read the [Abler changelog](packages/abler-mcp/CHANGELOG.md), [InfoMentor changelog](packages/infomentor-mcp/CHANGELOG.md), [Krónan changelog](packages/kronan-mcp/CHANGELOG.md), or [Domino’s changelog](packages/dominos-mcp/CHANGELOG.md).

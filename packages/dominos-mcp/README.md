@@ -2,7 +2,7 @@
 
 Unofficial Domino’s Iceland MCP: SMS sign-in, menu discovery, pickup and delivery
 quotes, receipts, tracking, and saved-card checkout through Domino’s Adyen sessions.
-This is an **unreleased preview** (`dominos-mcp@0.1.0`).
+This is a **preview release** (`dominos-mcp@0.1.0`).
 
 Live checks verified SMS login, token refresh, profile and receipts, the tracker’s
 no-active-order response, menu/address lookup, a 2,490 ISK quote, and an unpaid
@@ -12,16 +12,18 @@ Charging a card still needs live validation with an explicitly approved purchase
 Bank verification / 3-D Secure continuation is not implemented: a payment needing
 it stops at `requires_action`. Do not treat this preview as fully verified ordering.
 
-## Build and sign in
+## Install and sign in
 
-From the repository root, using Bun 1.4.2:
+Install the standalone executable for macOS or glibc Linux, arm64/x64:
 
 ```sh
-bun install --frozen-lockfile
-bunx turbo run build:binary --filter=dominos-mcp
-packages/dominos-mcp/release/native/dominos-mcp auth login
-packages/dominos-mcp/release/native/dominos-mcp auth status
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/dominos-mcp@0.1.0/packages/dominos-mcp/install.sh | sh
+dominos-mcp auth login
+dominos-mcp auth status
 ```
+
+The installer verifies the checksum and places the command in `~/.local/bin`.
+Upgrading replaces the command; restart the MCP host, or rerun with `--stop-running`.
 
 Enter a seven-digit Icelandic phone number (or `+354` prefix), then the six-digit
 SMS code in the terminal. Both inputs are hidden. Expected success starts with
@@ -35,7 +37,7 @@ MCP host, for example:
 {
   "mcpServers": {
     "dominos": {
-      "command": "/absolute/path/family-mcp/packages/dominos-mcp/release/native/dominos-mcp",
+      "command": "/absolute/path/to/.local/bin/dominos-mcp",
       "args": ["serve"]
     }
   }
@@ -46,7 +48,7 @@ For Codex:
 
 ```toml
 [mcp_servers.dominos]
-command = "/absolute/path/family-mcp/packages/dominos-mcp/release/native/dominos-mcp"
+command = "/absolute/path/to/.local/bin/dominos-mcp"
 args = ["serve"]
 ```
 
@@ -114,11 +116,15 @@ the configured MCP host. Treat merchant-provided text as untrusted data.
 
 ## Development
 
+From the repository root, using Bun 1.4.2:
+
 ```sh
+bun install --frozen-lockfile
 bunx turbo run check test release:check --filter=dominos-mcp
 bunx turbo run test:binary test:installer --filter=dominos-mcp
 ```
 
+The native build is `packages/dominos-mcp/release/native/dominos-mcp`.
 Tests use synthetic responses and never contact Domino’s or Adyen. Live account
 validation is a separate manual step; never make a purchase as an automated test.
 Endpoint evidence and remaining uncertainties are in the
