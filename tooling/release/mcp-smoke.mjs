@@ -10,8 +10,18 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { readPackage } from './package.mjs';
 import { z } from 'zod';
 
-/** @param {string} bin @param {string[]} expectedTools @param {string | undefined} version @param {boolean} standalone */
-export async function smoke(bin, expectedTools, version, standalone = false) {
+/**
+ * @param {string} bin
+ * @param {string[]} expectedTools
+ * @param {string | undefined} version
+ * @param {boolean} standalone
+ * @param {string} packageName Selects the package-specific missing-auth assertions.
+ */
+export async function smoke(bin, expectedTools, version, standalone, packageName) {
+  assert.ok(
+    ['abler-mcp', 'infomentor-mcp', 'kronan-mcp'].includes(packageName),
+    'Unknown package.',
+  );
   const directory = await mkdtemp(join(tmpdir(), 'family-mcp-smoke-'));
   const client = new Client({ name: 'family-mcp-smoke', version: '1.0.0' });
   let stderr = '';
@@ -32,6 +42,7 @@ export async function smoke(bin, expectedTools, version, standalone = false) {
       XDG_CONFIG_HOME: directory,
       ABLER_SESSION_FILE: join(directory, 'missing.json'),
       INFOMENTOR_SESSION_PATH: join(directory, 'missing.json'),
+      KRONAN_TOKEN_FILE: join(directory, 'missing.json'),
     };
 
     const actualVersion = execFileSync(executable, ['--version'], {
@@ -66,8 +77,9 @@ export async function smoke(bin, expectedTools, version, standalone = false) {
     assert.equal(client.getServerVersion()?.version, actualVersion);
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((tool) => tool.name).toSorted(), [...expectedTools].toSorted());
+    assert.ok(tools.every((tool) => tool.outputSchema));
 
-    if (expectedTools.includes('auth_status')) {
+    if (packageName === 'abler-mcp') {
       const status = await client.callTool({ name: 'auth_status', arguments: {} });
       assert.equal(status.isError, true);
       assert.match(JSON.stringify(status), /No saved Abler session/);
@@ -82,7 +94,23 @@ export async function smoke(bin, expectedTools, version, standalone = false) {
       );
     }
 
-    if (expectedTools.includes('infomentor_session_status')) {
+    if (packageName === 'kronan-mcp') {
+      assert.ok(tools.every((tool) => tool.outputSchema));
+      const status = await client.callTool({ name: 'auth_status', arguments: {} });
+      assert.equal(status.isError, true);
+      assert.match(JSON.stringify(status), /No saved Krónan access token/);
+      assert.equal(
+        (
+          await client.callTool({
+            name: 'get_product',
+            arguments: { sku: 'x', barcode: '12345' },
+          })
+        ).isError,
+        true,
+      );
+    }
+
+    if (packageName === 'infomentor-mcp') {
       assert.ok(tools.every((tool) => tool.outputSchema));
       const status = await client.callTool({ name: 'infomentor_session_status', arguments: {} });
       z.object({ authenticated: z.literal(false) }).parse(status.structuredContent);
@@ -119,12 +147,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
 
   assert.ok(values.bin, 'Use --bin <executable>.');
-  const pkg = values.package ? await readPackage(values.package) : undefined;
+  assert.ok(values.package, 'Use --package <directory>.');
+  const pkg = await readPackage(values.package);
 
   const expected = values['expect-tools']
     ? [...values['expect-tools'], ...positionals]
-    : pkg?.familyMcp.release.tools;
+    : pkg.familyMcp.release.tools;
 
-  assert.ok(expected?.length, 'Use --expect-tools <names...> or --package <directory>.');
-  await smoke(resolve(values.bin), expected, pkg?.version, values.standalone);
+  assert.ok(expected.length, 'Use --expect-tools <names...> or the package tool list.');
+  await smoke(resolve(values.bin), expected, pkg.version, values.standalone ?? false, pkg.name);
 }

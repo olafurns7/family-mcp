@@ -1,13 +1,15 @@
 # family-mcp
 
-Two local MCP servers give a parent read-only access to Abler sports schedules
-and an Icelandic InfoMentor school account. Each release is a standalone native
-executable, so the MCP host does not need Node, npm, or Bun at runtime.
+Three local MCP servers give a parent read-only access to Abler sports schedules,
+an Icelandic InfoMentor school account, and a Krónan grocery account. Each release
+is a standalone native executable, so the MCP host does not need Node, npm, or Bun
+at runtime.
 
-| Server | Best for | What you get | Login | Platforms |
-| --- | --- | --- | --- | --- |
-| **Abler** ([abler.io](https://www.abler.io)) | Sports schedules | Linked children, groups, events, and attendance records | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
-| **InfoMentor** | Icelandic school portal | Children, timetables, messages, notifications, and updates | Private credentials, a private file, or an imported session | macOS or glibc Linux, arm64/x64 |
+| Server                                       | Best for                   | What you get                                                                              | Login                                                                           | Platforms                       |
+| -------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------- |
+| **Abler** ([abler.io](https://www.abler.io)) | Sports schedules           | Linked children, groups, events, and attendance records                                   | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
+| **InfoMentor**                               | Icelandic school portal    | Children, timetables, messages, notifications, and updates                                | Private credentials, a private file, or an imported session                     | macOS or glibc Linux, arm64/x64 |
+| **Krónan** ([kronan.is](https://kronan.is))  | Icelandic grocery shopping | Products, recipes, orders, purchase history, shopping notes, delivery slots, and checkout | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
 
 ## Abler
 
@@ -33,9 +35,7 @@ Expected output: `Sign in to Abler in the browser window that opened.`
   "mcpServers": {
     "abler": {
       "command": "/absolute/path/to/.local/bin/abler-mcp",
-      "args": [
-        "serve"
-      ],
+      "args": ["serve"],
       "env": {
         "ABLER_SESSION_FILE": "/absolute/path/abler-session.json"
       }
@@ -89,9 +89,7 @@ Expected output starts with `Signed in. Session saved to`.
   "mcpServers": {
     "infomentor": {
       "command": "/absolute/path/to/.local/bin/infomentor-mcp",
-      "args": [
-        "serve"
-      ],
+      "args": ["serve"],
       "env": {
         "INFOMENTOR_SESSION_PATH": "/absolute/path/infomentor-session.json",
         "INFOMENTOR_CREDENTIALS_FILE": "/absolute/path/credentials.json"
@@ -130,17 +128,74 @@ curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp
 
 Read the [WARP guidance](packages/infomentor-mcp/README.md#remote-machines-and-warp) and [connectivity guide](packages/infomentor-mcp/docs/CONNECTIVITY.md) first.
 
+## Krónan
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.1.0/packages/kronan-mcp/install.sh | sh
+```
+
+Upgrading replaces the command but not a running server; restart the MCP host, or
+rerun with `--stop-running`.
+
+```sh
+kronan-mcp auth set
+```
+
+Expected output: `Krónan access token verified and saved:`
+
+<details>
+<summary>Connect to Claude Desktop, Claude Code, or Codex</summary>
+
+**Claude Desktop**
+
+```json
+{
+  "mcpServers": {
+    "kronan": {
+      "command": "/absolute/path/to/.local/bin/kronan-mcp",
+      "args": ["serve"],
+      "env": {
+        "KRONAN_TOKEN_FILE": "/absolute/path/kronan-token.json"
+      }
+    }
+  }
+}
+```
+
+**Claude Code**
+
+```sh
+claude mcp add kronan -e KRONAN_TOKEN_FILE=/absolute/path/kronan-token.json -- /absolute/path/to/.local/bin/kronan-mcp serve
+```
+
+**Codex**
+
+```toml
+[mcp_servers.kronan]
+command = "/absolute/path/to/.local/bin/kronan-mcp"
+args = ["serve"]
+env = { KRONAN_TOKEN_FILE = "/absolute/path/kronan-token.json" }
+```
+
+</details>
+
+Tools: [products, recipes, orders, purchase history, shopping notes, delivery and pickup slots, and checkout](packages/kronan-mcp/README.md#tools).
+
+Token setup, file locations, and troubleshooting: see [packages/kronan-mcp/README.md](packages/kronan-mcp/README.md).
+
 ## Security
 
 Credentials and authentication secrets—including passwords, cookies, refresh
 tokens, and private credential-file contents—are never returned as MCP tool
 output. Keep session and credential files private to the host user.
 
-Family data **is returned to the configured MCP host**. That can include child
-identities, schedules, messages, and notifications, so only connect hosts and
-data-processing providers that you trust with that data. Both servers expose
+Family and shopping data **is returned to the configured MCP host**. That can
+include child identities, schedules, messages, notifications, purchase history,
+orders, delivery addresses, and shopping notes, so only connect hosts and
+data-processing providers that you trust with that data. All three servers expose
 read paths; InfoMentor's opt-in setup tools only manage the local session and do
-not edit school records.
+not edit school records. The Krónan token is a personal API credential and must
+remain private to the host user.
 
 ## For agents and contributors
 
@@ -160,6 +215,6 @@ See [CLAUDE.md](CLAUDE.md) for the full gate.
 
 ## Releases
 
-Read the [Abler publishing guide](packages/abler-mcp/docs/PUBLISHING.md) or [InfoMentor releasing guide](packages/infomentor-mcp/docs/RELEASING.md).
+Read the [Abler publishing guide](packages/abler-mcp/docs/PUBLISHING.md), [InfoMentor releasing guide](packages/infomentor-mcp/docs/RELEASING.md), or [Krónan releasing guide](packages/kronan-mcp/docs/RELEASING.md).
 
-Read the [Abler changelog](packages/abler-mcp/CHANGELOG.md) or [InfoMentor changelog](packages/infomentor-mcp/CHANGELOG.md).
+Read the [Abler changelog](packages/abler-mcp/CHANGELOG.md), [InfoMentor changelog](packages/infomentor-mcp/CHANGELOG.md), or [Krónan changelog](packages/kronan-mcp/CHANGELOG.md).

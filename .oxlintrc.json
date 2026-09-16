@@ -17,7 +17,9 @@
     "packages/*/release/**",
     "**/node_modules/**",
     "**/.test-build/**",
-    "tooling/oxlint-anti-slop/**"
+    "tooling/oxlint-anti-slop/**",
+    "packages/kronan-mcp/api/openapi.json",
+    "packages/kronan-mcp/api/kronan-api.d.ts"
   ],
   "rules": {
     "eqeqeq": ["error", "always"],
@@ -103,13 +105,13 @@
       }
     },
     {
-      "files": ["packages/abler-mcp/src/cli.ts"],
+      "files": ["packages/abler-mcp/src/cli.ts", "packages/kronan-mcp/src/cli.ts"],
       "rules": {
         "no-console": "off"
       }
     },
     {
-      "files": ["packages/abler-mcp/test/**/*.ts"],
+      "files": ["packages/abler-mcp/test/**/*.ts", "packages/kronan-mcp/test/**/*.ts"],
       "env": {
         "bun": true
       },

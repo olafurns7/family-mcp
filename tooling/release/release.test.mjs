@@ -7,11 +7,22 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { readPackage } from './package.mjs';
+import { DOCUMENTATION_FILES, PACKAGE_NAMES, readPackage } from './package.mjs';
 import { renderInstall } from './render-install.mjs';
 
 const turboDryRun = z.object({
   tasks: z.array(z.object({ taskId: z.string(), hash: z.string() })),
+});
+
+const packageNames = PACKAGE_NAMES;
+
+await test('release package constants stay pinned', () => {
+  assert.deepEqual([...PACKAGE_NAMES], ['abler-mcp', 'infomentor-mcp', 'kronan-mcp']);
+  assert.deepEqual(DOCUMENTATION_FILES, {
+    'abler-mcp': ['docs/AGENTS.md', 'docs/PUBLISHING.md'],
+    'infomentor-mcp': ['docs/RELEASING.md'],
+    'kronan-mcp': ['docs/RELEASING.md'],
+  });
 });
 
 /** @param {string} repository @param {string} workspace */
@@ -36,10 +47,12 @@ await test('release generation, version tags, and package-specific assets stay c
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh -s -- --with-warp',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh -s -- --without-warp',
+    'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.0.1/packages/kronan-mcp/install.sh | sh',
+    'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.0.1/packages/kronan-mcp/install.sh | sh',
   ].join('\n');
 
   try {
-    for (const name of ['abler-mcp', 'infomentor-mcp']) {
+    for (const name of packageNames) {
       const root = join(directory, 'packages', name);
       await mkdir(join(root, 'docs'), { recursive: true });
 
@@ -53,12 +66,7 @@ await test('release generation, version tags, and package-specific assets stay c
       await writeFile(join(root, 'package.json'), JSON.stringify(manifest));
       const stale = `https://raw.githubusercontent.com/olafurns7/family-mcp/${name}@0.0.1/packages/${name}/install.sh\nhttps://github.com/olafurns7/family-mcp/releases/download/${name}@0.0.1/${name}-0.0.1-darwin-arm64.tar.gz\nCurrent ${name}@0.0.1 archive ${name}-0.0.1-darwin-arm64.tar.gz\n`;
 
-      const docs = [
-        'README.md',
-        ...(name === 'abler-mcp'
-          ? ['docs/AGENTS.md', 'docs/PUBLISHING.md']
-          : ['docs/RELEASING.md']),
-      ];
+      const docs = ['README.md', ...DOCUMENTATION_FILES[name]];
 
       for (const file of docs) await writeFile(join(root, file), stale);
 
@@ -148,7 +156,7 @@ await test('release generation, version tags, and package-specific assets stay c
       const artifacts = join(runner, 'release-artifacts');
       await mkdir(artifacts, { recursive: true });
 
-      for (const packageName of ['abler-mcp', 'infomentor-mcp']) {
+      for (const packageName of packageNames) {
         const assets = [
           '-darwin-arm64.tar.gz',
           '-darwin-x64.tar.gz',
@@ -202,7 +210,8 @@ await test('release generation, version tags, and package-specific assets stay c
       await readFile(join(directory, 'README.md'), 'utf8'),
       rootReadme
         .replaceAll('abler-mcp@0.0.1', 'abler-mcp@9.8.7')
-        .replaceAll('infomentor-mcp@0.0.1', 'infomentor-mcp@9.8.7'),
+        .replaceAll('infomentor-mcp@0.0.1', 'infomentor-mcp@9.8.7')
+        .replaceAll('kronan-mcp@0.0.1', 'kronan-mcp@9.8.7'),
     );
     assert.equal(spawnSync(process.execPath, [rootSync, '--check'], { cwd: directory }).status, 0);
   } finally {
@@ -220,11 +229,11 @@ await test('shared source changes invalidate server quality task hashes', async 
 
     const turbo = join(repository, 'node_modules', '.bin', 'turbo');
 
-    const qualityTaskIds = ['abler-mcp', 'infomentor-mcp'].flatMap((name) =>
+    const qualityTaskIds = packageNames.flatMap((name) =>
       ['test', 'typecheck', 'lint'].map((task) => `${name}#${task}`),
     );
 
-    const releaseTaskIds = ['abler-mcp', 'infomentor-mcp'].map((name) => `${name}#release:check`);
+    const releaseTaskIds = packageNames.map((name) => `${name}#release:check`);
     const taskIds = [...qualityTaskIds, ...releaseTaskIds];
 
     const hashes = () => {
@@ -293,7 +302,14 @@ await test('Turbo release synchronization preserves root README pins', async () 
     const synchronize = () => {
       const result = spawnSync(
         turbo,
-        ['run', 'release:sync', '--filter=abler-mcp', '--filter=infomentor-mcp', '--force'],
+        [
+          'run',
+          'release:sync',
+          '--filter=abler-mcp',
+          '--filter=infomentor-mcp',
+          '--filter=kronan-mcp',
+          '--force',
+        ],
         { cwd: workspace, encoding: 'utf8' },
       );
 
@@ -313,17 +329,27 @@ await test('Turbo release synchronization preserves root README pins', async () 
 
     await setVersion('abler-mcp', '1.2.3');
     await setVersion('infomentor-mcp', '4.5.6');
+    await setVersion('kronan-mcp', '7.8.9');
     await setVersion('abler-mcp', '1.2.4');
     synchronize();
     let output = await readFile(rootReadme, 'utf8');
     assert.match(output, /abler-mcp@1\.2\.4\/packages\/abler-mcp\/install\.sh/);
     assert.match(output, /infomentor-mcp@4\.5\.6\/packages\/infomentor-mcp\/install\.sh/);
+    assert.match(output, /kronan-mcp@7\.8\.9\/packages\/kronan-mcp\/install\.sh/);
 
     await setVersion('infomentor-mcp', '4.5.7');
     synchronize();
     output = await readFile(rootReadme, 'utf8');
     assert.match(output, /abler-mcp@1\.2\.4\/packages\/abler-mcp\/install\.sh/);
     assert.match(output, /infomentor-mcp@4\.5\.7\/packages\/infomentor-mcp\/install\.sh/);
+    assert.match(output, /kronan-mcp@7\.8\.9\/packages\/kronan-mcp\/install\.sh/);
+
+    await setVersion('kronan-mcp', '7.8.10');
+    synchronize();
+    output = await readFile(rootReadme, 'utf8');
+    assert.match(output, /abler-mcp@1\.2\.4\/packages\/abler-mcp\/install\.sh/);
+    assert.match(output, /infomentor-mcp@4\.5\.7\/packages\/infomentor-mcp\/install\.sh/);
+    assert.match(output, /kronan-mcp@7\.8\.10\/packages\/kronan-mcp\/install\.sh/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -13,11 +13,13 @@
     "**/*.tgz.sha256",
     "tooling/oxlint-anti-slop/*",
     "!tooling/oxlint-anti-slop/package.json",
-    "docs/analysis/**"
+    "docs/analysis/**",
+    "packages/kronan-mcp/api/openapi.json",
+    "packages/kronan-mcp/api/kronan-api.d.ts"
   ],
   "overrides": [
     {
-      "files": ["packages/abler-mcp/**"],
+      "files": ["packages/abler-mcp/**", "packages/kronan-mcp/**"],
       "options": {
         "sortImports": {}
       }

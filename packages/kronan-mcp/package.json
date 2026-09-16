@@ -1,0 +1,91 @@
+{
+  "name": "kronan-mcp",
+  "version": "0.1.0",
+  "description": "Unofficial, read-only Krónan grocery MCP server using a personal Krónan API access token",
+  "keywords": [
+    "family",
+    "grocery",
+    "iceland",
+    "kronan",
+    "mcp",
+    "model-context-protocol"
+  ],
+  "homepage": "https://github.com/olafurns7/family-mcp/tree/main/packages/kronan-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/olafurns7/family-mcp/issues"
+  },
+  "license": "MIT",
+  "author": "Ólafur Nils Sigurðsson",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/olafurns7/family-mcp.git",
+    "directory": "packages/kronan-mcp"
+  },
+  "type": "module",
+  "scripts": {
+    "check": "sh -n install.sh && bun run api:check && bun run lint && bun run format:check && bun run typecheck",
+    "api:generate": "bunx --bun openapi-typescript api/openapi.json -o api/kronan-api.d.ts",
+    "api:check": "bunx --bun openapi-typescript api/openapi.json -o api/kronan-api.d.ts --check",
+    "test": "bun test --timeout 30000",
+    "start": "bun src/cli.ts",
+    "typecheck": "../../node_modules/.bin/tsc --noEmit",
+    "lint": "oxlint -c ../../.oxlintrc.json --deny-warnings --report-unused-disable-directives-severity error .",
+    "lint:fix": "bun run lint --fix",
+    "format": "oxfmt -c ../../.oxfmtrc.json --write .",
+    "format:check": "oxfmt -c ../../.oxfmtrc.json --check .",
+    "build:binary": "node ../../tooling/release/build-binary.mjs --package .",
+    "test:binary": "node ../../tooling/release/mcp-smoke.mjs --package . --bin release/native/kronan-mcp --standalone",
+    "test:installer": "node ../../tooling/release/installer-test.mjs --package .",
+    "release:sync": "node ../../tooling/release/sync-version.mjs --package .",
+    "release:check": "node ../../tooling/release/render-install.mjs --package . --check && node ../../tooling/release/sync-version.mjs --package . --check"
+  },
+  "dependencies": {
+    "@family-mcp/mcp-runtime": "workspace:^",
+    "@family-mcp/session-store": "workspace:*",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@family-mcp/oxlint-anti-slop": "workspace:*",
+    "@family-mcp/release-tooling": "workspace:*",
+    "@family-mcp/tsconfig": "workspace:*",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/bun": "^1.2.19",
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  },
+  "packageManager": "bun@1.4.2",
+  "familyMcp": {
+    "release": {
+      "tools": [
+        "auth_status",
+        "search_products",
+        "get_product",
+        "lookup_products",
+        "list_categories",
+        "list_category_products",
+        "list_product_tags",
+        "list_products_by_tag",
+        "list_products_on_sale",
+        "list_favorite_products",
+        "list_orders",
+        "get_order",
+        "get_active_order",
+        "summarize_order_lines",
+        "list_purchase_stats",
+        "get_shopping_note",
+        "list_archived_shopping_note_lines",
+        "list_product_lists",
+        "get_product_list",
+        "list_recipes",
+        "search_recipes",
+        "get_recipe",
+        "list_favorite_recipes",
+        "list_addresses",
+        "get_delivery_slots",
+        "get_pickup_slots",
+        "get_checkout"
+      ]
+    }
+  }
+}
