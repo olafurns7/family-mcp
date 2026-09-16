@@ -1,15 +1,16 @@
 # family-mcp
 
-Three local MCP servers give a parent read-only access to Abler sports schedules,
-an Icelandic InfoMentor school account, and a Krónan grocery account. Each release
+Local MCP servers provide Abler sports schedules, an Icelandic InfoMentor school
+account, a Krónan grocery account, and Domino’s Iceland ordering. Each release
 is a standalone native executable, so the MCP host does not need Node, npm, or Bun
 at runtime.
 
-| Server                                       | Best for                   | What you get                                                                              | Login                                                                           | Platforms                       |
-| -------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------- |
-| **Abler** ([abler.io](https://www.abler.io)) | Sports schedules           | Linked children, groups, events, and attendance records                                   | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
-| **InfoMentor**                               | Icelandic school portal    | Children, timetables, messages, notifications, and updates                                | Private credentials, a private file, or an imported session                     | macOS or glibc Linux, arm64/x64 |
-| **Krónan** ([kronan.is](https://kronan.is))  | Icelandic grocery shopping | Products, recipes, orders, purchase history, shopping notes, delivery slots, and checkout | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
+| Server                                              | Best for                            | What you get                                                                              | Login                                                                           | Platforms                       |
+| --------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------- |
+| **Abler** ([abler.io](https://www.abler.io))        | Sports schedules                    | Linked children, groups, events, and attendance records                                   | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
+| **InfoMentor**                                      | Icelandic school portal             | Children, timetables, messages, notifications, and updates                                | Private credentials, a private file, or an imported session                     | macOS or glibc Linux, arm64/x64 |
+| **Krónan** ([kronan.is](https://kronan.is))         | Icelandic grocery shopping          | Products, recipes, orders, purchase history, shopping notes, delivery slots, and checkout | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
+| **Domino’s** ([dominos.is](https://www.dominos.is)) | Pizza ordering (unreleased preview) | Menu, quotes, receipts, tracking, and confirmed saved-card checkout                       | SMS code entered locally with `dominos-mcp auth login`                          | macOS or glibc Linux, arm64/x64 |
 
 ## Abler
 
@@ -183,6 +184,21 @@ Tools: [products, recipes, orders, purchase history, shopping notes, delivery an
 
 Token setup, file locations, and troubleshooting: see [packages/kronan-mcp/README.md](packages/kronan-mcp/README.md).
 
+## Dominos
+
+The new package is an unreleased preview. Build locally with Bun 1.4.2:
+
+```sh
+bunx turbo run build:binary --filter=dominos-mcp
+packages/dominos-mcp/release/native/dominos-mcp auth login
+```
+
+Configure the MCP host to run the absolute path to that executable with `serve`.
+See [setup, tools, and payment behavior](packages/dominos-mcp/README.md).
+Live login, refresh, account reads, quotes, and unpaid saved-card retrieval have
+been verified. Charging remains untested; bank-verification continuation is not
+implemented. Payment requires explicit approval of the exact order, total, and card.
+
 ## Security
 
 Credentials and authentication secrets—including passwords, cookies, refresh
@@ -192,10 +208,11 @@ output. Keep session and credential files private to the host user.
 Family and shopping data **is returned to the configured MCP host**. That can
 include child identities, schedules, messages, notifications, purchase history,
 orders, delivery addresses, and shopping notes, so only connect hosts and
-data-processing providers that you trust with that data. All three servers expose
-read paths; InfoMentor's opt-in setup tools only manage the local session and do
+data-processing providers that you trust with that data. Abler, InfoMentor, and
+Krónan expose read paths; InfoMentor's opt-in setup tools only manage the local session and do
 not edit school records. The Krónan token is a personal API credential and must
-remain private to the host user.
+remain private to the host user. Domino’s also creates unpaid orders and can charge
+a saved card after explicit confirmation. Its outputs include masked card metadata.
 
 ## For agents and contributors
 
@@ -215,6 +232,6 @@ See [CLAUDE.md](CLAUDE.md) for the full gate.
 
 ## Releases
 
-Read the [Abler publishing guide](packages/abler-mcp/docs/PUBLISHING.md), [InfoMentor releasing guide](packages/infomentor-mcp/docs/RELEASING.md), or [Krónan releasing guide](packages/kronan-mcp/docs/RELEASING.md).
+Read the [Abler publishing guide](packages/abler-mcp/docs/PUBLISHING.md), [InfoMentor releasing guide](packages/infomentor-mcp/docs/RELEASING.md), [Krónan releasing guide](packages/kronan-mcp/docs/RELEASING.md), or [Domino’s releasing guide](packages/dominos-mcp/docs/RELEASING.md).
 
 Read the [Abler changelog](packages/abler-mcp/CHANGELOG.md), [InfoMentor changelog](packages/infomentor-mcp/CHANGELOG.md), or [Krónan changelog](packages/kronan-mcp/CHANGELOG.md).

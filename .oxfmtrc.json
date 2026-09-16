@@ -19,7 +19,7 @@
   ],
   "overrides": [
     {
-      "files": ["packages/abler-mcp/**", "packages/kronan-mcp/**"],
+      "files": ["packages/abler-mcp/**", "packages/kronan-mcp/**", "packages/dominos-mcp/**"],
       "options": {
         "sortImports": {}
       }

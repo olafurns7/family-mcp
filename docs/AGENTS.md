@@ -1,7 +1,7 @@
 # Agent guide
 
 Start with the self-contained [Abler](../README.md#abler),
-[InfoMentor](../README.md#infomentor), or [Krónan](../README.md#krónan) setup in
+[InfoMentor](../README.md#infomentor), [Krónan](../README.md#krónan), or [Domino’s](../README.md#dominos) setup in
 the root README. Package READMEs hold the full tool, file-location, and
 troubleshooting reference. Keep
 credentials, cookies, refresh tokens, raw upstream errors, and family data out
@@ -59,6 +59,22 @@ attendance state from a failed request or undocumented value.
 - Slot tools report availability only; nothing reserves a slot or places an order.
 - Offset-paged tools return `nextOffset`; continue with it, not with `offset + limit`.
 - Krónan limits access to 200 requests per 200 seconds; avoid fan-out.
+
+### Domino’s
+
+- Sign in using `dominos-mcp auth login` locally. Phone and SMS code inputs are hidden;
+  never request codes, access tokens, payment-session data, or card tokens in chat.
+- Discover current item, size, crust, topping, store, and offer-slot IDs before quoting.
+  Prices from `quote_order` are whole ISK; never derive the final total from menu prices.
+- `create_checkout` creates an unpaid order and retrieves masked saved cards. It is a
+  write. Repeating the same quote reuses the checkout.
+- Before `pay_saved_card`, obtain explicit approval of the exact cart, fulfillment,
+  total, and selected card. `confirm: true` represents that approval.
+- A pending, unknown, submitting, or verification-required payment is not a failure.
+  Reconcile using `get_checkout` and the user's order history; never make another
+  checkout or retry payment to work around uncertainty. Do not delete local checkout
+  files to enable another attempt. Bank verification support is not complete.
+- Payment authorization does not establish pizza preparation; use `get_tracker`.
 
 ## Working on this repository
 

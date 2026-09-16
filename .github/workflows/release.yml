@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ['abler-mcp@*', 'infomentor-mcp@*', 'kronan-mcp@*']
+    tags: ['abler-mcp@*', 'infomentor-mcp@*', 'kronan-mcp@*', 'dominos-mcp@*']
   workflow_dispatch:
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
           import assert from 'node:assert/strict';
           import { appendFileSync, readFileSync } from 'node:fs';
           assert.equal(process.env.REF_TYPE, 'tag', 'Select an existing package release tag.');
-          const match = /^(abler-mcp|infomentor-mcp|kronan-mcp)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(process.env.RELEASE_TAG);
+          const match = /^(abler-mcp|infomentor-mcp|kronan-mcp|dominos-mcp)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(process.env.RELEASE_TAG);
           assert.ok(match, 'Use <package>@<version>.');
           const [, name, version] = match;
           const root = `packages/${name}`;

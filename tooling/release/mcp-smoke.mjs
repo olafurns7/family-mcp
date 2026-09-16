@@ -19,7 +19,7 @@ import { z } from 'zod';
  */
 export async function smoke(bin, expectedTools, version, standalone, packageName) {
   assert.ok(
-    ['abler-mcp', 'infomentor-mcp', 'kronan-mcp'].includes(packageName),
+    ['abler-mcp', 'infomentor-mcp', 'kronan-mcp', 'dominos-mcp'].includes(packageName),
     'Unknown package.',
   );
   const directory = await mkdtemp(join(tmpdir(), 'family-mcp-smoke-'));
@@ -43,6 +43,7 @@ export async function smoke(bin, expectedTools, version, standalone, packageName
       ABLER_SESSION_FILE: join(directory, 'missing.json'),
       INFOMENTOR_SESSION_PATH: join(directory, 'missing.json'),
       KRONAN_TOKEN_FILE: join(directory, 'missing.json'),
+      DOMINOS_SESSION_FILE: join(directory, 'missing.json'),
     };
 
     const actualVersion = execFileSync(executable, ['--version'], {
@@ -106,6 +107,16 @@ export async function smoke(bin, expectedTools, version, standalone, packageName
             arguments: { sku: 'x', barcode: '12345' },
           })
         ).isError,
+        true,
+      );
+    }
+
+    if (packageName === 'dominos-mcp') {
+      const status = await client.callTool({ name: 'auth_status', arguments: {} });
+      assert.equal(status.isError, true);
+      assert.match(JSON.stringify(status), /No saved Domino’s session/);
+      assert.equal(
+        (await client.callTool({ name: 'pay_saved_card', arguments: { confirm: false } })).isError,
         true,
       );
     }

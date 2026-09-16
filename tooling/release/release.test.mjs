@@ -17,17 +17,26 @@ const turboDryRun = z.object({
 const packageNames = PACKAGE_NAMES;
 
 await test('release package constants stay pinned', () => {
-  assert.deepEqual([...PACKAGE_NAMES], ['abler-mcp', 'infomentor-mcp', 'kronan-mcp']);
+  assert.deepEqual(
+    [...PACKAGE_NAMES],
+    ['abler-mcp', 'infomentor-mcp', 'kronan-mcp', 'dominos-mcp'],
+  );
   assert.deepEqual(DOCUMENTATION_FILES, {
     'abler-mcp': ['docs/AGENTS.md', 'docs/PUBLISHING.md'],
     'infomentor-mcp': ['docs/RELEASING.md'],
     'kronan-mcp': ['docs/RELEASING.md'],
+    'dominos-mcp': ['docs/RELEASING.md'],
   });
 });
 
 /** @param {string} repository @param {string} workspace */
-async function copyTrackedFiles(repository, workspace) {
-  const result = spawnSync('git', ['ls-files', '-z'], { cwd: repository, encoding: 'buffer' });
+async function copySourceFiles(repository, workspace) {
+  const result = spawnSync(
+    'git',
+    ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+    { cwd: repository, encoding: 'buffer' },
+  );
+
   assert.equal(result.status, 0, result.stderr.toString());
 
   for (const file of result.stdout.toString('utf8').split('\0')) {
@@ -48,6 +57,7 @@ await test('release generation, version tags, and package-specific assets stay c
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh -s -- --with-warp',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh -s -- --without-warp',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.0.1/packages/kronan-mcp/install.sh | sh',
+    'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/dominos-mcp@0.0.1/packages/dominos-mcp/install.sh | sh',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.0.1/packages/kronan-mcp/install.sh | sh',
   ].join('\n');
 
@@ -211,7 +221,8 @@ await test('release generation, version tags, and package-specific assets stay c
       rootReadme
         .replaceAll('abler-mcp@0.0.1', 'abler-mcp@9.8.7')
         .replaceAll('infomentor-mcp@0.0.1', 'infomentor-mcp@9.8.7')
-        .replaceAll('kronan-mcp@0.0.1', 'kronan-mcp@9.8.7'),
+        .replaceAll('kronan-mcp@0.0.1', 'kronan-mcp@9.8.7')
+        .replaceAll('dominos-mcp@0.0.1', 'dominos-mcp@9.8.7'),
     );
     assert.equal(spawnSync(process.execPath, [rootSync, '--check'], { cwd: directory }).status, 0);
   } finally {
@@ -225,7 +236,7 @@ await test('shared source changes invalidate server quality task hashes', async 
   const workspace = join(directory, 'workspace');
 
   try {
-    await copyTrackedFiles(repository, workspace);
+    await copySourceFiles(repository, workspace);
 
     const turbo = join(repository, 'node_modules', '.bin', 'turbo');
 
@@ -294,7 +305,7 @@ await test('Turbo release synchronization preserves root README pins', async () 
   const workspace = join(directory, 'workspace');
 
   try {
-    await copyTrackedFiles(repository, workspace);
+    await copySourceFiles(repository, workspace);
     await symlink(join(repository, 'node_modules'), join(workspace, 'node_modules'), 'dir');
 
     const turbo = join(repository, 'node_modules', '.bin', 'turbo');
@@ -308,6 +319,7 @@ await test('Turbo release synchronization preserves root README pins', async () 
           '--filter=abler-mcp',
           '--filter=infomentor-mcp',
           '--filter=kronan-mcp',
+          '--filter=dominos-mcp',
           '--force',
         ],
         { cwd: workspace, encoding: 'utf8' },

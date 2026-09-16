@@ -9,13 +9,19 @@ const relativeFile = z
   .refine((path) => !path.split('/').includes('..'));
 
 /** Every native server package, in the order the root README lists them. */
-export const PACKAGE_NAMES = /** @type {const} */ (['abler-mcp', 'infomentor-mcp', 'kronan-mcp']);
+export const PACKAGE_NAMES = /** @type {const} */ ([
+  'abler-mcp',
+  'infomentor-mcp',
+  'kronan-mcp',
+  'dominos-mcp',
+]);
 
 /** Package documentation files that pin the release version alongside README.md. */
 export const DOCUMENTATION_FILES = /** @type {const} */ ({
   'abler-mcp': ['docs/AGENTS.md', 'docs/PUBLISHING.md'],
   'infomentor-mcp': ['docs/RELEASING.md'],
   'kronan-mcp': ['docs/RELEASING.md'],
+  'dominos-mcp': ['docs/RELEASING.md'],
 });
 
 const manifestSchema = z.object({
