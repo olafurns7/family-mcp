@@ -105,6 +105,9 @@ KRONAN_TOKEN_FILE = "/absolute/path/kronan-token.json"
 | `search_recipes`                    | Searches recipes and returns available tag filters.                  |
 | `get_recipe`                        | Returns a recipe with ingredients, directions, and related products. |
 | `list_favorite_recipes`             | Returns one page of the account's favorited recipes.                 |
+| `list_addresses`                    | Lists saved shipping addresses, default first.                       |
+| `get_delivery_slots`                | Lists home-delivery time slots and capacity for one saved address.   |
+| `get_pickup_slots`                  | Lists in-store pickup slots per store for Krónan or Pikkoló.         |
 | `get_checkout`                      | Reads the current checkout and its totals.                           |
 
 ## Pagination and data
@@ -127,7 +130,8 @@ Krónan documents a rate limit of 200 requests per 200 seconds per account.
 Back off after HTTP 429 responses.
 
 No tool adds, edits, or removes checkout lines, orders, shopping-note lines,
-product lists, favorites, or slot reservations. Two reads have a documented side
+product lists, favorites, or slot reservations. The slot tools only read
+availability; reserving a slot is not implemented. Two reads have a documented side
 effect: Krónan creates an empty checkout on the first `get_checkout` and an
 empty shopping note on the first `get_shopping_note` for an account that has
 none, so those two tools are annotated `readOnlyHint: false` (non-destructive,
@@ -137,11 +141,12 @@ a future version, will require explicit opt-in.
 ## What was verified
 
 On **2026-09-15**, against an authorized personal account, every read endpoint
-behind the 24 tools was called once and validated against this package's
+behind the first 24 tools was called once and validated against this package's
 schemas: all responses parsed, no undocumented keys were returned, and all
 response and body fields were camelCase while query parameters were
 snake_case (the OpenAPI overview's "snake_case" sentence does not match its
-own component schemas). `GET /categories/{slug}/products/` returned 404 for
+own component schemas). The address list and the delivery and pickup slot
+lookups were verified the same way on 2026-09-16. `GET /categories/{slug}/products/` returned 404 for
 first- and second-level category slugs and 200 only for leaf slugs, so
 `list_category_products` documents leaf slugs. `GET /orders/currently-active/`
 returned the documented 404 for an account without an active order. The barcode

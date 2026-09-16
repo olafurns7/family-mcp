@@ -5,11 +5,11 @@ an Icelandic InfoMentor school account, and a Krónan grocery account. Each rele
 is a standalone native executable, so the MCP host does not need Node, npm, or Bun
 at runtime.
 
-| Server                                       | Best for                   | What you get                                                              | Login                                                                           | Platforms                       |
-| -------------------------------------------- | -------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------- |
-| **Abler** ([abler.io](https://www.abler.io)) | Sports schedules           | Linked children, groups, events, and attendance records                   | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
-| **InfoMentor**                               | Icelandic school portal    | Children, timetables, messages, notifications, and updates                | Private credentials, a private file, or an imported session                     | macOS or glibc Linux, arm64/x64 |
-| **Krónan** ([kronan.is](https://kronan.is))  | Icelandic grocery shopping | Products, recipes, orders, purchase history, shopping notes, and checkout | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
+| Server                                       | Best for                   | What you get                                                                              | Login                                                                           | Platforms                       |
+| -------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------- |
+| **Abler** ([abler.io](https://www.abler.io)) | Sports schedules           | Linked children, groups, events, and attendance records                                   | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
+| **InfoMentor**                               | Icelandic school portal    | Children, timetables, messages, notifications, and updates                                | Private credentials, a private file, or an imported session                     | macOS or glibc Linux, arm64/x64 |
+| **Krónan** ([kronan.is](https://kronan.is))  | Icelandic grocery shopping | Products, recipes, orders, purchase history, shopping notes, delivery slots, and checkout | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
 
 ## Abler
 
@@ -179,7 +179,7 @@ env = { KRONAN_TOKEN_FILE = "/absolute/path/kronan-token.json" }
 
 </details>
 
-Tools: [products, recipes, orders, purchase history, shopping notes, and checkout](packages/kronan-mcp/README.md#tools).
+Tools: [products, recipes, orders, purchase history, shopping notes, delivery and pickup slots, and checkout](packages/kronan-mcp/README.md#tools).
 
 Token setup, file locations, and troubleshooting: see [packages/kronan-mcp/README.md](packages/kronan-mcp/README.md).
 

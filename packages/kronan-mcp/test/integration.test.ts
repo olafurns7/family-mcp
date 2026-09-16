@@ -389,6 +389,53 @@ function fixtureResponse(pathname: string): Response {
         results: [recipe],
         upstreamOnly: UPSTREAM_EXTRA,
       });
+    case '/api/v1/addresses/':
+      return Response.json([
+        {
+          id: 11,
+          streetAddress1: 'Testgata 1',
+          city: 'Reykjavík',
+          postalCode: '101',
+          comment: '',
+          lat: 64.1,
+          lng: -21.9,
+          dropoffOutside: false,
+          isDefaultShipping: true,
+          upstreamOnly: UPSTREAM_EXTRA,
+        },
+      ]);
+    case '/api/v1/slots/delivery/':
+      return Response.json([
+        {
+          day: '2026-09-17',
+          slots: [
+            {
+              slotId: 501,
+              timeStart: '10:00',
+              timeStop: '12:00',
+              availabilityStatus: 3,
+              upstreamOnly: UPSTREAM_EXTRA,
+            },
+          ],
+          upstreamOnly: UPSTREAM_EXTRA,
+        },
+      ]);
+    case '/api/v1/slots/pickup/':
+      return Response.json([
+        {
+          storeName: 'Krónan Test',
+          storeChain: 'kronan',
+          days: [
+            {
+              day: '2026-09-17',
+              slots: [
+                { slotId: 601, timeStart: '14:00', timeStop: '15:00', availabilityStatus: -1 },
+              ],
+            },
+          ],
+          upstreamOnly: UPSTREAM_EXTRA,
+        },
+      ]);
     case '/api/v1/checkout/':
       return Response.json({
         token: '123e4567-e89b-12d3-a456-426614174006',
@@ -755,6 +802,26 @@ test('all public client methods use the exact published paths, parameters, bodie
       call: () => client.favoriteRecipes(),
     },
     {
+      name: 'addresses',
+      method: 'GET',
+      path: '/addresses/',
+      call: () => client.addresses(),
+    },
+    {
+      name: 'deliverySlots',
+      method: 'POST',
+      path: '/slots/delivery/',
+      body: JSON.stringify({ addressId: 11 }),
+      call: () => client.deliverySlots({ addressId: 11 }),
+    },
+    {
+      name: 'pickupSlots',
+      method: 'POST',
+      path: '/slots/pickup/',
+      body: JSON.stringify({ chain: 'pikkolo' }),
+      call: () => client.pickupSlots({ chain: 'pikkolo' }),
+    },
+    {
       name: 'checkout',
       method: 'GET',
       path: '/checkout/',
@@ -931,10 +998,13 @@ const toolArguments = {
   search_recipes: {},
   get_recipe: { slug: 'oat-cakes' },
   list_favorite_recipes: {},
+  list_addresses: {},
+  get_delivery_slots: { addressId: 11 },
+  get_pickup_slots: {},
   get_checkout: {},
-} satisfies Record<string, Record<string, string | string[]>>;
+} satisfies Record<string, Record<string, string | number | string[]>>;
 
-test('all 24 MCP tools declare honest annotations and round-trip strict validated results', async () => {
+test('all 27 MCP tools declare honest annotations and round-trip strict validated results', async () => {
   const api = new KronanClient(
     async () => TOKEN,
     async (url) => fixtureResponse(new URL(url).pathname),

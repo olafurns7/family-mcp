@@ -4,6 +4,11 @@ import * as z from 'zod/v4';
 import { ORIGIN, loadToken, tokenPath } from './auth.js';
 import {
   activeOrderSchema,
+  addressesUpstream,
+  deliverySlotsInput,
+  deliverySlotsUpstream,
+  pickupSlotsInput,
+  pickupSlotsUpstream,
   archivedLinesUpstream,
   categoriesUpstream,
   categoryProductsInput,
@@ -461,6 +466,29 @@ export class KronanClient {
     const window = offsetInput.parse(input);
 
     return this.run(() => this.offsetPaged('/recipes/favorites/', window, {}, recipesUpstream));
+  }
+
+  addresses() {
+    return this.run(async () => ({
+      addresses: await this.get('/addresses/', {}, addressesUpstream),
+    }));
+  }
+
+  deliverySlots(input: z.input<typeof deliverySlotsInput>) {
+    const body = deliverySlotsInput.parse(input);
+
+    // Availability lookups are POSTs upstream but change nothing; reservation is a separate endpoint.
+    return this.run(async () => ({
+      days: await this.post('/slots/delivery/', body, deliverySlotsUpstream),
+    }));
+  }
+
+  pickupSlots(input: z.input<typeof pickupSlotsInput> = {}) {
+    const body = pickupSlotsInput.parse(input);
+
+    return this.run(async () => ({
+      stores: await this.post('/slots/pickup/', body, pickupSlotsUpstream),
+    }));
   }
 
   checkout() {

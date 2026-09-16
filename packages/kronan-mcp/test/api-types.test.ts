@@ -5,6 +5,11 @@ import type * as z from 'zod/v4';
 import type { components } from '../api/kronan-api.js';
 import type {
   activeOrderSchema,
+  addressSchema,
+  deliverySlotsInput,
+  pickupSlotsInput,
+  pickupStoreSchema,
+  slotDaySchema,
   ordersUpstream,
   productListsUpstream,
   purchaseStatsUpstream,
@@ -190,6 +195,31 @@ const favoriteRecipesPageOk: Extends<
   z.input<typeof recipesUpstream>
 > = true;
 
+const addressOk: Extends<
+  components['schemas']['PublicAddress'],
+  z.input<typeof addressSchema>
+> = true;
+
+const slotDayOk: Extends<
+  components['schemas']['PublicSlotDay'],
+  z.input<typeof slotDaySchema>
+> = true;
+
+const pickupStoreOk: Extends<
+  components['schemas']['PublicPickupStore'],
+  z.input<typeof pickupStoreSchema>
+> = true;
+
+const deliverySlotsInputOk: Extends<
+  z.output<typeof deliverySlotsInput>,
+  components['schemas']['PublicDeliverySlotInput']
+> = true;
+
+const pickupSlotsInputOk: Extends<
+  Defined<z.output<typeof pickupSlotsInput>>,
+  Defined<components['schemas']['PublicPickupSlotInput']>
+> = true;
+
 test('spec types stay compatible with the MCP schemas', () => {
   expect([
     meOk,
@@ -223,7 +253,17 @@ test('spec types stay compatible with the MCP schemas', () => {
     productListsPageOk,
     recipesPageOk,
     favoriteRecipesPageOk,
+    addressOk,
+    slotDayOk,
+    pickupStoreOk,
+    deliverySlotsInputOk,
+    pickupSlotsInputOk,
   ]).toEqual([
+    true,
+    true,
+    true,
+    true,
+    true,
     true,
     true,
     true,

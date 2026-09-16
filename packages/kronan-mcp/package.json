@@ -81,6 +81,9 @@
         "search_recipes",
         "get_recipe",
         "list_favorite_recipes",
+        "list_addresses",
+        "get_delivery_slots",
+        "get_pickup_slots",
         "get_checkout"
       ]
     }

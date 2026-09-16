@@ -157,6 +157,21 @@ export const searchRecipesInput = z.strictObject({
   orderBy: z.enum(['default', 'top', 'cooking_time']).default('default'),
 });
 
+export const deliverySlotsInput = z.strictObject({
+  addressId: z
+    .number()
+    .int()
+    .min(0)
+    .describe('Address id from list_addresses; the address must belong to this account.'),
+});
+
+export const pickupSlotsInput = z.strictObject({
+  chain: z
+    .enum(['kronan', 'pikkolo'])
+    .default('kronan')
+    .describe('Store chain to list pickup slots for.'),
+});
+
 export const recipeInput = z.strictObject({
   slug: slug.describe('Recipe slug from list_recipes or search_recipes.'),
 });
@@ -574,3 +589,50 @@ export const checkoutSchema = z.object({
   shippingFee: isk,
   shippingFeeCutoff: isk,
 });
+
+export const addressSchema = z.object({
+  id: z.number().int(),
+  streetAddress1: z.string().optional(),
+  city: z.string().optional(),
+  postalCode: z.string().optional(),
+  comment: z.string().optional(),
+  lat: z.number().nullable(),
+  lng: z.number().nullable(),
+  dropoffOutside: z.boolean().optional(),
+  isDefaultShipping: z.boolean(),
+});
+
+export const addressesUpstream = z.array(addressSchema);
+
+export const addressesResultSchema = z.object({
+  addresses: addressesUpstream.describe('The default shipping address is listed first.'),
+});
+
+export const slotDaySchema = z.object({
+  day: z.string(),
+  slots: z.array(
+    z.object({
+      slotId: z.number().int(),
+      timeStart: z.string(),
+      timeStop: z.string(),
+      availabilityStatus: z
+        .number()
+        .int()
+        .describe('Remaining slot capacity: 0 is fully booked, -1 is unlimited.'),
+    }),
+  ),
+});
+
+export const deliverySlotsUpstream = z.array(slotDaySchema);
+
+export const deliverySlotsResultSchema = z.object({ days: deliverySlotsUpstream });
+
+export const pickupStoreSchema = z.object({
+  storeName: z.string(),
+  storeChain: z.string(),
+  days: z.array(slotDaySchema),
+});
+
+export const pickupSlotsUpstream = z.array(pickupStoreSchema);
+
+export const pickupSlotsResultSchema = z.object({ stores: pickupSlotsUpstream });
