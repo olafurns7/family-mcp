@@ -7,7 +7,7 @@ For agent setup and reporting rules, read **[docs/AGENTS.md](docs/AGENTS.md)**.
 ## Quick start (0.5.0+)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.2/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.3/packages/abler-mcp/install.sh | sh
 ```
 
 ```sh
@@ -146,6 +146,8 @@ abler-mcp auth import /private/path/cookies.json
 
 Accepted formats are a cookie array or an object with a `cookies` array, including Playwright storage state and CDP `Network.getCookies` output. Browser exports with `expirationDate` are also accepted. Only the two Abler auth cookies are retained; cookies for other sites and analytics are ignored.
 
+The export must be a regular, single-link file owned by you with owner-only permissions (`chmod 600` on Unix), in a private directory. Symlinks, hard links, shared permissions, and files larger than 4 MiB are rejected. `abler-mcp auth import -` reads JSON from stdin with the same 4 MiB limit.
+
 With a browser that only provides developer tools, open **Application → Cookies → https://www.abler.io**, copy the `refreshToken` value into a private JSON file, and import it:
 
 ```json
@@ -161,7 +163,7 @@ With a browser that only provides developer tools, open **Application → Cookie
 }
 ```
 
-These cookies are HttpOnly, so `document.cookie` cannot export them. Treat the JSON as a credential; keep it out of source control and chat, and remove the temporary export after importing. A failed verification leaves the previous file intact and retains a private `.pending` candidate, because Abler may already have rotated the imported credential. The earlier credential may no longer work upstream; follow the recovery instructions below. A later successful import removes retained candidates.
+These cookies are HttpOnly, so `document.cookie` cannot export them. Treat the JSON as a credential; keep it out of source control and chat, and remove the temporary export after a successful, verified import. A failed verification leaves the previous file intact and retains a private `.pending` candidate, because Abler may already have rotated the imported credential. The earlier credential may no longer work upstream; follow the recovery instructions below. A later successful import removes retained candidates.
 
 ### Move to a server without a browser
 

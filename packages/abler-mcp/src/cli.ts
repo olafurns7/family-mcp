@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { readFile, rename } from 'node:fs/promises';
+import { rename } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 
-import { startStdio } from '@family-mcp/mcp-runtime';
+import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
+import { readPrivateFile, SessionStoreError } from '@family-mcp/session-store';
 import type { CookieJar } from 'tough-cookie';
 
 import { AblerClient } from './api.js';
@@ -19,6 +20,9 @@ import {
 } from './auth.js';
 import { loginInBrowser } from './browser-login.js';
 import { createServer, VERSION } from './server.js';
+
+// Browser exports can include unrelated cookies; bound both credential input paths.
+const COOKIE_EXPORT_MAX_BYTES = 4 * 1024 * 1024;
 
 const help = `abler-mcp — unofficial read-only Abler MCP server
 
@@ -46,8 +50,8 @@ async function saveVerifiedSession(path: string, jar: CookieJar): Promise<void> 
       await rename(pending, path);
     } catch {
       // A successful refresh may already have invalidated the imported credential.
-      throw new Error(
-        `Session verification failed. The previous file was kept; a possibly rotated candidate is retained at ${pending}. Retry with ABLER_SESSION_FILE pointing there and auth status, or capture a fresh session. Treat both files as credentials.`,
+      throw new SafeError(
+        'Session verification failed. The previous file was kept; a possibly rotated candidate is retained beside it as <session-file>.<uuid>.pending. Retry with ABLER_SESSION_FILE pointing to that candidate and auth status, or capture a fresh session. Treat both files as credentials.',
       );
     }
 
@@ -63,22 +67,30 @@ function parseTimeout(value: string | undefined): number {
   const seconds = Number(value);
 
   if (!Number.isSafeInteger(seconds) || seconds < 1)
-    throw new Error('Provide a positive whole number for --timeout.');
+    throw new SafeError('Provide a positive whole number for --timeout.');
 
   return seconds;
 }
 
 async function main() {
-  const { positionals, values } = parseArgs({
-    allowPositionals: true,
-    options: {
-      help: { type: 'boolean', short: 'h' },
-      version: { type: 'boolean', short: 'v' },
-      browser: { type: 'string' },
-      timeout: { type: 'string' },
-      'keep-browser': { type: 'boolean' },
-    },
-  });
+  let parsed;
+
+  try {
+    parsed = parseArgs({
+      allowPositionals: true,
+      options: {
+        help: { type: 'boolean', short: 'h' },
+        version: { type: 'boolean', short: 'v' },
+        browser: { type: 'string' },
+        timeout: { type: 'string' },
+        'keep-browser': { type: 'boolean' },
+      },
+    });
+  } catch {
+    throw new SafeError('Invalid command-line options. Run abler-mcp --help for usage.');
+  }
+
+  const { positionals, values } = parsed;
 
   if (values.help) {
     console.log(help);
@@ -101,59 +113,84 @@ async function main() {
     return;
   }
 
-  if (command !== 'auth' || positionals.length > 3) throw new Error(help);
+  if (command !== 'auth' || positionals.length > 3)
+    throw new SafeError('Invalid command. Run abler-mcp --help for usage.');
 
   if (
     action !== 'login' &&
     (values.browser !== undefined || values.timeout !== undefined || values['keep-browser'])
   )
-    throw new Error(
+    throw new SafeError(
       'The browser, timeout, and keep-browser options are only valid with auth login.',
     );
 
   const path = sessionPath();
 
-  if (action === 'login' || action === 'capture' || action === 'import') {
-    let jar: CookieJar;
+  let jar: CookieJar;
 
-    if (action === 'login') {
-      if (argument) throw new Error(help);
-      jar = await loginInBrowser({
-        browser: values.browser,
-        timeoutSeconds: parseTimeout(values.timeout),
-        keepBrowser: values['keep-browser'],
-      });
-    } else if (action === 'capture')
-      jar = await captureCookies(argument || 'http://127.0.0.1:9222');
-    else {
-      if (!argument) throw new Error('Provide a cookie JSON file, or - for stdin.');
-      let raw = '';
+  if (action === 'login') {
+    if (argument) throw new SafeError('Invalid command. Run abler-mcp --help for usage.');
+    jar = await loginInBrowser({
+      browser: values.browser,
+      timeoutSeconds: parseTimeout(values.timeout),
+      keepBrowser: values['keep-browser'],
+    });
+  } else if (action === 'capture') jar = await captureCookies(argument || 'http://127.0.0.1:9222');
+  else if (action === 'import') {
+    if (!argument) throw new SafeError('Provide a cookie JSON file, or - for stdin.');
+    let raw = '';
 
-      if (argument === '-') {
-        for await (const chunk of process.stdin) raw += chunk;
-      } else raw = await readFile(argument, 'utf8');
+    if (argument === '-') {
+      const chunks: Buffer[] = [];
+      let bytes = 0;
 
+      for await (const chunk of process.stdin) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        bytes += buffer.length;
+
+        if (bytes > COOKIE_EXPORT_MAX_BYTES)
+          throw new SafeError('Cookie JSON input exceeds the 4 MiB limit.');
+        chunks.push(buffer);
+      }
+
+      raw = Buffer.concat(chunks, bytes).toString('utf8');
+    } else {
       try {
-        jar = await importCookies(cookieInputSchema.parse(JSON.parse(raw)));
-      } catch {
-        throw new Error(
-          'Import failed: provide valid browser cookie JSON containing an unexpired Abler refreshToken.',
+        raw = await readPrivateFile(argument, { maxBytes: COOKIE_EXPORT_MAX_BYTES });
+      } catch (error) {
+        if (error instanceof SessionStoreError && error.code === 'TOO_LARGE')
+          throw new SafeError('Cookie JSON input exceeds the 4 MiB limit.');
+        throw new SafeError(
+          'Cannot read the cookie JSON file. Use a regular file that you own with owner-only permissions (chmod 600 on Unix), not a symlink or hard link.',
         );
       }
     }
 
-    await saveVerifiedSession(path, jar);
+    try {
+      jar = await importCookies(cookieInputSchema.parse(JSON.parse(raw)));
+    } catch {
+      throw new SafeError(
+        'Import failed: provide valid browser cookie JSON containing an unexpired Abler refreshToken.',
+      );
+    }
   } else if (action === 'status' && !argument) {
     console.log(JSON.stringify(await new AblerClient(path).status()));
+
+    return;
   } else if (action === 'logout' && !argument) {
     await removeSession(path);
     console.log(
       'Local Abler session and failed-import candidates removed. This does not sign out other devices.',
     );
-  } else throw new Error(help);
+
+    return;
+  } else throw new SafeError('Invalid command. Run abler-mcp --help for usage.');
+
+  await saveVerifiedSession(path, jar);
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : 'Abler MCP failed.');
+  // Only reviewed diagnostics cross the terminal boundary; library messages may contain secrets.
+  console.error(error instanceof SafeError ? error.message : 'Abler MCP failed.');
   process.exitCode = 1;
 });

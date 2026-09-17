@@ -1,0 +1,144 @@
+---
+import '@fontsource-variable/archivo/wght.css';
+import '../styles/global.css';
+import { content, repository, servers, type Locale } from '../data/content';
+
+interface Props { locale: Locale }
+const { locale } = Astro.props;
+const text = content[locale];
+const canonical = new URL(locale === 'is' ? '/is/' : '/', Astro.site);
+---
+
+<!doctype html>
+<html lang={locale}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={text.description} />
+    <meta name="theme-color" content="#076b67" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={text.title} />
+    <meta property="og:description" content={text.description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:locale" content={locale === 'is' ? 'is_IS' : 'en_GB'} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="canonical" href={canonical} />
+    <link rel="alternate" hreflang="en" href="https://mcp.olinn.is/" />
+    <link rel="alternate" hreflang="is" href="https://mcp.olinn.is/is/" />
+    <link rel="alternate" hreflang="x-default" href="https://mcp.olinn.is/" />
+    <title>{text.title}</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#servers">{text.skip}</a>
+    <header class="site-header container">
+      <a class="wordmark" href={locale === 'is' ? '/is/' : '/'} aria-label="Family MCP">
+        <svg class="brand-mark" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><path d="M4 7h24M4 13h18M4 19h24M4 25h18" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" /></svg>
+        <span>family<span class="wordmark-suffix">mcp</span></span>
+      </a>
+      <div class="header-links">
+        <nav class="language-switch" aria-label={text.language}>
+          <a href="/" lang="en" hreflang="en" aria-current={locale === 'en' ? 'page' : undefined}>EN</a>
+          <a href="/is/" lang="is" hreflang="is" aria-current={locale === 'is' ? 'page' : undefined}>IS</a>
+        </nav>
+        <a class="source-link" href={repository}>
+          <span>GitHub</span>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 18 18 6M6 6h12v12" /></svg>
+        </a>
+      </div>
+    </header>
+
+    <main>
+      <section class="intro container" aria-labelledby="intro-title">
+        <h1 id="intro-title"><span>{text.headline[0]}</span><span>{text.headline[1]}</span></h1>
+        <p class="introduction">{text.introduction}</p>
+      </section>
+
+      <section class="servers container" id="servers" aria-label={text.servers}>
+        {servers.map((server) => {
+          const details = text.tools[server.id as keyof typeof text.tools];
+          return (
+            <article class:list={['service', `service-${server.id}`]} aria-labelledby={`${server.id}-title`}>
+              <div class="service-description">
+                <div class="service-heading">
+                  <h2 id={`${server.id}-title`}>{server.name}</h2>
+                  <a class="version" href={server.release} aria-label={`${server.name} ${text.release} ${server.version}`}>v{server.version}</a>
+                  {server.preview && <span class="preview-label">{text.preview}</span>}
+                </div>
+                <p>{details.description}</p>
+              </div>
+              <div class="service-install">
+                <div class="command-box">
+                  <div class="command-header">
+                    <span>{text.install}</span>
+                    <button type="button" class="copy-button" data-copy={server.id} data-name={server.name} data-copied={text.copied} data-confirmation={text.copyConfirmation} data-error={text.copyError} aria-label={`${text.copy}: ${server.name}`}>
+                      <svg class="copy-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3" /></svg>
+                      <span>{text.copy}</span>
+                    </button>
+                  </div>
+                  <pre tabindex="0" aria-label={`${server.name} — ${text.install}`}><code id={`${server.id}-command`}>{server.command}</code></pre>
+                </div>
+                <div class="service-links">
+                  <span>{details.login}</span>
+                  <a href={server.documentation} aria-label={`${server.name} — ${text.setup}`}>
+                    {text.setup}
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5" /></svg>
+                  </a>
+                </div>
+              </div>
+              {'limitation' in details && <p class="preview-note">{details.limitation}</p>}
+            </article>
+          );
+        })}
+      </section>
+
+      <section class="next-steps container" aria-labelledby="next-title">
+        <h2 id="next-title">{text.nextHeading}</h2>
+        <div>
+          <p>{text.nextText}</p>
+          <p class="privacy-note">{text.privacy}</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer container">
+      <div><p>{text.footer} <a href="https://olinn.is">Ólafur Nils</a>.</p><p>{text.affiliation}</p></div>
+      <a class="footer-source" href={repository}>{text.source}<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 18 18 6M6 6h12v12" /></svg></a>
+    </footer>
+    <p class="copy-status" role="status" aria-live="polite" aria-atomic="true"></p>
+
+    <script>
+      const status = document.querySelector<HTMLElement>('.copy-status');
+      for (const button of document.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
+        button.addEventListener('click', async () => {
+          const code = document.getElementById(`${button.dataset.copy}-command`);
+          const label = button.querySelector('span');
+          if (!code || !label || !status) return;
+          const original = label.textContent;
+          try {
+            await navigator.clipboard.writeText(code.textContent ?? '');
+            label.textContent = button.dataset.copied ?? original;
+            button.dataset.state = 'copied';
+            button.disabled = true;
+            const confirmation = `${button.dataset.confirmation} ${button.dataset.name}.`;
+            status.textContent = confirmation;
+            window.setTimeout(() => {
+              if (status.textContent === confirmation) status.textContent = '';
+            }, 3500);
+            window.setTimeout(() => {
+              label.textContent = original;
+              delete button.dataset.state;
+              button.disabled = false;
+            }, 1800);
+          } catch {
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(code);
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+            status.textContent = button.dataset.error ?? '';
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

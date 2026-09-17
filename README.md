@@ -5,6 +5,9 @@ account, a Krónan grocery account, and Domino’s Iceland ordering. Each releas
 is a standalone native executable, so the MCP host does not need Node, npm, or Bun
 at runtime.
 
+Visit [mcp.olinn.is](https://mcp.olinn.is) for a short introduction and installers
+in English and Icelandic.
+
 | Server                                              | Best for                            | What you get                                                                              | Login                                                                           | Platforms                       |
 | --------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------- |
 | **Abler** ([abler.io](https://www.abler.io))        | Sports schedules                    | Linked children, groups, events, and attendance records                                   | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
@@ -15,7 +18,7 @@ at runtime.
 ## Abler
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.2/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.3/packages/abler-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server; restart the MCP host, or
@@ -69,7 +72,7 @@ Other sign-in paths (capture an existing Chrome session, import cookies), headle
 ## InfoMentor
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server; restart the MCP host, or
@@ -119,12 +122,12 @@ env = { INFOMENTOR_SESSION_PATH = "/absolute/path/infomentor-session.json", INFO
 
 Tools: [session, children, timetables, messages, notifications, and scheduled updates](packages/infomentor-mcp/README.md#mcp-tools).
 
-Flags (`--allow-setup-tools`, `--allow-account-change`, `--local-form`), file locations, and troubleshooting: see [packages/infomentor-mcp/README.md](packages/infomentor-mcp/README.md).
+Flags (`--allow-setup-tools`, `--allow-account-change`), file locations, and troubleshooting: see [packages/infomentor-mcp/README.md](packages/infomentor-mcp/README.md).
 
 Remote machines (VPS, Grok bot VM): if the host's network path to `infomentor.is` fails before HTTP, use the WARP installer variant, Debian 13 x64 only:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
 ```
 
 Read the [WARP guidance](packages/infomentor-mcp/README.md#remote-machines-and-warp) and [connectivity guide](packages/infomentor-mcp/docs/CONNECTIVITY.md) first.

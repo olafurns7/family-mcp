@@ -232,13 +232,18 @@ export class AblerClient {
 
     let changed = false;
 
-    for (const header of response.headers.getSetCookie()) {
-      const cookie = Cookie.parse(header);
+    try {
+      for (const header of response.headers.getSetCookie()) {
+        const cookie = Cookie.parse(header);
 
-      if (!cookie || !AUTH_COOKIES.has(cookie.key)) continue;
-      cookie.secure = true;
-      await jar.setCookie(cookie, `${ORIGIN}${path}`);
-      changed = true;
+        if (!cookie || !AUTH_COOKIES.has(cookie.key)) continue;
+        cookie.secure = true;
+        await jar.setCookie(cookie, `${ORIGIN}${path}`);
+        changed = true;
+      }
+    } catch {
+      // Cookie-library errors can include untrusted response headers.
+      throw new SafeError('Abler returned an invalid authentication cookie.');
     }
 
     // Persist rotation before another request, including when Abler returns an error.

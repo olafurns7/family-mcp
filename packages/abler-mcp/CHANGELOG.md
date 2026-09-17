@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.3
+
+- Cookie-file imports now require a private, regular, owner-controlled file;
+  symlinks and hard links are rejected. File and stdin imports are limited to
+  4 MiB before parsing or account verification.
+- Malformed upstream authentication cookies and unreviewed CLI exceptions now
+  produce fixed, safe errors. Browser login and capture retain useful reviewed
+  diagnostics without exposing upstream or library exception text.
+
 ## 0.5.2
 
 - Upgrades now report old running server processes and can stop them with

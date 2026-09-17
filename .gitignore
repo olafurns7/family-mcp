@@ -16,6 +16,11 @@ coverage/
 *session*.json
 *cookies*.json
 *storage-state*.json
+credentials.json
+kronan-token.json
+token.json
+token.txt
+*.checkouts/
 *.pending
 *.tmp
 *.lock/

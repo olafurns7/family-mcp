@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { SafeError } from '@family-mcp/mcp-runtime';
 import type { CookieJar } from 'tough-cookie';
 import * as z from 'zod/v4';
 
@@ -39,9 +40,6 @@ const PROCESS_TERM_TIMEOUT_MS = 5_000;
 const CDP_COMMAND_TIMEOUT_MS = 10_000;
 
 const POLL_INTERVAL_MS = 100;
-
-const PIPE_FAILURE_MESSAGE =
-  'Could not establish a private Chrome debugging pipe. Use `abler-mcp auth capture` or `abler-mcp auth import`, or select a Chromium browser with `--browser`.';
 
 type Exists = (path: string) => Promise<boolean>;
 
@@ -144,7 +142,7 @@ class CdpPipe {
         (target) => target.type === 'page' && target.url.startsWith(`${ORIGIN}/`),
       );
 
-      if (!page) throw new Error('Open www.abler.io and sign in in that browser first.');
+      if (!page) throw new SafeError('Open www.abler.io and sign in in that browser first.');
 
       this.sessionId = z
         .object({ sessionId: z.string() })
@@ -205,9 +203,10 @@ class CdpPipe {
     sessionId?: string,
     timeoutMs = CDP_COMMAND_TIMEOUT_MS,
   ): Promise<CdpValue> {
-    if (this.closed) return Promise.reject(new Error('Chrome debugging connection closed.'));
+    if (this.closed) return Promise.reject(new SafeError('Chrome debugging connection closed.'));
 
-    if (signal?.aborted) return Promise.reject(new Error('Chrome session capture was cancelled.'));
+    if (signal?.aborted)
+      return Promise.reject(new SafeError('Chrome session capture was cancelled.'));
 
     const id = ++this.nextId;
     const command: CdpCommand = { id, method };
@@ -217,10 +216,10 @@ class CdpPipe {
     if (sessionId) command.sessionId = sessionId;
 
     return new Promise((resolve, reject) => {
-      const abort = () => this.finish(id, new Error('Chrome session capture was cancelled.'));
+      const abort = () => this.finish(id, new SafeError('Chrome session capture was cancelled.'));
 
       const timer = setTimeout(
-        () => this.finish(id, new Error('Chrome debugging request timed out.')),
+        () => this.finish(id, new SafeError('Chrome debugging request timed out.')),
         timeoutMs,
       );
 
@@ -228,7 +227,7 @@ class CdpPipe {
         abort,
         reject,
         resolve: (value) => {
-          if (value === undefined) reject(new Error('Invalid Chrome debugging response.'));
+          if (value === undefined) reject(new SafeError('Invalid Chrome debugging response.'));
           else resolve(value);
         },
         signal,
@@ -236,7 +235,7 @@ class CdpPipe {
       });
       signal?.addEventListener('abort', abort, { once: true });
       this.input.write(`${JSON.stringify(command)}\0`, (error) => {
-        if (error) this.finish(id, new Error('Cannot communicate with Chrome debugging.'));
+        if (error) this.finish(id, new SafeError('Cannot communicate with Chrome debugging.'));
       });
     });
   }
@@ -265,14 +264,14 @@ class CdpPipe {
       try {
         parsed = cdpEnvelopeSchema.safeParse(JSON.parse(raw));
       } catch {
-        this.rejectPending(new Error('Invalid Chrome debugging response.'));
+        this.rejectPending(new SafeError('Invalid Chrome debugging response.'));
         this.close();
 
         return;
       }
 
       if (!parsed.success) {
-        this.rejectPending(new Error('Invalid Chrome debugging response.'));
+        this.rejectPending(new SafeError('Invalid Chrome debugging response.'));
         this.close();
 
         return;
@@ -320,7 +319,7 @@ class CdpPipe {
 
     if (this.closed) return;
     this.closed = true;
-    this.rejectPending(new Error('Chrome debugging connection closed.'));
+    this.rejectPending(new SafeError('Chrome debugging connection closed.'));
 
     for (const resolve of this.closeWaiters) resolve();
   }
@@ -365,13 +364,13 @@ export async function findBrowser(
     }
   }
 
-  throw new Error(
-    `No Chromium-family browser found. Searched ABLER_BROWSER, macOS ${macBrowsers.join(', ')}, and Linux PATH for ${linuxBrowsers.join(', ')}. Use 'abler-mcp auth capture <URL>' or 'abler-mcp auth import <file>'.`,
+  throw new SafeError(
+    "No Chromium-family browser found. Install Chrome, Chromium, Brave, or Edge, or set ABLER_BROWSER/--browser to its executable. Use 'abler-mcp auth capture <URL>' or 'abler-mcp auth import <file>'.",
   );
 }
 
 function throwIfCancelled(signal: AbortSignal): void {
-  if (signal.aborted) throw new Error('Abler login cancelled.');
+  if (signal.aborted) throw new SafeError('Abler login cancelled.');
 }
 
 function browserExited(browser: Bun.Subprocess): boolean {
@@ -460,7 +459,7 @@ async function waitForPipeDebugging(connection: CdpPipe, signal: AbortSignal): P
   while (Date.now() < deadline) {
     throwIfCancelled(signal);
 
-    if (connection.isClosed) throw new Error('The browser exited before debugging started.');
+    if (connection.isClosed) throw new SafeError('The browser exited before debugging started.');
 
     try {
       const version = versionSchema.safeParse(
@@ -468,18 +467,18 @@ async function waitForPipeDebugging(connection: CdpPipe, signal: AbortSignal): P
       );
 
       if (version.success) return;
-      throw new Error('Invalid Chrome debugging response.');
+      throw new SafeError('Invalid Chrome debugging response.');
     } catch (error) {
       throwIfCancelled(signal);
 
-      if (error instanceof Error && error.message === 'Invalid Chrome debugging response.')
+      if (error instanceof SafeError && error.message === 'Invalid Chrome debugging response.')
         throw error;
     }
 
     await delay(POLL_INTERVAL_MS, undefined, { signal });
   }
 
-  throw new Error('Timed out waiting for browser debugging to start.');
+  throw new SafeError('Timed out waiting for browser debugging to start.');
 }
 
 async function waitForCookies(
@@ -493,7 +492,7 @@ async function waitForCookies(
     throwIfCancelled(signal);
 
     if (debugging.connection.isClosed)
-      throw new Error('The browser closed before Abler sign-in completed.');
+      throw new SafeError('The browser closed before Abler sign-in completed.');
 
     try {
       const attemptSignal = AbortSignal.any([
@@ -522,9 +521,7 @@ async function waitForCookies(
     if (remaining > 0) await delay(Math.min(2000, remaining), undefined, { signal });
   }
 
-  throw new Error(
-    `Abler login timed out after ${timeoutSeconds} second${timeoutSeconds === 1 ? '' : 's'}.`,
-  );
+  throw new SafeError('Abler login timed out. Try again or increase --timeout.');
 }
 
 function closeDebugging(debugging: BrowserDebugging | undefined): void {
@@ -633,7 +630,7 @@ function spawnBrowser(browserPath: string, profile: string): Bun.Subprocess {
       detached: process.platform !== 'win32',
     });
   } catch {
-    throw new Error('Could not start the selected browser.');
+    throw new SafeError('Could not start the selected browser.');
   }
 }
 
@@ -642,7 +639,7 @@ function pipeConnection(browser: Bun.Subprocess): CdpPipe {
   const outputFd = browser.stdio[4];
 
   if (inputFd === null || inputFd === undefined || outputFd === null || outputFd === undefined)
-    throw new Error('This Bun runtime cannot create a private Chrome debugging pipe.');
+    throw new SafeError('This Bun runtime cannot create a private Chrome debugging pipe.');
 
   return new CdpPipe(inputFd, outputFd);
 }
@@ -655,7 +652,7 @@ export async function loginInBrowser(options: {
   const { browser: override, timeoutSeconds, keepBrowser = false } = options;
 
   if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1)
-    throw new Error('Provide a positive whole number for --timeout.');
+    throw new SafeError('Provide a positive whole number for --timeout.');
 
   const controller = new AbortController();
   const cancel = () => controller.abort();
@@ -685,14 +682,16 @@ export async function loginInBrowser(options: {
       debugging.owned = true;
     } catch (error) {
       if (controller.signal.aborted) throw error;
-      throw new Error(PIPE_FAILURE_MESSAGE, { cause: error });
+      throw new SafeError(
+        'Could not establish a private Chrome debugging pipe. Use `abler-mcp auth capture` or `abler-mcp auth import`, or select a Chromium browser with `--browser`.',
+      );
     }
 
     process.stdout.write('Sign in to Abler in the browser window that opened.\n');
     result = await waitForCookies(debugging, timeoutSeconds, controller.signal);
   } catch (error) {
     loginError = controller.signal.aborted
-      ? new Error('Abler login cancelled.')
+      ? new SafeError('Abler login cancelled.')
       : error instanceof Error
         ? error
         : new Error(String(error));
@@ -708,7 +707,7 @@ export async function loginInBrowser(options: {
       keepProfile = true;
     } else if (profile && browser) {
       if (!(await closeBrowser(browser, debugging)))
-        cleanupError = new Error(
+        cleanupError = new SafeError(
           'A browser process may still be running; its temporary profile was removed.',
         );
     } else closeDebugging(debugging);
@@ -719,7 +718,7 @@ export async function loginInBrowser(options: {
   try {
     if (profile && !keepProfile) await rm(profile, { recursive: true, force: true });
   } catch {
-    cleanupError = new Error('Could not remove the temporary browser profile.');
+    cleanupError = new SafeError('Could not remove the temporary browser profile.');
   } finally {
     process.off('SIGINT', cancel);
     process.off('SIGTERM', cancel);
@@ -727,11 +726,11 @@ export async function loginInBrowser(options: {
 
   if (cleanupError) throw cleanupError;
 
-  if (controller.signal.aborted) throw new Error('Abler login cancelled.');
+  if (controller.signal.aborted) throw new SafeError('Abler login cancelled.');
 
   if (loginError) throw loginError;
 
-  if (!result) throw new Error('Abler login did not capture a complete session.');
+  if (!result) throw new SafeError('Abler login did not capture a complete session.');
 
   return result;
 }

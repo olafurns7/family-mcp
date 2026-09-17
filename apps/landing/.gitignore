@@ -1,0 +1,10 @@
+.astro/
+.wrangler/
+dist/
+.impeccable/review/
+.impeccable/mocks/
+.impeccable/build/
+.impeccable/questions/
+.impeccable/direction-options.json
+.impeccable/direction-notes.md
+.impeccable/landing-brief.md

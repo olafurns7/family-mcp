@@ -3,13 +3,7 @@ import { SessionStoreError, readPrivateFile } from '@family-mcp/session-store';
 import { z } from 'zod';
 import { InfoMentorHttp, parseForms } from './http.js';
 import { withSessionLock } from './lock.js';
-import {
-  credentialsSchema,
-  promptCredentials,
-  readCredentials,
-  type Credentials,
-  type OpenBrowser,
-} from './credentials.js';
+import { credentialsSchema, readCredentials, type Credentials } from './credentials.js';
 import {
   captureSession,
   InfoMentorError,
@@ -33,11 +27,8 @@ export type ImportOptions = SessionOptions & {
 };
 
 export type LoginOptions = ImportOptions & {
-  localForm?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
-  onProgress?: (stage: 'waiting' | 'saved', loginUrl?: string) => void;
-  openBrowser?: OpenBrowser;
 };
 
 function loginDeadline(timeoutMs = 300_000): AbortSignal {
@@ -150,16 +141,10 @@ export async function createAuthenticatedHttp(
           'Use the app’s private secret input to provide both INFOMENTOR_USERNAME (kennitala or InfoMentor username; no email required) and INFOMENTOR_PASSWORD to the login process. Never put their values in chat or MCP arguments.',
         );
       credentials = configured.data;
-    } else if (options.localForm) {
-      credentials = await promptCredentials(
-        signal,
-        (url) => options.onProgress?.('waiting', url),
-        options.openBrowser,
-      );
     } else
       throw new InfoMentorError(
         'INVALID_CONFIGURATION',
-        'Credentials required. Use the app’s private secret input for INFOMENTOR_USERNAME (kennitala or InfoMentor username; no email required) and INFOMENTOR_PASSWORD, then run infomentor-mcp login with those secrets injected into its environment. If the MCP process already has them, call infomentor_login. Alternatively supply credentialsFile or importFile. Never put secret values in chat or MCP arguments. Browser login is opt-in with localForm; do not use it on a remote VM.',
+        'Credentials required. Use the app’s private secret input for INFOMENTOR_USERNAME (kennitala or InfoMentor username; no email required) and INFOMENTOR_PASSWORD, then run infomentor-mcp login with those secrets injected into its environment. If the MCP process already has them, call infomentor_login. Alternatively supply credentialsFile or importFile. Never put secret values in chat or MCP arguments.',
       );
 
     const http = new InfoMentorHttp(undefined, 0, options.fetch);
@@ -189,7 +174,6 @@ export async function login(options: LoginOptions = {}): Promise<void> {
       await requireSameAccount(file, session, options.allowAccountChange);
       throwIfAborted(signal);
       await (options.writeSession ?? writeSession)(session, file, signal);
-      options.onProgress?.('saved');
     });
   } catch (error) {
     if (deadline.aborted && !options.signal?.aborted) throw loginTimedOut();
@@ -223,8 +207,8 @@ export function httpFromSession(
 }
 
 /**
- * An explicit login or import must not silently switch the saved account: a local attacker who
- * hijacks the loopback form, or a mistaken credentials file, would otherwise take over the MCP.
+ * An explicit login or import must not silently switch the saved account: a mistaken
+ * credentials or session file would otherwise replace the account used by the MCP.
  * Missing and legacy-v1 files protect nothing. An unsafe or unrecognized existing file cannot
  * safely establish which account it represents, so replacement requires an explicit override.
  */

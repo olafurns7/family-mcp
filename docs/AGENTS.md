@@ -32,10 +32,10 @@ attendance state from a failed request or undocumented value.
 - Use the host client's private secret input; never request credentials in chat.
   A username may be a kennitala and does not need to be an email address.
 - The four setup tools are absent unless `serve` explicitly receives
-  `--allow-setup-tools`. Never enable them, `localForm`, or
+  `--allow-setup-tools`. Never enable them or
   `allowAccountChange` without the user's specific request.
-- `localForm` is only for an explicitly requested same-computer browser flow.
-  Its URL is written to server stderr and is never a tool result.
+- Login uses a private credentials file or environment secrets. The local
+  browser password form has been removed.
 - Session, import, and credential paths are host-local absolute paths. Their
   files must be private, regular, owner-controlled files; do not share, log,
   symlink, or expose them. Never pass `allowAccountChange` unless the user

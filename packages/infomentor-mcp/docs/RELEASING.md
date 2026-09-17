@@ -1,7 +1,7 @@
 # Release process
 
 Source: https://github.com/olafurns7/family-mcp/tree/main/packages/infomentor-mcp
-Tags use `infomentor-mcp@<version>`; the current version is `infomentor-mcp@0.6.1`.
+Tags use `infomentor-mcp@<version>`; the current version is `infomentor-mcp@0.7.0`.
 Native binaries are the only distribution.
 
 1. Bump this package's `version` in `package.json`.
@@ -14,7 +14,7 @@ Native binaries are the only distribution.
 8. Publish the draft release.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh
 ```
 
 Archives contain the executable, README, LICENSE, and generated third-party

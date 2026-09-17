@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-17T10:01:31.081920Z",
+  "title": "Design System: Family MCP",
+  "extensions": {
+    "colorMeta": {
+      "green": {
+        "role": "primary",
+        "displayName": "Pool green"
+      },
+      "mint": {
+        "role": "secondary",
+        "displayName": "InfoMentor mint"
+      },
+      "yellow": {
+        "role": "secondary",
+        "displayName": "Krónan yellow"
+      },
+      "peach": {
+        "role": "secondary",
+        "displayName": "Domino’s peach"
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper ground"
+      },
+      "white": {
+        "role": "neutral",
+        "displayName": "Command white"
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Body ink"
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Supporting ink"
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Quiet divider"
+      },
+      "focus": {
+        "role": "secondary",
+        "displayName": "Rust focus"
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Introductory two-line headline."
+      },
+      "headline": {
+        "displayName": "Service headline",
+        "purpose": "Repeated service names."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Service descriptions and closing guidance."
+      },
+      "label": {
+        "displayName": "Copy label",
+        "purpose": "Copy command and copied states."
+      },
+      "language": {
+        "displayName": "Language",
+        "purpose": "Persistent EN and IS links."
+      },
+      "command": {
+        "displayName": "Command",
+        "purpose": "Visible, wrapping installer text."
+      }
+    },
+    "shadows": [
+      {
+        "name": "copy-status",
+        "value": "0 5px 18px #0a302426",
+        "purpose": "Temporary live copy-status message only."
+      }
+    ],
+    "motion": [
+      {
+        "name": "copy-feedback",
+        "value": "background-color 160ms ease-out, color 160ms ease-out",
+        "purpose": "Copy-button hover and copied state; transitions are removed for reduced motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact",
+        "value": "960px"
+      },
+      {
+        "name": "single-column",
+        "value": "700px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Copy command",
+      "kind": "button",
+      "refersTo": "copy-button",
+      "description": "Existing copy control with hover, keyboard focus, copied state and reduced-motion support.",
+      "html": "<button type=\"button\" class=\"ds-copy-button\" aria-label=\"Copy command: Abler\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" aria-hidden=\"true\"><rect x=\"8\" y=\"8\" width=\"12\" height=\"13\" rx=\"2\" /><path d=\"M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3\" /></svg><span>Copy command</span></button>",
+      "css": ".ds-copy-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex-shrink: 0; min-width: 117px; min-height: 44px; margin-right: -6px; padding: 7px 8px; color: #174c40; background: transparent; border: 0; border-radius: 5px; font-family: 'Archivo Variable', sans-serif; font-size: 12px; font-weight: 580; cursor: pointer; transition: background-color 160ms ease-out, color 160ms ease-out; } .ds-copy-button:hover { background: #e4f1e9; } .ds-copy-button[data-state='copied'] { background: var(--green, #076b67); color: #ffffff; cursor: default; } .ds-copy-button:focus-visible { outline: 3px solid #af3c18; outline-offset: 5px; } .ds-copy-button svg { flex: 0 0 auto; } @media (max-width: 700px) { .ds-copy-button { min-width: 109px; } } @media (prefers-reduced-motion: reduce) { .ds-copy-button { transition: none !important; } }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Icelandic swimming-pool timetable",
+    "overview": "Confident Archivo lettering and flat color bands make a small collection easy to read. Deep pool green anchors a clean paper ground; mint, yellow and peach give the services distinct, friendly identities without illustration or texture.\n\nThe controls are compact and direct. White command surfaces separate executable text from the descriptive content, and English and Icelandic share the same layout and visual hierarchy.",
+    "keyCharacteristics": [
+      "Flat service colors and a shared reading rhythm.",
+      "Archivo for interface text; native monospace for commands.",
+      "Visible installation text, language links and copy feedback."
+    ],
+    "rules": [
+      {
+        "name": "The Paired Color Rule",
+        "body": "Keep each service background with its recorded main and secondary text colors.",
+        "section": "colors"
+      },
+      {
+        "name": "The Flat Surface Rule",
+        "body": "Keep service lanes and command surfaces free of shadows.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do preserve the service palette pairings and shared lane structure.",
+      "Do let command text wrap and keep keyboard focus visible.",
+      "Do retain the same controls and hierarchy in English and Icelandic."
+    ],
+    "donts": [
+      "Don't add shadows to service lanes or command boxes.",
+      "Don't use monospace for display headings or descriptive prose.",
+      "Don't hide command text behind the copy action."
+    ]
+  }
+}

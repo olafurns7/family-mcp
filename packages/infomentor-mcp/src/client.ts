@@ -51,7 +51,6 @@ export const loginRequestSchema = z
       .string()
       .refine(isAbsolute, 'Use an absolute path on the MCP host.')
       .optional(),
-    localForm: z.boolean().optional(),
     allowAccountChange: z.boolean().optional(),
     timeoutSeconds: z.number().int().min(1).max(3600).default(300),
   })
@@ -59,9 +58,8 @@ export const loginRequestSchema = z
 
 export type LoginRequest = z.input<typeof loginRequestSchema>;
 
-/** The local form's URL is never exposed here: any local process that learns it can submit credentials. */
 export const setupStatusSchema = z.object({
-  state: z.enum(['idle', 'running', 'waiting', 'succeeded', 'failed', 'cancelled']),
+  state: z.enum(['idle', 'running', 'succeeded', 'failed', 'cancelled']),
   operation: z.enum(['login', 'import']).optional(),
   message: z.string(),
 });
@@ -439,7 +437,7 @@ export class InfoMentorClient {
   startLogin(request: LoginRequest = {}): SetupStatus {
     const parsed = loginRequestSchema.parse(request);
 
-    if (parsed.importFile && (parsed.credentialsFile || parsed.localForm))
+    if (parsed.importFile && parsed.credentialsFile)
       throw new InfoMentorError(
         'INVALID_CONFIGURATION',
         'Choose session import or login, not both.',
@@ -476,21 +474,8 @@ export class InfoMentorClient {
         const options = {
           ...this.options,
           signal: controller.signal,
-          localForm: parsed.localForm ?? false,
           allowAccountChange: parsed.allowAccountChange ?? false,
           timeoutMs: parsed.timeoutSeconds * 1000,
-          onProgress: (stage: 'waiting' | 'saved', loginUrl?: string): void => {
-            if (stage === 'saved') return;
-            this.setupStatus = {
-              operation,
-              state: 'waiting',
-              message:
-                'Open the private local sign-in form that was opened in a browser on this computer. Never send passwords or session cookies to the agent.',
-            };
-
-            // The URL goes to the host's log only; through MCP it would reach the model.
-            if (loginUrl) process.stderr.write('Open the private sign-in form: ' + loginUrl + '\n');
-          },
         };
 
         await login(

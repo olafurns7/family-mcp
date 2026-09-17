@@ -14,7 +14,7 @@
     },
     "packages/abler-mcp": {
       "name": "abler-mcp",
-      "version": "0.5.2",
+      "version": "0.5.3",
       "bin": {
         "abler-mcp": "dist/cli.js",
       },
@@ -52,7 +52,7 @@
     },
     "packages/infomentor-mcp": {
       "name": "infomentor-mcp",
-      "version": "0.6.1",
+      "version": "0.7.0",
       "dependencies": {
         "@family-mcp/mcp-runtime": "workspace:^",
         "@family-mcp/session-store": "workspace:*",

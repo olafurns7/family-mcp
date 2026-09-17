@@ -2,6 +2,7 @@ import { test, expect } from 'bun:test';
 import assert from 'node:assert/strict';
 import {
   chmod,
+  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -15,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { SafeError } from '@family-mcp/mcp-runtime';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import * as z from 'zod/v4';
@@ -51,6 +53,284 @@ const cookie = {
   path: '/',
   expires: Date.now() / 1000 + 3600,
 };
+
+test('auth import rejects unsafe files and oversized file/stdin inputs before verification', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-import-input-'));
+  const source = join(directory, 'cookies.json');
+  const path = join(directory, 'session.json');
+  const preload = join(directory, 'offline.ts');
+
+  try {
+    await writeFile(preload, `globalThis.fetch = () => { throw new Error('UNEXPECTED_FETCH'); };`);
+    await writeFile(source, JSON.stringify([cookie]), { mode: 0o600 });
+
+    const run = (argument: string, input = '') =>
+      Bun.spawn(
+        [process.execPath, '--preload', preload, 'src/cli.ts', 'auth', 'import', argument],
+        {
+          env: { ...process.env, ABLER_SESSION_FILE: path },
+          stdin: new Blob([input]),
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      );
+
+    const rejected = async (argument: string, diagnostic: string, input = '') => {
+      const child = run(argument, input);
+
+      const [code, out, error] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+
+      expect(code).toBe(1);
+      expect(out).toBe('');
+      expect(error).toContain(diagnostic);
+      expect((await readdir(directory)).some((name) => name.startsWith('session.json'))).toBe(
+        false,
+      );
+    };
+
+    if (process.platform !== 'win32') {
+      // chmod after creation so the test remains adversarial under umask 077.
+      for (const mode of [0o644, 0o666]) {
+        await chmod(source, mode);
+        await rejected(source, 'owner-only');
+        expect((await stat(source)).mode & 0o777).toBe(mode);
+      }
+
+      await chmod(source, 0o600);
+      const alias = join(directory, 'symlink.json');
+      await symlink(source, alias);
+      await rejected(alias, 'symlink');
+    }
+
+    const hard = join(directory, 'hardlink.json');
+    await link(source, hard);
+    await rejected(hard, 'hard link');
+    await rejected(source, 'hard link');
+    await rm(hard);
+    await rejected(directory, 'regular file');
+    await rejected(join(directory, 'missing.json'), 'Cannot read');
+    const oversized = ' '.repeat(4 * 1024 * 1024 + 1);
+    await writeFile(source, oversized);
+    await rejected(source, '4 MiB limit');
+    await rejected('-', '4 MiB limit', oversized);
+    // Byte limits also apply to non-ASCII JSON, independently of character count.
+    await rejected('-', '4 MiB limit', 'é'.repeat(2 * 1024 * 1024 + 1));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('auth import accepts private browser exports and stdin at the byte limit', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-valid-import-'));
+  const source = join(directory, 'cookies.json');
+  const path = join(directory, 'session.json');
+  const preload = join(directory, 'offline.ts');
+
+  try {
+    await writeFile(
+      preload,
+      `globalThis.fetch = async (url, init) => {
+      if (url === 'https://www.abler.io/oauth/token') {
+        if (!new Headers(init.headers).get('cookie')?.includes('refreshToken=private-refresh'))
+          throw new Error('Missing imported credential');
+        return Response.json({ access_token: 'offline-access' }, {
+          headers: { 'Set-Cookie': 'id_token=offline-access; Path=/; Max-Age=600' },
+        });
+      }
+      if (url === 'https://www.abler.io/graphql' && JSON.parse(init.body).operationName === 'SessionStatus')
+        return Response.json({ data: { me: { id: 'offline-parent', displayName: 'Parent' } } });
+      throw new Error('UNEXPECTED_FETCH');
+    };`,
+    );
+    const { expires, ...browserCookie } = cookie;
+
+    const exported = JSON.stringify({
+      cookies: [
+        { ...browserCookie, expirationDate: expires },
+        { name: '_analytics', value: 'é' },
+      ],
+      origins: [],
+    });
+
+    const atLimit = exported + ' '.repeat(4 * 1024 * 1024 - Buffer.byteLength(exported));
+    await writeFile(source, atLimit, { mode: 0o600 });
+
+    for (const argument of [source, '-']) {
+      const child = Bun.spawn(
+        [process.execPath, '--preload', preload, 'src/cli.ts', 'auth', 'import', argument],
+        {
+          env: { ...process.env, ABLER_SESSION_FILE: path },
+          stdin: new Blob([atLimit]),
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      );
+
+      const [code, out, error] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+
+      expect(code).toBe(0);
+      expect(error).toBe('');
+      expect(out).toContain('saved and verified');
+      expect(await (await loadSession(path)).getCookieString(ORIGIN)).toContain(
+        'id_token=offline-access',
+      );
+      expect(await readFile(path, 'utf8')).not.toContain('_analytics');
+    }
+
+    expect(await readFile(source, 'utf8')).toBe(atLimit);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('refresh and GraphQL reject malformed upstream cookie domains with a fixed SafeError', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-cookie-error-'));
+  const path = join(directory, 'session.json');
+  const calls: string[] = [];
+
+  const client = new AblerClient(path, async (url) => {
+    calls.push(url);
+
+    return Response.json(
+      {},
+      {
+        headers: { 'Set-Cookie': 'id_token=offline; Domain=private-domain-marker.example; Path=/' },
+      },
+    );
+  });
+
+  try {
+    await saveSession(path, await importCookies([cookie, { ...cookie, name: 'id_token' }]));
+    const original = await readFile(path, 'utf8');
+
+    for (const forceRefresh of [false, true]) {
+      await assert.rejects(client.status(forceRefresh), (error) => {
+        assert(error instanceof SafeError);
+        expect(error.message).toBe('Abler returned an invalid authentication cookie.');
+
+        return true;
+      });
+      expect(await readFile(path, 'utf8')).toBe(original);
+    }
+
+    expect(calls).toEqual([`${ORIGIN}/graphql`, `${ORIGIN}/oauth/token`]);
+  } finally {
+    await client.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('CLI hides unreviewed exceptions and preserves safe usage, import, and browser diagnostics', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-cli-errors-'));
+  const path = join(directory, 'session.json');
+  const preload = join(directory, 'offline.ts');
+  const marker = 'PRIVATE_EXCEPTION_MARKER';
+  const offline = `globalThis.fetch = async () => { throw new Error('${marker}'); };`;
+
+  const check = async (args: string[], expected: string, mock = offline, input = '') => {
+    await writeFile(preload, mock);
+
+    const child = Bun.spawn([process.execPath, '--preload', preload, 'src/cli.ts', ...args], {
+      env: { ...process.env, ABLER_SESSION_FILE: path, TMPDIR: directory },
+      stdin: new Blob([input]),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const [code, out, error] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+
+    expect(code).toBe(1);
+    expect(out).toBe('');
+    expect(error.trim()).toBe(expected);
+    expect(error).not.toContain(marker);
+  };
+
+  try {
+    await saveSession(path, await importCookies([cookie, { ...cookie, name: 'id_token' }]));
+    await check(
+      ['auth', 'status'],
+      'Abler returned an invalid authentication cookie.',
+      `globalThis.fetch = async () => Response.json({}, {
+        headers: { 'Set-Cookie': 'id_token=offline; Domain=${marker}.example; Path=/' },
+      });`,
+    );
+    await check(
+      ['auth', 'status'],
+      'Abler MCP failed.',
+      `globalThis.fetch = async () => Response.json({ data: { me: { id: '${marker}', displayName: null } } });`,
+    );
+
+    // Unknown errors (including a forged name) and non-Error throws must not become safe messages.
+    for (const thrown of [
+      `new Error('${marker}')`,
+      `Object.assign(new Error('${marker}'), { name: 'SafeError' })`,
+      `'${marker}'`,
+    ]) {
+      await check(
+        ['auth', 'import', '-'],
+        'Abler MCP failed.',
+        `${offline}
+        process.stdin[Symbol.asyncIterator] = async function* () { throw ${thrown}; };`,
+      );
+    }
+
+    await check(
+      ['auth', 'import', '-'],
+      'Cookie JSON input exceeds the 4 MiB limit.',
+      `${offline}
+        process.stdin[Symbol.asyncIterator] = async function* () {
+          yield Buffer.alloc(4 * 1024 * 1024);
+          yield Buffer.from('x');
+          throw new Error('${marker} read past the input limit');
+        };`,
+    );
+    await check(['auth', 'import'], 'Provide a cookie JSON file, or - for stdin.');
+    await check(
+      ['auth', 'import', '-'],
+      'Import failed: provide valid browser cookie JSON containing an unexpired Abler refreshToken.',
+      offline,
+      marker,
+    );
+    await check(
+      ['auth', 'login', '--timeout', '0'],
+      'Provide a positive whole number for --timeout.',
+    );
+    await check(
+      ['auth', 'status', '--timeout', '1'],
+      'The browser, timeout, and keep-browser options are only valid with auth login.',
+    );
+    await check(['unknown'], 'Invalid command. Run abler-mcp --help for usage.');
+    await check([`--${marker}`], 'Invalid command-line options. Run abler-mcp --help for usage.');
+    await check(
+      ['auth', 'capture', marker],
+      'Use a loopback Chrome debugging URL, such as http://127.0.0.1:9222.',
+    );
+    await check(['auth', 'capture'], 'Cannot connect to Chrome debugging.');
+    await check(
+      ['auth', 'capture'],
+      'Invalid Chrome debugging response.',
+      `globalThis.fetch = async () => new Response('${marker}');`,
+    );
+    await check(
+      ['auth', 'login', '--browser', join(directory, 'missing-browser')],
+      "No Chromium-family browser found. Install Chrome, Chromium, Brave, or Edge, or set ABLER_BROWSER/--browser to its executable. Use 'abler-mcp auth capture <URL>' or 'abler-mcp auth import <file>'.",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('private cookie import, renewal, pagination, validation, and safe failures', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-test-'));

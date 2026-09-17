@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Server as HttpServer } from 'node:http';
 import {
   chmod,
   link,
@@ -12,14 +13,14 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'bun:test';
+import { spyOn, test } from 'bun:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { CookieJar } from 'tough-cookie';
 import { InfoMentorClient, setupStatusSchema, type SetupStatus } from '../src/client.js';
 import { collectionSchema } from '../src/collection.js';
-import { promptCredentials, readCredentials } from '../src/credentials.js';
-import { InfoMentorHttp, parseForms } from '../src/http.js';
+import { readCredentials } from '../src/credentials.js';
+import { InfoMentorHttp } from '../src/http.js';
 import { authenticate, importSession, login } from '../src/login.js';
 import { withSessionLock } from '../src/lock.js';
 import { createServer } from '../src/server.js';
@@ -384,6 +385,11 @@ test('private login and eleven MCP tools select children and read school data wi
   };
 
   const routes = fixture();
+
+  const listen = spyOn(HttpServer.prototype, 'listen').mockImplementation(() =>
+    assert.fail('Private login must never open a credential listener.'),
+  );
+
   const server = createServer({ sessionFile: file, allowSetupTools: true, fetch: routes.fetch });
   const client = new Client({ name: 'http-test', version: '1.0.0' });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
@@ -444,13 +450,34 @@ test('private login and eleven MCP tools select children and read school data wi
       code: 'INVALID_CONFIGURATION',
     });
     assert.equal(routes.requests.length, 0);
-    process.env['INFOMENTOR_PASSWORD'] = credentials.password;
+    delete process.env['INFOMENTOR_USERNAME'];
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const tools = (await client.listTools()).tools;
     assert.equal(tools.length, 11);
     assert.ok(tools.every((tool) => tool.outputSchema));
     assert.ok(!tools.some((tool) => tool.name.includes('browser')));
+    const loginTool = tools.find((tool) => tool.name === 'infomentor_login');
+    assert.ok(loginTool);
+    assert.equal(loginTool.inputSchema.additionalProperties, false);
+    assert.ok(!('localForm' in (loginTool.inputSchema.properties ?? {})));
+
+    for (const localForm of [true, false]) {
+      const rejected = await client.callTool({
+        name: 'infomentor_login',
+        arguments: { localForm },
+      });
+
+      assert.equal(rejected.isError, true);
+      assert.match(JSON.stringify(rejected), /localForm/);
+      const status = await client.callTool({ name: 'infomentor_setup_status', arguments: {} });
+      assert.equal(setupStatusSchema.parse(status.structuredContent).state, 'idle');
+      assert.equal(routes.requests.length, 0);
+      assert.equal(listen.mock.calls.length, 0);
+    }
+
+    process.env['INFOMENTOR_USERNAME'] = credentials.username;
+    process.env['INFOMENTOR_PASSWORD'] = credentials.password;
 
     const started = await client.callTool({
       name: 'infomentor_login',
@@ -471,6 +498,7 @@ test('private login and eleven MCP tools select children and read school data wi
     }
 
     assert.equal(state, 'succeeded');
+    assert.equal(listen.mock.calls.length, 0);
     const stored = await readSession(file);
     assert.equal(stored.version, 2);
     assert.ok(stored.cookies.some((cookie) => cookie.key === 'IMHome'));
@@ -746,6 +774,7 @@ test('private login and eleven MCP tools select children and read school data wi
     await client.close();
     await server.close();
     routes.restore();
+    listen.mockRestore();
 
     for (const [name, value] of Object.entries(environment)) {
       if (value === undefined) delete process.env[name];
@@ -1482,51 +1511,5 @@ test('HTTP cancellation aborts in-flight requests; closing a client drains reads
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test('private loopback login form rejects cross-origin submissions and closes after use or cancellation', async () => {
-  const controller = new AbortController();
-  const ready = Promise.withResolvers<string>();
-
-  const pending = promptCredentials(
-    controller.signal,
-    (url) => ready.resolve(url),
-    () => {},
-  );
-
-  try {
-    const url = await ready.promise;
-    const page = await globalThis.fetch(url);
-    assert.equal(page.headers.get('cache-control'), 'no-store');
-    const form = parseForms(await page.text())[0];
-    assert.ok(form);
-    form.fields.set('username', credentials.username);
-    form.fields.set('password', credentials.password);
-
-    const wrongOrigin = await globalThis.fetch(url, {
-      method: 'POST',
-      headers: { Origin: 'https://evil.test' },
-      body: form.fields,
-    });
-
-    assert.equal(wrongOrigin.status, 403);
-
-    const posted = await globalThis.fetch(url, {
-      method: 'POST',
-      headers: { Origin: new URL(url).origin },
-      body: form.fields,
-    });
-
-    assert.equal(posted.status, 200);
-    assert.deepEqual(await pending, credentials);
-    await assert.rejects(globalThis.fetch(url));
-    const cancelled = new AbortController();
-    const waiting = assert.rejects(promptCredentials(cancelled.signal), { code: 'CANCELLED' });
-    cancelled.abort();
-    await waiting;
-  } finally {
-    controller.abort();
-    await pending.catch(() => {});
   }
 });

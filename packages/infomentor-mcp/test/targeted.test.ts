@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'bun:test';
-import { parseForms, InfoMentorHttp, parseParent } from '../src/http.js';
-import { promptCredentials } from '../src/credentials.js';
+import { InfoMentorHttp, parseParent } from '../src/http.js';
 import { PARENT_URL, InfoMentorError } from '../src/session.js';
 
 test('HTTP responses over 8 MiB are rejected before buffering', async () => {
@@ -43,55 +45,8 @@ test('malformed parent bootstrap is rejected without evaluation', () => {
   );
 });
 
-test('local credential form rejects oversized and CSRF-mismatched posts', async () => {
-  const controller = new AbortController();
-  const ready = Promise.withResolvers<string>();
-
-  const pending = promptCredentials(
-    controller.signal,
-    (url) => ready.resolve(url),
-    () => {},
-  );
-
-  try {
-    const url = await ready.promise;
-    const page = await fetch(url);
-    const form = parseForms(await page.text())[0];
-    assert.ok(form);
-
-    const oversized = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Origin: new URL(url).origin,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: 'x'.repeat(16_385),
-    });
-
-    assert.equal(oversized.status, 413);
-
-    form.fields.set('csrf', 'wrong');
-    form.fields.set('username', 'user');
-    form.fields.set('password', 'password');
-
-    const mismatched = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Origin: new URL(url).origin,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: form.fields,
-    });
-
-    assert.equal(mismatched.status, 403);
-  } finally {
-    controller.abort();
-    await pending.catch(() => {});
-  }
-});
-
 test('CLI rejects arguments for the wrong command', async () => {
-  const child = Bun.spawn([process.execPath, 'src/cli.ts', 'status', '--local-form'], {
+  const child = Bun.spawn([process.execPath, 'src/cli.ts', 'status', '--timeout', '1'], {
     cwd: process.cwd(),
     stdout: 'pipe',
     stderr: 'pipe',
@@ -99,4 +54,63 @@ test('CLI rejects arguments for the wrong command', async () => {
 
   assert.equal(await child.exited, 1);
   assert.match(await new Response(child.stderr).text(), /Login options only apply to login/);
+});
+
+test('retired CLI form flags fail before any listener or provider request', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-no-form-'));
+  const preload = join(directory, 'no-network.js');
+  await writeFile(
+    preload,
+    `import { Server } from 'node:http';
+Server.prototype.listen = () => process.exit(91);
+Bun.serve = () => process.exit(91);
+globalThis.fetch = () => process.exit(92);
+`,
+  );
+
+  try {
+    for (const args of [
+      ['login', '--local-form'],
+      ['login', '--local-form=true'],
+      ['login', '--local-form=false'],
+      ['status', '--local-form'],
+      ['logout', '--local-form'],
+      ['serve', '--local-form'],
+      ['--local-form'],
+    ]) {
+      const child = Bun.spawn([process.execPath, '--preload', preload, 'src/cli.ts', ...args], {
+        cwd: process.cwd(),
+        env: { INFOMENTOR_SESSION_PATH: join(directory, 'session.json') },
+        timeout: 5_000,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+
+      try {
+        assert.equal(await child.exited, 1);
+        assert.equal(await new Response(child.stdout).text(), '');
+        assert.match(
+          await new Response(child.stderr).text(),
+          /--local-form has been removed\. Use --credentials/,
+        );
+        assert.deepEqual(await readdir(directory), ['no-network.js']);
+      } finally {
+        child.kill();
+        await child.exited;
+      }
+    }
+
+    const help = Bun.spawn([process.execPath, 'src/cli.ts', '--help'], {
+      cwd: process.cwd(),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    assert.equal(await help.exited, 0);
+    const output = await new Response(help.stdout).text();
+    assert.doesNotMatch(output, /local-form/);
+    assert.match(output, /--credentials/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

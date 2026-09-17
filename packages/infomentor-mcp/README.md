@@ -19,7 +19,7 @@ it is not affiliated with InfoMentor.
 ## Quick start
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh
 ```
 
 ```sh
@@ -65,7 +65,7 @@ Use the standard install on your own laptop or desktop. Use `--with-warp`
 when its network path to `infomentor.is` fails before HTTP.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
 ```
 
 It requires administrator or `sudo` access and acceptance of
@@ -75,7 +75,7 @@ It does not change the default route or Tailscale settings. To revert to direct
 access:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.6.1/packages/infomentor-mcp/install.sh | sh -s -- --without-warp
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh -s -- --without-warp
 ```
 
 Do not use WARP on a normal working connection, on a non-Debian-13-x64 machine,
@@ -126,7 +126,6 @@ To expose the opt-in setup tools, append `--allow-setup-tools` to the configured
 
 | Flag                     | Use it when                                                    | Effect                                                              |
 | ------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `--local-form`           | A user explicitly wants same-computer browser login            | Opens a private loopback form; never use it on a remote VM          |
 | `--allow-account-change` | The user explicitly wants to replace a different saved account | Allows login or import to replace that account's session            |
 | `--allow-setup-tools`    | The MCP host must expose setup operations to an agent          | Adds login, setup status, cancellation, and logout tools to `serve` |
 
@@ -138,8 +137,8 @@ use `--allow-account-change` without that explicit user request.
 The MCP server uses standard input/output; human-readable CLI messages go to
 standard error. Restart the MCP client after upgrading the executable.
 
-Login uses direct HTTPS and **does not open a browser or listen on loopback by
-default**. It accepts your InfoMentor username or kennitala (Icelandic identity
+Login uses direct HTTPS with a private credentials file or injected environment
+variables. It accepts your InfoMentor username or kennitala (Icelandic identity
 number) and password. An email address is not required.
 
 Have your MCP host supply these environment variables through its private
@@ -227,23 +226,6 @@ different account are rejected. Missing sessions, including after logout, never
 trigger automatic sign-in. Rate limits, network failures, and security
 challenges do not trigger login retries.
 
-### Optional same-computer browser form
-
-For a desktop user who explicitly wants it, run:
-
-```sh
-infomentor-mcp login --local-form
-```
-
-MCP equivalent (with `--allow-setup-tools`): `infomentor_login` with
-`{"localForm":true}`. With no credentials configured, this opens a private form
-on `127.0.0.1` in the default browser and prints its URL on the process's
-standard error. The URL is never returned through MCP, because any local
-process that learns it could submit its own credentials. The browser and
-executable must run on the same computer. **Do not use this option for a remote
-VM.** The form checks the request host/origin and a random token, and closes on
-submission, cancellation, or timeout.
-
 ### Transfer an existing session
 
 Copy a version-2 session file privately to the other machine, then validate and
@@ -267,23 +249,23 @@ deliberately.
 
 ## MCP tools
 
-| Tool                           | Purpose                                                                                                                                                                                                                                           |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `infomentor_session_status`    | Verify authentication using InfoMentor's session endpoint. Without a session it names the CLI command to run.                                                                                                                                     |
-| `infomentor_get_overview`      | Read children and the selected child's timetable.                                                                                                                                                                                                 |
-| `infomentor_select_child`      | Select a child using `childId` from the overview, then return the updated overview and timetable. Later reads describe whichever child is selected at that moment.                                                                                |
-| `infomentor_get_messages`      | List messages with `folder` (`inbox` or `sent`), optional `search`, `page` (starting at 1), and `pageSize` (default 20, maximum 100).                                                                                                             |
-| `infomentor_get_message`       | Read a full plain-text message using its numeric `id` from the message list.                                                                                                                                                                      |
-| `infomentor_get_notifications` | Read the available notification feed. Optional `selectedChildOnly` and `includeCleared` both default to false.                                                                                                                                    |
-| `infomentor_collect_updates`   | Check all children, timetables, full inbox/sent messages, and notifications. Pass the last handled `cursor` for changes only; see scheduled checks below.                                                                                         |
-| `infomentor_login`             | Opt-in. Sign in with injected secrets or `credentialsFile`, or import with `importFile`. `localForm` explicitly opts into a same-computer browser; `allowAccountChange` replaces another account's session. `timeoutSeconds` 1–3600, default 300. |
-| `infomentor_setup_status`      | Opt-in. Read setup progress or the final result.                                                                                                                                                                                                  |
-| `infomentor_cancel_setup`      | Opt-in. Cancel setup while preserving the previously saved session.                                                                                                                                                                               |
-| `infomentor_logout`            | Opt-in. Cancel setup and remove the local saved session and its collection snapshots.                                                                                                                                                             |
+| Tool                           | Purpose                                                                                                                                                                                 |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `infomentor_session_status`    | Verify authentication using InfoMentor's session endpoint. Without a session it names the CLI command to run.                                                                           |
+| `infomentor_get_overview`      | Read children and the selected child's timetable.                                                                                                                                       |
+| `infomentor_select_child`      | Select a child using `childId` from the overview, then return the updated overview and timetable. Later reads describe whichever child is selected at that moment.                      |
+| `infomentor_get_messages`      | List messages with `folder` (`inbox` or `sent`), optional `search`, `page` (starting at 1), and `pageSize` (default 20, maximum 100).                                                   |
+| `infomentor_get_message`       | Read a full plain-text message using its numeric `id` from the message list.                                                                                                            |
+| `infomentor_get_notifications` | Read the available notification feed. Optional `selectedChildOnly` and `includeCleared` both default to false.                                                                          |
+| `infomentor_collect_updates`   | Check all children, timetables, full inbox/sent messages, and notifications. Pass the last handled `cursor` for changes only; see scheduled checks below.                               |
+| `infomentor_login`             | Opt-in. Sign in with injected secrets or `credentialsFile`, or import with `importFile`. `allowAccountChange` replaces another account's session. `timeoutSeconds` 1–3600, default 300. |
+| `infomentor_setup_status`      | Opt-in. Read setup progress or the final result.                                                                                                                                        |
+| `infomentor_cancel_setup`      | Opt-in. Cancel setup while preserving the previously saved session.                                                                                                                     |
+| `infomentor_logout`            | Opt-in. Cancel setup and remove the local saved session and its collection snapshots.                                                                                                   |
 
 The four opt-in tools exist only when the server runs with `--allow-setup-tools`.
-Login/import return immediately. Check progress after the user signs in or after
-a short wait; do not continuously poll. Account operations pause during setup.
+Login/import return immediately. Check progress after a short wait; do not
+continuously poll. Account operations pause during setup.
 
 The overview returns `title`, `text`, `truncated`, `retrievedAt`, `children`, and
 `timetable`. A `null` timetable means the parent account did not advertise the
@@ -371,9 +353,6 @@ session file together with its collection snapshots.
 - Inject secrets into the login process and use setup/status tools.
 - Setup tools are absent unless the server runs with `--allow-setup-tools`; when
   they are absent, tell the user to run `infomentor-mcp login` on the MCP host.
-- Only enable `localForm` when explicitly requested on the same computer; never
-  select it for a remote VM. Its URL is printed on the server's standard error
-  and the form opens in the user's browser; it is never returned to you.
 - Never pass `allowAccountChange` unless the user explicitly asked to replace
   the saved account.
 - Pass only host-local paths to import or credential-file login.
@@ -400,7 +379,6 @@ infomentor-mcp [serve|login|status|logout] [options]
 
 --session FILE          Absolute session path, usable with every command
 --credentials FILE      Private username/password JSON file for login and renewal
---local-form            login: opt into a same-computer browser form
 --import FILE           login: verify and import a version-2 session
 --timeout SECONDS       login: 1–3600 seconds, default 300
 --allow-account-change  login: replace a saved session that belongs to another account
@@ -443,6 +421,13 @@ instead of retrying. See automatic session renewal above for expired sessions.
 
 ### Upgrade notes
 
+The optional local password form has been removed because a stale page could
+send credentials to a replacement listener. Remove `--local-form` and `localForm`
+from configurations; both are rejected. Use the private credentials file or
+environment options above. Setup status no longer includes `waiting`. Existing
+sessions and automatic renewal remain supported. Restart the MCP host after
+upgrading and close any old local-form browser tabs.
+
 Version 0.6.0 is the first release from the `family-mcp` monorepo (see
 `CHANGELOG.md`). Install URLs changed; releases under the old repository are not
 updated. Behaviour changes:
@@ -453,8 +438,6 @@ updated. Behaviour changes:
   `--allow-account-change` is supplied.
 - New installs use `~/.config/infomentor-mcp/session.json`; an existing
   `~/.infomentor-mcp/session.json` remains honoured.
-- `loginUrl` is no longer returned through MCP; the local form URL is printed
-  only on the server's standard error.
 
 Session, import, and credentials files must be regular files owned by you with
 mode `0600`. Logout also removes collection snapshots.
@@ -474,9 +457,8 @@ sessions remain valid. Restart the MCP client to discover all nine tools.
 Version 0.2.2 fixes session saving when InfoMentor sends empty authentication
 deletion cookies. Existing HTTP sessions remain valid.
 
-Version 0.2.1 makes the browser form opt-in and adds username/password environment
-input. Existing HTTP sessions remain valid. Desktop users who want the form now
-use `--local-form` or `localForm: true`.
+Version 0.2.1 added username/password environment input. Existing HTTP sessions
+remain valid.
 
 #### From 0.1.x
 

@@ -21,7 +21,6 @@ const help = [
   '  --session FILE     Session file (default: ~/.config/infomentor-mcp/session.json, or',
   '                     ~/.infomentor-mcp/session.json when that legacy file exists)',
   '  --credentials FILE Private JSON file with username/password (login and automatic renewal)',
-  '  --local-form       login: opt into a browser form on this same computer',
   '  --import FILE      login: validate and import a session on a headless machine',
   '  --timeout SECONDS  login: maximum wait (default: 300)',
   '  --allow-account-change',
@@ -52,7 +51,6 @@ async function main(): Promise<void> {
       options: {
         session: { type: 'string' },
         credentials: { type: 'string' },
-        'local-form': { type: 'boolean' },
         import: { type: 'string' },
         timeout: { type: 'string' },
         'allow-account-change': { type: 'boolean' },
@@ -62,6 +60,14 @@ async function main(): Promise<void> {
       },
     });
   } catch {
+    // Retired: a stale password form can submit to a replacement loopback listener.
+    if (
+      process.argv.slice(2).some((arg) => arg === '--local-form' || arg.startsWith('--local-form='))
+    )
+      throw new InfoMentorError(
+        'INVALID_CONFIGURATION',
+        '--local-form has been removed. Use --credentials with a private JSON file or privately inject INFOMENTOR_USERNAME and INFOMENTOR_PASSWORD.',
+      );
     throw new InfoMentorError(
       'INVALID_CONFIGURATION',
       'Invalid arguments. Run infomentor-mcp --help.',
@@ -89,17 +95,14 @@ async function main(): Promise<void> {
     );
   const command = positionals[0] ?? 'serve';
 
-  if (
-    command !== 'login' &&
-    (values.import || values.timeout || values['local-form'] || values['allow-account-change'])
-  ) {
+  if (command !== 'login' && (values.import || values.timeout || values['allow-account-change'])) {
     throw new InfoMentorError('INVALID_CONFIGURATION', 'Login options only apply to login.');
   }
 
   if (command !== 'serve' && values['allow-setup-tools'])
     throw new InfoMentorError('INVALID_CONFIGURATION', 'Server options only apply to serve.');
 
-  if (values.import && (values.credentials || values['local-form']))
+  if (values.import && values.credentials)
     throw new InfoMentorError('INVALID_CONFIGURATION', 'Choose session import or login, not both.');
 
   const options: ServerOptions = {};
@@ -151,16 +154,8 @@ async function main(): Promise<void> {
         const loginOptions = {
           ...options,
           signal: controller.signal,
-          localForm: values['local-form'] ?? false,
           allowAccountChange: values['allow-account-change'] ?? false,
           timeoutMs: timeout.data * 1000,
-          onProgress(stage: 'waiting' | 'saved', url?: string): void {
-            stderr(
-              stage === 'saved'
-                ? 'Signed in. Session saved to ' + sessionPath(options.sessionFile)
-                : 'Open the private sign-in form: ' + url,
-            );
-          },
         };
 
         await login(
@@ -168,6 +163,7 @@ async function main(): Promise<void> {
             ? { ...loginOptions, credentialsFile: resolve(values.credentials) }
             : loginOptions,
         );
+        stderr('Signed in. Session saved to ' + sessionPath(options.sessionFile));
 
         return;
       }

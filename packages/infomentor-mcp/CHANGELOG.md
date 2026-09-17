@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+
+Breaking changes:
+
+- Removed the optional local HTTP password form: `--local-form` and the MCP
+  `localForm` field are rejected, and setup status no longer includes `waiting`.
+  A stale form could send credentials to another local process after cancellation
+  or timeout.
+- Use a private credentials file or privately injected `INFOMENTOR_USERNAME` /
+  `INFOMENTOR_PASSWORD` instead. Restart upgraded MCP processes and close any old
+  local-form browser tabs. Existing sessions, account binding, session import,
+  cancellation, and automatic renewal remain supported.
+
 ## 0.6.1
 
 - Upgrades now report old running server processes and can stop them with

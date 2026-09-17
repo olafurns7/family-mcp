@@ -295,7 +295,7 @@ test('browser discovery honors the override and reports all searched choices', a
       },
     ),
     (error: Error) => {
-      expect(error.message).toContain('google-chrome, google-chrome-stable, chromium');
+      expect(error.message).toContain('ABLER_BROWSER/--browser');
       expect(error.message).toContain("auth capture <URL>' or 'abler-mcp auth import <file>");
 
       return true;
@@ -452,7 +452,7 @@ test('auth login timeout closes a launcher-spawned browser child', async () => {
     const { exit, stderr } = await collectProcess(child);
 
     expect(exit).toBe(1);
-    expect(stderr).toContain('Abler login timed out after 1 second.');
+    expect(stderr).toContain('Abler login timed out. Try again or increase --timeout.');
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(await readFile(join(directory, 'browser.closed'), 'utf8')).toBe('closed');
     expect(pidIsRunning(state.pid)).toBe(false);
@@ -589,7 +589,7 @@ test('auth login rejects partial cookies and keeps the previous session', async 
     const { exit, stderr } = await collectProcess(child);
 
     expect(exit).toBe(1);
-    expect(stderr).toContain('Abler login timed out after 1 second.');
+    expect(stderr).toContain('Abler login timed out. Try again or increase --timeout.');
     expect(await readFile(sessionPath, 'utf8')).toBe(originalFile);
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(await readFile(join(directory, 'browser.closed'), 'utf8')).toBe('closed');

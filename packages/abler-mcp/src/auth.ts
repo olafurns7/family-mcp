@@ -195,7 +195,13 @@ export async function saveSession(path: string, jar: CookieJar): Promise<void> {
 
 /** Attach to an existing Chromium page; the server itself never needs a browser. */
 export async function captureCookies(endpoint: string, signal?: AbortSignal): Promise<CookieJar> {
-  const url = new URL(endpoint);
+  let url: URL;
+
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new SafeError('Use a loopback Chrome debugging URL, such as http://127.0.0.1:9222.');
+  }
 
   if (
     url.protocol !== 'http:' ||
@@ -206,20 +212,36 @@ export async function captureCookies(endpoint: string, signal?: AbortSignal): Pr
     throw new SafeError('Use a loopback Chrome debugging URL, such as http://127.0.0.1:9222.');
   }
 
-  const response = await fetch(new URL('/json/list', url), {
-    redirect: 'error',
-    signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(10000)])
-      : AbortSignal.timeout(10000),
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(new URL('/json/list', url), {
+      redirect: 'error',
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(10000)])
+        : AbortSignal.timeout(10000),
+    });
+  } catch {
+    throw new SafeError('Cannot connect to Chrome debugging.');
+  }
 
   if (!response.ok) throw new SafeError('Cannot list Chrome debugging tabs.');
 
-  const pages = z
-    .array(
-      z.object({ type: z.string(), url: z.string(), webSocketDebuggerUrl: z.string().optional() }),
-    )
-    .parse(await response.json());
+  let pages;
+
+  try {
+    pages = z
+      .array(
+        z.object({
+          type: z.string(),
+          url: z.string(),
+          webSocketDebuggerUrl: z.string().optional(),
+        }),
+      )
+      .parse(await response.json());
+  } catch {
+    throw new SafeError('Invalid Chrome debugging response.');
+  }
 
   const page = pages.find(
     (p) => p.type === 'page' && p.url.startsWith(`${ORIGIN}/`) && p.webSocketDebuggerUrl,
@@ -227,7 +249,13 @@ export async function captureCookies(endpoint: string, signal?: AbortSignal): Pr
 
   if (!page?.webSocketDebuggerUrl)
     throw new SafeError('Open www.abler.io and sign in in that browser first.');
-  const socketUrl = new URL(page.webSocketDebuggerUrl);
+  let socketUrl: URL;
+
+  try {
+    socketUrl = new URL(page.webSocketDebuggerUrl);
+  } catch {
+    throw new SafeError('Chrome returned an unexpected debugging address.');
+  }
 
   if (
     socketUrl.protocol !== 'ws:' ||

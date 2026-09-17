@@ -72,7 +72,69 @@ an authenticated legacy session acquires that identity on its next read.
 Successful renewal and rotated cookies are saved atomically under the same
 session lock used for collection, login, import, and logout. The MCP does not
 save the password. A configured credentials file remains under the user's
-control; a one-time local form cannot provide credentials for unattended renewal.
+control; unattended renewal requires credentials configured for the MCP process.
+
+## Mobile OAuth renewal investigation (2026-09-16)
+
+InfoMentor's mobile app has a separate OAuth renewal flow that this MCP does not
+implement. The earlier cookie-only experiment above did not exercise this flow
+and does not establish that passwordless renewal is unavailable.
+
+The publisher's [iOS release notes](https://apps.apple.com/is/app/infomentor-hub/id1388965431)
+describe automatic login until logout. Static inspection of the Android app
+confirmed an authorization-code exchange, persisted access and refresh tokens,
+and an SSO bridge back into the website. This is evidence about the Android
+implementation; the iOS binary was not inspected.
+
+### Observed Android flow
+
+1. `WebLoginKt` selects
+   `https://im1.infomentor.is/Production/Mentor/?isimhapp=1` for Iceland.
+2. After web login, `WebLoginActivity` posts an empty body to
+   `account/pair/GetAuthenticationData` on the parent site. The response model
+   contains `apiUrl`, `authenticationUrl`, `clientId`, `expirationTime`,
+   `tokenUrl`, and `revokeRefreshTokenUrl`. The authentication URL contains a
+   temporary `authGuid`.
+3. `NetworkAPIManager.auth` calls `GET /Authentication/Authentication/LoginOAuth2`
+   on the discovered authentication origin with the GUID, device identifier/name,
+   platform, client ID, scope, response type, and callback URI. The app expects
+   a 302 carrying an authorization code in the custom-scheme callback.
+4. `AuthAPI.authToken` exchanges that code using a form-encoded
+   `POST /Authentication/OAuth2/Token`. `AuthPresenter` saves `access_token` and
+   `refresh_token`. The app uses client ID `notificationapp`, scope
+   `IM2-API-NOTIFICATION`, and callback `InfomentorNotification://oauth2Callback`.
+5. `MainPresenter` requests `GET /NA1/Authentication/sso` on the discovered API
+   origin with a bearer access token and receives a web sign-in URL. On HTTP 401,
+   it posts `grant_type=refresh_token` and the saved refresh token to the token
+   endpoint, saves both returned tokens, and retries SSO.
+
+The API paths, HTTP methods, and form field names were checked in the app's
+Retrofit annotations as well as its calling code. No push-notification
+registration is needed to describe this authentication sequence.
+
+### Evidence and remaining verification
+
+The inspected package was `net.infomentor.android`, version 1.0.85, matching the
+publisher's [Google Play listing](https://play.google.com/store/apps/details?id=net.infomentor.android).
+It was downloaded from an [APKPure mirror](https://apkpure.net/infomentor-hub/net.infomentor.android/download)
+for static inspection, without installation or execution. The downloaded XAPK's
+SHA-256 was `9267eae9ae8286ac850701d1f55e4e7906c77133d6786c4fc45302c4fa1d9ad6`,
+matching the mirror's published hash; this is not independent publisher-signature
+verification.
+
+The Icelandic app-login URL was fetched successfully without credentials.
+The public [parent JavaScript](https://minn.infomentor.is/dist/scripts/scripts.js)
+also publishes native-app session-expiry notifications. Neither observation
+proves a successful token exchange. No account was paired, no user tokens were
+requested or refreshed, and refresh-token lifetime/rotation rules remain untested.
+
+Before adding this flow to the MCP, verify discovery, pairing, token exchange,
+expired-access-token renewal, and SSO restoration with an Icelandic account.
+Preserve the existing account/child checks and cross-process lock. Rotated tokens
+must be saved privately before subsequent SSO/data requests can fail. Validate
+discovered origins and SSO redirects without forwarding bearer tokens or
+passwords to redirect destinations. Existing cookie-only sessions will need an
+explicit upgrade while authenticated, or a new login, to acquire a refresh token.
 
 ## Scope and consequence
 
