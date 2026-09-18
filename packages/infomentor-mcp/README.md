@@ -19,7 +19,7 @@ it is not affiliated with InfoMentor.
 ## Quick start
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.8.0/packages/infomentor-mcp/install.sh | sh
 ```
 
 ```sh
@@ -28,7 +28,7 @@ infomentor-mcp login --credentials /absolute/path/credentials.json
 
 Expected output starts with `Signed in. Session saved to`.
 
-## Install, WARP, and connect
+## Install and connect
 
 The installer verifies the archive checksum and executable version, then installs
 `infomentor-mcp` under `~/.local/bin`. Set `INFOMENTOR_PREFIX` to an absolute
@@ -42,13 +42,16 @@ it. Verify an install:
 Expected output:
 
 ```text
-0.6.0
+0.8.0
 ```
 
 Run the Quick start installer again to upgrade; the session file stays in place.
 Upgrading replaces the command but not a running server; restart the MCP host, or
 rerun with `--stop-running`.
 To uninstall the command and release directories while retaining the session:
+
+If direct-route setup was enabled, first rerun the installer with
+`--without-direct-route` to remove its managed hostname override.
 
 ```sh
 rm -f /absolute/path/to/.local/bin/infomentor-mcp
@@ -60,12 +63,31 @@ configuration files do not reliably expand `~` or `$HOME`.
 
 ### Remote machines and WARP
 
-Use the standard install on your own laptop or desktop. Use `--with-warp`
-**only** on a remote Debian 13 x64 machine, such as a VPS or the Grok bot VM,
-when its network path to `infomentor.is` fails before HTTP.
+Use the standard install on a working connection. For Grok Bot or another Linux
+host where the normal school connection fails, try the verified alternate route:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.8.0/packages/infomentor-mcp/install.sh | sh -s -- --with-direct-route
+```
+
+This requires `/usr/bin/python3` and administrator or `sudo` access. The installer
+resolves InfoMentor's alternate frontend, verifies both original school hostnames
+over HTTPS, and adds one marked `/etc/hosts` entry. That entry affects these two
+hostnames for all programs on the machine. Login URLs and certificate verification
+stay unchanged. Existing unmanaged hostname overrides are left for you to review.
+
+Upgrades remember this option and recheck the current alternate address. To
+remove the managed entry and restore ordinary DNS, rerun with
+`--without-direct-route`. Restart the MCP host after installing. The
+[connectivity guide](docs/CONNECTIVITY.md#reproduce-on-another-grok-vm) records the
+live checks and limits: this is a tested workaround, not a guaranteed upstream route.
+
+WARP remains an optional experiment for remote Debian 13 x64 machines whose
+network path fails before HTTP. It worked in an earlier test, but a later
+healthy tunnel could not reach either school host. If testing WARP, use:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.8.0/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
 ```
 
 It requires administrator or `sudo` access and acceptance of
@@ -75,7 +97,7 @@ It does not change the default route or Tailscale settings. To revert to direct
 access:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh -s -- --without-warp
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.8.0/packages/infomentor-mcp/install.sh | sh -s -- --without-warp
 ```
 
 Do not use WARP on a normal working connection, on a non-Debian-13-x64 machine,
@@ -519,9 +541,9 @@ The library is a small standards-based cookie jar, not a browser dependency.
 WARP is optional; the standard installation uses the host's existing connection.
 The host must be able to establish verified HTTPS connections to `im1.infomentor.is` and
 `minn.infomentor.is`. A tested Grok VM's normal internet route closed TLS before
-HTTP. WARP in local proxy mode worked with the published standalone MCP and
-removed the need for a user-operated Tailscale exit node. It remains a managed
-proxy; no proxy-free repair on that VM has been confirmed. See the
-[verified configuration and measured results](docs/CONNECTIVITY.md).
+HTTP at the normal destination. An alternate InfoMentor frontend subsequently
+passed direct login, session verification, and an MCP overview. WARP's earlier
+success did not hold on the replacement VM's tested US route. See the
+[current workaround, limits, and measured results](docs/CONNECTIVITY.md).
 
 License: MIT.

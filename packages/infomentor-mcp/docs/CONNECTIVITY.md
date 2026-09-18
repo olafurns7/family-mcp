@@ -1,5 +1,254 @@
 # Direct InfoMentor access: investigation and recommendation
 
+## 18 September 2026: a direct route passed login and MCP reads
+
+**An alternate InfoMentor frontend works from the Grok VM without WARP or a
+Tailscale exit node.** Both school hostnames normally resolve to
+`213.180.87.183`, which still failed before HTTP over the native VM route.
+The mobile app's public API hostname, `api-im.infomentor.net`, resolved to
+`213.180.76.9`. Connecting to that address while retaining each original school
+hostname for TLS SNI, certificate verification, and HTTP Host worked:
+
+| Native-route check                                       | Result                                                                       |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `im1.infomentor.is/production/mentor/` at `213.180.76.9` | Verified TLS 1.3, HTTP 200, expected password form and ASP.NET hidden fields |
+| `minn.infomentor.is/` at `213.180.76.9`                  | Verified TLS 1.3, HTTP 302 to the expected authentication path               |
+| Existing native MCP 0.6.1: full credential login         | Passed in approximately five seconds                                         |
+| Separate MCP session check                               | Active; verified account ID saved                                            |
+| MCP with a hostname override and no proxy environment    | Session check and `infomentor_get_overview` passed                           |
+
+The certificate covers `*.infomentor.is`. The login and session checks first
+used a temporary loopback CONNECT forwarder whose outgoing sockets explicitly
+used the VM's native route. TLS remained between the unmodified MCP and
+InfoMentor. A second test replaced that forwarder with an `/etc/hosts` entry and
+a temporary, destination-specific native-route rule. It passed both CLI status
+and the MCP overview tool. This demonstrates an authenticated direct route,
+not just a reachable public page.
+
+After these initial checks, the two-host entry was retained on the inspected VM.
+Temporary proxies, test processes, and routing rules were removed. Its original
+Tailscale exit-node selection and running MCP process were preserved. The saved
+network mode at that point was `direct`; WARP was stopped. Existing Tailscale routing may still carry
+ordinary traffic, but the controlled checks above did not depend on it.
+
+This is a verified workaround using an alternate frontend, not an advertised
+InfoMentor failover contract. Its address and virtual-host configuration may
+change. No 24-hour soak test or test on the friend's VM has been completed.
+It narrows the network problem to the normal destination/path; it does not
+identify the operator responsible for the failures at `213.180.87.183`.
+
+### Reproduce on another Grok VM
+
+First check whether ordinary access already works. A working host does not need
+this override. On Linux, release 0.8.0 can apply the tested route:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.8.0/packages/infomentor-mcp/install.sh | sh -s -- --with-direct-route
+```
+
+The installer requires `/usr/bin/python3` and administrator or `sudo` access.
+It resolves `api-im.infomentor.net`, then verifies TLS certificates and the
+expected public login responses using the original school hostnames. Only after
+both checks pass does it add one marked `/etc/hosts` entry for `im1.infomentor.is`
+and `minn.infomentor.is`. It handles no school credentials. This entry applies to
+all programs on that machine; no default route or Tailscale setting is changed.
+
+Restart the MCP host after installation. Use the host's existing private
+credentials for login and automatic renewal, then check `infomentor-mcp status`
+and an overview through the MCP host. No setup tools need to be enabled.
+
+The network selection is saved as `direct-route`. Rerunning the ordinary
+installer remembers it and revalidates the current alternate address. It safely
+adopts the marked entry from the earlier manual recipe, but refuses to replace
+an unmanaged hostname override. Failed network checks leave the hosts file and
+previous command unchanged. There is no background address refresh; rerun the
+installer if the upstream address changes.
+
+To remove the managed entry and return to ordinary DNS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.8.0/packages/infomentor-mcp/install.sh | sh -s -- --without-direct-route
+```
+
+Switching a saved direct-route install to WARP or ordinary direct mode also
+removes the managed entry. WARP remains an unreliable alternative on the tested
+Grok route, as recorded below.
+
+The release helper was also exercised on the inspected Linux VM over its native
+route: TLS preflight, adoption of the manual entry, removal, and reinstallation
+passed. The original hosts content and routing rules were preserved afterward.
+
+### A separate session-expiry problem
+
+During the later tests, the VM's session had expired and contained cookies but
+no verified `accountId`. Both the existing exit-node route and the alternate
+frontend returned the MCP's legacy-session renewal guard. The runtime already
+had privately configured credentials. One explicit login using those existing
+credentials succeeded through the alternate frontend and saved the verified
+account ID; subsequent status and overview checks passed. No account-change
+override was used. This repairs the observed prerequisite for automatic
+renewal, but does not prove the cause of the friend's roughly 24-hour failure.
+
+### Other alternatives investigated
+
+| Option                  | Current evidence and tradeoff                                                                                                                                                                                                                                                                                                     |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tor with European exits | A temporary client connected over the native VM route. A Europe-limited run reached Cloudflare FRA; an Iceland-only run used an exit classified as IS by Tor's GeoIP data. Both runs timed out connecting to both school hosts. No school credentials were sent through Tor. Test daemons and routing rules were removed.         |
+| Mobile OAuth/API        | `api-im.infomentor.net` is reachable directly. The inspected app's SSO flow returns to the school website; its observed API surface does not establish a replacement for the MCP's timetable/message endpoints. The useful discovery was its alternate frontend address. No device pairing or OAuth token exchange was performed. |
+| Tailscale with Mullvad  | Supported selectable regional exit nodes, with no home computer required. The [add-on](https://tailscale.com/docs/features/exit-nodes/mullvad-exit-nodes) requires purchase; current [pricing](https://tailscale.com/pricing) is $5/month per five devices. Not purchased or tested against InfoMentor.                           |
+| Proton VPN              | Supports [WireGuard configuration files and server selection](https://protonvpn.com/support/wireguard-configurations), including configurations for free accounts. Requires a separate account and private VPN configuration. Not tested here.                                                                                    |
+| Shared European relay   | Can use the MCP's existing `HTTPS_PROXY` support with an authenticated CONNECT proxy restricted to the two school hosts. Requires operating a service and testing its actual egress. No relay was provisioned.                                                                                                                    |
+
+## 18 September 2026 retest: WARP connects, school hosts remain unreachable
+
+**WARP is not currently a dependable unattended connection for Grok Bot users.**
+The earlier successful test below is historical. A live retest on the authorized
+replacement Grok VM reproduced the reported failure: WARP itself connected, but
+could not reach InfoMentor's school service.
+
+The VM runs Debian 13/x64 without systemd. Its installed MCP was 0.6.1, saved in
+direct mode, with an existing Tailscale exit node providing its working route.
+The installed WARP helper matched this repository's script byte for byte. WARP
+was initially stopped; temporarily starting it produced these results:
+
+| Route or check                                             | Result                                                                      |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------- |
+| WARP daemon                                                | `Connected`, `Network: healthy`                                             |
+| Cloudflare trace through WARP                              | `warp=on`, `colo=IAD`, verified TLS                                         |
+| WARP tunnel route                                          | Native VM interface to `162.159.198.2:500`, independent of the exit node    |
+| Public `www.infomentor.is` through WARP                    | HTTP 200                                                                    |
+| `im1.infomentor.is/production/mentor/` through WARP        | Connection timeout before HTTP                                              |
+| `minn.infomentor.is` through WARP                          | Connection timeout before HTTP                                              |
+| Parent host through SOCKS5 with local DNS                  | SOCKS5 failure, reply code 4                                                |
+| Login host with a pinned destination through HTTP CONNECT  | Proxy CONNECT aborted                                                       |
+| Both school hosts through the VM's native route            | TCP connects; TLS ends with unexpected EOF after approximately five seconds |
+| Both school hosts through the existing Tailscale exit node | Verified TLS; HTTP 200 for login and 302 for the parent entry point         |
+| Session check with the running MCP's private environment   | `InfoMentor session is active.`                                             |
+
+Both school names resolved to `213.180.87.183`. Native-route comparisons used
+Tailscale's existing bypass mark on individual test sockets; no global routing
+change was required. Certificate verification remained enabled. The existing
+helper's recovery attempt correctly failed with `WARP could not establish a
+verified InfoMentor connection.`
+
+This establishes a destination-specific connectivity failure on the tested WARP
+path. Source-network filtering or upstream routing is plausible; the responsible
+operator and exact cause require network-side evidence. The earlier successful
+WARP test used EWR, whereas this test used IAD. That difference is a lead, not
+proof that an edge change caused the failure. The reported roughly 24-hour
+lifetime does not establish a WARP expiry timer. The friend's VM was not inspected.
+
+### European WARP route comparison, 18 September
+
+A follow-up test routed only WARP's `162.159.198.0/24` tunnel destination through
+the existing Icelandic Tailscale exit node. The same registered client connected
+to `162.159.198.2:443`; WARP tunnel statistics reported `Colo: KEF`, and the
+Cloudflare trace independently returned `warp=on`, `colo=KEF`, `loc=IS`.
+Both school hosts then passed verified HTTPS: HTTP 200 for the login page and
+302 for the parent entry point, each in approximately three seconds. These were
+anonymous connectivity checks, not another authenticated MCP test.
+
+After restoring the native route and default endpoint selection, the same
+client connected to IAD and the Cloudflare trace still succeeded, but both
+school requests failed with HTTP CONNECT 502 responses. This comparison
+confirms a working Icelandic WARP path and a failing US WARP path in the same
+test session. It does not identify which network operator causes the failure.
+
+Setting `warp-cli tunnel endpoint set 162.159.198.2:443` over the native route
+did not reproduce KEF: the tunnel remained connecting during a 35-second wait.
+The installed client accepts an IP/port override but exposes no country selector.
+Cloudflare's [WARP FAQ](https://developers.cloudflare.com/warp-client/known-issues-and-faq/)
+describes how network routing affects the selected data center. Its supported
+[dedicated egress policies](https://developers.cloudflare.com/cloudflare-one/traffic-policies/egress-policies/)
+are Enterprise-only.
+
+The European test therefore still depends on the existing exit node; it is not
+a standalone WARP fix for other Grok users. The endpoint override, temporary
+routing rule, and test daemons were removed, and the original connection setting
+was restored.
+
+### Available WARP settings and further native-route tests
+
+The installed 2026.7.1377.0 client reports `Account type: Free`. Its registered
+endpoint list contains `162.159.198.2` and `2606:4700:103::2`, each with ports
+443, 500, 1701, 4500, 4443, 8443, and 8095. These are entry addresses and ports,
+not a list of regional exits. The same IPv4 address served IAD over the native
+route and KEF over the Icelandic exit node. The VM has no native IPv6 default
+route, so the IPv6 variants were not tested as independent routes.
+
+| Setting                     | Available control                                                               |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| Entry endpoint              | `tunnel endpoint set IP:PORT`, or `reset` for automatic selection               |
+| Tunnel protocol             | MASQUE or WireGuard; the current local-proxy mode requires MASQUE               |
+| MASQUE transport preference | `h3-only`, `h2-only`, or `h3-with-h2-fallback`                                  |
+| Operating mode              | `proxy`, `warp`, `warp+doh`, `warp+dot`, `tunnel_only`, or DNS-only `doh`/`dot` |
+| Local proxy listener        | `proxy port PORT`; currently loopback port 18443                                |
+| Country or city             | No selector in this consumer registration                                       |
+
+Further anonymous tests used the native VM route, without changing the existing
+Tailscale exit-node selection:
+
+- Requesting `h2-only` was accepted by the CLI, but the actual tunnel continued
+  to report `MASQUE (HTTPS via UDP)` and IAD, including after a daemon restart.
+  Both school hosts returned proxy HTTP CONNECT 502 failures. This does not
+  establish that an HTTP/2 tunnel was exercised successfully.
+- Forcing the registered `162.159.198.2:1701` endpoint with `h3-only` established
+  a healthy tunnel; the UDP socket confirmed that port. It still reached IAD,
+  and both school requests failed with proxy CONNECT aborts.
+
+Endpoint and transport overrides were reset, test daemons were stopped, and
+the original consumer settings, proxy mode, connection setting, and routing
+rules were verified restored.
+
+[WARP+](https://developers.cloudflare.com/warp-client/warp-modes/#warp-unlimited)
+offers access to a larger network; its documentation does not provide a country
+selector. Cloudflare's supported selectable regional egress uses
+[dedicated egress IPs and virtual networks](https://developers.cloudflare.com/cloudflare-one/tutorials/user-selectable-egress-ips/),
+with the Enterprise egress policies linked above. No such European egress was
+provisioned or tested for this consumer registration. The working KEF test
+remains dependent on the existing Icelandic exit node.
+
+Authentication is a separate requirement. A session check from an ordinary SSH
+shell initially required login; repeating it with the existing MCP environment
+succeeded using its configured credentials. Keep credentials available to the
+running MCP for [automatic renewal](../README.md#automatic-session-renewal).
+Reinstalling WARP cannot repair an expired InfoMentor session.
+
+### Making setup usable by other Grok Bot users
+
+The smallest supported alternative is Grok's **Settings → Computer → Route
+egress through this desktop**, followed by the normal direct MCP configuration.
+Grok documents this route in its [settings guide](https://docs.x.ai/grok-bot/settings-and-notifications#route-traffic-through-your-desktop).
+It depends on that desktop and its network. This feature was documented, not
+enabled or live-tested during this investigation.
+
+A setup flow can test both school hosts, configure the existing native MCP, use
+the host's private credential input, and verify a session. WARP can remain an
+optional route only when those destination checks pass. Its healthy status and
+a successful Cloudflare trace are insufficient acceptance checks.
+
+For unattended operation while the desktop is unavailable, a reachable exit
+node or an operator-supported repair to the cloud route is still needed.
+Grok's [Team Setup](https://docs.x.ai/grok-bot/private-networks) can reapply
+installation scripts after computer replacement, but is Enterprise-only and
+does not operate or guarantee the networking client. Public setup instructions
+must keep each user's credentials private and account-specific.
+
+Two existing implementation limits also matter: the launcher checks tunnel
+health rather than school-host reachability, and non-systemd daemon recovery
+runs on the next MCP launch, not during an already-running MCP process. Neither
+explains away the reproduced failure with a running, healthy tunnel. Switching
+to WireGuard is not a compatible proxy-mode fallback; Cloudflare requires
+[MASQUE for this mode](https://developers.cloudflare.com/changelog/post/2025-10-07-warp-linux-ga/).
+
+Both temporary WARP daemon instances were stopped after their tests. The saved
+direct mode, installed command, running MCP process, and Tailscale exit-node
+selection were preserved. The authenticated status check could renew and save
+the existing session. No credentials or school records were included in output.
+No release, runtime-code change, or new networking service was deployed.
+
+## 11 September 2026 investigation: historical evidence
+
 Investigated on 11 September 2026. Scope: the Icelandic InfoMentor parent site,
 this MCP package, and one authorized Grok Bot VM. No passwords, session cookies,
 message contents, or pupil names are included in these results.

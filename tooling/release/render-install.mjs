@@ -28,12 +28,16 @@ export async function renderInstall(pkg) {
     VERSION: pkg.version,
     OPTIONS: warp
       ? `  network=''
+  remove_direct_route=false
+  usage='Usage: install.sh [--with-direct-route|--without-direct-route|--with-warp|--without-warp] [--stop-running]'
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --stop-running) stop_running=true ;;
-      --with-warp) [ -z "$network" ] || { echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1; }; network=warp ;;
-      --without-warp) [ -z "$network" ] || { echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1; }; network=direct ;;
-      *) echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1 ;;
+      --with-direct-route) [ -z "$network" ] || { echo "$usage" >&2; exit 1; }; network=direct-route ;;
+      --without-direct-route) [ -z "$network" ] || { echo "$usage" >&2; exit 1; }; network=direct; remove_direct_route=true ;;
+      --with-warp) [ -z "$network" ] || { echo "$usage" >&2; exit 1; }; network=warp ;;
+      --without-warp) [ -z "$network" ] || { echo "$usage" >&2; exit 1; }; network=direct ;;
+      *) echo "$usage" >&2; exit 1 ;;
     esac
     shift
   done`
@@ -43,9 +47,14 @@ export async function renderInstall(pkg) {
     *) echo 'Usage: install.sh [--stop-running]' >&2; exit 1 ;;
   esac`,
     NETWORK: warp
-      ? `  [ -n "$network" ] || network=$(cat "$prefix/share/${pkg.name}/network" 2>/dev/null || printf direct)
-  case "$network" in direct|warp) ;; *) echo 'Invalid saved network setting.' >&2; exit 1 ;; esac
-  if [ "$network" = warp ] && { [ "$platform" != linux ] || [ "$arch" != x64 ]; }; then echo 'Automatic WARP setup supports Debian 13 on x64.' >&2; exit 1; fi`
+      ? `  previous_network=$(cat "$prefix/share/${pkg.name}/network" 2>/dev/null || printf direct)
+  [ -n "$network" ] || network=$previous_network
+  case "$network" in direct|warp|direct-route) ;; *) echo 'Invalid saved network setting.' >&2; exit 1 ;; esac
+  if [ "$network" = warp ] && { [ "$platform" != linux ] || [ "$arch" != x64 ]; }; then echo 'Automatic WARP setup supports Debian 13 on x64.' >&2; exit 1; fi
+  if [ "$previous_network" = direct-route ] && [ "$network" != direct-route ]; then remove_direct_route=true; fi
+  if [ "$network" = direct-route ] || [ "$remove_direct_route" = true ]; then
+    [ "$platform" = linux ] && [ -x /usr/bin/python3 ] || { echo 'Direct-route setup requires Linux with /usr/bin/python3.' >&2; exit 1; }
+  fi`
       : '',
     EXTRA_FILES: extraFiles,
     POST_INSTALL: warp
@@ -56,6 +65,13 @@ export async function renderInstall(pkg) {
     else sudo sh "$temporary/warp.sh" install </dev/null
     fi
     entrypoint=${pkg.name}-warp
+  fi
+  if [ "$network" = direct-route ] || [ "$remove_direct_route" = true ]; then
+    cp "$staging/libexec/direct-route.py" "$temporary/direct-route.py"
+    if [ "$network" = direct-route ]; then route_action=install; else route_action=remove; fi
+    if [ "$(id -u)" = 0 ]; then /usr/bin/python3 -I "$temporary/direct-route.py" "$route_action" </dev/null
+    else sudo /usr/bin/python3 -I "$temporary/direct-route.py" "$route_action" </dev/null
+    fi
   fi`
       : '',
     SAVE_NETWORK: warp

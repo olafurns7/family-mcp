@@ -293,6 +293,108 @@ fi
         env: { ...env, ...extraEnv },
       });
 
+    if (pkg.name === 'infomentor-mcp') {
+      const calls = join(directory, 'network-admin-calls');
+      await writeFile(calls, '');
+      await writeFile(join(fakeBin, 'id'), '#!/bin/sh\necho 1000\n', { mode: 0o755 });
+      await writeFile(
+        join(fakeBin, 'sudo'),
+        `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$TEST_NETWORK_CALLS"
+if [ "$1" = /usr/bin/python3 ]; then cmp "$3" "$TEST_ROUTE_SOURCE"; fi
+[ "$TEST_FAILURE" != route ] || exit 42
+cat >/dev/null
+`,
+        { mode: 0o755 },
+      );
+
+      const networkEnv = {
+        TEST_NETWORK_CALLS: calls,
+        TEST_ROUTE_SOURCE: join(pkg.root, 'scripts/direct-route.py'),
+      };
+
+      const networkPath = join(prefix, 'share/infomentor-mcp/network');
+
+      const scenarios = [
+        {
+          args: ['--with-direct-route'],
+          mode: 'direct-route',
+          actions: ['direct-route.py install'],
+        },
+        { args: [], mode: 'direct-route', actions: ['direct-route.py install'] },
+        { args: ['--without-warp'], mode: 'direct', actions: ['direct-route.py remove'] },
+        { args: ['--without-direct-route'], mode: 'direct', actions: ['direct-route.py remove'] },
+        { args: ['--with-warp'], mode: 'warp', actions: ['warp.sh install'] },
+        {
+          args: ['--with-direct-route'],
+          mode: 'direct-route',
+          actions: ['direct-route.py install'],
+        },
+        {
+          args: ['--with-warp'],
+          mode: 'warp',
+          actions: ['warp.sh install', 'direct-route.py remove'],
+        },
+        { args: ['--without-warp'], mode: 'direct', actions: [] },
+      ];
+
+      for (const { args, mode, actions } of scenarios) {
+        await writeFile(calls, '');
+        const result = runInstaller(args, networkEnv);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal((await readFile(networkPath, 'utf8')).trim(), mode);
+        assert.ok(
+          (await readlink(binary)).endsWith(
+            mode === 'warp' ? '/infomentor-mcp-warp' : '/infomentor-mcp',
+          ),
+        );
+        const invoked = (await readFile(calls, 'utf8')).trim().split('\n').filter(Boolean);
+        assert.equal(invoked.length, actions.length);
+
+        assert.ok(invoked.every((call) => call.includes('/infomentor-install.')));
+        assert.deepEqual(
+          invoked.map((call) => call.split('/').at(-1)),
+          actions,
+        );
+      }
+
+      const previousCommand = await readlink(binary);
+
+      const failed = runInstaller(['--with-direct-route'], {
+        ...networkEnv,
+        TEST_FAILURE: 'route',
+      });
+
+      assert.notEqual(failed.status, 0);
+      assert.equal(await readlink(binary), previousCommand);
+      assert.equal((await readFile(networkPath, 'utf8')).trim(), 'direct');
+
+      for (const args of [
+        ['--with-warp', '--with-direct-route'],
+        ['--with-direct-route', '--without-direct-route'],
+      ]) {
+        const conflicting = runInstaller(args, networkEnv);
+        assert.notEqual(conflicting.status, 0);
+        assert.match(conflicting.stderr, /Usage:/);
+      }
+
+      const unsupported = runInstaller(['--with-direct-route'], {
+        ...networkEnv,
+        TEST_PLATFORM: 'Darwin',
+      });
+
+      assert.notEqual(unsupported.status, 0);
+      assert.match(unsupported.stderr, /requires Linux/);
+      await rm(join(fakeBin, 'id'));
+      await writeFile(join(fakeBin, 'sudo'), '#!/bin/sh\necho "Unexpected sudo" >&2\nexit 1\n', {
+        mode: 0o755,
+      });
+      console.log(
+        'infomentor-mcp: direct-route selection, upgrades, removal, WARP switching, and failure preservation passed.',
+      );
+    }
+
     const darwinArchive = `${pkg.name}-${pkg.version}-darwin-x64.tar.gz`;
     await copyFile(join(directory, archive), join(directory, darwinArchive));
 

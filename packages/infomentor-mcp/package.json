@@ -1,6 +1,6 @@
 {
   "name": "infomentor-mcp",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Local MCP server for Icelandic InfoMentor parent accounts with direct HTTP login",
   "keywords": [
     "iceland",
@@ -26,7 +26,7 @@
     "check": "tsc --noEmit",
     "format": "oxfmt -c ../../.oxfmtrc.json --write .",
     "format:check": "oxfmt -c ../../.oxfmtrc.json --check .",
-    "test": "bun test --timeout 30000",
+    "test": "bun test --timeout 30000 && python3 -I -B scripts/direct-route.test.py",
     "release:check": "node ../../tooling/release/render-install.mjs --package . --check && node ../../tooling/release/sync-version.mjs --package . --check",
     "build:binary": "node ../../tooling/release/build-binary.mjs --package .",
     "test:installer": "node ../../tooling/release/installer-test.mjs --package .",
@@ -65,6 +65,11 @@
         "infomentor_collect_updates"
       ],
       "extraFiles": [
+        {
+          "source": "scripts/direct-route.py",
+          "destination": "libexec/direct-route.py",
+          "platform": "linux"
+        },
         {
           "source": "scripts/warp.sh",
           "destination": "libexec/warp.sh",

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.0
+
+- Added Linux installer option `--with-direct-route` for hosts where the normal
+  InfoMentor destination fails. It verifies HTTPS to both school hostnames via
+  InfoMentor's alternate frontend before saving a managed `/etc/hosts` entry.
+  Requires Python 3 and administrator access; no VPN or home relay is required.
+- Upgrades remember the route and revalidate its current address.
+  `--without-direct-route` removes only the managed entry. Existing unmanaged
+  overrides and failed preflight checks leave the hosts file unchanged.
+- Documented the tested Grok Bot route, WARP limitations, and the separate
+  one-time login needed to renew an expired session without a verified account ID.
+
 ## 0.7.0
 
 Breaking changes:

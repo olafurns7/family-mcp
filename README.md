@@ -72,7 +72,7 @@ Other sign-in paths (capture an existing Chrome session, import cookies), headle
 ## InfoMentor
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.8.0/packages/infomentor-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server; restart the MCP host, or
@@ -124,13 +124,12 @@ Tools: [session, children, timetables, messages, notifications, and scheduled up
 
 Flags (`--allow-setup-tools`, `--allow-account-change`), file locations, and troubleshooting: see [packages/infomentor-mcp/README.md](packages/infomentor-mcp/README.md).
 
-Remote machines (VPS, Grok bot VM): if the host's network path to `infomentor.is` fails before HTTP, use the WARP installer variant, Debian 13 x64 only:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.7.0/packages/infomentor-mcp/install.sh | sh -s -- --with-warp
-```
-
-Read the [WARP guidance](packages/infomentor-mcp/README.md#remote-machines-and-warp) and [connectivity guide](packages/infomentor-mcp/docs/CONNECTIVITY.md) first.
+Grok Bot connectivity: add `--with-direct-route` to the installer command to
+verify and save the tested alternate InfoMentor route on Linux. It requires
+Python 3 and administrator access. See the
+[setup instructions](packages/infomentor-mcp/docs/CONNECTIVITY.md#reproduce-on-another-grok-vm).
+WARP is currently unreliable on the tested Grok route; see the
+[remote-machine guidance](packages/infomentor-mcp/README.md#remote-machines-and-warp).
 
 ## Krónan
 

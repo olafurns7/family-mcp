@@ -52,7 +52,7 @@
     },
     "packages/infomentor-mcp": {
       "name": "infomentor-mcp",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "dependencies": {
         "@family-mcp/mcp-runtime": "workspace:^",
         "@family-mcp/session-store": "workspace:*",

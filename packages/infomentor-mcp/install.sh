@@ -4,18 +4,22 @@ set -eu
 
 # Do not execute a partial script when invoked through curl | sh.
 main() {
-  version=${INFOMENTOR_VERSION:-0.7.0}
+  version=${INFOMENTOR_VERSION:-0.8.0}
   prefix=${INFOMENTOR_PREFIX:-${HOME:?Set HOME or INFOMENTOR_PREFIX}/.local}
   case "$version" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid INFOMENTOR_VERSION.' >&2; exit 1 ;; esac
   case "$prefix" in /*) ;; *) echo 'INFOMENTOR_PREFIX must be an absolute path.' >&2; exit 1 ;; esac
   stop_running=false
   network=''
+  remove_direct_route=false
+  usage='Usage: install.sh [--with-direct-route|--without-direct-route|--with-warp|--without-warp] [--stop-running]'
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --stop-running) stop_running=true ;;
-      --with-warp) [ -z "$network" ] || { echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1; }; network=warp ;;
-      --without-warp) [ -z "$network" ] || { echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1; }; network=direct ;;
-      *) echo 'Usage: install.sh [--with-warp|--without-warp] [--stop-running]' >&2; exit 1 ;;
+      --with-direct-route) [ -z "$network" ] || { echo "$usage" >&2; exit 1; }; network=direct-route ;;
+      --without-direct-route) [ -z "$network" ] || { echo "$usage" >&2; exit 1; }; network=direct; remove_direct_route=true ;;
+      --with-warp) [ -z "$network" ] || { echo "$usage" >&2; exit 1; }; network=warp ;;
+      --without-warp) [ -z "$network" ] || { echo "$usage" >&2; exit 1; }; network=direct ;;
+      *) echo "$usage" >&2; exit 1 ;;
     esac
     shift
   done
@@ -134,9 +138,14 @@ n$2/bin/infomentor-mcp-warp
     detect_command_processes
     detect_macos_symlink_processes
   }
-  [ -n "$network" ] || network=$(cat "$prefix/share/infomentor-mcp/network" 2>/dev/null || printf direct)
-  case "$network" in direct|warp) ;; *) echo 'Invalid saved network setting.' >&2; exit 1 ;; esac
+  previous_network=$(cat "$prefix/share/infomentor-mcp/network" 2>/dev/null || printf direct)
+  [ -n "$network" ] || network=$previous_network
+  case "$network" in direct|warp|direct-route) ;; *) echo 'Invalid saved network setting.' >&2; exit 1 ;; esac
   if [ "$network" = warp ] && { [ "$platform" != linux ] || [ "$arch" != x64 ]; }; then echo 'Automatic WARP setup supports Debian 13 on x64.' >&2; exit 1; fi
+  if [ "$previous_network" = direct-route ] && [ "$network" != direct-route ]; then remove_direct_route=true; fi
+  if [ "$network" = direct-route ] || [ "$remove_direct_route" = true ]; then
+    [ "$platform" = linux ] && [ -x /usr/bin/python3 ] || { echo 'Direct-route setup requires Linux with /usr/bin/python3.' >&2; exit 1; }
+  fi
   temporary=$(mktemp -d "${TMPDIR:-/tmp}/infomentor-install.XXXXXX")
   staging=
   command_tmp=
@@ -162,6 +171,11 @@ n$2/bin/infomentor-mcp-warp
   done
   if [ "$platform" = 'linux' ]; then
     mkdir -p "$staging/libexec"
+    tar -xOzf "$temporary/$archive" 'infomentor-mcp/libexec/direct-route.py' > "$staging/libexec/direct-route.py"
+    chmod 644 "$staging/libexec/direct-route.py"
+  fi
+  if [ "$platform" = 'linux' ]; then
+    mkdir -p "$staging/libexec"
     tar -xOzf "$temporary/$archive" 'infomentor-mcp/libexec/warp.sh' > "$staging/libexec/warp.sh"
     chmod 644 "$staging/libexec/warp.sh"
   fi
@@ -178,6 +192,13 @@ n$2/bin/infomentor-mcp-warp
     else sudo sh "$temporary/warp.sh" install </dev/null
     fi
     entrypoint=infomentor-mcp-warp
+  fi
+  if [ "$network" = direct-route ] || [ "$remove_direct_route" = true ]; then
+    cp "$staging/libexec/direct-route.py" "$temporary/direct-route.py"
+    if [ "$network" = direct-route ]; then route_action=install; else route_action=remove; fi
+    if [ "$(id -u)" = 0 ]; then /usr/bin/python3 -I "$temporary/direct-route.py" "$route_action" </dev/null
+    else sudo /usr/bin/python3 -I "$temporary/direct-route.py" "$route_action" </dev/null
+    fi
   fi
   install_dir="$prefix/share/infomentor-mcp/$version-$digest"
   if [ -e "$install_dir" ] || [ -L "$install_dir" ]; then
