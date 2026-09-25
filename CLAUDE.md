@@ -23,7 +23,7 @@ Turbo filters when possible. Tests must not contact live services.
 
 - `packages/abler-mcp`: read-only Abler native MCP server.
 - `packages/infomentor-mcp`: read-only InfoMentor native MCP server.
-- `packages/kronan-mcp`: read-only Krónan native MCP server.
+- `packages/kronan-mcp`: Krónan native MCP server: grocery reads, shopping-note and basket edits, and confirmed orders.
 - `packages/dominos-mcp`: Domino’s Iceland menu, SMS login, quotes, and confirmed saved-card payments.
 - `packages/mcp-runtime`: shared MCP server runtime and safe error boundary.
 - `packages/session-store`: private shared session locking/storage.

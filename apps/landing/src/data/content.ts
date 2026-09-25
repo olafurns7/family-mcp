@@ -60,8 +60,11 @@ export const content = {
         login: 'Your school account',
       },
       kronan: {
-        description: 'Search Krónan products and recipes, and look up your previous purchases.',
+        description:
+          'Search products and recipes, edit your shopping list and basket, and place orders you confirm.',
         login: 'Personal API token',
+        limitation:
+          'Ordering is not yet tested with a live account. No order is placed without your explicit confirmation.',
       },
       dominos: {
         description:
@@ -109,8 +112,11 @@ export const content = {
         login: 'InfoMentor-aðgangur',
       },
       kronan: {
-        description: 'Leitaðu að vörum og uppskriftum hjá Krónunni og skoðaðu fyrri innkaup.',
+        description:
+          'Leitaðu að vörum og uppskriftum, breyttu innkaupalistanum og körfunni og pantaðu þegar þú staðfestir.',
         login: 'API-lykill',
+        limitation:
+          'Pantanir hafa ekki enn verið prófaðar á raunverulegum aðgangi. Engin pöntun fer fram án skýrs samþykkis þíns.',
       },
       dominos: {
         description:
