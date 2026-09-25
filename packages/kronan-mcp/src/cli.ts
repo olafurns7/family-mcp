@@ -1,9 +1,11 @@
 #!/usr/bin/env node
+import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 
 import { startStdio } from '@family-mcp/mcp-runtime';
 
 import { KronanClient } from './api.js';
+import { attemptsPath, clearAttempts, listAttempts } from './attempts.js';
 import {
   TOKEN_MAX_BYTES,
   loadToken,
@@ -15,16 +17,19 @@ import {
 } from './auth.js';
 import { createServer, VERSION } from './server.js';
 
-const help = `kronan-mcp — unofficial read-only Krónan MCP server
+const help = `kronan-mcp — unofficial Krónan MCP server (products, shopping note, basket, and confirmed orders)
 
   kronan-mcp [serve]                Start the stdio MCP server
   kronan-mcp auth set [FILE]        Save an access token read from FILE, or from stdin (hidden prompt on a terminal)
   kronan-mcp auth status            Verify the saved token against Krónan
   kronan-mcp auth logout            Remove the saved token file
+  kronan-mcp orders clear-attempts  Show recorded order attempts; clear them after a y/N confirmation
   kronan-mcp --version              Print the installed version
 
 Create the access token in Krónan's settings (User or Customer group page; Auðkenni login required).
 Never pass the token as a command-line argument. Set KRONAN_TOKEN_FILE to choose the private token file.
+Order calls are recorded beside it; an unresolved record blocks further order calls for that checkout.
+Clear records only after checking your Krónan orders, never to get around an unknown outcome.
 `;
 
 /** Ctrl-C and Delete, written as code points so the source holds no raw control bytes. */
@@ -104,6 +109,56 @@ async function readTokenInput(source: string | undefined): Promise<string> {
   return raw;
 }
 
+/** One answer line from the terminal or standard input; end of input counts as no. */
+async function readAnswer(prompt: string): Promise<string> {
+  process.stderr.write(prompt);
+  const input = createInterface({ input: process.stdin, terminal: false });
+
+  try {
+    for await (const line of input) return line.trim();
+
+    return '';
+  } finally {
+    input.close();
+  }
+}
+
+/** A human-only escape hatch: no MCP tool can clear the order-attempt record. */
+async function clearOrderAttempts(): Promise<void> {
+  const path = attemptsPath();
+  const shown = await listAttempts(path);
+
+  if (shown !== 'invalid' && shown.length === 0) {
+    console.log(`No recorded order attempts in ${path}.`);
+
+    return;
+  }
+
+  if (shown === 'invalid') console.log(`The order-attempt record ${path} is unreadable or unsafe.`);
+  else {
+    console.log(`Recorded order attempts in ${path}:`);
+
+    for (const attempt of shown)
+      console.log(
+        `  ${attempt.createdAt}  ${attempt.tool}  ${attempt.state}  checkout ${attempt.checkoutToken}  total ${attempt.total} ISK  order ${attempt.orderToken ?? '-'}`,
+      );
+  }
+
+  console.log(
+    'Clear these only after you checked your Krónan orders. A submitting or unknown attempt may have placed an order.',
+  );
+
+  if ((await readAnswer('Clear the recorded order attempts? [y/N] ')).toLowerCase() !== 'y') {
+    console.log('Kept the recorded order attempts.');
+
+    return;
+  }
+
+  if (!(await clearAttempts(path, shown)))
+    throw new Error('The order-attempt record changed while you answered. Run the command again.');
+  console.log('Cleared the recorded order attempts.');
+}
+
 async function main() {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
@@ -130,6 +185,12 @@ async function main() {
   if (command === 'serve' && positionals.length <= 1) {
     const client = new KronanClient();
     startStdio(() => createServer(client), { onClose: () => client.close() });
+
+    return;
+  }
+
+  if (command === 'orders' && action === 'clear-attempts' && positionals.length === 2) {
+    await clearOrderAttempts();
 
     return;
   }

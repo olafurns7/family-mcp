@@ -176,10 +176,153 @@ export const recipeInput = z.strictObject({
   slug: slug.describe('Recipe slug from list_recipes or search_recipes.'),
 });
 
-// Upstream and output data. Required fields follow Krónan's published schema; image and URL
-// strings are also accepted as null because unset upload fields serialize that way.
+// Write inputs. Each Krónan request body has its own schema so the drift check compares exactly
+// what is sent; gate fields such as confirm and expected totals never leave this server.
+
+const lineToken = z.guid().describe('Shopping note line token from get_shopping_note.');
+
+const orderToken = resourceToken.describe('Order token from get_active_order or list_orders.');
 
 const isk = z.number().int().describe('Whole ISK.');
+
+const confirm = z
+  .literal(true)
+  .describe(
+    'Must be true, and only after the user explicitly approved this exact change in this conversation.',
+  );
+
+const expectedTotal = isk
+  .min(0)
+  .describe(
+    'The checkout total from get_checkout that the user approved. A consistency check that the checkout did not change, not a cap: delivery, service, and bag fees and the selected slot can make authorizedAmount higher.',
+  );
+
+const expectedCheckoutToken = resourceToken.describe(
+  'The checkout token from get_checkout that the user approved.',
+);
+
+const returnBags = z
+  .boolean()
+  .describe('Whether bags are returned with this order; Krónan bag fees can depend on it.');
+
+const slotId = z.number().int().min(0);
+
+const lineIds = z.array(z.number().int().min(0)).min(1).max(100).describe('Order line ids.');
+
+export const shoppingNoteLineInput = z
+  .strictObject({
+    text: z.string().min(1).max(255).optional().describe('Freeform line text.'),
+    sku: sku.max(32).optional().describe('Product SKU to link instead of text.'),
+    quantity: z.number().int().min(0).max(10000).optional(),
+  })
+  .refine((v) => (v.text === undefined) !== (v.sku === undefined), {
+    message: 'Provide exactly one of text or sku per line',
+  });
+
+export const addShoppingNoteLinesInput = z.strictObject({
+  lines: z.array(shoppingNoteLineInput).min(1).max(30),
+});
+
+export const changeShoppingNoteLineInput = z
+  .strictObject({
+    token: lineToken,
+    text: z.string().min(1).max(255).optional(),
+    quantity: z.number().int().min(0).max(10000).optional(),
+  })
+  // Krónan deletes the line when both are absent; deletion has its own tool.
+  .refine((v) => v.text !== undefined || v.quantity !== undefined, {
+    message: 'Provide text, quantity, or both',
+  });
+
+export const shoppingNoteLineTokenInput = z.strictObject({ token: lineToken });
+
+export const clearShoppingNoteInput = z.strictObject({ confirm });
+
+export const previewCheckoutLinesInput = z.strictObject({
+  lines: z
+    .array(z.strictObject({ sku, quantity: z.number().int().min(1).max(500).default(1) }))
+    .min(1)
+    .max(100),
+});
+
+export const setCheckoutLinesInput = z.strictObject({
+  lines: z
+    .array(
+      z.strictObject({
+        sku,
+        quantity: z.number().int().min(0).max(500).default(1),
+        substitution: z
+          .boolean()
+          .optional()
+          .describe('Whether Krónan may substitute this product if it is unavailable.'),
+      }),
+    )
+    .min(1)
+    .max(100),
+  replace: z
+    .boolean()
+    .describe(
+      'Required. true replaces every existing checkout line with these lines; false adds them to the existing lines.',
+    ),
+});
+
+export const reserveDeliveryBody = z.strictObject({
+  slotId: slotId.describe('Delivery slotId from get_delivery_slots for this address.'),
+  addressId: z.number().int().min(0).describe('Address id from list_addresses.'),
+  returnBags,
+});
+
+export const reservePickupBody = z.strictObject({
+  slotId: slotId.describe('Pickup slotId from get_pickup_slots.'),
+  returnBags,
+});
+
+export const completeCheckoutBody = z.strictObject({
+  slotId: slotId.describe('Delivery or pickup slotId from get_delivery_slots or get_pickup_slots.'),
+  addressId: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('Address id from list_addresses, for home delivery.'),
+  returnBags,
+});
+
+const placeGate = { confirm, expectedTotal, expectedCheckoutToken };
+
+export const reserveDeliverySlotInput = reserveDeliveryBody.extend(placeGate);
+
+export const reservePickupSlotInput = reservePickupBody.extend(placeGate);
+
+export const completeCheckoutInput = completeCheckoutBody.extend(placeGate);
+
+export const addCheckoutToOrderInput = z.strictObject({
+  ...placeGate,
+  expectedOrderToken: orderToken.describe(
+    'The active order token from get_active_order that the user approved adding to.',
+  ),
+});
+
+export const orderLinesBody = z.strictObject({ lineIds });
+
+export const lowerOrderLinesBody = z.strictObject({
+  lineIds,
+  quantity: z
+    .number()
+    .int()
+    .min(0)
+    .max(10000)
+    .describe('New quantity for every listed line; must be lower than each current quantity.'),
+});
+
+export const deleteOrderLinesInput = orderLinesBody.extend({ orderToken, confirm });
+
+export const lowerOrderLineQuantitiesInput = lowerOrderLinesBody.extend({ orderToken, confirm });
+
+export const toggleOrderLineSubstitutionInput = orderLinesBody.extend({ orderToken });
+
+// Upstream and output data. Required fields follow Krónan's published schema; image and URL
+// strings are also accepted as null because unset upload fields serialize that way.
 
 const image = z.string().nullish();
 
@@ -636,3 +779,57 @@ export const pickupStoreSchema = z.object({
 export const pickupSlotsUpstream = z.array(pickupStoreSchema);
 
 export const pickupSlotsResultSchema = z.object({ stores: pickupSlotsUpstream });
+
+export const clearShoppingNoteResultSchema = z.object({ cleared: z.literal(true) });
+
+export const previewResponseSchema = z.object({
+  lines: z.array(
+    z.object({
+      sku: z.string(),
+      name: z.string(),
+      quantity: z.number().int(),
+      price: isk,
+      total: isk,
+      status: z.enum(['ok', 'not_found', 'temporary_shortage', 'unpublished']),
+      reason: z.string().nullable(),
+    }),
+  ),
+  estimatedSubtotal: isk.describe('Estimated subtotal of the lines with status ok.'),
+  okCount: z.number().int(),
+  issueCount: z.number().int(),
+});
+
+export const orderTokenResponseSchema = z.object({
+  orderToken: z.string(),
+  authorizedAmount: isk.describe(
+    'Amount authorized on the saved card. Weight-charged products can make the captured amount differ.',
+  ),
+});
+
+export const reserveResponseSchema = orderTokenResponseSchema.extend({
+  slotId: z.number().int(),
+  deliveryDate: z.string(),
+  timeStart: z.string(),
+  timeStop: z.string(),
+  fees: z.record(z.string(), isk),
+});
+
+const placementOutcome = z
+  .enum(['accepted', 'unknown'])
+  .describe(
+    'accepted: Krónan confirmed the request. unknown: the request may have reached Krónan but no confirmation was read; it is not a failure and not permission to retry.',
+  );
+
+const placementMessage = z.string().describe('What happened and what to check next.');
+
+export const orderPlacementResultSchema = z.object({
+  outcome: placementOutcome,
+  order: orderTokenResponseSchema.nullable().describe('Null when the outcome is unknown.'),
+  message: placementMessage,
+});
+
+export const reservationResultSchema = z.object({
+  outcome: placementOutcome,
+  reservation: reserveResponseSchema.nullable().describe('Null when the outcome is unknown.'),
+  message: placementMessage,
+});

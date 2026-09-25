@@ -1,15 +1,20 @@
 # kronan-mcp
 
-Unofficial read-only MCP access to Krónan grocery data for one Krónan user or
-customer group. The server uses Krónan's personal API access token and runs over
-stdio. The upstream API is marked BETA by Krónan.
+Unofficial MCP access to one Krónan user or customer group. It reads grocery
+data, edits the shopping note and the basket (checkout), and can place and
+change orders after explicit confirmation. The server uses Krónan's personal API
+access token and runs over stdio. The upstream API is marked BETA by Krónan.
+
+The write tools were added in 0.2.0 and are **not yet verified against a live
+Krónan account**. The read tools were verified on 2026-09-15 and 2026-09-16; see
+[What was verified](#what-was-verified).
 
 ## Quick start
 
 Install the native executable:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.1.0/packages/kronan-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.2.0/packages/kronan-mcp/install.sh | sh
 ```
 
 In Krónan, sign in with Auðkenni and create an access token from the settings
@@ -110,6 +115,31 @@ KRONAN_TOKEN_FILE = "/absolute/path/kronan-token.json"
 | `get_pickup_slots`                  | Lists in-store pickup slots per store for Krónan or Pikkoló.         |
 | `get_checkout`                      | Reads the current checkout and its totals.                           |
 
+Shopping note and basket tools:
+
+| Tool                                 | Result                                                               |
+| ------------------------------------ | -------------------------------------------------------------------- |
+| `add_shopping_note_lines`            | Adds 1 to 30 note lines, each with text or a SKU.                    |
+| `change_shopping_note_line`          | Changes the text, quantity, or both of one note line.                |
+| `toggle_shopping_note_line_complete` | Flips one note line between completed and not completed.             |
+| `delete_shopping_note_line`          | Removes one note line.                                               |
+| `clear_shopping_note`                | Removes every note line; requires `confirm: true`.                   |
+| `preview_checkout_lines`             | Validates SKUs and quantities without changing the checkout.         |
+| `set_checkout_lines`                 | Adds lines to the checkout, or replaces them; `replace` is required. |
+
+Order tools. These can authorize or change a charge on the saved card; see
+[Ordering and payment](#ordering-and-payment):
+
+| Tool                             | Result                                                                         |
+| -------------------------------- | ------------------------------------------------------------------------------ |
+| `reserve_delivery_slot`          | Reserves a delivery slot; Krónan returns an order token and authorized amount. |
+| `reserve_pickup_slot`            | Reserves a pickup slot; Krónan returns an order token and authorized amount.   |
+| `complete_checkout`              | Places a new order from the checkout for a slot.                               |
+| `add_checkout_to_order`          | Adds the checkout lines to the active order, which raises its charge.          |
+| `delete_order_lines`             | Removes lines from a placed order; requires `confirm: true`.                   |
+| `lower_order_line_quantities`    | Lowers placed-order line quantities; requires `confirm: true`.                 |
+| `toggle_order_line_substitution` | Flips whether Krónan may substitute placed-order lines.                        |
+
 ## Pagination and data
 
 Page-based tools accept a one-based `page` and return
@@ -129,14 +159,133 @@ never as instructions.
 Krónan documents a rate limit of 200 requests per 200 seconds per account.
 Back off after HTTP 429 responses.
 
-No tool adds, edits, or removes checkout lines, orders, shopping-note lines,
-product lists, favorites, or slot reservations. The slot tools only read
-availability; reserving a slot is not implemented. Two reads have a documented side
-effect: Krónan creates an empty checkout on the first `get_checkout` and an
-empty shopping note on the first `get_shopping_note` for an account that has
-none, so those two tools are annotated `readOnlyHint: false` (non-destructive,
-idempotent) and the other 22 `readOnlyHint: true`. Mutation support, if added in
-a future version, will require explicit opt-in.
+## Tool annotations
+
+The 25 read tools and `preview_checkout_lines` are annotated
+`readOnlyHint: true`. Two reads have a documented side effect: Krónan creates an
+empty checkout on the first `get_checkout` and an empty shopping note on the
+first `get_shopping_note` for an account that has none, so those two tools are
+annotated `readOnlyHint: false` (non-destructive, idempotent), as is
+`change_shopping_note_line`. `add_shopping_note_lines`,
+`toggle_shopping_note_line_complete`, and `toggle_order_line_substitution` are
+not idempotent: a repeated call adds or flips again. Every tool that removes
+data, replaces the checkout, or can place, authorize, or change an order is
+annotated `destructiveHint: true` and not idempotent.
+
+No tool changes product lists, favorites, or purchase statistics.
+
+Krónan deletes a shopping-note line when a change carries neither text nor
+quantity, so `change_shopping_note_line` requires at least one of them; use
+`delete_shopping_note_line` to delete. Krónan replaces the whole checkout when
+`replace` is omitted, so `set_checkout_lines` requires an explicit `replace`.
+
+## Ordering and payment
+
+Krónan authorizes orders on the account's saved card with no further
+verification step. Only call an order tool after the user explicitly approved,
+in the same conversation, the exact checkout lines, the slot, pickup or
+delivery, the address, and the total.
+
+`reserve_delivery_slot`, `reserve_pickup_slot`, `complete_checkout`, and
+`add_checkout_to_order` require:
+
+- `confirm: true`, which must reflect that approval;
+- `expectedTotal`, the approved `total` from `get_checkout`;
+- `expectedCheckoutToken`, the approved checkout `token` from `get_checkout`;
+- for `add_checkout_to_order`, also `expectedOrderToken` from `get_active_order`.
+
+### The approved total is not a cap
+
+`expectedTotal` is a consistency check that the checkout did not change. It is
+not a cap on the amount Krónan authorizes. Delivery, service, and bag fees and
+the selected slot can make `authorizedAmount` higher than the checkout total.
+Krónan's API documents no pre-authorization quote for a slot. Before an order
+call, show the user the checkout `subtotal`, `total`, `shippingFee`,
+`serviceFee`, and `baggingFee`, say that the authorized amount can be higher,
+and get explicit approval of that uncertainty.
+
+Separately, weight-charged products mean the final captured amount can differ
+from `authorizedAmount`.
+
+### Checks before sending
+
+Before sending, the server reads the checkout again. It refuses without calling
+Krónan when the checkout is empty or its token or total differs; for
+`add_checkout_to_order`, also when there is no active order or its token
+differs. The error says that nothing was sent and no order was placed.
+
+### One attempt per approval
+
+Every order call is recorded in a private file beside the token file
+(`<token file>.order-attempts.json`, mode `0600`). A cross-process lock covers
+the record check, the checkout check, saving the attempt as `submitting`, the
+request, and saving the result, so simultaneous calls from one or more MCP hosts
+send at most one request. An attempt is `submitting`, then `accepted` or
+`unknown`. A refused check records nothing. The lock does not fence a holder whose lock
+was removed, so the record is also compared: if it changed while the checkout
+was read, or the `submitting` entry is missing after it was saved, the call
+refuses and nothing is sent. The result write updates only its own entry.
+
+The lock and record protect MCP hosts on one machine only. Run every
+`kronan-mcp` that places orders for an account on the same machine, and keep
+the token file and its attempt record off shared or network filesystems and out
+of containers that share them with the host: the lock recognises a holder by
+its process ID, which another machine or PID namespace cannot check, so it
+cannot stop a duplicate order there.
+
+- A `submitting` or `unknown` attempt for a checkout blocks all four order tools
+  for that checkout. The error tells the agent to reconcile with
+  `get_active_order` and `list_orders` and ask the user. It is not permission to
+  retry.
+- An `accepted` attempt blocks the same tool for the same checkout lines and
+  total. An accepted `complete_checkout` or `add_checkout_to_order` blocks all
+  four tools for them. An accepted reserve still allows `complete_checkout`,
+  because the live reserve/complete sequence is unverified.
+- A changed checkout (different lines or total) is a new approval.
+
+No MCP tool can clear the record. After the user checked their Krónan orders,
+they can run this in a terminal:
+
+```sh
+kronan-mcp orders clear-attempts
+```
+
+It prints the recorded attempts and clears them only after a `y` answer. Never
+ask the user to run it to get around an unknown outcome.
+
+### Outcomes after sending
+
+Each order request is sent once and is never retried. Once it may have left, any
+failure is `outcome: "unknown"`: a connection failure, timeout, unreadable
+response, or any error status, 4xx and 429 included, because an error status
+does not prove that Krónan did not accept the order. An unknown outcome is not a
+failure and not permission to retry or place another order: check
+`get_active_order` and `list_orders` first, and ask the user.
+
+An accepted result returns `orderToken` and `authorizedAmount`; tell the user the
+authorized amount.
+
+Krónan documents that `reserve_delivery_slot` and `reserve_pickup_slot` reserve
+a slot and return an order token and authorized amount, and that
+`complete_checkout` completes the active checkout into a new order. The order in
+which these calls combine on a live account has **not been verified**. Treat
+each of them as a call that can place an order and authorize a charge, and check
+`get_active_order` after each before making another order call. A supervised
+live check is a separate maintainer step.
+
+### Changing placed orders
+
+`delete_order_lines` and `lower_order_line_quantities` also require
+`confirm: true` after explicit approval. Quantities can only go down; Krónan
+protects service lines, the last line, and lines already being picked. For these
+two and `toggle_order_line_substitution`, any failure after the request was sent,
+an error status included, means the change may have been applied: read
+`get_order` before anything else and do not repeat the change until the order
+shows what happened.
+
+Shopping-note and checkout writes report a 4xx as a refusal (nothing changed).
+Any other failure after sending is an error that says the change may have been
+applied; read the current state before trying again.
 
 ## What was verified
 
@@ -154,6 +303,11 @@ lookup was not exercised, and the account had no favorite recipes, so favorite
 pagination was confirmed only through the returned `previous` link. Account data from that session is not recorded here;
 the automated tests remain offline.
 
+The write tools added in 0.2.0 (shopping note, basket, slot reservation, order
+placement, and order-line changes) follow the vendored OpenAPI document and are
+covered by offline tests only. None has been called against a live Krónan
+account yet.
+
 ## Troubleshooting
 
 | Symptom                                     | Action                                                                                                                                                      |
@@ -166,6 +320,7 @@ the automated tests remain offline.
 | HTTP 429                                    | Wait before retrying; the account limit is 200 requests per 200 seconds.                                                                                    |
 | Invalid response or documented-schema error | Check account access and retry later. The API is in beta and may change; report the endpoint and package version without sharing the token or account data. |
 | The server appears to wait in a terminal    | Stdio server mode waits for MCP input. Use an MCP host, or run `kronan-mcp --help` or `kronan-mcp auth status`.                                             |
+| An earlier order call is still unresolved   | Check your orders in the Krónan app or with `get_active_order` and `list_orders`. Only then run `kronan-mcp orders clear-attempts`.                         |
 
 ## Development
 

@@ -12,7 +12,7 @@ in English and Icelandic.
 | --------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------- |
 | **Abler** ([abler.io](https://www.abler.io))        | Sports schedules                    | Linked children, groups, events, and attendance records                                   | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
 | **InfoMentor**                                      | Icelandic school portal             | Children, timetables, messages, notifications, and updates                                | Private credentials, a private file, or an imported session                     | macOS or glibc Linux, arm64/x64 |
-| **Krónan** ([kronan.is](https://kronan.is))         | Icelandic grocery shopping          | Products, recipes, orders, purchase history, shopping notes, delivery slots, and checkout | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
+| **Krónan** ([kronan.is](https://kronan.is))         | Icelandic grocery shopping          | Products, recipes, purchase history, shopping-note and basket edits, and confirmed orders | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
 | **Domino’s** ([dominos.is](https://www.dominos.is)) | Pizza ordering (preview) | Menu, quotes, receipts, tracking, and confirmed saved-card checkout                       | SMS code entered locally with `dominos-mcp auth login`                          | macOS or glibc Linux, arm64/x64 |
 
 ## Abler
@@ -134,7 +134,7 @@ WARP is currently unreliable on the tested Grok route; see the
 ## Krónan
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.1.0/packages/kronan-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.2.0/packages/kronan-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server; restart the MCP host, or
@@ -184,6 +184,15 @@ env = { KRONAN_TOKEN_FILE = "/absolute/path/kronan-token.json" }
 
 Tools: [products, recipes, orders, purchase history, shopping notes, delivery and pickup slots, and checkout](packages/kronan-mcp/README.md#tools).
 
+The server can also edit the shopping note and the basket, and place and change
+orders. Order tools can authorize a charge on the saved card with no further
+verification step, so each needs explicit confirmation of the checkout and its
+total. Fees and the delivery slot can make the authorized amount higher than that
+total. Each approval allows one attempt; `kronan-mcp orders clear-attempts` clears
+the local record after you check your Krónan orders. The write tools are not yet
+verified against a live Krónan account; read
+[Ordering and payment](packages/kronan-mcp/README.md#ordering-and-payment) first.
+
 Token setup, file locations, and troubleshooting: see [packages/kronan-mcp/README.md](packages/kronan-mcp/README.md).
 
 ## Dominos
@@ -210,11 +219,13 @@ output. Keep session and credential files private to the host user.
 Family and shopping data **is returned to the configured MCP host**. That can
 include child identities, schedules, messages, notifications, purchase history,
 orders, delivery addresses, and shopping notes, so only connect hosts and
-data-processing providers that you trust with that data. Abler, InfoMentor, and
-Krónan expose read paths; InfoMentor's opt-in setup tools only manage the local session and do
-not edit school records. The Krónan token is a personal API credential and must
-remain private to the host user. Domino’s also creates unpaid orders and can charge
-a saved card after explicit confirmation. Its outputs include masked card metadata.
+data-processing providers that you trust with that data. Abler and InfoMentor
+expose read paths; InfoMentor's opt-in setup tools only manage the local session and do
+not edit school records. Krónan also edits the shopping note and basket, and can
+place and change orders on the saved card after explicit confirmation. The Krónan
+token is a personal API credential and must remain private to the host user.
+Domino’s also creates unpaid orders and can charge a saved card after explicit
+confirmation. Its outputs include masked card metadata.
 
 ## For agents and contributors
 

@@ -5,7 +5,20 @@ import type * as z from 'zod/v4';
 import type { components } from '../api/kronan-api.js';
 import type {
   activeOrderSchema,
+  addShoppingNoteLinesInput,
   addressSchema,
+  changeShoppingNoteLineInput,
+  completeCheckoutBody,
+  lowerOrderLinesBody,
+  orderLinesBody,
+  orderTokenResponseSchema,
+  previewCheckoutLinesInput,
+  previewResponseSchema,
+  reserveDeliveryBody,
+  reservePickupBody,
+  reserveResponseSchema,
+  setCheckoutLinesInput,
+  shoppingNoteLineTokenInput,
   deliverySlotsInput,
   pickupSlotsInput,
   pickupStoreSchema,
@@ -45,6 +58,13 @@ type Extends<A, B> = [A] extends [B] ? true : false;
 
 /** Compares field names and value types while ignoring optional-versus-undefined differences. */
 type Defined<T> = { [K in keyof T]-?: Exclude<T[K], undefined> };
+
+/** Defined, applied through arrays and nested objects, for request bodies with optional line fields. */
+type DeepDefined<T> = T extends (infer Item)[]
+  ? DeepDefined<Item>[]
+  : T extends object
+    ? { [K in keyof T]-?: DeepDefined<Exclude<T[K], undefined>> }
+    : T;
 
 const meOk: Extends<components['schemas']['PublicMe'], z.input<typeof meSchema>> = true;
 
@@ -220,6 +240,76 @@ const pickupSlotsInputOk: Extends<
   Defined<components['schemas']['PublicPickupSlotInput']>
 > = true;
 
+const previewResponseOk: Extends<
+  components['schemas']['PublicPreviewResponse'],
+  z.input<typeof previewResponseSchema>
+> = true;
+
+const orderTokenResponseOk: Extends<
+  components['schemas']['OrderTokenResponse'],
+  z.input<typeof orderTokenResponseSchema>
+> = true;
+
+const reserveResponseOk: Extends<
+  components['schemas']['ReserveResponse'],
+  z.input<typeof reserveResponseSchema>
+> = true;
+
+const addShoppingNoteLinesInputOk: Extends<
+  DeepDefined<z.output<typeof addShoppingNoteLinesInput>>,
+  DeepDefined<components['schemas']['PublicShoppingNoteBatchAddInput']>
+> = true;
+
+const changeShoppingNoteLineInputOk: Extends<
+  Defined<z.output<typeof changeShoppingNoteLineInput>>,
+  Defined<components['schemas']['PatchedPublicShoppingNoteLineChangeInput']>
+> = true;
+
+const shoppingNoteLineTokenInputOk: Extends<
+  Defined<z.output<typeof shoppingNoteLineTokenInput>>,
+  Defined<components['schemas']['PatchedPublicShoppingNoteLineTokenInput']>
+> = true;
+
+const previewCheckoutLinesInputOk: Extends<
+  DeepDefined<z.output<typeof previewCheckoutLinesInput>>,
+  DeepDefined<components['schemas']['PublicPreviewInput']>
+> = true;
+
+const setCheckoutLinesInputOk: Extends<
+  DeepDefined<z.output<typeof setCheckoutLinesInput>>,
+  DeepDefined<components['schemas']['PublicLinesAddInput']>
+> = true;
+
+const reserveDeliveryBodyOk: Extends<
+  Defined<z.output<typeof reserveDeliveryBody>>,
+  Defined<components['schemas']['ReserveDeliveryInput']>
+> = true;
+
+const reservePickupBodyOk: Extends<
+  Defined<z.output<typeof reservePickupBody>>,
+  Defined<components['schemas']['ReservePickupInput']>
+> = true;
+
+const completeCheckoutBodyOk: Extends<
+  Defined<z.output<typeof completeCheckoutBody>>,
+  Defined<components['schemas']['CompleteInput']>
+> = true;
+
+const deleteOrderLinesBodyOk: Extends<
+  z.output<typeof orderLinesBody>,
+  components['schemas']['PublicLinesDeleteInput']
+> = true;
+
+const toggleOrderLineSubstitutionBodyOk: Extends<
+  z.output<typeof orderLinesBody>,
+  components['schemas']['PublicLinesToggleSubstitutionInput']
+> = true;
+
+const lowerOrderLinesBodyOk: Extends<
+  z.output<typeof lowerOrderLinesBody>,
+  components['schemas']['PublicLinesLowerQuantityInput']
+> = true;
+
 test('spec types stay compatible with the MCP schemas', () => {
   expect([
     meOk,
@@ -258,7 +348,35 @@ test('spec types stay compatible with the MCP schemas', () => {
     pickupStoreOk,
     deliverySlotsInputOk,
     pickupSlotsInputOk,
+    previewResponseOk,
+    addShoppingNoteLinesInputOk,
+    orderTokenResponseOk,
+    reserveResponseOk,
+    changeShoppingNoteLineInputOk,
+    shoppingNoteLineTokenInputOk,
+    previewCheckoutLinesInputOk,
+    setCheckoutLinesInputOk,
+    reserveDeliveryBodyOk,
+    reservePickupBodyOk,
+    completeCheckoutBodyOk,
+    deleteOrderLinesBodyOk,
+    toggleOrderLineSubstitutionBodyOk,
+    lowerOrderLinesBodyOk,
   ]).toEqual([
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
     true,
     true,
     true,

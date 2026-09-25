@@ -1,7 +1,7 @@
 {
   "name": "kronan-mcp",
-  "version": "0.1.0",
-  "description": "Unofficial, read-only Krónan grocery MCP server using a personal Krónan API access token",
+  "version": "0.2.0",
+  "description": "Unofficial Krónan grocery MCP server for products, the shopping note, the basket, and confirmed orders, using a personal Krónan API access token",
   "keywords": [
     "family",
     "grocery",
@@ -82,7 +82,21 @@
         "list_addresses",
         "get_delivery_slots",
         "get_pickup_slots",
-        "get_checkout"
+        "get_checkout",
+        "add_shopping_note_lines",
+        "change_shopping_note_line",
+        "toggle_shopping_note_line_complete",
+        "delete_shopping_note_line",
+        "clear_shopping_note",
+        "preview_checkout_lines",
+        "set_checkout_lines",
+        "reserve_delivery_slot",
+        "reserve_pickup_slot",
+        "complete_checkout",
+        "add_checkout_to_order",
+        "delete_order_lines",
+        "lower_order_line_quantities",
+        "toggle_order_line_substitution"
       ]
     }
   }
