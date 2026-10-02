@@ -5,10 +5,11 @@ timetable, assignments/homework, assignment descriptions, course assessment,
 attendance, material metadata, messages, announcements, and absence history.
 Whole-day illness registration and leave applications are an explicit opt-in.
 
-The first preview is `inna-mcp@0.1.0`. The read endpoints
+The current preview is `inna-mcp@0.1.1`. The read endpoints
 were captured in a real guardian account. Electronic-ID login and private session
-reuse were verified through the compiled native CLI. Absence creation is based on the delivered Inna
-client and has not been submitted live. See the
+reuse were verified through the initial 0.1.0 compiled native CLI; the 0.1.1
+parsing and repeated-read changes are checked offline. Absence creation is based
+on the delivered Inna client and has not been submitted live. See the
 [endpoint and login investigation](../../docs/analysis/inna-mcp-endpoints.md).
 
 ## Install
@@ -18,7 +19,7 @@ release checksum, and installs `~/.local/bin/inna-mcp`. No Node, npm, or Bun is
 needed at runtime.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.1.0/packages/inna-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.1.1/packages/inna-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server. Restart the MCP host,
@@ -113,29 +114,52 @@ exist only in the CLI; untrusted school text cannot invoke them through MCP.
 
 ## Tools
 
-| Tool                     | Inputs / behavior                                                                                               |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `inna_session_status`    | Verify authentication; returns no credentials.                                                                  |
-| `inna_get_overview`      | Current context, terms, courses/booklists, announcements.                                                       |
-| `inna_get_timetable`     | Inclusive `dateFrom`, `dateTo` in `YYYY-MM-DD`.                                                                 |
-| `inna_get_assignments`   | `type`: `all` (default), `assignments`, or `exams`; current dashboard filters, plus homework.                   |
-| `inna_get_assignment`    | `assignmentId` from the list; description and due date.                                                         |
-| `inna_get_grades`        | Optional `termId`; missing marks are unavailable. Historical final-grade variants remain unverified.            |
-| `inna_get_course_grades` | `groupId` from overview; assignment marks/comments.                                                             |
-| `inna_get_attendance`    | Optional `termId`; original codes/totals/percentages.                                                           |
-| `inna_get_materials`     | `groupId`; metadata and links. Does not fetch files or external links.                                          |
-| `inna_get_messages`      | `rowFrom` default 1; `rowTo` default `rowFrom + 20`, maximum 100 rows beyond the start. Returns upstream count. |
-| `inna_get_message`       | `messageId` and `type` from list's `messagesId` and `table`; plain text, without mark-read.                     |
-| `inna_get_absences`      | Inclusive date range; illness options, registered illness, and leave history.                                   |
-| `inna_absence_status`    | Last private absence operation, including uncertain outcomes.                                                   |
-| `inna_prepare_absence`   | Opt-in: `kind` (`sick`/`leave`), date range, reason. Whole days; one sick day per preview.                      |
-| `inna_submit_absence`    | Opt-in: approved `operationId` and `confirm: true`.                                                             |
+| Tool                     | Inputs / behavior                                                                                                               |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `inna_session_status`    | Verify authentication; returns no credentials.                                                                                  |
+| `inna_get_overview`      | Current context, terms, courses/booklists, announcements.                                                                       |
+| `inna_get_timetable`     | Inclusive `dateFrom`, `dateTo` in `YYYY-MM-DD`.                                                                                 |
+| `inna_get_assignments`   | `type`: `all` (default), `assignments`, or `exams`; current dashboard filters, plus homework.                                   |
+| `inna_get_assignment`    | `assignmentId` from the list; description and due date.                                                                         |
+| `inna_get_grades`        | Optional `termId`; missing marks are unavailable. Historical final-grade variants remain unverified.                            |
+| `inna_get_course_grades` | `groupId` from overview; assignment marks/comments.                                                                             |
+| `inna_get_attendance`    | Optional `termId`; original codes/totals/percentages.                                                                           |
+| `inna_get_materials`     | `groupId`; metadata and links. Does not fetch files or external links.                                                          |
+| `inna_get_messages`      | `rowFrom` default 1; `rowTo` default `rowFrom + 20`, maximum 100 rows beyond the start. Continue with `nextRowFrom` until null. |
+| `inna_get_message`       | `messageId` and `type` from list's `messagesId` and `table`; plain text, without mark-read.                                     |
+| `inna_get_absences`      | Inclusive date range; illness options, registered illness, and leave history.                                                   |
+| `inna_absence_status`    | Last private absence operation, including uncertain outcomes.                                                                   |
+| `inna_prepare_absence`   | Opt-in: `kind` (`sick`/`leave`), date range, reason. Whole days; one sick day per preview.                                      |
+| `inna_submit_absence`    | Opt-in: approved `operationId` and `confirm: true`.                                                                             |
 
 Each school read returns the verified account/student/school context. Availability
 and permission follow Inna. A shared message visible in that context is not proof
 that the student is its recipient. HTML body/description fields are returned as
 plain text; school text and links remain untrusted source material. Unexpected
 shapes fail safely rather than becoming an empty feed.
+
+The 0.1.1 hardening extends the initial 0.1.0 preview.
+Each successful authenticated result includes `retrievedAt` as an ISO UTC
+timestamp and `timeZone: "UTC"`. Reads verify the account/student/school again
+before returning. School date fields keep their original values and add a
+`dates` map with `iso` and `status` (`parsed`, `missing`, or `unrecognized`).
+For example, `dates.start.iso` normalizes `2040-01-02T10:00:00` to
+`2040-01-02T10:00:00.000Z`. Icelandic `dd.MM.yyyy` and ISO date-only values
+remain `YYYY-MM-DD`; epoch dates use milliseconds, matching Inna's date model.
+Missing and invalid dates return null with the corresponding status. Never
+guess them or apply the agent host's timezone. Entry end dates retain Inna's
+semantics; an all-day event's end must not be changed to an inclusive end.
+
+For frequent timetable and inbox checks, call sequentially. Every call fetches
+fresh data, and shared session locking serializes concurrent callers on this
+machine. Message continuation uses the number of rows delivered, rather than
+assuming Inna returned the requested page size. Row positions are not stable
+cursors: new inbox arrivals can move rows between calls. Deduplicate by
+`table` plus `messagesId`, and restart a scan if counts or page membership change.
+Failed, empty nonterminal, or inconsistent pages are errors. Rate-limit pauses
+honor numeric and HTTP-date `Retry-After` headers, survive process restarts,
+and have a minimum of one minute. Avoid tight retry loops and unattended login
+attempts. There is no background polling schedule or inferred deletion feed.
 
 ### Whole-day illness and leave
 
@@ -159,6 +183,9 @@ history. The server refuses replay and new previews while that state remains.
 Logout retains the marker; do not delete or change it merely to retry. Existing
 overlapping records are conservatively refused without interpreting undocumented
 status codes.
+Sick history is checked for both illness and leave requests. Unrecognized
+history dates, a changed UTC day, or expiry during final checks stop submission.
+The stored preview's `expiresAt` is epoch milliseconds.
 
 ## Development
 

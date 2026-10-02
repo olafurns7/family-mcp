@@ -28,10 +28,17 @@ export async function readBody(
   const chunks: Uint8Array[] = [];
   let size = 0;
 
+  const onAbort = (): void => {
+    reader.cancel().catch(() => {});
+  };
+
   try {
+    signal?.addEventListener('abort', onAbort, { once: true });
+
     for (;;) {
       signal?.throwIfAborted();
       const { done, value } = await reader.read();
+      signal?.throwIfAborted();
 
       if (done) break;
       size += value.byteLength;
@@ -42,6 +49,7 @@ export async function readBody(
 
     return Buffer.concat(chunks).toString('utf8');
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     await reader.cancel().catch(() => {});
   }
 }

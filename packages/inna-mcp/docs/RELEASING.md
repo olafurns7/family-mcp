@@ -1,8 +1,9 @@
 # Release process
 
-The current preview is `inna-mcp@0.1.0`. Native binaries are the only
-distribution. Phone-prompt electronic-ID login, private session reuse, and all
-13 read/status tools were checked live in an owner-authorized guardian account.
+The current preview is `inna-mcp@0.1.1`. Native binaries are the only
+distribution. The initial 0.1.0 phone-prompt electronic-ID login, private session
+reuse, and all 13 read/status tools were checked live in an owner-authorized
+guardian account. The 0.1.1 parsing and polling changes are checked offline.
 Whole-day illness and leave creation are source verified and tested offline;
 no real absence was submitted. Keep that limit in the preview release notes.
 
@@ -22,7 +23,7 @@ prerelease with macOS/Linux arm64/x64 archives, SHA-256 files, and `install.sh`.
 After authorized publication, install with:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.1.0/packages/inna-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.1.1/packages/inna-mcp/install.sh | sh
 ```
 
 Verify all four workflow-built archives and checksums before publishing the

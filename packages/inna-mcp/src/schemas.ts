@@ -1,5 +1,8 @@
 import { Parser } from 'htmlparser2';
 import { z } from 'zod';
+import { datesSchema } from './dates.js';
+
+const parsedDates = { dates: datesSchema.optional() };
 
 export const id = z.string().regex(/^\d+$/).max(32);
 
@@ -100,6 +103,7 @@ export const coursesSchema = z.array(
     booklist: z.array(bookSchema).optional(),
     dateFrom: z.string(),
     dateTo: z.string(),
+    ...parsedDates,
   }),
 );
 
@@ -120,6 +124,7 @@ export const timetableSchema = z.array(
     timetable_id: z.number().optional(),
     maintable_id: z.number().optional(),
     studentRecordId: z.number().optional(),
+    ...parsedDates,
   }),
 );
 
@@ -137,6 +142,7 @@ export const assignmentsSchema = z.array(
     projectId: z.string(),
     exam: z.string().optional(),
     assignmentComment: z.string().optional(),
+    ...parsedDates,
   }),
 );
 
@@ -154,6 +160,7 @@ export const assignmentSchema = z.object({
   weight: z.string(),
   projectId: z.string(),
   groupReturnSize: z.number(),
+  ...parsedDates,
 });
 
 export const homeworkSchema = z.array(
@@ -162,6 +169,7 @@ export const homeworkSchema = z.array(
     date: z.string(),
     moduleName: z.string(),
     text: z.string(),
+    ...parsedDates,
   }),
 );
 
@@ -178,6 +186,7 @@ export const gradesSchema = z.array(
     grade: z.string().optional(),
     myUnits: z.string().optional(),
     dateFinished: z.string().optional(),
+    ...parsedDates,
   }),
 );
 
@@ -193,6 +202,7 @@ export const courseGradesSchema = z.object({
       returnDate: z.number(),
       assignDate: z.number(),
       handedIn: z.boolean(),
+      ...parsedDates,
     }),
   ),
 });
@@ -212,6 +222,7 @@ export const attendanceSchema = z.object({
   termName: z.string(),
   nrClassesTotal: z.number(),
   absencePointsTotal: z.string(),
+  ...parsedDates,
   modules: z.array(
     z.object({
       moduleName: z.string(),
@@ -240,6 +251,7 @@ export const materialsSchema = z.array(
         link: z.string().optional(),
         closed: z.boolean(),
         dateOpened: z.string().optional(),
+        ...parsedDates,
       }),
     ),
   }),
@@ -256,6 +268,7 @@ export const messagesSchema = z.object({
       date: z.string(),
       dateOpened: z.string().optional(),
       status: z.string(),
+      ...parsedDates,
     }),
   ),
 });
@@ -274,6 +287,7 @@ export const messageSchema = z.object({
       contentType: z.string().optional(),
     }),
   ),
+  ...parsedDates,
 });
 
 export const announcementsSchema = z.array(
@@ -285,6 +299,7 @@ export const announcementsSchema = z.array(
     moduleName: z.string().optional(),
     contentHtml: z.string(),
     hasOpened: z.boolean(),
+    ...parsedDates,
   }),
 );
 
@@ -303,6 +318,7 @@ const classesSchema = z.array(
     timeFrom: z.string(),
     timeTo: z.string(),
     class: z.string(),
+    ...parsedDates,
   }),
 );
 
@@ -319,6 +335,7 @@ export const leavesSchema = z.array(
     confirmedBy: z.string().optional(),
     created: z.string(),
     classes: classesSchema,
+    ...parsedDates,
   }),
 );
 
@@ -330,6 +347,7 @@ export const sicknessSchema = z.array(
     statusCode: z.number(),
     allDay: z.string(),
     classes: classesSchema,
+    ...parsedDates,
   }),
 );
 

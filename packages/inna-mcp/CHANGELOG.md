@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1
+
+- Normalize school dates explicitly as UTC, preserve date-only and raw values,
+  and expose parsed/missing/unrecognized status plus retrieval timestamps.
+- Continue inbox paging using delivered rows; reject incomplete, duplicate,
+  and inconsistent pages. Recheck student context before returning reads.
+- Preserve numeric and HTTP-date rate-limit pauses across restarts. Shared
+  response-body reads now cancel stalled streams on abort; request deadlines
+  also cover Inna response bodies.
+- Check illness overlap for leave requests and refuse malformed absence dates,
+  UTC midnight changes, or preview expiry during final submission checks.
+- Exercise all 15 tools offline through MCP, multi-page inboxes, concurrent
+  reads, timezone differences, response cancellation, and write refusal paths.
+
 ## 0.1.0
 
 - Initial standalone native MCP for Inna school accounts.

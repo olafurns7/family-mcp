@@ -229,9 +229,9 @@ explicit approval to send that data to the school. Recheck permissions and
 overlapping records, persist a submitting marker before POST, and never replay
 an uncertain outcome. A returned creation ID is submission, not school approval.
 
-## Remaining proof before release
+## Release and verification status
 
-The initial package passed TypeScript, Oxlint, formatting, and ten
+The published 0.1.0 preview passed TypeScript, Oxlint, formatting, and ten
 offline synthetic integration tests. The compiled Bun 1.4.2 native executable
 also completed a stdio MCP handshake from an isolated directory without a
 runtime on `PATH`: 13 tools by default and 15 with absence writes enabled,
@@ -241,6 +241,50 @@ also verified private session creation and reuse after process restart. A
 separate restarted native MCP process exercised all 13 read/status tools against
 the live session, including nonempty illness history and an already-opened message.
 No successful school write or long-term session lifetime was established.
+
+The [0.1.0 preview release](https://github.com/olafurns7/family-mcp/releases/tag/inna-mcp%400.1.0)
+is published. Its release CI passed on macOS arm64/x64 and Linux arm64/x64;
+the public installer was also checked against the downloaded CI-built binary.
+The following hardening changes are included in 0.1.1, whose publication and
+website update were authorized by the maintainer. Release and deployment
+evidence is recorded in the [hardening verification report](inna-mcp-hardening.md).
+
+### Date parsing and repeated reads
+
+The owner confirmed that school dates and times are UTC. The delivered timetable
+UI also uses `moment.utc`; its assessment date model constructs JavaScript dates
+directly from numeric values, establishing milliseconds rather than seconds.
+The client now preserves source fields and supplies normalized date metadata:
+ISO UTC timestamps, unchanged date-only semantics, and explicit missing or
+unrecognized states. Calendar and clock validation reject impossible dates,
+overflowing times, ambiguous formats, and trailing junk. Timestamp normalization
+was checked in three host timezones; no host-local interpretation is used.
+
+The delivered message controller continues from the actual received-message
+count plus one. The client now returns `nextRowFrom` using delivered rows and
+rejects empty nonterminal, duplicate, overlong, and count-inconsistent pages.
+Synthetic tests cover a 41-message feed with 20/20/1 delivered rows. A live
+large-feed boundary and inbox changes during multi-call paging remain gaps;
+these row offsets do not provide an atomic snapshot or stable cursor.
+
+Each read verifies the selected context before and after data retrieval and
+returns a UTC retrieval timestamp. Concurrent reads share the existing private
+session lock; synthetic checks verify serialization and fresh fetches without
+writes. HTTP-date and numeric rate-limit pauses survive a new client process
+and expire at the stored deadline. Stalled streams now stop on cancellation,
+and the request deadline includes the response body. An unavailable response
+never becomes an empty feed.
+
+Absence checks now validate complete history date strings, check illness overlap
+for leave as well as sick requests, and refuse submission when the UTC day
+changes or the preview expires during checks. All 15 tools round-trip through
+the MCP protocol offline. Separate checks cover confirmed whole-day sick and
+inclusive leave payloads. Real school writes remain unverified and require approval of
+an actual requested absence. No fictitious request was sent.
+
+The hardened package passes 21 synthetic tests with 1,865 assertions, plus the
+shared response-body cancellation and byte-limit checks. See the
+[hardening verification report](inna-mcp-hardening.md) for the final local gates.
 
 Run the package's repeatable offline checks with:
 
@@ -257,5 +301,5 @@ bun run --cwd packages/inna-mcp build:binary
    fictitious illness or leave request merely to test the endpoint.
 3. Verify longer session lifetime and expiry behavior. One live restart/reuse
    check does not establish unattended authentication or renewal.
-4. Run the repository's independent review and native release gates before
-   authorizing publication. The first preview is prepared but remains unpublished.
+4. Repeat native release gates and obtain maintainer approval for subsequent
+   releases. Publication of 0.1.1 has been authorized; see its verification report.

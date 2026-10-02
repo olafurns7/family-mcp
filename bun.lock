@@ -72,7 +72,7 @@
     },
     "packages/inna-mcp": {
       "name": "inna-mcp",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@family-mcp/mcp-runtime": "workspace:^",
         "@family-mcp/session-store": "workspace:*",
@@ -92,7 +92,7 @@
     },
     "packages/kronan-mcp": {
       "name": "kronan-mcp",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@family-mcp/mcp-runtime": "workspace:^",
         "@family-mcp/session-store": "workspace:*",
