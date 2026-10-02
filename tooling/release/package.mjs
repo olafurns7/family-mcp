@@ -12,6 +12,7 @@ const relativeFile = z
 export const PACKAGE_NAMES = /** @type {const} */ ([
   'abler-mcp',
   'infomentor-mcp',
+  'inna-mcp',
   'kronan-mcp',
   'dominos-mcp',
 ]);
@@ -20,6 +21,7 @@ export const PACKAGE_NAMES = /** @type {const} */ ([
 export const DOCUMENTATION_FILES = /** @type {const} */ ({
   'abler-mcp': ['docs/AGENTS.md', 'docs/PUBLISHING.md'],
   'infomentor-mcp': ['docs/RELEASING.md'],
+  'inna-mcp': ['docs/RELEASING.md'],
   'kronan-mcp': ['docs/RELEASING.md'],
   'dominos-mcp': ['docs/RELEASING.md'],
 });

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { readPackage } from './package.mjs';
+import { PACKAGE_NAMES, readPackage } from './package.mjs';
 import { z } from 'zod';
 
 /**
@@ -19,7 +19,7 @@ import { z } from 'zod';
  */
 export async function smoke(bin, expectedTools, version, standalone, packageName) {
   assert.ok(
-    ['abler-mcp', 'infomentor-mcp', 'kronan-mcp', 'dominos-mcp'].includes(packageName),
+    PACKAGE_NAMES.some((name) => name === packageName),
     'Unknown package.',
   );
   const directory = await mkdtemp(join(tmpdir(), 'family-mcp-smoke-'));
@@ -42,6 +42,7 @@ export async function smoke(bin, expectedTools, version, standalone, packageName
       XDG_CONFIG_HOME: directory,
       ABLER_SESSION_FILE: join(directory, 'missing.json'),
       INFOMENTOR_SESSION_PATH: join(directory, 'missing.json'),
+      INNA_SESSION_FILE: join(directory, 'missing.json'),
       KRONAN_TOKEN_FILE: join(directory, 'missing.json'),
       DOMINOS_SESSION_FILE: join(directory, 'missing.json'),
     };
@@ -79,6 +80,41 @@ export async function smoke(bin, expectedTools, version, standalone, packageName
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((tool) => tool.name).toSorted(), [...expectedTools].toSorted());
     assert.ok(tools.every((tool) => tool.outputSchema));
+
+    if (packageName === 'inna-mcp') {
+      assert.match(client.getInstructions() ?? '', /show the user the exact security code/);
+      const status = await client.callTool({ name: 'inna_session_status', arguments: {} });
+      z.object({ authenticated: z.literal(false) }).parse(status.structuredContent);
+      const error = await client.callTool({ name: 'inna_get_overview', arguments: {} });
+      assert.equal(error.isError, true);
+      assert.equal(error.structuredContent, undefined);
+
+      const optional = new Client({ name: 'inna-write-opt-in-smoke', version: '1' });
+
+      const optionalTransport = new StdioClientTransport({
+        command: executable,
+        args: ['serve', '--allow-absence-writes'],
+        cwd: directory,
+        env,
+        stderr: 'pipe',
+      });
+
+      optionalTransport.stderr?.on('data', (chunk) => {
+        stderr += String(chunk);
+      });
+
+      try {
+        await optional.connect(optionalTransport);
+        const enabled = await optional.listTools();
+        assert.deepEqual(
+          enabled.tools.map((tool) => tool.name).toSorted(),
+          [...expectedTools, 'inna_prepare_absence', 'inna_submit_absence'].toSorted(),
+        );
+        assert.ok(enabled.tools.every((tool) => tool.outputSchema));
+      } finally {
+        await optional.close();
+      }
+    }
 
     if (packageName === 'abler-mcp') {
       const status = await client.callTool({ name: 'auth_status', arguments: {} });

@@ -70,6 +70,26 @@
         "@types/node": "^22.20.2",
       },
     },
+    "packages/inna-mcp": {
+      "name": "inna-mcp",
+      "version": "0.1.0",
+      "dependencies": {
+        "@family-mcp/mcp-runtime": "workspace:^",
+        "@family-mcp/session-store": "workspace:*",
+        "@modelcontextprotocol/server": "^2.0.0",
+        "htmlparser2": "^12.0.0",
+        "tough-cookie": "^6.0.2",
+        "zod": "^4.6.2",
+      },
+      "devDependencies": {
+        "@family-mcp/oxlint-anti-slop": "workspace:*",
+        "@family-mcp/release-tooling": "workspace:*",
+        "@family-mcp/tsconfig": "workspace:*",
+        "@modelcontextprotocol/client": "^2.0.0",
+        "@types/bun": "^1.2.19",
+        "@types/node": "^22.20.2",
+      },
+    },
     "packages/kronan-mcp": {
       "name": "kronan-mcp",
       "version": "0.1.0",
@@ -321,6 +341,8 @@
     "htmlparser2": ["htmlparser2@12.0.0", "", { "dependencies": { "domelementtype": "^3.0.0", "domhandler": "^6.0.0", "domutils": "^4.0.2", "entities": "^8.0.0" } }, "sha512-Tz7u1i95/g2x2jz81+x0FBVhBhY5aRTvD3tXXdFaljuNdzDLJ8UGNRrTcj2cgQvAg3iW/h77Fz15nLW0L0CrZw=="],
 
     "infomentor-mcp": ["infomentor-mcp@workspace:packages/infomentor-mcp"],
+
+    "inna-mcp": ["inna-mcp@workspace:packages/inna-mcp"],
 
     "isexe": ["isexe@2.0.0", "", {}, "sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw=="],
 

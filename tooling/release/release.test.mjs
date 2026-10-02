@@ -19,11 +19,12 @@ const packageNames = PACKAGE_NAMES;
 await test('release package constants stay pinned', () => {
   assert.deepEqual(
     [...PACKAGE_NAMES],
-    ['abler-mcp', 'infomentor-mcp', 'kronan-mcp', 'dominos-mcp'],
+    ['abler-mcp', 'infomentor-mcp', 'inna-mcp', 'kronan-mcp', 'dominos-mcp'],
   );
   assert.deepEqual(DOCUMENTATION_FILES, {
     'abler-mcp': ['docs/AGENTS.md', 'docs/PUBLISHING.md'],
     'infomentor-mcp': ['docs/RELEASING.md'],
+    'inna-mcp': ['docs/RELEASING.md'],
     'kronan-mcp': ['docs/RELEASING.md'],
     'dominos-mcp': ['docs/RELEASING.md'],
   });
@@ -56,6 +57,7 @@ await test('release generation, version tags, and package-specific assets stay c
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh -s -- --with-warp',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.0.1/packages/infomentor-mcp/install.sh | sh -s -- --without-warp',
+    'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.0.1/packages/inna-mcp/install.sh | sh',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.0.1/packages/kronan-mcp/install.sh | sh',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/dominos-mcp@0.0.1/packages/dominos-mcp/install.sh | sh',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.0.1/packages/kronan-mcp/install.sh | sh',
@@ -221,6 +223,7 @@ await test('release generation, version tags, and package-specific assets stay c
       rootReadme
         .replaceAll('abler-mcp@0.0.1', 'abler-mcp@9.8.7')
         .replaceAll('infomentor-mcp@0.0.1', 'infomentor-mcp@9.8.7')
+        .replaceAll('inna-mcp@0.0.1', 'inna-mcp@9.8.7')
         .replaceAll('kronan-mcp@0.0.1', 'kronan-mcp@9.8.7')
         .replaceAll('dominos-mcp@0.0.1', 'dominos-mcp@9.8.7'),
     );
@@ -318,6 +321,7 @@ await test('Turbo release synchronization preserves root README pins', async () 
           'release:sync',
           '--filter=abler-mcp',
           '--filter=infomentor-mcp',
+          '--filter=inna-mcp',
           '--filter=kronan-mcp',
           '--filter=dominos-mcp',
           '--force',
@@ -342,12 +346,14 @@ await test('Turbo release synchronization preserves root README pins', async () 
     await setVersion('abler-mcp', '1.2.3');
     await setVersion('infomentor-mcp', '4.5.6');
     await setVersion('kronan-mcp', '7.8.9');
+    await setVersion('inna-mcp', '2.3.4');
     await setVersion('abler-mcp', '1.2.4');
     synchronize();
     let output = await readFile(rootReadme, 'utf8');
     assert.match(output, /abler-mcp@1\.2\.4\/packages\/abler-mcp\/install\.sh/);
     assert.match(output, /infomentor-mcp@4\.5\.6\/packages\/infomentor-mcp\/install\.sh/);
     assert.match(output, /kronan-mcp@7\.8\.9\/packages\/kronan-mcp\/install\.sh/);
+    assert.match(output, /inna-mcp@2\.3\.4\/packages\/inna-mcp\/install\.sh/);
 
     await setVersion('infomentor-mcp', '4.5.7');
     synchronize();

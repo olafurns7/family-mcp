@@ -407,21 +407,27 @@ cat >/dev/null
       `${darwinDigest}  ${darwinArchive}\n`,
     );
 
-    /** @param {string} label @param {string} [contents] */
-    const startOldProcess = async (label, contents) => {
+    /** @param {string} label @param {boolean} [ignoreTerm] */
+    const startOldProcess = async (label, ignoreTerm = false) => {
       const oldDir = join(prefix, 'share', pkg.name, label);
       const oldBinary = join(oldDir, 'bin', pkg.name);
       await mkdir(join(oldDir, 'bin'), { recursive: true });
       await writeFile(
         oldBinary,
-        contents ?? "#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do /bin/sleep 1; done\n",
+        `#!/bin/sh\ntrap '${ignoreTerm ? '' : 'exit 0'}' TERM\nprintf 'ready\\n'\nwhile :; do /bin/sleep 1; done\n`,
         { mode: 0o755 },
       );
       await rm(binary, { force: true });
       await symlink(oldBinary, binary);
-      const child = spawn(binary, [], { stdio: 'ignore' });
+      const child = spawn(binary, [], { stdio: ['ignore', 'pipe', 'ignore'] });
       const pid = child.pid;
       assert.ok(pid);
+      // The shell must open the old symlink and install its trap before an upgrade replaces it.
+      await new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('exit', () => reject(new Error('Old-process fixture exited before readiness.')));
+        child.stdout.once('data', resolve);
+      });
       await writeFile(lsofMap, `${pid}\t${oldBinary}\n`, { flag: 'a' });
 
       return { child, oldDir, pid };
@@ -512,10 +518,7 @@ cat >/dev/null
     process.kill(unrelatedPid, 'SIGTERM');
     await unrelatedExit;
 
-    const ignored = await startOldProcess(
-      '0.0.0-old-ignore',
-      "#!/bin/sh\ntrap '' TERM\nwhile :; do /bin/sleep 1; done\n",
-    );
+    const ignored = await startOldProcess('0.0.0-old-ignore', true);
 
     const ignoredExit = new Promise((resolve) => ignored.child.once('exit', resolve));
 
@@ -524,7 +527,7 @@ cat >/dev/null
       { TEST_PLATFORM: 'Darwin' },
     );
 
-    assert.equal(ignore.status, 1);
+    assert.equal(ignore.status, 1, `stdout: ${ignore.stdout}\nstderr: ${ignore.stderr}`);
     assert.ok(
       ignore.stdout.includes(
         `Old ${pkg.name} process still running after SIGTERM: PID ${ignored.pid} (${ignored.oldDir})`,

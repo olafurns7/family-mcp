@@ -1,7 +1,8 @@
 # Agent guide
 
 Start with the self-contained [Abler](../README.md#abler),
-[InfoMentor](../README.md#infomentor), [Krónan](../README.md#krónan), or [Domino’s](../README.md#dominos) setup in
+[InfoMentor](../README.md#infomentor), [Inna](../README.md#inna),
+[Krónan](../README.md#krónan), or [Domino’s](../README.md#dominos) setup in
 the root README. Package READMEs hold the full tool, file-location, and
 troubleshooting reference. Keep
 credentials, cookies, refresh tokens, raw upstream errors, and family data out
@@ -44,6 +45,27 @@ attendance state from a failed request or undocumented value.
   ask when a name is ambiguous. Another shared client can change the selection.
 - Preserve cursors only after successful delivery. Failed or partial feeds are
   not empty; retain the old cursor and do not call missing references deletions.
+
+### Inna
+
+- Electronic-ID login uses `inna-mcp auth login` with hidden phone input. Any
+  agent running the CLI must immediately show the user the exact security code
+  printed by the CLI, including leading zeros, before waiting for phone approval.
+  Do not suppress it in tool output or summarize it as merely "approve on your
+  phone". The user compares that code and enters their PIN only on their phone;
+  never request or capture the PIN.
+- Google sign-in must use an account already linked in Inna. Browser cookie
+  exports stay in private local files and never go in chat. Both login paths
+  verify and store the session with the shared session-store helpers.
+- Identify the returned account, student, and school before describing records.
+  Do not enable `--allow-account-change` to work around a binding mismatch.
+  Missing marks, percentages, or optional text are unavailable, not zero.
+- Absence writes are absent unless `serve --allow-absence-writes` is explicitly
+  enabled. Prepare a whole-day preview, show the student, school, kind, exact
+  dates, and reason, and obtain human approval to send them to the school through
+  Inna before submitting. A submitted application does not establish school
+  approval. An uncertain operation must never be retried or erased to allow a
+  new submission.
 
 ### Krónan
 
