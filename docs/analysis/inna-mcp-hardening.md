@@ -3,8 +3,9 @@
 Date: 2026-10-02. Scope: Inna 0.1.1 hardening after the initial 0.1.0 preview.
 The maintainer authorized publication of 0.1.1 and the public website update.
 The manifest, documentation, and installer pins are synchronized for that
-release. Four-platform CI, asset verification, publication, and deployment
-results will be recorded below after they complete.
+release. The preview is published, its four-platform checks passed, and the
+English and Icelandic public pages now show 0.1.1. Release and deployment
+evidence follows below.
 
 ## Findings and changes
 
@@ -43,9 +44,33 @@ results will be recorded below after they complete.
   spaced prefix, reinstall, checksum rejection, previous-command preservation,
   and installed-binary protocol smoke pass.
 
-Current native checks cover local macOS arm64. The next approved release must
-run the four-platform CI build gates; the earlier four-platform success belongs
-to the published 0.1.0 source.
+## Published release and hosted evidence
+
+- Source commit and immutable release tag: `c443a8907c02b3db095bd301e1a6510dfed810e8`,
+  `inna-mcp@0.1.1`.
+- [Release CI](https://github.com/olafurns7/family-mcp/actions/runs/37033249086)
+  passed both Node 22/24 quality jobs and standalone binary/installer jobs on
+  macOS arm64/x64 and Linux arm64/x64. The
+  [main CI](https://github.com/olafurns7/family-mcp/actions/runs/37033244778)
+  and [landing CI](https://github.com/olafurns7/family-mcp/actions/runs/37033245021)
+  also passed for the same source commit.
+- All nine draft assets were downloaded and verified before publication:
+  four archives, their SHA-256 files, and the installer. Archives had exactly
+  the expected regular files/directories, executable permissions, source-matched
+  README/LICENSE, sourcemap, and dependency notices. The installer matched the
+  tagged source byte-for-byte.
+- [Inna 0.1.1 preview](https://github.com/olafurns7/family-mcp/releases/tag/inna-mcp%400.1.1)
+  was published at `2026-10-02T16:28:18Z`, with draft false, prerelease true,
+  and latest false.
+- The public pinned installer installed successfully into a disposable prefix
+  containing a space. The installed executable matched the verified CI-built
+  macOS arm64 binary and passed standalone protocol smoke, including the
+  default and opt-in tool inventories. Temporary installer files were removed.
+- `bun run deploy` published the Astro assets to [mcp.olinn.is](https://mcp.olinn.is/),
+  Cloudflare version `f6103f31-bdcf-4294-a6d0-362142cd31c8`. Browser verification
+  confirmed the English and [Icelandic](https://mcp.olinn.is/is/) pages display
+  Inna 0.1.1 and its matching installer, release, and setup links, alongside
+  all five services and the preview limitations. No viewport override was used.
 
 The prior landing workflow failed at `bun audit`, after its frozen install and
 Astro checks had passed. For the 0.1.1 website update, `devalue` is now 5.9.3 and

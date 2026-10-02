@@ -63,9 +63,10 @@ Historical published-release snapshot, verified on 2026-09-17: Abler 0.5.2,
 InfoMentor 0.6.1, Krónan 0.1.0, and Domino’s 0.1.0 preview.
 
 Current public-release snapshot, verified via GitHub API on 2026-10-02:
-Abler 0.5.3 and InfoMentor 0.8.0 stable; Inna 0.1.0, Krónan 0.2.0 and
-Domino’s 0.1.0 preview. Inna 0.1.0 was published publicly as a prerelease on
-2026-10-02.
+Abler 0.5.3 and InfoMentor 0.8.0 stable; Inna 0.1.1, Krónan 0.2.0 and
+Domino’s 0.1.0 preview. Inna 0.1.1 was published publicly as a prerelease on
+2026-10-02, with UTC parsing and repeated-read hardening. The public English
+and Icelandic pages were verified against those version and installer pins.
 
 ## Product Principles
 
