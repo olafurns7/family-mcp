@@ -228,7 +228,8 @@
     --lane-secondary: #d5efea;
     --focus: #f5cf82;
   }
-  .service-infomentor {
+  .service-infomentor,
+  .service-inna {
     background: #ddf0e8;
     color: #174c40;
     --lane-secondary: #356454;
@@ -368,6 +369,13 @@
     line-height: 1.6;
     padding-top: 17px;
     border-top: 1px solid #cd9983;
+  }
+  .service-inna .preview-label {
+    border-color: var(--lane-secondary);
+  }
+  .service-inna .preview-note {
+    color: var(--lane-secondary);
+    border-color: var(--lane-secondary);
   }
   .copy-status {
     position: fixed;

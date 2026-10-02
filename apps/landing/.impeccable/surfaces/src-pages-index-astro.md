@@ -8,13 +8,14 @@ related_targets: ["src/components/Landing.astro","src/pages/is/index.astro","src
 # Landing page
 
 Mode: Persuade. Scope: the brief bilingual introduction and installation directory
-at `/` and `/is/`. Readers choose one of the four published MCP servers, copy its
+at `/` and `/is/`. Readers choose one of the five published MCP servers, copy its
 pinned install command, and follow its setup guide. Keep the site static, the
-commands visible, and the Domino’s preview limitation accurate in both languages.
+commands visible, and the Inna, Krónan and Domino’s preview limits and approval
+requirements accurate in both languages.
 
 ## Direction contract
 
-THESIS: Four useful services become four approachable lanes. The timetable's
+THESIS: Five useful services become five approachable lanes. The timetable's
 consistent reading rhythm makes comparing and installing easier; no generic card
 grid or giant decorative technology illustration.
 

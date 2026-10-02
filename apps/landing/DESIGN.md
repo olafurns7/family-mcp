@@ -123,8 +123,9 @@ and successful copy state. White text belongs on those green surfaces.
 
 ### Secondary
 
-Mint identifies InfoMentor, yellow identifies Krónan, and peach identifies
-Domino’s. Each lane uses its recorded ink and secondary-text pair; Abler uses its
+Inna shares InfoMentor's existing mint background, ink and secondary-text palette.
+Yellow identifies Krónan, and peach identifies Domino’s. Each lane uses its
+recorded ink and secondary-text pair; Abler uses its
 light secondary tone. The two pale hover colors belong to the copy and language
 controls respectively.
 

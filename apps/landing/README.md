@@ -25,17 +25,18 @@ The static output in `dist/` is served by Cloudflare Workers Static Assets.
 domain. Deployment uses the local Wrangler login; no credentials belong in the
 repository or the site. There is no application server, database, or analytics.
 
-Service versions and pinned install commands are derived from the four package
+Service versions and pinned install commands are derived from the five package
 manifests at build time. Before deployment, verify those versions have published
 GitHub releases. Edit both languages in `src/data/content.ts`; keep the Domino’s
-preview limitations in both. The setup links point to each release's README.
+preview limitations and Inna's absence-submission limits in both. The setup links
+point to each release's README.
 
 Archivo is self-hosted through Fontsource; its OFL license is included in
 `public/archivo-license.txt`. The only client script handles copying commands,
 including visible feedback and a manual-copy fallback.
 
 For the browser smoke check, paste `scripts/check-copy.js` into the developer
-console on each language route. It checks all four copy buttons, their reset,
+console on each language route. It checks all five copy buttons, their reset,
 and the permission-denied fallback without changing the system clipboard.
 
 Design context lives in `PRODUCT.md`, `DESIGN.md`, and `.impeccable/`.

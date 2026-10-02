@@ -1,5 +1,6 @@
 import abler from '../../../../packages/abler-mcp/package.json';
 import infomentor from '../../../../packages/infomentor-mcp/package.json';
+import inna from '../../../../packages/inna-mcp/package.json';
 import kronan from '../../../../packages/kronan-mcp/package.json';
 import dominos from '../../../../packages/dominos-mcp/package.json';
 
@@ -9,13 +10,14 @@ export const repository = 'https://github.com/olafurns7/family-mcp';
 export const servers = [
   { id: 'abler', name: 'Abler', manifest: abler },
   { id: 'infomentor', name: 'InfoMentor', manifest: infomentor },
+  { id: 'inna', name: 'Inna', manifest: inna },
   { id: 'kronan', name: 'Krónan', manifest: kronan },
   { id: 'dominos', name: 'Domino’s', manifest: dominos },
 ].map(({ id, name, manifest }) => ({
   id,
   name,
   version: manifest.version,
-  preview: id === 'dominos',
+  preview: id === 'inna' || id === 'kronan' || id === 'dominos',
   command: `curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/${manifest.name}@${manifest.version}/packages/${manifest.name}/install.sh | sh`,
   documentation: `${repository}/tree/${manifest.name}@${manifest.version}/packages/${manifest.name}#readme`,
   release: `${repository}/releases/tag/${manifest.name}@${manifest.version}`,
@@ -25,13 +27,13 @@ export const content = {
   en: {
     title: 'Family MCP: Icelandic apps for your AI assistant',
     description:
-      'Unofficial MCP servers for Abler, InfoMentor, Krónan and Domino’s Iceland. Install them on your computer and connect them to an AI app that supports MCP.',
+      'Unofficial MCP servers for Abler, InfoMentor, Inna, Krónan and Domino’s Iceland. Install them on your computer and connect them to an AI app that supports MCP.',
     skip: 'Skip to the servers',
     language: 'Language',
     source: 'Source on GitHub',
     headline: ['Connect Icelandic apps', 'to your AI assistant.'],
     introduction:
-      'Unofficial MCP servers for Abler, InfoMentor, Krónan and Domino’s Iceland. Install them on your computer and connect them to an AI app that supports MCP.',
+      'Unofficial MCP servers for Abler, InfoMentor, Inna, Krónan and Domino’s Iceland. Install them on your computer and connect them to an AI app that supports MCP.',
     servers: 'MCP servers',
     install: 'Install in your terminal',
     copy: 'Copy command',
@@ -59,6 +61,13 @@ export const content = {
           'Read timetables, messages and school updates from your Icelandic InfoMentor account.',
         login: 'Your school account',
       },
+      inna: {
+        description:
+          'Read timetables, assignments, grades, attendance and messages from Inna. Whole-day illness registration and leave applications are available with your approval.',
+        login: 'Electronic ID or a linked Google account',
+        limitation:
+          'Match the displayed security code on your phone when signing in with electronic ID. Absence requests require opt-in and explicit approval; live submission is untested.',
+      },
       kronan: {
         description:
           'Search products and recipes, edit your shopping list and basket, and place orders you confirm.',
@@ -78,13 +87,13 @@ export const content = {
   is: {
     title: 'Family MCP: tengdu íslensk öpp við gervigreind',
     description:
-      'Óopinberir MCP-þjónar fyrir Abler, InfoMentor, Krónuna og Domino’s. Settu þá upp á tölvunni þinni og tengdu við gervigreindarforrit sem styður MCP.',
+      'Óopinberir MCP-þjónar fyrir Abler, InfoMentor, Innu, Krónuna og Domino’s. Settu þá upp á tölvunni þinni og tengdu við gervigreindarforrit sem styður MCP.',
     skip: 'Fara beint í uppsetningu',
     language: 'Tungumál',
     source: 'Kóðinn á GitHub',
     headline: ['Tengdu íslensk öpp', 'við gervigreind.'],
     introduction:
-      'Óopinberir MCP-þjónar fyrir Abler, InfoMentor, Krónuna og Domino’s. Settu þá upp á tölvunni þinni og tengdu við gervigreindarforrit sem styður MCP.',
+      'Óopinberir MCP-þjónar fyrir Abler, InfoMentor, Innu, Krónuna og Domino’s. Settu þá upp á tölvunni þinni og tengdu við gervigreindarforrit sem styður MCP.',
     servers: 'MCP-þjónar',
     install: 'Uppsetning',
     copy: 'Afrita skipun',
@@ -110,6 +119,13 @@ export const content = {
       infomentor: {
         description: 'Sæktu stundatöflur, skilaboð og tilkynningar úr InfoMentor.',
         login: 'InfoMentor-aðgangur',
+      },
+      inna: {
+        description:
+          'Sæktu stundatöflur, verkefni, einkunnir, mætingar og skilaboð úr Innu. Þú getur líka skráð veikindi fyrir heilan dag eða sótt um leyfi með þínu samþykki.',
+        login: 'Rafræn skilríki eða tengdur Google-aðgangur',
+        limitation:
+          'Berðu saman öryggiskóðann sem birtist við kóðann í símanum þegar þú notar rafræn skilríki. Virkja þarf fjarvistaskráningu sérstaklega og samþykkja hverja beiðni; innsending hefur ekki verið prófuð á raunverulegum aðgangi.',
       },
       kronan: {
         description:
