@@ -417,6 +417,14 @@ test('every read tool round-trips through MCP without marking read or fetching e
       calls.map(([name]) => name).toSorted(),
     );
 
+    // Only the two tools that never select a student may claim to be read-only.
+    expect(
+      tools.tools
+        .filter((tool) => tool.annotations?.readOnlyHint)
+        .map((tool) => tool.name)
+        .toSorted(),
+    ).toEqual(['inna_absence_status', 'inna_list_students']);
+
     for (const [name, args] of calls) {
       const result = await client.callTool({ name, arguments: args });
       expect(result.isError, name).not.toBe(true);

@@ -9,6 +9,9 @@ const metadata = { retrievedAt: z.iso.datetime(), timeZone: z.literal('UTC') };
 
 const context = { context: schemas.contextSchema, ...metadata };
 
+/** Reads school data but may change which student Inna's shared session has selected. */
+const SELECTS_STUDENT = LOCAL_WRITE;
+
 const student = { studentKey: schemas.studentKey };
 
 export function createServer(options: ClientOptions = {}): McpServer {
@@ -37,7 +40,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         retrievedAt: metadata.retrievedAt.optional(),
         timeZone: metadata.timeZone.optional(),
       }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) => toolResult(() => client.status(ctx.mcpReq.signal, request.studentKey)),
   );
@@ -64,7 +67,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         courses: schemas.coursesSchema,
         announcements: schemas.announcementsSchema,
       }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) => toolResult(() => client.overview(ctx.mcpReq.signal, request.studentKey)),
   );
@@ -75,7 +78,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         'Read timetable entries in an inclusive date range. Use YYYY-MM-DD dates. Normalized timestamps are UTC, date-only values stay dates, and original Inna times are preserved.',
       inputSchema: schemas.dateRange,
       outputSchema: z.object({ ...context, entries: schemas.timetableSchema }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) => toolResult(() => client.timetable(request, ctx.mcpReq.signal)),
   );
@@ -92,7 +95,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         entries: schemas.assignmentsSchema,
         homework: schemas.homeworkSchema,
       }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) =>
       toolResult(() => client.assignments(request.type, ctx.mcpReq.signal, request.studentKey)),
@@ -104,7 +107,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         'Read assignment description and due date by assignmentId from the list. Returns plain text; does not start an exam or submit answers.',
       inputSchema: z.object({ assignmentId: schemas.id, ...student }).strict(),
       outputSchema: z.object({ ...context, assignment: schemas.assignmentSchema }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) =>
       toolResult(() =>
@@ -118,7 +121,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         'Read course grade records for termId from the overview; defaults to the current term. Missing grade fields are unavailable. Use course grades for assignment-level assessment.',
       inputSchema: z.object({ termId: schemas.id.optional(), ...student }).strict(),
       outputSchema: z.object({ ...context, entries: schemas.gradesSchema }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) =>
       toolResult(() => client.grades(request.termId, ctx.mcpReq.signal, request.studentKey)),
@@ -133,7 +136,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         ...context,
         assignments: schemas.courseGradesSchema.shape.assignments,
       }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) =>
       toolResult(() => client.courseGrades(request.groupId, ctx.mcpReq.signal, request.studentKey)),
@@ -145,7 +148,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         'Read term attendance percentages, raw absence codes, and per-course totals. Preserve codes; do not infer attendance from missing or undocumented values.',
       inputSchema: z.object({ termId: schemas.id.optional(), ...student }).strict(),
       outputSchema: z.object({ ...context, attendance: schemas.attendanceSchema }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) =>
       toolResult(() => client.attendance(request.termId, ctx.mcpReq.signal, request.studentKey)),
@@ -157,7 +160,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         'List course material groups, file metadata, descriptions, and links for groupId from the overview. Does not download files, visit external links, or mark files opened.',
       inputSchema: z.object({ groupId: schemas.id, ...student }).strict(),
       outputSchema: z.object({ ...context, groups: schemas.materialsSchema }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) =>
       toolResult(() => client.materials(request.groupId, ctx.mcpReq.signal, request.studentKey)),
@@ -181,7 +184,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         rowTo: z.number(),
         nextRowFrom: z.number().int().positive().nullable(),
       }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) =>
       toolResult(() =>
@@ -202,7 +205,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         .object({ messageId: schemas.id, type: z.string().regex(/^[A-Z]$/), ...student })
         .strict(),
       outputSchema: z.object({ ...context, message: schemas.messageSchema }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) =>
       toolResult(() =>
@@ -221,7 +224,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
         sick: schemas.sicknessSchema,
         leave: schemas.leavesSchema,
       }),
-      annotations: READ_ONLY,
+      annotations: SELECTS_STUDENT,
     },
     (request, ctx) => toolResult(() => client.absences(request, ctx.mcpReq.signal)),
   );

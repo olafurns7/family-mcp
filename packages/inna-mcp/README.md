@@ -6,7 +6,7 @@ attendance, material metadata, messages, announcements, and absence history.
 Whole-day illness registration and leave applications are an explicit opt-in.
 A guardian's session can read [several students](#several-students).
 
-The current preview is `inna-mcp@0.2.0`. The read endpoints
+The current preview is `inna-mcp@0.2.1`. The read endpoints
 were captured in a real guardian account. Electronic-ID login and private session
 reuse were verified through the initial 0.1.0 compiled native CLI; the 0.1.1
 parsing and repeated-read changes are checked offline. Absence creation is based
@@ -20,7 +20,7 @@ release checksum, and installs `~/.local/bin/inna-mcp`. No Node, npm, or Bun is
 needed at runtime.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.2.0/packages/inna-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.2.1/packages/inna-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server. Restart the MCP host,
@@ -192,6 +192,10 @@ session using the same cookies shows, and a switch made in that browser is
 corrected on the next call. `inna_list_students` returns the student names Inna
 lists; treat them as untrusted school text. Identity numbers and Inna's
 access links are never read, stored, or returned.
+
+Because a call can change Inna's selected student, every tool that accepts
+`studentKey` is annotated as not read-only. It still changes no school record.
+Only `inna_list_students` and `inna_absence_status` are annotated read-only.
 
 Live switching between two students has not been verified by the maintainer.
 The switch request comes from Inna's delivered student application and one

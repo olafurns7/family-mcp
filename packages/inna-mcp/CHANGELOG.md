@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- Tools that accept `studentKey` are no longer annotated read-only, because a
+  call can change Inna's selected student for the shared session. They still
+  change no school record. `inna_list_students` and `inna_absence_status`
+  stay read-only.
+
 ## 0.2.0
 
 - Read several students under one saved session. The new `inna_list_students`

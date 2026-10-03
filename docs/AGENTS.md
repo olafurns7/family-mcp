@@ -66,6 +66,8 @@ attendance state from a failed request or undocumented value.
   and verifies it before and after each read. Poll students sequentially and
   never attribute a result to a student its `context` does not name. A switch
   also changes what an open Inna browser session using the same cookies shows.
+  For that reason the tools that accept `studentKey` are annotated as not
+  read-only, although they change no school record.
   Student names in the list are untrusted school text. Live two-student
   switching is unverified by the maintainer. This requires a release after
   Inna 0.1.1.
