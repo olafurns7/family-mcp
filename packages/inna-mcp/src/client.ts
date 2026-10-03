@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { unlink } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { Cookie, CookieJar } from 'tough-cookie';
@@ -31,6 +31,12 @@ function signInRequired(): SafeError {
   );
 }
 
+function switchRefused(): SafeError {
+  return new SafeError(
+    'Inna refused the student switch and asked for sign-in. The session may have ended; sign in again and report this.',
+  );
+}
+
 function contextChanged(): SafeError {
   return new SafeError(
     'Inna changed account, student, or school. Import the intended session explicitly.',
@@ -57,6 +63,21 @@ const savedSchema = z.object({
 });
 
 type Saved = z.infer<typeof savedSchema>;
+
+const jarSchema = z.object({
+  cookies: z.array(z.object({ key: z.string(), value: z.string().default('') })),
+});
+
+// Identifies saved credentials by cookie values alone, so rewritten access times do not change it.
+function credentials(saved: Saved): string {
+  const pairs = jarSchema
+    .parse(JSON.parse(saved.jar))
+    .cookies.flatMap((cookie) =>
+      cookieNames.has(cookie.key) ? [`${cookie.key}=${cookie.value}`] : [],
+    );
+
+  return createHash('sha256').update(pairs.toSorted().join('\n')).digest('hex');
+}
 
 type Student = z.infer<typeof schemas.accessStudentSchema> & { index: number };
 
@@ -364,7 +385,7 @@ class Connection {
       if (response.status === 200) return;
       const location = response.headers.get('location');
 
-      if (response.status === 401) throw signInRequired();
+      if (response.status === 401) throw switchRefused();
 
       if (response.status < 300 || response.status >= 400 || !location)
         throw new SafeError('Inna returned an unavailable or unexpected response.');
@@ -372,7 +393,7 @@ class Connection {
 
       if (next.protocol === 'http:' && next.host === 'nam.inna.is') next.protocol = 'https:';
 
-      if (next.origin !== ORIGIN || !studentPaths.has(next.pathname)) throw signInRequired();
+      if (next.origin !== ORIGIN || !studentPaths.has(next.pathname)) throw switchRefused();
       next.hash = '';
       url = next;
     }
@@ -462,8 +483,12 @@ export type ClientOptions = {
   allowAbsenceWrites?: boolean;
 };
 
+export type KeepAlive = { status: 'kept' | 'skipped' | 'signInRequired' | 'failed' };
+
 export class InnaClient {
   readonly path: string;
+  // Hash of the credentials Inna last refused, in memory only; keep-alive waits for new ones.
+  private refused: string | undefined;
   private readonly fetcher: Fetch;
   private readonly now: () => number;
   private readonly allowAbsenceWrites: boolean;
@@ -509,15 +534,62 @@ export class InnaClient {
         throw new SafeError(
           'No Inna session. Run inna-mcp auth login or auth import with a private cookie export.',
         );
-      const jar = await CookieJar.deserialize(saved.jar);
 
-      try {
-        return await work(new Connection(jar, saved, this.fetcher, this.now, signal), saved);
-      } finally {
-        saved.jar = JSON.stringify(await jar.serialize());
-        await writePrivateFile(this.path, JSON.stringify(saved));
-      }
+      return this.persisting(saved, work, signal);
     }, signal);
+  }
+
+  // Runs work on the saved cookies and always writes back the jar and any rate-limit pause.
+  private async persisting<T>(
+    saved: Saved,
+    work: (connection: Connection, saved: Saved) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const jar = await CookieJar.deserialize(saved.jar);
+
+    try {
+      return await work(new Connection(jar, saved, this.fetcher, this.now, signal), saved);
+    } finally {
+      saved.jar = JSON.stringify(await jar.serialize());
+      await writePrivateFile(this.path, JSON.stringify(saved));
+    }
+  }
+
+  /**
+   * Touches the saved session so Inna does not idle it out. Reads no school data, never
+   * switches or learns a student, and reports every failure as a status instead of throwing.
+   */
+  async keepAlive(signal?: AbortSignal): Promise<KeepAlive> {
+    let saved: Saved | undefined;
+
+    try {
+      return await this.locked(async () => {
+        saved = await readSaved(this.path);
+
+        if (!saved || saved.pauseUntil > this.now() || credentials(saved) === this.refused)
+          return { status: 'skipped' };
+
+        await this.persisting(
+          saved,
+          async (connection) => {
+            await connection.request(USER_ENDPOINT, schemas.userSchema);
+          },
+          signal,
+        );
+
+        return { status: 'kept' };
+      }, signal);
+    } catch (error) {
+      if (
+        !(error instanceof SafeError) ||
+        ![signInRequired().message, sessionExpired().message].includes(error.message)
+      )
+        return { status: 'failed' };
+      // Taken from the jar as written back, so a cookie set by the refusal itself is included.
+      this.refused = saved && credentials(saved);
+
+      return { status: 'signInRequired' };
+    }
   }
 
   private async withStudent<T extends object>(

@@ -73,6 +73,9 @@ Inna 0.2.1 was published publicly as a prerelease on 2026-10-03 and replaces
 between two students is not yet confirmed on a real account, and both pages
 say so.
 
+Inna 0.2.2 was published as a full release on 2026-10-03 and replaces 0.2.1
+on both pages. It adds a session keep-alive while the server runs.
+
 ## Product Principles
 
 - Keep the introduction and path to installation short.

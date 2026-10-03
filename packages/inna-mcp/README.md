@@ -6,7 +6,7 @@ attendance, material metadata, messages, announcements, and absence history.
 Whole-day illness registration and leave applications are an explicit opt-in.
 A guardian's session can read [several students](#several-students).
 
-The current preview is `inna-mcp@0.2.1`. The read endpoints
+The current preview is `inna-mcp@0.2.2`. The read endpoints
 were captured in a real guardian account. Electronic-ID login and private session
 reuse were verified through the initial 0.1.0 compiled native CLI; the 0.1.1
 parsing and repeated-read changes are checked offline. Absence creation is based
@@ -20,7 +20,7 @@ release checksum, and installs `~/.local/bin/inna-mcp`. No Node, npm, or Bun is
 needed at runtime.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.2.1/packages/inna-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.2.2/packages/inna-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server. Restart the MCP host,
@@ -81,6 +81,28 @@ The normal session file is `~/.config/inna-mcp/session.json`, or an absolute
 `INNA_SESSION_FILE` path. Shared private-file and lock helpers enforce owner-only
 files and atomic replacement. No unattended login or renewal is implemented.
 Expiry needs a fresh explicit login/import.
+
+### Keeping the session alive
+
+Inna issues browser session cookies only; there is no refresh token, and a new
+session needs your phone or Google. While `inna-mcp serve` runs, it makes one
+small authenticated request every ten minutes and saves any rotated cookies, so
+the session is not left idle. The first request comes ten minutes after start.
+It reads no school data and never switches the selected student. This can only
+prevent an idle timeout: how long Inna keeps a session is unmeasured, and a
+session Inna ends for any other reason still needs a fresh login or import.
+After Inna asks for sign-in, the requests stop until the saved session cookies
+change, which a new login or import does. Rewriting the same cookies, as a tool
+call or a second `serve` on the same session file does, does not restart them.
+A restarted server asks once more. They also wait out a rate-limit pause, and
+they stop when the MCP connection closes.
+
+The keep-alive runs only while `serve` runs. Start the server with
+`inna-mcp serve --no-keep-alive` to turn it off. A host that starts the server
+per conversation leaves the session idle between conversations; there, schedule
+`inna-mcp auth status` (for example from cron) for the same effect. Unlike the
+keep-alive, `auth status` verifies the default student and switches Inna's
+selected student back to it when a browser or another call left it elsewhere.
 
 ### Connect an MCP host
 

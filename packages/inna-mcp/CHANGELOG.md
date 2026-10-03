@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.2
+
+- While `serve` runs, the server makes one small authenticated request every
+  ten minutes so the saved session is not left idle. It saves rotated cookies,
+  reads no school data, never switches students, waits out rate-limit pauses,
+  and stops after Inna asks for sign-in until the saved session cookies change,
+  as after a new login or import.
+  `serve --no-keep-alive` turns it off. This only prevents an idle timeout;
+  Inna's session lifetime is still unmeasured.
+- A student switch that Inna answers with a sign-in request now reports
+  "Inna refused the student switch and asked for sign-in" instead of the
+  message used for an expired session on an ordinary read.
+
 ## 0.2.1
 
 - Tools that accept `studentKey` are no longer annotated read-only, because a

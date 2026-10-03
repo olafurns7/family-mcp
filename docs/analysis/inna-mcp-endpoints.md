@@ -116,6 +116,10 @@ array's `url_login` links. Later work selects among the listed students; see
 [Student switching](#student-switching).
 
 No long-term session lifetime or unattended cookie/OAuth renewal was established.
+Inna issues only the `SESSION`, `JSESSIONID`, and `XSRF-TOKEN` browser cookies;
+no refresh token exists. `serve` repeats this request every ten minutes as a
+keep-alive, which can only prevent an idle timeout. Whether Inna has an idle
+timeout, an absolute lifetime, or both is still unmeasured.
 Save only verified sessions using the shared private session store, under the
 shared file lock. Treat redirects, access denial, rate limits, malformed JSON,
 and missing records distinctly; never return a failed feed as an empty list.
@@ -356,6 +360,9 @@ bun run --cwd packages/inna-mcp build:binary
    absence write and reconcile its returned ID with history. Do not create a
    fictitious illness or leave request merely to test the endpoint.
 3. Verify longer session lifetime and expiry behavior. One live restart/reuse
-   check does not establish unattended authentication or renewal.
+   check does not establish unattended authentication or renewal. The
+   ten-minute keep-alive is unverified against a live session: measure whether
+   it extends a session, and whether a lost session follows idle time or a
+   student switch, which now report different errors.
 4. Repeat native release gates and obtain maintainer approval for subsequent
    releases. Publication of 0.1.1 has been authorized; see its verification report.

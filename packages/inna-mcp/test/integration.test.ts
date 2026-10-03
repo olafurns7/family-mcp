@@ -1,11 +1,13 @@
 import { afterEach, expect, test } from 'bun:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, chmod, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { z } from 'zod';
-import { InnaClient } from '../src/client.js';
+import { InnaClient, type KeepAlive } from '../src/client.js';
+import { startKeepAlive } from '../src/keep-alive.js';
 import { createServer } from '../src/server.js';
 import {
   absencePreviewSchema,
@@ -82,6 +84,9 @@ class Provider {
   rateLimit = false;
   ignoreSwitch = false;
   switchRateLimit = false;
+  unauthorized = false;
+  switchUnauthorized = false;
+  rotation = 'synthetic-rotated';
   numeric = false;
   switchLocation = 'http://nam.inna.is/Components/Students/Students.html';
   switches = 0;
@@ -137,6 +142,8 @@ class Provider {
 
     if (this.switchRateLimit)
       return new Response(null, { status: 429, headers: { 'Retry-After': '120' } });
+
+    if (this.switchUnauthorized) return new Response(null, { status: 401 });
     const key = this.order[Number(url.searchParams.get('i'))];
     const entry = key === undefined ? undefined : this.entries.get(key);
 
@@ -191,6 +198,8 @@ class Provider {
     if (this.rateLimit)
       return new Response(null, { status: 429, headers: { 'Retry-After': '60' } });
 
+    if (this.unauthorized) return new Response(null, { status: 401 });
+
     if (url.pathname === '/api/UserData/GetLoggedInUser')
       return Response.json(
         {
@@ -199,7 +208,7 @@ class Provider {
           studentIdNumber: 'DO-NOT-RETURN',
           privateToken: 'DO-NOT-RETURN',
         },
-        { headers: { 'Set-Cookie': 'SESSION=synthetic-rotated; Path=/; Secure; HttpOnly' } },
+        { headers: { 'Set-Cookie': `SESSION=${this.rotation}; Path=/; Secure; HttpOnly` } },
       );
 
     if (url.pathname === '/api/RegisterAbsence/AddNewLeave') {
@@ -1202,9 +1211,19 @@ test('an ignored, misdirected, or rate-limited switch returns no data', async ()
   ]) {
     const f = await fixture();
     f.provider.switchLocation = location;
-    await assert.rejects(f.client.overview(undefined, SIBLING), /sign-in is required/);
+    await assert.rejects(f.client.overview(undefined, SIBLING), /refused the student switch/);
     expect(f.provider.paths().slice(-1)).toEqual(['/auth/system']);
   }
+
+  const refused = await fixture();
+  refused.provider.switchUnauthorized = true;
+  await assert.rejects(
+    refused.client.overview(undefined, SIBLING),
+    /^SafeError: Inna refused the student switch and asked for sign-in\. The session may have ended; sign in again and report this\.$/,
+  );
+  expect(refused.provider.paths().slice(-1)).toEqual(['/auth/system']);
+  refused.provider.unauthorized = true;
+  await assert.rejects(refused.client.overview(), /^SafeError: Inna sign-in is required\./);
 
   const limited = await fixture();
   limited.provider.switchRateLimit = true;
@@ -1509,6 +1528,534 @@ test('all 16 tools round-trip through MCP for the sibling studentKey', async () 
   } finally {
     await client.close();
     await server.close();
+  }
+});
+
+const USER_PATH = '/api/UserData/GetLoggedInUser';
+
+// Drives the scheduler by hand: the injected timer never fires on its own.
+function scheduled(client: InnaClient) {
+  const runs: Promise<KeepAlive>[] = [];
+  const ticks: (() => void)[] = [];
+  const intervals: number[] = [];
+  let cancelled = 0;
+
+  const scheduler = startKeepAlive(
+    {
+      keepAlive: (signal) => {
+        const run = client.keepAlive(signal);
+        runs.push(run);
+
+        return run;
+      },
+    },
+    {
+      repeat: (tick, milliseconds) => {
+        ticks.push(tick);
+        intervals.push(milliseconds);
+
+        return () => {
+          cancelled += 1;
+        };
+      },
+    },
+  );
+
+  return {
+    runs,
+    intervals,
+    scheduler,
+    cancelled: () => cancelled,
+    fire: () => ticks[0]?.(),
+    // Waits for the latest tick and for the scheduler to release its overlap guard.
+    tick: async () => {
+      ticks[0]?.();
+      const result = await runs.at(-1);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      return result;
+    },
+  };
+}
+
+test('keep-alive makes one user request, persists the rotated cookie, and returns only a status', async () => {
+  const f = await fixture();
+  const before = await savedFile(f.path);
+  const count = f.provider.calls.length;
+  f.provider.rotation = 'synthetic-kept';
+  const result = await f.client.keepAlive();
+  expect(result).toEqual({ status: 'kept' });
+  expectClean(JSON.stringify(result));
+  expect(f.provider.paths(count)).toEqual([USER_PATH]);
+  const after = await savedFile(f.path);
+  expect(after.jar).toContain('synthetic-kept');
+  expect(before.jar).not.toContain('synthetic-kept');
+  expect({ ...after, jar: '' }).toEqual({ ...before, jar: '' });
+  expectClean(await readFile(f.path, 'utf8'));
+  expect((await stat(f.path)).mode & 0o777).toBe(0o600);
+});
+
+test('keep-alive makes no request without a session or during a pause', async () => {
+  const f = await fixture();
+  await f.client.logout();
+  const count = f.provider.calls.length;
+  expect(await f.client.keepAlive()).toEqual({ status: 'skipped' });
+  expect(f.provider.calls).toHaveLength(count);
+  await assert.rejects(stat(f.path), /ENOENT/);
+
+  const limited = await fixture();
+  const s = scheduled(limited.client);
+  limited.provider.rateLimit = true;
+  expect(await s.tick()).toEqual({ status: 'failed' });
+  expect((await savedFile(limited.path)).pauseUntil).toBe(NOW + 60_000);
+  limited.provider.rateLimit = false;
+  const paused = limited.provider.calls.length;
+  const file = await readFile(limited.path, 'utf8');
+  expect(await s.tick()).toEqual({ status: 'skipped' });
+  expect(await new InnaClient(limited.options).keepAlive()).toEqual({ status: 'skipped' });
+  expect(limited.provider.calls).toHaveLength(paused);
+  expect(await readFile(limited.path, 'utf8')).toBe(file);
+  s.scheduler.stop();
+});
+
+test('an expired session stops the keep-alive until a new import replaces it', async () => {
+  const f = await fixture();
+  const s = scheduled(f.client);
+  expect(s.intervals).toEqual([600_000]);
+  const count = f.provider.calls.length;
+  expect(s.runs).toHaveLength(0);
+  f.provider.unauthorized = true;
+  const expired = await s.tick();
+  expect(expired).toEqual({ status: 'signInRequired' });
+  expectClean(JSON.stringify(expired));
+  expect(f.provider.paths(count)).toEqual([USER_PATH]);
+  expect(await s.tick()).toEqual({ status: 'skipped' });
+  expect(await s.tick()).toEqual({ status: 'skipped' });
+  expect(f.provider.calls).toHaveLength(count + 1);
+  // The same refusal reaches a tool call with the existing message.
+  await assert.rejects(f.client.overview(), /^SafeError: Inna sign-in is required\./);
+
+  f.provider.unauthorized = false;
+  f.provider.rotation = 'synthetic-renewed';
+  await f.client.importSession(f.source);
+  const renewed = f.provider.calls.length;
+  expect(await s.tick()).toEqual({ status: 'kept' });
+  expect(f.provider.paths(renewed)).toEqual([USER_PATH]);
+  s.scheduler.stop();
+  expect(s.cancelled()).toBe(1);
+});
+
+test('keep-alive on a session the browser moved to the sibling neither switches nor relearns', async () => {
+  const f = await fixture();
+  const before = await savedFile(f.path);
+  f.provider.selected = SIBLING;
+  f.provider.user = sibling;
+  const count = f.provider.calls.length;
+  expect(await f.client.keepAlive()).toEqual({ status: 'kept' });
+  expect(f.provider.paths(count)).toEqual([USER_PATH]);
+  expect(f.provider.switches).toBe(0);
+  const after = await savedFile(f.path);
+  expect(after.account).toEqual(before.account);
+  expect(after.students).toEqual(before.students);
+  expect(Object.keys(after.students)).toEqual(['1']);
+});
+
+test('keep-alive ticks never overlap, and stop cancels the timer and aborts the request in flight', async () => {
+  const f = await fixture();
+  const signals: AbortSignal[] = [];
+  const started = Promise.withResolvers<undefined>();
+
+  const stalled = new InnaClient({
+    ...f.options,
+    fetch: (_url, options) =>
+      new Promise((_resolve, reject) => {
+        const signal = z.instanceof(AbortSignal).parse(options.signal);
+        signals.push(signal);
+        signal.addEventListener('abort', () => reject(new Error('Synthetic abort')));
+        started.resolve(undefined);
+      }),
+  });
+
+  const s = scheduled(stalled);
+  s.fire();
+  s.fire();
+  await started.promise;
+  s.fire();
+  expect(s.runs).toHaveLength(1);
+  expect(signals).toHaveLength(1);
+  expect(s.cancelled()).toBe(0);
+  s.scheduler.stop();
+  expect(s.cancelled()).toBe(1);
+  expect(signals[0]?.aborted).toBe(true);
+  expect(await s.runs[0]).toEqual({ status: 'failed' });
+  await new Promise((resolve) => setImmediate(resolve));
+  s.fire();
+  expect(s.runs).toHaveLength(1);
+  expect(signals).toHaveLength(1);
+});
+
+test('the default keep-alive timer waits one interval and stops firing after stop', async () => {
+  const first = Promise.withResolvers<undefined>();
+  let runs = 0;
+
+  const scheduler = startKeepAlive(
+    {
+      keepAlive: async () => {
+        runs += 1;
+        first.resolve(undefined);
+
+        return { status: 'kept' };
+      },
+    },
+    { intervalMs: 2 },
+  );
+
+  expect(runs).toBe(0);
+  await first.promise;
+  scheduler.stop();
+  const stopped = runs;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(runs).toBe(stopped);
+});
+
+test('two servers sharing a refused session stop asking, and replaced credentials resume', async () => {
+  const f = await fixture();
+  const clients = [f.client, new InnaClient(f.options)];
+  f.provider.unauthorized = true;
+  const start = f.provider.calls.length;
+  const statuses: string[] = [];
+
+  for (let round = 0; round < 4; round += 1)
+    for (const client of clients) {
+      // Cookie access times have millisecond resolution; each round must land on a new one.
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      const before = await readFile(f.path, 'utf8');
+      statuses.push((await client.keepAlive()).status);
+
+      // A refused request rewrites cookie access times; that alone must not look like a new session.
+      if (statuses.at(-1) === 'signInRequired')
+        expect(await readFile(f.path, 'utf8')).not.toBe(before);
+    }
+
+  expect(statuses).toEqual([
+    'signInRequired',
+    'signInRequired',
+    ...Array.from({ length: 6 }, () => 'skipped'),
+  ]);
+  expect(f.provider.calls).toHaveLength(start + 2);
+  // A tool call on the dead session rewrites the jar without changing the credentials.
+  await assert.rejects(f.client.overview(), /^SafeError: Inna sign-in is required\./);
+  const afterTool = f.provider.calls.length;
+
+  for (const client of clients) expect(await client.keepAlive()).toEqual({ status: 'skipped' });
+  expect(f.provider.calls).toHaveLength(afterTool);
+  expectClean(JSON.stringify(Object.entries(f.client)));
+
+  f.provider.unauthorized = false;
+  f.provider.rotation = 'synthetic-replaced';
+  await f.client.importSession(f.source);
+  const replaced = f.provider.calls.length;
+
+  for (const client of clients) expect(await client.keepAlive()).toEqual({ status: 'kept' });
+  expect(f.provider.paths(replaced)).toEqual([USER_PATH, USER_PATH]);
+});
+
+test('a cookie value rotated by Inna counts as new credentials for a refused session', async () => {
+  const f = await fixture();
+  f.provider.unauthorized = true;
+  expect(await f.client.keepAlive()).toEqual({ status: 'signInRequired' });
+  expect(await f.client.keepAlive()).toEqual({ status: 'skipped' });
+  const saved = await readFile(f.path, 'utf8');
+  expect(saved).toContain('synthetic-rotated');
+  await writeFile(f.path, saved.replace('synthetic-rotated', 'synthetic-other'), { mode: 0o600 });
+  const count = f.provider.calls.length;
+  expect(await f.client.keepAlive()).toEqual({ status: 'signInRequired' });
+  expect(await f.client.keepAlive()).toEqual({ status: 'skipped' });
+  expect(f.provider.calls).toHaveLength(count + 1);
+});
+
+test('an output stream error or close stops the timer, aborts the tick in flight, and leaves no listener', async () => {
+  for (const event of ['error', 'close']) {
+    const output = new EventEmitter();
+    const seen: unknown[] = [];
+    const signals: AbortSignal[] = [];
+    const ticks: (() => void)[] = [];
+    const started = Promise.withResolvers<undefined>();
+    let cancelled = 0;
+    // Stands in for the SDK transport's own handler, which must still see the event.
+    output.on(event, (...values) => seen.push(values));
+
+    const scheduler = startKeepAlive(
+      {
+        keepAlive: (signal) =>
+          new Promise((resolve) => {
+            const live = z.instanceof(AbortSignal).parse(signal);
+            signals.push(live);
+            live.addEventListener('abort', () => resolve({ status: 'failed' }));
+            started.resolve(undefined);
+          }),
+      },
+      {
+        output,
+        repeat: (tick) => {
+          ticks.push(tick);
+
+          return () => {
+            cancelled += 1;
+          };
+        },
+      },
+    );
+
+    expect([output.listenerCount('error'), output.listenerCount('close')]).toEqual(
+      event === 'error' ? [2, 1] : [1, 2],
+    );
+    ticks[0]?.();
+    await started.promise;
+    expect(signals[0]?.aborted).toBe(false);
+    const failure = new Error('Synthetic broken output pipe');
+    output.emit(event, failure);
+    expect(seen).toEqual([[failure]]);
+    expect(cancelled).toBe(1);
+    expect(signals[0]?.aborted).toBe(true);
+    expect([output.listenerCount('error'), output.listenerCount('close')]).toEqual(
+      event === 'error' ? [1, 0] : [0, 1],
+    );
+    output.emit('close');
+    scheduler.stop();
+    expect(cancelled).toBe(1);
+    ticks[0]?.();
+    expect(signals).toHaveLength(1);
+  }
+
+  // Without another handler the stream error stays unhandled once the scheduler has stopped.
+  const bare = new EventEmitter();
+  startKeepAlive({ keepAlive: async () => ({ status: 'kept' }) }, { output: bare }).stop();
+  expect(bare.listenerCount('error')).toBe(0);
+  expect(() => bare.emit('error', new Error('Synthetic unhandled'))).toThrow('Synthetic unhandled');
+});
+
+// Runs the same wiring as the CLI under the real stdio runtime, with a controlled keep-alive.
+async function runtimeProbe(body: string) {
+  const script = `
+    import { startStdio } from '@family-mcp/mcp-runtime';
+    import { createServer } from './src/server.ts';
+    import { startKeepAlive } from './src/keep-alive.ts';
+    const seen = { instances: 0, timers: 0, cancelled: 0, calls: [], aborted: [] };
+    let tick = () => {};
+    let live;
+    let stalled = false;
+    const scheduler = startKeepAlive(
+      { keepAlive: (signal) => new Promise((resolve) => {
+        live = signal;
+        seen.calls.push(seen.instances);
+        if (stalled) signal.addEventListener('abort', () => resolve({ status: 'failed' }));
+        else resolve({ status: 'kept' });
+      }) },
+      { output: process.stdout, repeat: (callback) => { tick = callback; seen.timers += 1; return () => { seen.cancelled += 1; }; } },
+    );
+    const handle = startStdio(() => { seen.instances += 1; return scheduler.attach(createServer()); }, { onClose: () => scheduler.stop() });
+    const send = (message) => process.stdin.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n'));
+    const turn = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+    const client = { name: 'offline', version: '1' };
+    const finish = async () => {
+      process.stderr.write(JSON.stringify(seen));
+      await handle.close();
+      process.exit(0);
+    };
+    ${body}
+  `;
+
+  const directory = await mkdtemp(join(tmpdir(), 'inna-offline-'));
+  directories.push(directory);
+
+  const child = Bun.spawn({
+    cmd: [process.execPath, '-e', script],
+    cwd: new URL('..', import.meta.url).pathname,
+    env: { ...process.env, INNA_SESSION_FILE: join(directory, 'session.json') },
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+
+  return { stdout, stderr, code };
+}
+
+test('discovery followed by a legacy initialize keeps the keep-alive running on the live connection', async () => {
+  const probe = await runtimeProbe(`
+    send({ id: 1, method: 'server/discover', params: { _meta: {
+      'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+      'io.modelcontextprotocol/clientCapabilities': {},
+      'io.modelcontextprotocol/clientInfo': client,
+    } } });
+    await turn(10);
+    tick();
+    send({ id: 2, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: client } });
+    await turn(10);
+    tick();
+    send({ id: 3, method: 'ping' });
+    await turn(10);
+    tick();
+    await turn(0);
+    await finish();
+  `);
+
+  // Discarding the negotiation instance suspends once; the legacy instance starts a new interval.
+  expect(probe.stderr).toBe(
+    '{"instances":2,"timers":2,"cancelled":1,"calls":[1,2,2],"aborted":[]}',
+  );
+  expect(probe.code).toBe(0);
+
+  const replies = probe.stdout
+    .trim()
+    .split('\n')
+    .map((line) =>
+      z.object({ id: z.number(), result: z.object({}).loose() }).parse(JSON.parse(line)),
+    );
+
+  expect(replies.map((reply) => reply.id)).toEqual([1, 2, 3]);
+});
+
+test('a broken output pipe under the real stdio runtime cancels the timer and aborts the tick in flight', async () => {
+  const probe = await runtimeProbe(`
+    send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: client } });
+    await turn(10);
+    stalled = true;
+    tick();
+    seen.aborted.push(live.aborted);
+    process.stdout.emit('error', new Error('Synthetic broken output pipe'));
+    await turn(0);
+    seen.aborted.push(live.aborted, process.stdout.listenerCount('error'));
+    await finish();
+  `);
+
+  expect(probe.stderr).toBe(
+    '{"instances":1,"timers":1,"cancelled":1,"calls":[1],"aborted":[false,true,0]}',
+  );
+  expect(probe.code).toBe(0);
+});
+
+test('input the SDK rejects closes the wire, cancels the timer, and aborts the tick in flight', async () => {
+  const probe = await runtimeProbe(`
+    send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: client } });
+    await turn(10);
+    stalled = true;
+    tick();
+    seen.aborted.push(live.aborted);
+    // One byte over the SDK's 10 MiB input buffer: it closes the wire without any stdout event.
+    process.stdin.emit('data', Buffer.alloc(10 * 1024 * 1024 + 1, 0x20));
+    await turn(10);
+    seen.aborted.push(live.aborted);
+    tick();
+    await turn(0);
+    await finish();
+  `);
+
+  expect(probe.stderr).toBe(
+    '{"instances":1,"timers":1,"cancelled":1,"calls":[1],"aborted":[false,true]}',
+  );
+  expect(probe.code).toBe(0);
+});
+
+test('keep-alive suspends with its last server, resumes with the next, and never after stop', async () => {
+  const f = await fixture();
+  const signals: AbortSignal[] = [];
+  const ticks: (() => void)[] = [];
+  const intervals: number[] = [];
+  let cancelled = 0;
+  let chained = 0;
+
+  const scheduler = startKeepAlive(
+    {
+      keepAlive: (signal) =>
+        new Promise((resolve) => {
+          const live = z.instanceof(AbortSignal).parse(signal);
+          signals.push(live);
+          live.addEventListener('abort', () => resolve({ status: 'failed' }));
+        }),
+    },
+    {
+      repeat: (tick, milliseconds) => {
+        ticks.push(tick);
+        intervals.push(milliseconds);
+
+        return () => {
+          cancelled += 1;
+        };
+      },
+    },
+  );
+
+  const connect = async () => {
+    const server = createServer(f.options);
+
+    // oxlint-disable-next-line unicorn/prefer-add-event-listener -- the SDK server offers only this callback property
+    server.server.onclose = () => {
+      chained += 1;
+    };
+
+    const [a] = InMemoryTransport.createLinkedPair();
+    await scheduler.attach(server).connect(a);
+
+    return a;
+  };
+
+  const first = await connect();
+  const second = await connect();
+  expect(ticks).toHaveLength(1);
+  ticks[0]?.();
+  // One of two servers closing, as a discarded negotiation instance does, changes nothing.
+  await first.close();
+  expect([chained, cancelled, signals[0]?.aborted]).toEqual([1, 0, false]);
+  // The last one closing by itself suspends: no stop() and no output event is involved.
+  await second.close();
+  expect([chained, cancelled, signals[0]?.aborted]).toEqual([2, 1, true]);
+  ticks[0]?.();
+  expect(signals).toHaveLength(1);
+
+  const third = await connect();
+  expect(intervals).toEqual([600_000, 600_000]);
+  expect(signals).toHaveLength(1);
+  await new Promise((resolve) => setImmediate(resolve));
+  ticks[1]?.();
+  expect(signals).toHaveLength(2);
+  expect(signals[1]?.aborted).toBe(false);
+
+  scheduler.stop();
+  expect([cancelled, signals[1]?.aborted]).toEqual([2, true]);
+  await connect();
+  expect(ticks).toHaveLength(2);
+  await third.close();
+  scheduler.stop();
+  expect(cancelled).toBe(2);
+  ticks[1]?.();
+  expect(signals).toHaveLength(2);
+});
+
+test('the keep-alive opt-out is a serve flag only', async () => {
+  for (const args of [
+    ['auth', 'status', '--no-keep-alive'],
+    ['auth', 'logout', '--no-keep-alive'],
+  ]) {
+    const directory = await mkdtemp(join(tmpdir(), 'inna-offline-'));
+    directories.push(directory);
+
+    const child = Bun.spawn({
+      cmd: [process.execPath, join(import.meta.dir, '../src/cli.ts'), ...args],
+      env: { ...process.env, INNA_SESSION_FILE: join(directory, 'session.json') },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(await child.exited).toBe(1);
+    expect(await new Response(child.stdout).text()).toBe('');
+    expect(await new Response(child.stderr).text()).toBe('Invalid command. Run inna-mcp --help.\n');
   }
 });
 

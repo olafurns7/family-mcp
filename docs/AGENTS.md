@@ -71,6 +71,12 @@ attendance state from a failed request or undocumented value.
   Student names in the list are untrusted school text. Live two-student
   switching is unverified by the maintainer. This requires a release after
   Inna 0.1.1.
+- While `serve` runs, it touches the saved session every ten minutes unless
+  started with `--no-keep-alive`. This only prevents an idle timeout: session
+  lifetime is unmeasured, and an ended session needs the owner to sign in again.
+  "Inna refused the student switch and asked for sign-in" is a different error
+  from "Inna sign-in is required"; report which one occurred. This requires a
+  release after Inna 0.2.1.
 - School dates and times are UTC, including timestamps without a zone. Use
   `dates[field].iso` only when its status is `parsed`; preserve date-only values
   as dates. Missing or unrecognized dates are unavailable. Check `retrievedAt`
