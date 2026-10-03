@@ -66,7 +66,7 @@ export const content = {
           'Read timetables, assignments, grades, attendance and messages from Inna, for each student on your account. Whole-day illness registration and leave applications are available with your approval.',
         login: 'Electronic ID or a linked Google account',
         limitation:
-          'Match the displayed security code on your phone when signing in with electronic ID. Switching between several students is new and not yet confirmed on a real account. Absence requests require opt-in and explicit approval; live submission is untested.',
+          'Match the displayed security code on your phone when signing in with electronic ID. Absence requests require opt-in and explicit approval; live submission is untested.',
       },
       kronan: {
         description:
@@ -125,7 +125,7 @@ export const content = {
           'Sæktu stundatöflur, verkefni, einkunnir, mætingar og skilaboð úr Innu fyrir hvern nemanda á aðganginum þínum. Þú getur líka skráð veikindi fyrir heilan dag eða sótt um leyfi með þínu samþykki.',
         login: 'Rafræn skilríki eða tengdur Google-aðgangur',
         limitation:
-          'Berðu saman öryggiskóðann sem birtist við kóðann í símanum þegar þú notar rafræn skilríki. Skipting á milli nemenda er ný og hefur ekki enn verið staðfest á raunverulegum aðgangi. Virkja þarf fjarvistaskráningu sérstaklega og samþykkja hverja beiðni; innsending hefur ekki verið prófuð á raunverulegum aðgangi.',
+          'Berðu saman öryggiskóðann sem birtist við kóðann í símanum þegar þú notar rafræn skilríki. Virkja þarf fjarvistaskráningu sérstaklega og samþykkja hverja beiðni; innsending hefur ekki verið prófuð á raunverulegum aðgangi.',
       },
       kronan: {
         description:

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0
+
+- `inna-mcp auth login --google` signs in with Google in one command. It opens
+  a temporary Chrome or Chromium window on Inna's Google sign-in, waits for the
+  student page, saves the verified session, and closes the window; nothing is
+  copied or pasted. `--timeout <seconds>` (default 300) and `--browser <path>`
+  or `INNA_BROWSER` are optional. It needs a desktop session. Checked offline
+  against a fake browser; not yet run against Inna and Google.
+- Cookie import is now documented as the fallback for a machine without a
+  desktop.
+- Electronic-ID login no longer stops when Inna lists several contexts. It
+  signs in to the first student context, or to the already saved default
+  student when a session exists, and that student is the default. The other
+  students are reached with `inna_list_students`. `--allow-account-change`
+  takes the first listed student as the new default. Login still stops when no
+  accessible student context is listed.
+- Switching between two students was confirmed on a real account by a user on
+  2026-10-03: the list returned two keys and an overview read succeeded for the
+  default student and the sibling. Absence submission and the effect of the
+  keep-alive on session lifetime remain unverified.
+
 ## 0.2.2
 
 - While `serve` runs, the server makes one small authenticated request every

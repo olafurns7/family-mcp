@@ -15,11 +15,11 @@ import {
 import * as schemas from './schemas.js';
 import { normalizeDate, parseDates } from './dates.js';
 
-const ORIGIN = 'https://nam.inna.is';
+export const ORIGIN = 'https://nam.inna.is';
 
 const MAX_SESSION_BYTES = 262_144;
 
-const cookieNames = new Set(['SESSION', 'JSESSIONID', 'XSRF-TOKEN']);
+export const cookieNames = new Set(['SESSION', 'JSESSIONID', 'XSRF-TOKEN']);
 
 const studentPaths = new Set(['/Components/Students/Students.html', '/auth/system']);
 
@@ -110,10 +110,41 @@ const exportedCookieSchema = z.object({
   sameSite: z.string().optional(),
 });
 
-const cookieExportSchema = z.union([
+export const cookieExportSchema = z.union([
   z.array(exportedCookieSchema),
   z.object({ cookies: z.array(exportedCookieSchema) }),
 ]);
+
+// The only cookies a saved session holds: the three nam.inna.is session cookies at path /.
+export async function sessionJar(input: z.infer<typeof cookieExportSchema>): Promise<CookieJar> {
+  const cookies = Array.isArray(input) ? input : input.cookies;
+  const jar = new CookieJar();
+
+  for (const entry of cookies) {
+    if (!cookieNames.has(entry.name)) continue;
+
+    if (entry.domain.replace(/^\./, '') !== 'nam.inna.is' || entry.path !== '/')
+      throw new SafeError('Import only the verified nam.inna.is session cookies.');
+    const expiry = entry.expires ?? entry.expirationDate;
+    const sameSite = entry.sameSite?.toLowerCase();
+
+    const cookie = new Cookie({
+      key: entry.name,
+      value: entry.value,
+      path: '/',
+      secure: true,
+      httpOnly: entry.httpOnly,
+    });
+
+    if (expiry !== undefined && expiry > 0) cookie.expires = new Date(expiry * 1000);
+
+    if (sameSite === 'strict' || sameSite === 'lax' || sameSite === 'none')
+      cookie.sameSite = sameSite;
+    await jar.setCookie(cookie, ORIGIN);
+  }
+
+  return jar;
+}
 
 export function sessionPath(): string {
   const path = process.env.INNA_SESSION_FILE ?? defaultSessionPath('inna-mcp');
@@ -638,33 +669,12 @@ export class InnaClient {
       JSON.parse(await readPrivateFile(source, { maxBytes: MAX_SESSION_BYTES })),
     );
 
-    const cookies = Array.isArray(input) ? input : input.cookies;
-    const jar = new CookieJar();
+    await this.saveVerifiedSession(await sessionJar(input), allowAccountChange);
+  }
 
-    for (const entry of cookies) {
-      if (!cookieNames.has(entry.name)) continue;
-
-      if (entry.domain.replace(/^\./, '') !== 'nam.inna.is' || entry.path !== '/')
-        throw new SafeError('Import only the verified nam.inna.is session cookies.');
-      const expiry = entry.expires ?? entry.expirationDate;
-      const sameSite = entry.sameSite?.toLowerCase();
-
-      const cookie = new Cookie({
-        key: entry.name,
-        value: entry.value,
-        path: '/',
-        secure: true,
-        httpOnly: entry.httpOnly,
-      });
-
-      if (expiry !== undefined && expiry > 0) cookie.expires = new Date(expiry * 1000);
-
-      if (sameSite === 'strict' || sameSite === 'lax' || sameSite === 'none')
-        cookie.sameSite = sameSite;
-      await jar.setCookie(cookie, ORIGIN);
-    }
-
-    await this.saveVerifiedSession(jar, allowAccountChange);
+  /** The saved default student's user id, read locally; a fresh login prefers it. */
+  async defaultUserId(): Promise<number | undefined> {
+    return this.locked(async () => (await readSaved(this.path))?.account.userId);
   }
 
   async saveVerifiedSession(
