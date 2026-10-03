@@ -68,6 +68,11 @@ Domino’s 0.1.0 preview. Inna 0.1.1 was published publicly as a prerelease on
 2026-10-02, with UTC parsing and repeated-read hardening. The public English
 and Icelandic pages were verified against those version and installer pins.
 
+Inna 0.2.1 was published publicly as a prerelease on 2026-10-03 and replaces
+0.1.1 on both pages. It reads several students under one session; switching
+between two students is not yet confirmed on a real account, and both pages
+say so.
+
 ## Product Principles
 
 - Keep the introduction and path to installation short.
