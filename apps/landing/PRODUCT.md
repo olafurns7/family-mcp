@@ -76,6 +76,12 @@ say so.
 Inna 0.2.2 was published as a full release on 2026-10-03 and replaces 0.2.1
 on both pages. It adds a session keep-alive while the server runs.
 
+Inna 0.3.0 was published on 2026-10-03 and replaces 0.2.2 on both pages. It adds
+`auth login --google` (a browser sign-in window) and lets electronic-ID login
+proceed for accounts with several students. A user confirmed switching between
+two students on a real account that day, so the pages no longer call it
+unconfirmed. Google's acceptance of the sign-in window is not yet verified live.
+
 ## Product Principles
 
 - Keep the introduction and path to installation short.

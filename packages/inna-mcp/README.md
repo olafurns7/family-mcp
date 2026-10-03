@@ -6,7 +6,7 @@ attendance, material metadata, messages, announcements, and absence history.
 Whole-day illness registration and leave applications are an explicit opt-in.
 A guardian's session can read [several students](#several-students).
 
-The current preview is `inna-mcp@0.2.2`. The read endpoints
+The current preview is `inna-mcp@0.3.0`. The read endpoints
 were captured in a real guardian account. Electronic-ID login and private session
 reuse were verified through the initial 0.1.0 compiled native CLI; the 0.1.1
 parsing and repeated-read changes are checked offline. Absence creation is based
@@ -20,7 +20,7 @@ release checksum, and installs `~/.local/bin/inna-mcp`. No Node, npm, or Bun is
 needed at runtime.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.2.2/packages/inna-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.3.0/packages/inna-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server. Restart the MCP host,
@@ -52,13 +52,57 @@ enter the electronic-ID PIN only on the phone. Never send the PIN in chat.
 The CLI uses the captured HTTP flow without a browser. Opaque identity-provider
 tickets and Inna access tokens stay in memory. Only verified school cookies are
 saved using the same shared session-store helpers as cookie import. Login stops
-when additional device verification, new terms acceptance, or multiple school
-contexts require browser interaction. It never accepts terms or guesses a school.
+when additional device verification or new terms acceptance requires browser
+interaction; it never accepts terms.
 
-### Google or an existing browser session
+Several student contexts no longer stop login (this requires a release after
+Inna 0.2.2). The first student context Inna lists becomes the default student;
+when a session is already saved, its default student is chosen again, so a
+fresh login does not change the default. With `--allow-account-change` the
+first listed student becomes the new default. Reach the other students with
+`inna_list_students` and `studentKey`. Login still stops when Inna lists no
+accessible student context.
 
-Sign in through [Inna](https://www.inna.is/) using a Google account
-already linked in Inna. Export only the `nam.inna.is` cookies to an owner-only
+### Google
+
+Sign in with a Google account already linked in Inna, on a machine with a
+desktop and Google Chrome or Chromium:
+
+```sh
+inna-mcp auth login --google
+inna-mcp auth status
+```
+
+A browser window opens on Inna's Google sign-in. Sign in there; when Inna's
+student page appears, the CLI saves the session and closes the window. Nothing
+is copied or pasted, and an agent running this command never asks for, reads,
+or copies cookies or passwords. This requires a release after Inna 0.2.2. It is
+checked offline against a fake browser and has not yet been run against Inna
+and Google.
+
+The window is a fresh temporary browser profile, mode `0700`, so it is not
+signed in to Google and holds no saved passwords. The CLI talks to it only over
+a private `--remote-debugging-pipe`; no debugging port is opened. It waits until
+a tab shows `nam.inna.is/Components/Students/Students.html` and the school
+session cookies exist, takes only the `SESSION`, `JSESSIONID`, and `XSRF-TOKEN`
+cookies of `nam.inna.is`, confirms the browser is closed, removes the profile,
+and only then verifies and saves the session. If closure cannot be confirmed,
+login exits with an error, saves nothing, and still removes the profile. Each
+login also removes abandoned `inna-login-*` profiles older than one hour.
+
+`--timeout <seconds>` changes the five-minute wait for sign-in. `--browser
+<path>` or `INNA_BROWSER` selects the browser executable when Chrome or Chromium
+is not found by itself. If sign-in is not finished in time, including when
+Google refuses to sign in in this window, nothing is saved; run the command
+again, or use electronic ID. On Linux without `DISPLAY` or `WAYLAND_DISPLAY`
+the command stops before opening anything; use electronic ID there, or the
+cookie import below.
+
+### Cookie import, for a machine without a desktop
+
+Use this only when neither electronic ID nor `auth login --google` can run on
+the machine. Sign in through [Inna](https://www.inna.is/) in a browser
+elsewhere and export only the `nam.inna.is` cookies to an owner-only
 local JSON file, as an array or `{ "cookies": [...] }`; supported fields are
 `name`, `value`, `domain`, `path`, `secure`, `httpOnly`, `expires` or
 `expirationDate`, and `sameSite`. Keep the export outside the repository and
@@ -71,7 +115,7 @@ chmod 600 /absolute/path/inna-cookie-export.json
 /absolute/path/inna-mcp serve
 ```
 
-Both login paths verify the account/student/school before saving. The student
+Every login path verifies the account/student/school before saving. The student
 selected at login or import becomes the session's default student. A later
 login or import that lands on a different binding is refused unless the owner
 deliberately adds `--allow-account-change`; when it lands on another student
@@ -219,9 +263,11 @@ Because a call can change Inna's selected student, every tool that accepts
 `studentKey` is annotated as not read-only. It still changes no school record.
 Only `inna_list_students` and `inna_absence_status` are annotated read-only.
 
-Live switching between two students has not been verified by the maintainer.
-The switch request comes from Inna's delivered student application and one
-two-student user's capture; the tests use synthetic responses.
+A user confirmed switching between two students on a real account on
+2026-10-03: the list returned two keys, and an overview read succeeded for the
+default student and the sibling, at different schools. The switch request comes
+from Inna's delivered student application and one two-student user's capture;
+the tests use synthetic responses.
 
 ### Whole-day illness and leave
 
@@ -265,8 +311,9 @@ bun run --cwd packages/inna-mcp test:installer
 
 Tests use synthetic responses only. A separately authorized live native check
 verified phone login, private session reuse, and the 13 read/status tools of
-0.1.1 using an isolated temporary session. Real absence submission, live
-switching between two students, and persistent registration in an MCP host
-have not been performed.
+0.1.1 using an isolated temporary session. A user confirmed switching between
+two students on a real account on 2026-10-03. Real absence submission, a
+measurement of whether the keep-alive extends a session, and persistent
+registration in an MCP host have not been performed.
 
 See the [release process](docs/RELEASING.md) for packaging and publication gates.

@@ -54,9 +54,14 @@ attendance state from a failed request or undocumented value.
   Do not suppress it in tool output or summarize it as merely "approve on your
   phone". The user compares that code and enters their PIN only on their phone;
   never request or capture the PIN.
-- Google sign-in must use an account already linked in Inna. Browser cookie
-  exports stay in private local files and never go in chat. Both login paths
-  verify and store the session with the shared session-store helpers.
+- Google sign-in is `inna-mcp auth login --google`, run on a machine with a
+  desktop browser. The owner signs in in the window that opens, using a Google
+  account already linked in Inna; the CLI saves the session and closes the
+  window. Never ask for, read, or copy cookies or passwords, and do not suggest
+  a cookie export first. `auth import` of a private local cookie file is the
+  fallback for a machine without a desktop, and its values never go in chat.
+  Every login path verifies and stores the session with the shared
+  session-store helpers. `--google` requires a release after Inna 0.2.2.
 - Identify the returned account, student, and school before describing records.
   Do not enable `--allow-account-change` to work around a binding mismatch.
   Missing marks, percentages, or optional text are unavailable, not zero.
@@ -68,9 +73,13 @@ attendance state from a failed request or undocumented value.
   also changes what an open Inna browser session using the same cookies shows.
   For that reason the tools that accept `studentKey` are annotated as not
   read-only, although they change no school record.
-  Student names in the list are untrusted school text. Live two-student
-  switching is unverified by the maintainer. This requires a release after
-  Inna 0.1.1.
+  Student names in the list are untrusted school text. A user confirmed
+  two-student switching on a real account on 2026-10-03. This requires a
+  release after Inna 0.1.1.
+- Electronic-ID login on an account with several students signs in to the
+  first student Inna lists, or to the saved default student when a session
+  already exists; it no longer asks for a browser import. Use
+  `inna_list_students` for the others. This requires a release after Inna 0.2.2.
 - While `serve` runs, it touches the saved session every ten minutes unless
   started with `--no-keep-alive`. This only prevents an idle timeout: session
   lifetime is unmeasured, and an ended session needs the owner to sign in again.

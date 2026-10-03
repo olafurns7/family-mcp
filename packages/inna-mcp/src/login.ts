@@ -70,6 +70,7 @@ export async function loginWithElectronicId(
     fetch?: ClientOptions['fetch'];
     signal?: AbortSignal;
     wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+    preferredUserId?: number | undefined;
   } = {},
 ): Promise<CookieJar> {
   if (!/^\d{7}$/.test(phone)) throw new SafeError('Enter a seven-digit Icelandic phone number.');
@@ -285,16 +286,24 @@ export async function loginWithElectronicId(
         'Review and accept Inna terms yourself in the browser, then sign in again.',
       );
 
-    // ponytail: one available context; use browser import when an explicit school chooser is needed.
-    const entry = access[0];
+    // Student contexts keep their position in the full list: the handoff addresses an entry by index.
+    const candidates = access.flatMap((entry, index) =>
+      entry.is_access && entry.system === 1 ? [{ entry, index }] : [],
+    );
 
-    if (access.length !== 1 || !entry?.is_access)
+    const chosen =
+      candidates.find((candidate) => candidate.entry.user_id === options.preferredUserId) ??
+      candidates[0];
+
+    if (!chosen)
       throw new SafeError(
         'Select the intended school in the browser and import its private session.',
       );
 
+    const { entry } = chosen;
+
     const params = new URLSearchParams({
-      i: '0',
+      i: String(chosen.index),
       system: String(entry.system),
       user_id: String(entry.user_id),
       status: String(entry.status),

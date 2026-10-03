@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
+import { loginInBrowser } from './browser-login.js';
 import { InnaClient } from './client.js';
 import { createServer } from './server.js';
 import { startKeepAlive } from './keep-alive.js';
@@ -15,13 +16,18 @@ const help = `inna-mcp — unofficial Inna school MCP (preview)
   inna-mcp serve --allow-absence-writes Also expose confirmed whole-day illness/leave requests
   inna-mcp serve --no-keep-alive      Do not touch the saved session every 10 minutes while serving
   inna-mcp auth login                 Electronic ID: hidden phone prompt; approve on your phone
-  inna-mcp auth import FILE           Verify and save a private nam.inna.is cookie export
+  inna-mcp auth login --google        Google: sign in in the browser window that opens
+  inna-mcp auth import FILE           Fallback without a desktop: save a private cookie export
   inna-mcp auth status                Verify the saved session (no credentials printed)
   inna-mcp auth logout                Remove the local session; retain absence evidence
   inna-mcp --version                  Print the executable version
 
-Google sign-in uses www.inna.is in your browser; the account must be linked in Inna.
-Export only nam.inna.is cookies to an owner-only local JSON file. Never paste cookies in chat.
+auth login --google opens Google Chrome or Chromium on Inna's Google sign-in, saves the
+session when you finish, and closes the window. The Google account must be linked in Inna.
+It needs a desktop; nothing is copied or pasted. Options: --timeout <seconds> (default 300),
+--browser <path> or INNA_BROWSER to choose the browser.
+auth import is for a machine without a desktop: export only nam.inna.is cookies to an
+owner-only local JSON file. Never paste cookies or passwords in chat.
 INNA_SESSION_FILE sets an absolute private session path.
 Login/import refuse a changed account/student/school unless --allow-account-change is given.
 `;
@@ -57,13 +63,16 @@ async function signIn(client: InnaClient, allowAccountChange: boolean): Promise<
 
     if (phone.done || controller.signal.aborted) throw new SafeError('Inna login cancelled.');
 
+    // A fresh login keeps the saved default student unless the owner asked to replace it.
+    const preferredUserId = allowAccountChange ? undefined : await client.defaultUserId();
+
     const jar = await loginWithElectronicId(
       phone.value.trim(),
       (code) =>
         process.stderr.write(
           `Security code ${code}: verify the match and approve on your phone. Enter your PIN only on your phone.\n`,
         ),
-      { signal: controller.signal },
+      { signal: controller.signal, preferredUserId },
     );
 
     await client.saveVerifiedSession(jar, allowAccountChange, controller.signal);
@@ -78,6 +87,41 @@ async function signIn(client: InnaClient, allowAccountChange: boolean): Promise<
   }
 }
 
+function parseTimeout(value: string | undefined): number {
+  if (value === undefined) return 300;
+
+  const seconds = Number(value);
+
+  if (!Number.isSafeInteger(seconds) || seconds < 1)
+    throw new SafeError('Provide a positive whole number for --timeout.');
+
+  return seconds;
+}
+
+async function signInWithGoogle(
+  client: InnaClient,
+  allowAccountChange: boolean,
+  browser: { browser: string | undefined; timeoutSeconds: number },
+): Promise<void> {
+  // The browser is closed and its profile removed before the session is verified and saved.
+  const jar = await loginInBrowser(browser);
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  process.on('SIGINT', cancel);
+  process.on('SIGTERM', cancel);
+
+  try {
+    await client.saveVerifiedSession(jar, allowAccountChange, controller.signal);
+    process.stdout.write(`Signed in. Session saved to ${client.path}\n`);
+  } catch (error) {
+    if (controller.signal.aborted) throw new SafeError('Inna login cancelled.');
+    throw error;
+  } finally {
+    process.off('SIGINT', cancel);
+    process.off('SIGTERM', cancel);
+  }
+}
+
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -87,6 +131,9 @@ async function main(): Promise<void> {
       'allow-absence-writes': { type: 'boolean' },
       'allow-account-change': { type: 'boolean' },
       'no-keep-alive': { type: 'boolean' },
+      google: { type: 'boolean' },
+      timeout: { type: 'string' },
+      browser: { type: 'string' },
     },
   });
 
@@ -94,6 +141,14 @@ async function main(): Promise<void> {
 
   if (values.version) return void process.stdout.write(`${manifest.version}\n`);
   const [command = 'serve', action, source] = positionals;
+
+  const browserOptions = values.timeout !== undefined || values.browser !== undefined;
+
+  if (
+    (values.google || browserOptions) &&
+    !(values.google && command === 'auth' && action === 'login' && positionals.length === 2)
+  )
+    throw new SafeError('Invalid command. Run inna-mcp --help.');
 
   if (command === 'serve' && positionals.length <= 1 && !values['allow-account-change']) {
     const keepAlive = values['no-keep-alive']
@@ -119,7 +174,12 @@ async function main(): Promise<void> {
   const client = new InnaClient();
 
   if (action === 'login' && positionals.length === 2) {
-    await signIn(client, values['allow-account-change'] ?? false);
+    if (values.google)
+      await signInWithGoogle(client, values['allow-account-change'] ?? false, {
+        browser: values.browser,
+        timeoutSeconds: parseTimeout(values.timeout),
+      });
+    else await signIn(client, values['allow-account-change'] ?? false);
 
     return;
   }

@@ -12,7 +12,7 @@ in English and Icelandic.
 | --------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------- |
 | **Abler** ([abler.io](https://www.abler.io))        | Sports schedules                    | Linked children, groups, events, and attendance records                                   | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
 | **InfoMentor**                                      | Icelandic school portal             | Children, timetables, messages, notifications, and updates                                | Private credentials, a private file, or an imported session                     | macOS or glibc Linux, arm64/x64 |
-| **Inna** ([inna.is](https://www.inna.is)) | Inna school portal (preview) | Timetables, assignments, grades, attendance, messages, and opt-in whole-day absence requests | Electronic ID with phone approval, or a private browser-session import | macOS or glibc Linux, arm64/x64 |
+| **Inna** ([inna.is](https://www.inna.is)) | Inna school portal (preview) | Timetables, assignments, grades, attendance, messages, and opt-in whole-day absence requests | Electronic ID with phone approval, or `inna-mcp auth login --google` in a browser window | macOS or glibc Linux, arm64/x64 |
 | **Krónan** ([kronan.is](https://kronan.is))         | Icelandic grocery shopping          | Products, recipes, purchase history, shopping-note and basket edits, and confirmed orders | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
 | **Domino’s** ([dominos.is](https://www.dominos.is)) | Pizza ordering (preview) | Menu, quotes, receipts, tracking, and confirmed saved-card checkout                       | SMS code entered locally with `dominos-mcp auth login`                          | macOS or glibc Linux, arm64/x64 |
 
@@ -137,7 +137,7 @@ WARP is currently unreliable on the tested Grok route; see the
 Install the preview and start electronic-ID login:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.2.2/packages/inna-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.3.0/packages/inna-mcp/install.sh | sh
 inna-mcp auth login
 ```
 
@@ -145,12 +145,18 @@ Enter the phone number at the hidden prompt and match the displayed security
 code before approving on the phone. An agent running this login must always
 show that exact code to the user. Enter the electronic-ID PIN only on the phone.
 
+To sign in with a Google account linked in Inna instead, run
+`inna-mcp auth login --google` on a machine with a desktop and Chrome or
+Chromium, and sign in in the window that opens. The session is saved and the
+window closes by itself; no cookies or passwords are copied, and an agent never
+asks for them. This requires a release after Inna 0.2.2.
+
 Configure the MCP host to run the absolute path to `~/.local/bin/inna-mcp` with
 `serve`. Read tools are enabled by default; whole-day illness and leave requests
 require `--allow-absence-writes`, a prepared preview, and explicit approval.
 Live absence submission remains unverified.
 
-See [setup, tools, and Google import](packages/inna-mcp/README.md).
+See [setup, tools, and cookie import for a machine without a desktop](packages/inna-mcp/README.md).
 
 ## Krónan
 

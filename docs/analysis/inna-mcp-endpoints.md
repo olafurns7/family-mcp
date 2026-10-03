@@ -12,6 +12,32 @@ values are included here.
 The public [Inna page](https://www.inna.is/) offers Ísland.is, Google, Office, and
 password sign-in. This investigation covers electronic ID and Google.
 
+### Electronic ID — several access entries
+
+A user with two students reported on 2026-10-03 that `inna.is/auth/access`
+returned more than one entry and that the CLI, which then accepted exactly one
+entry, stopped. The CLI now selects an entry instead:
+
+- Candidates are the entries with `is_access` true and `system` 1 (the student
+  application). With no candidate, login stops as before.
+- The candidate whose `user_id` equals the saved session's default `userId` is
+  chosen when a session is saved and `--allow-account-change` is not given;
+  otherwise the first candidate.
+- `i` is the chosen entry's index in the full access array, counting the
+  entries that are not candidates. `system`, `user_id`, and `status` come from
+  the chosen entry.
+
+The meaning of `i` is inferred from the delivered student bundle, whose switch
+link is `i=<index>` into its own `access` array. It has not been verified live
+for `inna.is/auth/system`; before this change the CLI always sent `i=0` for a
+single entry. That `user_id` here equals `userId` in `GetLoggedInUser` is also
+unverified; if it differs, the first candidate is chosen and a changed default
+is refused at saving. Tests use synthetic responses.
+
+The same user confirmed two-student switching on a real account on 2026-10-03:
+`inna_list_students` returned two keys, and an overview read succeeded for the
+default student and the sibling, at different schools.
+
 ### Google — successful browser sign-in
 
 1. `GET https://r.inna.is/auth/google` initiates Google's authorization flow.
@@ -43,6 +69,17 @@ for storage. A browser-assisted CLI must preserve the complete redirect chain,
 check the final Inna context, and obtain the school-session cookies through a
 private transport rather than exposing a debugging port or tokens in MCP inputs.
 
+`inna-mcp auth login --google` implements this. It opens
+`https://r.inna.is/auth/google` in a temporary browser profile and follows the
+user through the whole chain. A `SESSION` cookie for `nam.inna.is` can exist
+before sign-in finishes, so cookies alone are not taken as proof: the CLI waits
+for a page at `https://nam.inna.is/Components/Students/Students.html` together
+with the `SESSION` and `XSRF-TOKEN` cookies, reads only the three school cookies
+over a private debugging pipe, closes the browser, and verifies the session
+using `GetLoggedInUser` before saving. This is checked offline with a fake
+browser and a synthetic provider; it has not been run against Inna and Google.
+Whether Google accepts sign-in in a browser started this way is unmeasured.
+
 ### Electronic ID — complete native phone-prompt login verified
 
 The owner approved fresh phone requests. The compiled native CLI completed the
@@ -69,7 +106,7 @@ the phone-prompt login.
 | Inna access token | `GET https://inna.is/auth/island/callback?token=…&state=…` | Server-delivered HTML embeds an Inna JWT for the access page. The CLI extracts the opaque quoted token without executing JavaScript or decoding identity claims. |
 | School access | `GET https://inna.is/auth/access` | Bearer-authenticated array; selected fields `system`, `user_id`, `status`, `is_access`. A Google browser capture verified the equivalent `r.inna.is/auth/access` with empty `callback_url` and `callback_system`. |
 | Existing terms | `GET https://inna.is/auth/user-terms-confirmed` | Bearer-authenticated `{confirmed}`; CLI stops if false and never calls the terms-acceptance endpoint. |
-| School selection | `POST https://inna.is/auth/system?i=…&system=…&user_id=…&status=…` | Bearer auth, JSON `{}`; returns `{url}` for the `nam.inna.is/auth/token` handoff. CLI supports exactly one accessible context and stops when school selection is ambiguous. |
+| School selection | `POST https://inna.is/auth/system?i=…&system=…&user_id=…&status=…` | Bearer auth, JSON `{}`; returns `{url}` for the `nam.inna.is/auth/token` handoff. The CLI chooses one student context; see the selection rule below. |
 | School cookies | Known `nam.inna.is/auth/token`, `/auth/system`, student application | Upgrade legacy HTTP destinations to HTTPS before requesting. Final school session is verified using `GetLoggedInUser` before atomic saving. |
 
 The session object includes `isSuccess`, `retryWaitTime`, `retries`, `nexusUrl`,

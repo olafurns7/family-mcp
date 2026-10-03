@@ -36,7 +36,8 @@ function provider() {
   const calls: { url: URL; method: string }[] = [];
   let polls = 0;
   let terms = true;
-  let count = 1;
+  let access = [{ system: 1, user_id: 2, status: 3, is_access: true }];
+  const selections: Record<string, string>[] = [];
   let trap = false;
 
   const fetcher = async (value: string, options: RequestInit): Promise<Response> => {
@@ -130,26 +131,14 @@ function provider() {
       case 'inna.is/auth/island/callback':
         return new Response(`<script>var jwt = "${token}"; store.set('id_token',jwt);</script>`);
       case 'inna.is/auth/access':
-        return Response.json(
-          Array.from({ length: count }, () => ({
-            system: 1,
-            user_id: 2,
-            status: 3,
-            is_access: true,
-            ssn: 'DO-NOT-SAVE',
-          })),
-        );
+        return Response.json(access.map((entry) => Object.assign({ ssn: 'DO-NOT-SAVE' }, entry)));
       case 'inna.is/auth/user-terms-confirmed':
         return Response.json({ confirmed: terms });
       case 'inna.is/auth/system':
         expect(method).toBe('POST');
         expect(body).toEqual({});
-        expect(Object.fromEntries(url.searchParams)).toEqual({
-          i: '0',
-          system: '1',
-          user_id: '2',
-          status: '3',
-        });
+        expect([...url.searchParams.keys()]).toEqual(['i', 'system', 'user_id', 'status']);
+        selections.push(Object.fromEntries(url.searchParams));
 
         return Response.json({ url: 'http://nam.inna.is/auth/token?token=synthetic' });
       case 'nam.inna.is/auth/token':
@@ -177,8 +166,9 @@ function provider() {
     setTerms: (value: boolean) => {
       terms = value;
     },
-    setCount: (value: number) => {
-      count = value;
+    selections,
+    setAccess: (value: typeof access) => {
+      access = value;
     },
     setTrap: () => {
       trap = true;
@@ -206,6 +196,7 @@ test('phone login replaces the polling session, completes logout relay, upgrades
   );
 
   expect(codes).toEqual(['1234']);
+  expect(p.selections).toEqual([{ i: '0', system: '1', user_id: '2', status: '3' }]);
   expect(waits).toEqual([2000, 3000]);
   const saved = JSON.stringify(await jar.serialize());
   expect(saved).not.toContain(token);
@@ -216,7 +207,7 @@ test('phone login replaces the polling session, completes logout relay, upgrades
   expect(cookies.every((cookie) => cookie.secure)).toBe(true);
 });
 
-test('phone login refuses external redirects, unaccepted terms, and ambiguous school selection', async () => {
+test('phone login refuses external redirects, unaccepted terms, and an access list without a student context', async () => {
   const p = provider();
   p.setTrap();
   await assert.rejects(
@@ -229,13 +220,55 @@ test('phone login refuses external redirects, unaccepted terms, and ambiguous sc
     const q = provider();
 
     if (reason === 'terms') q.setTerms(false);
-    else q.setCount(2);
+    else
+      q.setAccess([
+        { system: 2, user_id: 7, status: 1, is_access: true },
+        { system: 1, user_id: 8, status: 1, is_access: false },
+      ]);
     await assert.rejects(
       loginWithElectronicId('5550000', () => {}, { fetch: q.fetcher, wait: async () => {} }),
       reason === 'terms' ? /accept Inna terms yourself/ : /Select the intended school/,
     );
     expect(q.calls.some((call) => call.method === 'POST' && call.url.hostname === 'inna.is')).toBe(
       false,
+    );
+  }
+});
+
+test('phone login with several student contexts picks the first or the preferred one by its original index', async () => {
+  const access = [
+    { system: 2, user_id: 7, status: 1, is_access: true },
+    { system: 1, user_id: 8, status: 1, is_access: false },
+    { system: 1, user_id: 2, status: 3, is_access: true },
+    { system: 1, user_id: 5, status: 4, is_access: true },
+  ];
+
+  const first = { i: '2', system: '1', user_id: '2', status: '3' };
+
+  for (const [preferredUserId, selection] of [
+    [undefined, first],
+    [5, { i: '3', system: '1', user_id: '5', status: '4' }],
+    [2, first],
+    // Absent, without access, or another application: fall back to the first student context.
+    [99, first],
+    [8, first],
+    [7, first],
+  ] as const) {
+    const p = provider();
+    p.setAccess(access);
+
+    const jar = await loginWithElectronicId('5550000', () => {}, {
+      fetch: p.fetcher,
+      wait: async () => {},
+      preferredUserId,
+    });
+
+    expect({ preferredUserId, selections: p.selections }).toEqual({
+      preferredUserId,
+      selections: [selection],
+    });
+    expect((await jar.getCookies('https://nam.inna.is/')).map((cookie) => cookie.key)).toContain(
+      'SESSION',
     );
   }
 });

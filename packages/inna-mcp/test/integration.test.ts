@@ -10,6 +10,16 @@ import { InnaClient, type KeepAlive } from '../src/client.js';
 import { startKeepAlive } from '../src/keep-alive.js';
 import { createServer } from '../src/server.js';
 import {
+  browserEnvironment,
+  collectProcess,
+  makeFakeBrowser,
+  makePreload,
+  makeTestDirectory,
+  spawnLogin,
+  START_MESSAGE,
+  stopChild,
+} from './browser-harness.js';
+import {
   absencePreviewSchema,
   absenceRecordSchema,
   dateRange,
@@ -1058,6 +1068,105 @@ async function savedFile(path: string) {
     })
     .parse(JSON.parse(await readFile(path, 'utf8')));
 }
+
+// Runs the real CLI with the fake browser; its nam.inna.is requests reach the synthetic Provider.
+async function googleLogin(provider: Provider, extra: string[] = []) {
+  const { directory, temporaryDirectory } = await makeTestDirectory('inna-offline-google-');
+  directories.push(directory);
+  const path = join(directory, 'session.json');
+  const browser = await makeFakeBrowser(directory);
+  const preload = await makePreload(directory);
+
+  const bridge = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: (incoming) => {
+      const url = new URL(incoming.url);
+
+      return provider.fetch(`https://nam.inna.is${url.pathname}${url.search}`, {
+        method: incoming.method,
+        headers: incoming.headers,
+        redirect: 'manual',
+      });
+    },
+  });
+
+  const env = browserEnvironment(directory, temporaryDirectory, path, {
+    INNA_TEST_ORIGIN: `http://127.0.0.1:${bridge.port}`,
+  });
+
+  async function run(args: string[] = extra) {
+    const child = spawnLogin(browser, env, 20, preload, args);
+
+    try {
+      return await collectProcess(child);
+    } finally {
+      await stopChild(child);
+    }
+  }
+
+  return { path, run, stop: () => bridge.stop(true) };
+}
+
+test('the saved default user id is read locally and is absent without a session', async () => {
+  const f = await fixture();
+  const count = f.provider.calls.length;
+  expect(await f.client.defaultUserId()).toBe(1);
+  await f.client.overview(undefined, SIBLING);
+  expect(await f.client.defaultUserId()).toBe(1);
+  const calls = f.provider.calls.length;
+  expect(calls).toBeGreaterThan(count);
+  await f.client.logout();
+  expect(await f.client.defaultUserId()).toBeUndefined();
+  expect(f.provider.calls).toHaveLength(calls);
+});
+
+test('Google browser sign-in saves a version 2 session and refuses a changed binding', async () => {
+  const provider = new Provider();
+  const login = await googleLogin(provider);
+
+  try {
+    const first = await login.run();
+    expect(first).toEqual({
+      exit: 0,
+      stdout: `Signed in. Session saved to ${login.path}\n`,
+      stderr: START_MESSAGE,
+    });
+    expect(provider.paths()).toEqual([USER_PATH]);
+    const saved = await savedFile(login.path);
+    expect(saved.version).toBe(2);
+    expect(saved.account).toEqual({ userId: 1, studentId: '2', schoolId: '3' });
+    expect(Object.keys(saved.students)).toEqual(['1']);
+    expect(saved.jar).toContain('synthetic-rotated');
+    expect(saved.jar).toContain('synthetic-xsrf');
+    expect(saved.jar).not.toContain('decoy');
+    expect((await stat(login.path)).mode & 0o777).toBe(0o600);
+
+    const client = new InnaClient({ sessionFile: login.path, fetch: provider.fetch });
+    expect(await client.status()).toMatchObject({
+      authenticated: true,
+      context: { studentId: '2' },
+    });
+
+    const before = await readFile(login.path, 'utf8');
+    provider.user = { ...provider.user, studentId: '99' };
+    const refused = await login.run();
+    expect(refused.exit).toBe(1);
+    expect(refused.stdout).toBe('');
+    expect(refused.stderr).toBe(
+      `${START_MESSAGE}This export changes the account, student, or school. Use --allow-account-change deliberately.\n`,
+    );
+    expect(await readFile(login.path, 'utf8')).toBe(before);
+
+    const allowed = await login.run(['--allow-account-change']);
+    expect(allowed.exit).toBe(0);
+    expect(allowed.stdout).toBe(`Signed in. Session saved to ${login.path}\n`);
+    expect((await savedFile(login.path)).account.studentId).toBe('99');
+    expectClean(await readFile(login.path, 'utf8'));
+  } finally {
+    await login.stop();
+  }
+});
 
 test('students are listed without switching or exposing identity fields', async () => {
   const f = await fixture();
