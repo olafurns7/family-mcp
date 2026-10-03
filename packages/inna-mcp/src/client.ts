@@ -21,14 +21,48 @@ const MAX_SESSION_BYTES = 262_144;
 
 const cookieNames = new Set(['SESSION', 'JSESSIONID', 'XSRF-TOKEN']);
 
+const studentPaths = new Set(['/Components/Students/Students.html', '/auth/system']);
+
+const USER_ENDPOINT = '/api/UserData/GetLoggedInUser';
+
+function signInRequired(): SafeError {
+  return new SafeError(
+    'Inna sign-in is required. Run auth login or import a fresh private cookie export.',
+  );
+}
+
+function contextChanged(): SafeError {
+  return new SafeError(
+    'Inna changed account, student, or school. Import the intended session explicitly.',
+  );
+}
+
+function sessionExpired(): SafeError {
+  return new SafeError(
+    'Inna session expired. Run inna-mcp auth login or import a fresh private browser cookie export.',
+  );
+}
+
+function noPreview(): SafeError {
+  return new SafeError('No matching absence preview for this account, student, and school.');
+}
+
+// Version 1 files hold one binding; they are read as version 2 without learned students.
 const savedSchema = z.object({
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
   jar: z.string().max(MAX_SESSION_BYTES),
   account: schemas.bindingSchema,
+  students: z.record(schemas.id, schemas.learnedStudentSchema).default({}),
   pauseUntil: z.number().default(0),
 });
 
 type Saved = z.infer<typeof savedSchema>;
+
+type Student = z.infer<typeof schemas.accessStudentSchema> & { index: number };
+
+type Target = { user: schemas.User; binding: schemas.Binding; key: string | undefined };
+
+type Stamp = { retrievedAt: string; timeZone: 'UTC' };
 
 type Fetch = (url: string, options: RequestInit) => Promise<Response>;
 
@@ -72,6 +106,95 @@ function sameAccount(a: schemas.Binding, b: schemas.Binding): boolean {
   return a.userId === b.userId && a.studentId === b.studentId && a.schoolId === b.schoolId;
 }
 
+// Returns undefined when Inna's access list is absent or cannot be read without guessing.
+function studentEntries(user: schemas.User): Student[] | undefined {
+  const access = z.array(z.unknown()).safeParse(user.access);
+
+  if (!access.success) return undefined;
+  const students: Student[] = [];
+
+  for (const [index, raw] of access.data.entries()) {
+    const system = schemas.accessSystemSchema.safeParse(raw);
+
+    if (!system.success) return undefined;
+
+    if (system.data.system !== '1') continue;
+    const entry = schemas.accessStudentSchema.safeParse(raw);
+
+    if (!entry.success || students.some((student) => student.userId === entry.data.userId))
+      return undefined;
+    students.push({ ...entry.data, index });
+  }
+
+  return students;
+}
+
+function selectedKey(students: Student[] | undefined): string | undefined {
+  const selected = students?.filter((student) => student.loggedIn) ?? [];
+
+  return selected.length === 1 ? selected[0]?.userId : undefined;
+}
+
+// Inna's selected access entry carries the same userId as the logged-in context.
+function defaultKey(saved: Pick<Saved, 'account'>): string {
+  return String(saved.account.userId);
+}
+
+// The context must be the only selected student entry and agree with it on user and school.
+function matchesEntry(user: schemas.User, key: string): boolean {
+  const students = studentEntries(user);
+  const entry = students?.find((student) => student.userId === key);
+
+  return (
+    selectedKey(students) === key &&
+    String(user.userId) === key &&
+    user.schoolId === entry?.skoli_id
+  );
+}
+
+function unknownStudent(): SafeError {
+  return new SafeError(
+    'That student is not in this Inna session. Use a studentKey from inna_list_students.',
+  );
+}
+
+// Trust on first use: a key keeps the binding first verified for it.
+function learn(
+  saved: Pick<Saved, 'account' | 'students'>,
+  key: string,
+  user: schemas.User,
+): schemas.Binding {
+  const known = saved.students[key];
+
+  if (known) {
+    if (!sameAccount(known, user)) throw contextChanged();
+
+    return known;
+  }
+
+  const taken = Object.values(saved.students).map((student) => student.studentId);
+
+  if (key === defaultKey(saved)) {
+    if (!sameAccount(saved.account, user)) throw contextChanged();
+  } else taken.push(saved.account.studentId);
+
+  if (taken.includes(user.studentId))
+    throw new SafeError(
+      'Inna returned a student already saved under another studentKey. The result was discarded.',
+    );
+  const learned = schemas.learnedStudentSchema.parse(user);
+  saved.students[key] = learned;
+
+  return learned;
+}
+
+function stillSelected(target: Target, current: schemas.User): boolean {
+  return (
+    sameAccount(target.binding, current) &&
+    (target.key === undefined || matchesEntry(current, target.key))
+  );
+}
+
 function canRegisterAbsence(user: schemas.User, kind: schemas.AbsenceInput['kind']): boolean {
   if (kind === 'sick')
     return (
@@ -90,9 +213,12 @@ function canRegisterAbsence(user: schemas.User, kind: schemas.AbsenceInput['kind
 
 async function readSaved(path: string): Promise<Saved | undefined> {
   try {
-    return savedSchema.parse(
-      JSON.parse(await readPrivateFile(path, { maxBytes: MAX_SESSION_BYTES })),
-    );
+    return {
+      ...savedSchema.parse(
+        JSON.parse(await readPrivateFile(path, { maxBytes: MAX_SESSION_BYTES })),
+      ),
+      version: 2,
+    };
   } catch (error) {
     if (error instanceof SessionStoreError && error.code === 'NOT_FOUND') return undefined;
     throw new SafeError(
@@ -144,8 +270,7 @@ class Connection {
     params = new URLSearchParams(),
     body?: AbsencePayload,
   ): Promise<z.output<T>> {
-    if (this.saved.pauseUntil > this.now())
-      throw new SafeError('Inna requested a pause. Wait before making another request.');
+    this.checkPause();
     const url = new URL(endpoint, ORIGIN);
 
     if (url.origin !== ORIGIN || !url.pathname.startsWith('/api/'))
@@ -154,10 +279,7 @@ class Connection {
     const cookies = await this.jar.getCookies(url.href);
     const xsrf = cookies.find((cookie) => cookie.key === 'XSRF-TOKEN');
 
-    if (!cookies.some((cookie) => cookie.key === 'SESSION') || !xsrf)
-      throw new SafeError(
-        'Inna session expired. Run inna-mcp auth login or import a fresh private browser cookie export.',
-      );
+    if (!cookies.some((cookie) => cookie.key === 'SESSION') || !xsrf) throw sessionExpired();
 
     const headers = new Headers({
       Accept: 'application/json',
@@ -167,47 +289,26 @@ class Connection {
     });
 
     if (body) headers.set('Content-Type', 'application/json;charset=UTF-8');
-    const timeout = AbortSignal.timeout(30_000);
 
     const options: RequestInit = {
       method: body ? 'POST' : 'GET',
       headers,
       redirect: 'manual',
-      signal: this.signal ? AbortSignal.any([this.signal, timeout]) : timeout,
+      signal: this.deadline(),
     };
 
     if (body) options.body = JSON.stringify(body);
     const response = await this.fetcher(url.href, options);
-
-    for (const header of response.headers.getSetCookie()) {
-      const cookie = Cookie.parse(header);
-
-      if (cookie && cookieNames.has(cookie.key)) await this.jar.setCookie(cookie, ORIGIN);
-    }
+    await this.capture(response);
 
     if (response.status === 429) {
       await response.body?.cancel().catch(() => {});
-      const retry = response.headers.get('retry-after');
-
-      const milliseconds =
-        retry && /^\d+$/.test(retry)
-          ? Number(retry) * 1000
-          : retry
-            ? Date.parse(retry) - this.now()
-            : NaN;
-
-      const wait =
-        Number.isFinite(milliseconds) && milliseconds > 0 ? Math.max(60_000, milliseconds) : 60_000;
-
-      this.saved.pauseUntil = Math.min(Date.parse('9999-12-31T23:59:59.999Z'), this.now() + wait);
-      throw new SafeError('Inna rate limited this session. Wait before trying again.');
+      throw this.pause(response);
     }
 
     if (response.status === 401 || (response.status >= 300 && response.status < 400)) {
       await response.body?.cancel().catch(() => {});
-      throw new SafeError(
-        'Inna sign-in is required. Run auth login or import a fresh private cookie export.',
-      );
+      throw signInRequired();
     }
 
     if (response.status === 403) {
@@ -227,6 +328,131 @@ class Connection {
       JSON.parse(await readBody(response, 8 * 1024 * 1024, options.signal ?? undefined)),
     );
   }
+
+  // Inna's own student switch: a cookie-only navigation that ends on the student application.
+  async selectStudent(student: Student): Promise<void> {
+    this.checkPause();
+    let url = new URL('/auth/system', ORIGIN);
+
+    url.search = new URLSearchParams({
+      i: String(student.index),
+      system: student.system,
+      status: student.status,
+      user_id: student.userId,
+    }).toString();
+
+    for (let hop = 0; hop < 5; hop += 1) {
+      const cookies = await this.jar.getCookies(url.href);
+
+      if (!cookies.some((cookie) => cookie.key === 'SESSION')) throw sessionExpired();
+
+      const response = await this.fetcher(url.href, {
+        method: 'GET',
+        headers: new Headers({
+          Accept: 'text/html',
+          Cookie: await this.jar.getCookieString(url.href),
+        }),
+        redirect: 'manual',
+        signal: this.deadline(),
+      });
+
+      await this.capture(response);
+      await response.body?.cancel().catch(() => {});
+
+      if (response.status === 429) throw this.pause(response);
+
+      if (response.status === 200) return;
+      const location = response.headers.get('location');
+
+      if (response.status === 401) throw signInRequired();
+
+      if (response.status < 300 || response.status >= 400 || !location)
+        throw new SafeError('Inna returned an unavailable or unexpected response.');
+      const next = new URL(location, url);
+
+      if (next.protocol === 'http:' && next.host === 'nam.inna.is') next.protocol = 'https:';
+
+      if (next.origin !== ORIGIN || !studentPaths.has(next.pathname)) throw signInRequired();
+      next.hash = '';
+      url = next;
+    }
+
+    throw new SafeError('Inna returned an unavailable or unexpected response.');
+  }
+
+  private checkPause(): void {
+    if (this.saved.pauseUntil > this.now())
+      throw new SafeError('Inna requested a pause. Wait before making another request.');
+  }
+
+  private deadline(): AbortSignal {
+    const timeout = AbortSignal.timeout(30_000);
+
+    return this.signal ? AbortSignal.any([this.signal, timeout]) : timeout;
+  }
+
+  private async capture(response: Response): Promise<void> {
+    for (const header of response.headers.getSetCookie()) {
+      const cookie = Cookie.parse(header);
+
+      if (cookie && cookieNames.has(cookie.key)) await this.jar.setCookie(cookie, ORIGIN);
+    }
+  }
+
+  private pause(response: Response): SafeError {
+    const retry = response.headers.get('retry-after');
+
+    const milliseconds =
+      retry && /^\d+$/.test(retry)
+        ? Number(retry) * 1000
+        : retry
+          ? Date.parse(retry) - this.now()
+          : NaN;
+
+    const wait =
+      Number.isFinite(milliseconds) && milliseconds > 0 ? Math.max(60_000, milliseconds) : 60_000;
+
+    this.saved.pauseUntil = Math.min(Date.parse('9999-12-31T23:59:59.999Z'), this.now() + wait);
+
+    return new SafeError('Inna rate limited this session. Wait before trying again.');
+  }
+}
+
+async function select(
+  connection: Connection,
+  saved: Saved,
+  user: schemas.User,
+  studentKey: string | undefined,
+): Promise<Target> {
+  const students = studentEntries(user);
+
+  if (!students?.length) {
+    // Without a usable student list nothing can be selected: only the saved binding decides.
+    if (studentKey !== undefined) throw unknownStudent();
+
+    if (!sameAccount(saved.account, user)) throw contextChanged();
+
+    return { user, binding: saved.account, key: undefined };
+  }
+
+  const key = studentKey ?? defaultKey(saved);
+  const target = students.find((student) => student.userId === key);
+
+  if (!target) throw studentKey === undefined ? contextChanged() : unknownStudent();
+
+  if (selectedKey(students) === key) {
+    if (!matchesEntry(user, key)) throw contextChanged();
+
+    return { user, binding: learn(saved, key, user), key };
+  }
+
+  await connection.selectStudent(target);
+  const switched = await connection.request(USER_ENDPOINT, schemas.userSchema);
+
+  if (!matchesEntry(switched, key))
+    throw new SafeError('Inna did not select the requested student. The result was discarded.');
+
+  return { user: switched, binding: learn(saved, key, switched), key };
 }
 
 export type ClientOptions = {
@@ -268,11 +494,14 @@ export class InnaClient {
     }
   }
 
-  private async withUser<T extends object>(
-    work: (connection: Connection, user: schemas.User) => Promise<T>,
+  private stamp(): Stamp {
+    return { retrievedAt: new Date(this.now()).toISOString(), timeZone: 'UTC' };
+  }
+
+  private async session<T>(
+    work: (connection: Connection, saved: Saved) => Promise<T>,
     signal?: AbortSignal,
-    verifyAfter = true,
-  ): Promise<T & { retrievedAt: string; timeZone: 'UTC' }> {
+  ): Promise<T> {
     return this.locked(async () => {
       const saved = await readSaved(this.path);
 
@@ -281,40 +510,53 @@ export class InnaClient {
           'No Inna session. Run inna-mcp auth login or auth import with a private cookie export.',
         );
       const jar = await CookieJar.deserialize(saved.jar);
-      const connection = new Connection(jar, saved, this.fetcher, this.now, signal);
 
       try {
-        const user = await connection.request('/api/UserData/GetLoggedInUser', schemas.userSchema);
-
-        if (!sameAccount(saved.account, user))
-          throw new SafeError(
-            'Inna changed account, student, or school. Import the intended session explicitly.',
-          );
-
-        const output = await work(connection, user);
-
-        if (verifyAfter) {
-          const current = await connection.request(
-            '/api/UserData/GetLoggedInUser',
-            schemas.userSchema,
-          );
-
-          if (!sameAccount(saved.account, current))
-            throw new SafeError(
-              'Inna changed account, student, or school during the read. The result was discarded.',
-            );
-        }
-
-        return {
-          ...output,
-          retrievedAt: new Date(this.now()).toISOString(),
-          timeZone: 'UTC',
-        };
+        return await work(new Connection(jar, saved, this.fetcher, this.now, signal), saved);
       } finally {
         saved.jar = JSON.stringify(await jar.serialize());
         await writePrivateFile(this.path, JSON.stringify(saved));
       }
     }, signal);
+  }
+
+  private async withStudent<T extends object>(
+    pick: () => Promise<string | undefined>,
+    work: (connection: Connection, user: schemas.User, target: Target) => Promise<T>,
+    signal?: AbortSignal,
+    verifyAfter = true,
+  ): Promise<T & Stamp> {
+    return this.session(async (connection, saved) => {
+      const key = schemas.studentKey.parse(await pick());
+
+      const target = await select(
+        connection,
+        saved,
+        await connection.request(USER_ENDPOINT, schemas.userSchema),
+        key,
+      );
+
+      const output = await work(connection, target.user, target);
+
+      if (
+        verifyAfter &&
+        !stillSelected(target, await connection.request(USER_ENDPOINT, schemas.userSchema))
+      )
+        throw new SafeError(
+          'Inna changed account, student, or school during the read. The result was discarded.',
+        );
+
+      return { ...output, ...this.stamp() };
+    }, signal);
+  }
+
+  private async withUser<T extends object>(
+    studentKey: string | undefined,
+    signal: AbortSignal | undefined,
+    work: (connection: Connection, user: schemas.User, target: Target) => Promise<T>,
+    verifyAfter = true,
+  ): Promise<T & Stamp> {
+    return this.withStudent(async () => studentKey, work, signal, verifyAfter);
   }
 
   async importSession(source: string, allowAccountChange = false): Promise<void> {
@@ -365,7 +607,7 @@ export class InnaClient {
       let user: schemas.User;
 
       try {
-        user = await connection.request('/api/UserData/GetLoggedInUser', schemas.userSchema);
+        user = await connection.request(USER_ENDPOINT, schemas.userSchema);
       } catch (error) {
         if (prior && throttle.pauseUntil > prior.pauseUntil) {
           prior.pauseUntil = throttle.pauseUntil;
@@ -375,17 +617,35 @@ export class InnaClient {
         throw error;
       }
 
-      if (prior && !sameAccount(prior.account, user) && !allowAccountChange)
+      const kept = prior && sameAccount(prior.account, user) ? prior.students : {};
+
+      if (prior && kept !== prior.students && !allowAccountChange) {
+        if (Object.values(prior.students).some((student) => sameAccount(student, user)))
+          throw new SafeError(
+            'This session has another saved student selected. Select the default student in the Inna browser session first, or use --allow-account-change deliberately.',
+          );
         throw new SafeError(
           'This export changes the account, student, or school. Use --allow-account-change deliberately.',
         );
+      }
 
       const candidate: Saved = {
-        version: 1,
+        version: 2,
         jar: JSON.stringify(await jar.serialize()),
         account: schemas.bindingSchema.parse(user),
+        students: { ...kept },
         pauseUntil: throttle.pauseUntil,
       };
+
+      if (studentEntries(user)?.length) {
+        const key = String(user.userId);
+
+        if (!matchesEntry(user, key))
+          throw new SafeError(
+            'Inna did not report one selected student matching this session. Select the intended student in Inna and sign in again.',
+          );
+        candidate.students[key] = schemas.learnedStudentSchema.parse(user);
+      }
 
       signal?.throwIfAborted();
       await writePrivateFile(this.path, JSON.stringify(candidate));
@@ -401,20 +661,63 @@ export class InnaClient {
     });
   }
 
-  async status(signal?: AbortSignal) {
+  async status(signal?: AbortSignal, studentKey?: string) {
     if (!(await readSaved(this.path))) return { authenticated: false };
 
-    return this.withUser(
-      async (_connection, user) => ({
-        authenticated: true,
-        context: schemas.contextSchema.parse(user),
-      }),
-      signal,
-    );
+    return this.withUser(studentKey, signal, async (_connection, user) => ({
+      authenticated: true,
+      context: schemas.contextSchema.parse(user),
+    }));
   }
 
-  async overview(signal?: AbortSignal) {
-    return this.withUser(async (connection, user) => {
+  async listStudents(signal?: AbortSignal) {
+    return this.session(async (connection, saved) => {
+      const user = await connection.request(USER_ENDPOINT, schemas.userSchema);
+      const entries = studentEntries(user);
+
+      if (!entries)
+        throw new SafeError(
+          'Inna returned no usable student list. Omit studentKey to read the default student.',
+        );
+      const context = schemas.contextSchema.parse(user);
+      const onDefault = sameAccount(saved.account, user);
+
+      if (entries.length === 0)
+        return {
+          students: [
+            {
+              schoolName: user.schoolLong,
+              schoolId: user.schoolId,
+              selected: true,
+              isDefault: onDefault,
+              studentId: user.studentId,
+              studentName: user.studentName,
+            },
+          ],
+          context,
+          ...this.stamp(),
+        };
+      const known = defaultKey(saved);
+
+      return {
+        students: entries.map((entry) => ({
+          studentKey: entry.userId,
+          title: entry.title,
+          schoolName: entry.skoli_heiti,
+          schoolId: entry.skoli_id,
+          selected: entry.loggedIn,
+          isDefault: entry.userId === known,
+          studentId: saved.students[entry.userId]?.studentId,
+          studentName: entry.nafn,
+        })),
+        context,
+        ...this.stamp(),
+      };
+    }, signal);
+  }
+
+  async overview(signal?: AbortSignal, studentKey?: string) {
+    return this.withUser(studentKey, signal, async (connection, user) => {
       const announcements = await connection.request(
         '/api/Announcements/GetStudentAnnouncements',
         schemas.announcementsSchema,
@@ -440,13 +743,13 @@ export class InnaClient {
         courses,
         announcements,
       };
-    }, signal);
+    });
   }
 
   async timetable(input: z.infer<typeof schemas.dateRange>, signal?: AbortSignal) {
     const request = schemas.dateRange.parse(input);
 
-    return this.withUser(async (connection, user) => {
+    return this.withUser(request.studentKey, signal, async (connection, user) => {
       const entries = await connection.request(
         '/api/Timetable/GetTimetable',
         schemas.timetableSchema,
@@ -467,11 +770,15 @@ export class InnaClient {
       for (const entry of entries) entry.dates = parseDates({ start: entry.start, end: entry.end });
 
       return { context: schemas.contextSchema.parse(user), entries };
-    }, signal);
+    });
   }
 
-  async assignments(type: 'assignments' | 'exams' | 'all', signal?: AbortSignal) {
-    return this.withUser(async (connection, user) => {
+  async assignments(
+    type: 'assignments' | 'exams' | 'all',
+    signal?: AbortSignal,
+    studentKey?: string,
+  ) {
+    return this.withUser(studentKey, signal, async (connection, user) => {
       const entries: z.infer<typeof schemas.assignmentsSchema> = [];
 
       for (const value of type === 'all' ? ['0', '1'] : [type === 'exams' ? '1' : '0']) {
@@ -506,13 +813,13 @@ export class InnaClient {
         entries,
         homework,
       };
-    }, signal);
+    });
   }
 
-  async assignment(assignmentId: string, signal?: AbortSignal) {
+  async assignment(assignmentId: string, signal?: AbortSignal, studentKey?: string) {
     schemas.id.parse(assignmentId);
 
-    return this.withUser(async (connection, user) => {
+    return this.withUser(studentKey, signal, async (connection, user) => {
       const assignment = await connection.request(
         '/api/GetAssignments/GetAssignmentInfo',
         schemas.assignmentSchema,
@@ -523,13 +830,13 @@ export class InnaClient {
       assignment.dates = parseDates({ returnDate: assignment.returnDate });
 
       return { context: schemas.contextSchema.parse(user), assignment };
-    }, signal);
+    });
   }
 
-  async grades(termId?: string, signal?: AbortSignal) {
+  async grades(termId?: string, signal?: AbortSignal, studentKey?: string) {
     if (termId !== undefined) schemas.id.parse(termId);
 
-    return this.withUser(async (connection, user) => {
+    return this.withUser(studentKey, signal, async (connection, user) => {
       const entries = await connection.request(
         '/api/StudentGrades/GetStudentGrades',
         schemas.gradesSchema,
@@ -539,13 +846,13 @@ export class InnaClient {
       for (const entry of entries) entry.dates = parseDates({ dateFinished: entry.dateFinished });
 
       return { context: schemas.contextSchema.parse(user), entries };
-    }, signal);
+    });
   }
 
-  async courseGrades(groupId: string, signal?: AbortSignal) {
+  async courseGrades(groupId: string, signal?: AbortSignal, studentKey?: string) {
     schemas.id.parse(groupId);
 
-    return this.withUser(async (connection, user) => {
+    return this.withUser(studentKey, signal, async (connection, user) => {
       const { assignments } = await connection.request(
         `/api/GetAssignments/Groups/${groupId}/StudentProjects`,
         schemas.courseGradesSchema,
@@ -555,13 +862,13 @@ export class InnaClient {
         entry.dates = parseDates({ assignDate: entry.assignDate, returnDate: entry.returnDate });
 
       return { context: schemas.contextSchema.parse(user), assignments };
-    }, signal);
+    });
   }
 
-  async attendance(termId = '', signal?: AbortSignal) {
+  async attendance(termId = '', signal?: AbortSignal, studentKey?: string) {
     if (termId) schemas.id.parse(termId);
 
-    return this.withUser(async (connection, user) => {
+    return this.withUser(studentKey, signal, async (connection, user) => {
       const attendance = await connection.request(
         '/api/Attendance/GetAttendance',
         schemas.attendanceSchema,
@@ -571,13 +878,13 @@ export class InnaClient {
       attendance.dates = parseDates({ dateFrom: attendance.dateFrom, dateTo: attendance.dateTo });
 
       return { context: schemas.contextSchema.parse(user), attendance };
-    }, signal);
+    });
   }
 
-  async materials(groupId: string, signal?: AbortSignal) {
+  async materials(groupId: string, signal?: AbortSignal, studentKey?: string) {
     schemas.id.parse(groupId);
 
-    return this.withUser(async (connection, user) => {
+    return this.withUser(studentKey, signal, async (connection, user) => {
       const groups = await connection.request(
         '/api/Attachment/GetModuleFiles',
         schemas.materialsSchema,
@@ -594,10 +901,10 @@ export class InnaClient {
       }
 
       return { context: schemas.contextSchema.parse(user), groups };
-    }, signal);
+    });
   }
 
-  async messages(rowFrom = 1, rowTo = 21, signal?: AbortSignal) {
+  async messages(rowFrom = 1, rowTo = 21, signal?: AbortSignal, studentKey?: string) {
     z.number().int().min(1).parse(rowFrom);
     z.number()
       .int()
@@ -605,7 +912,7 @@ export class InnaClient {
       .max(rowFrom + 100)
       .parse(rowTo);
 
-    return this.withUser(async (connection, user) => {
+    return this.withUser(studentKey, signal, async (connection, user) => {
       const page = await connection.request(
         '/api/Messages/GetReceivedMessages',
         schemas.messagesSchema,
@@ -646,16 +953,16 @@ export class InnaClient {
         rowTo,
         nextRowFrom: next <= page.count ? next : null,
       };
-    }, signal);
+    });
   }
 
-  async message(messageId: string, type: string, signal?: AbortSignal) {
+  async message(messageId: string, type: string, signal?: AbortSignal, studentKey?: string) {
     schemas.id.parse(messageId);
     z.string()
       .regex(/^[A-Z]$/)
       .parse(type);
 
-    return this.withUser(async (connection, user) => {
+    return this.withUser(studentKey, signal, async (connection, user) => {
       const message = await connection.request(
         '/api/Messages/GetMessageDetails',
         schemas.messageSchema,
@@ -663,16 +970,19 @@ export class InnaClient {
       );
 
       message.message = schemas.plainText(message.message);
-      message.dates = parseDates({ dateCreated: message.dateCreated, dateSent: message.dateSent });
+      message.dates = parseDates({
+        dateCreated: message.dateCreated,
+        dateSent: message.dateSent,
+      });
 
       return { context: schemas.contextSchema.parse(user), message };
-    }, signal);
+    });
   }
 
   async absences(input: z.infer<typeof schemas.dateRange>, signal?: AbortSignal) {
     const request = schemas.dateRange.parse(input);
 
-    return this.withUser(async (connection, user) => {
+    return this.withUser(request.studentKey, signal, async (connection, user) => {
       const sickOptions = await connection.request(
         '/api/RegisterAbsence/GetRegisterAbsences',
         schemas.sickOptionsSchema,
@@ -709,7 +1019,7 @@ export class InnaClient {
         for (const lesson of record.classes) lesson.dates = parseDates({ date: lesson.date });
 
       return { context: schemas.contextSchema.parse(user), sickOptions, sick, leave };
-    }, signal);
+    });
   }
 
   private async checkAbsence(
@@ -792,10 +1102,12 @@ export class InnaClient {
   async prepareAbsence(input: schemas.AbsenceInput, signal?: AbortSignal) {
     if (!this.allowAbsenceWrites)
       throw new SafeError('Absence writes require --allow-absence-writes.');
-    const request = schemas.absenceInputSchema.parse(input);
+    const { studentKey, ...request } = schemas.absenceInputSchema.parse(input);
 
     return this.withUser(
-      async (connection, user) => {
+      studentKey,
+      signal,
+      async (connection, user, target) => {
         const previous = await readAbsence(this.path);
 
         if (previous?.state === 'submitting' || previous?.state === 'unknown')
@@ -807,6 +1119,7 @@ export class InnaClient {
         const record: AbsenceRecord = {
           operationId: randomUUID(),
           account: schemas.bindingSchema.parse(user),
+          studentKey: target.key,
           request,
           state: 'prepared',
           expiresAt: this.now() + 10 * 60_000,
@@ -816,7 +1129,6 @@ export class InnaClient {
 
         return { ...record, studentName: user.studentName, schoolName: user.schoolLong };
       },
-      signal,
       false,
     );
   }
@@ -827,12 +1139,20 @@ export class InnaClient {
     z.uuid().parse(operationId);
     z.literal(true).parse(confirm);
 
-    return this.withUser(
-      async (connection, user) => {
+    return this.withStudent(
+      // The preview decides the student: Inna is switched to it before any check.
+      async () => {
         const record = await readAbsence(this.path);
 
-        if (!record || record.operationId !== operationId || !sameAccount(record.account, user))
-          throw new SafeError('No matching absence preview for this account, student, and school.');
+        if (record?.operationId !== operationId) throw noPreview();
+
+        return record.studentKey;
+      },
+      async (connection, user, target) => {
+        const record = await readAbsence(this.path);
+
+        if (record?.operationId !== operationId || !sameAccount(record.account, user))
+          throw noPreview();
 
         if (record.state === 'submitted') return record;
 
@@ -846,13 +1166,11 @@ export class InnaClient {
 
         const checkedDay = await this.checkAbsence(connection, user, record.request);
 
-        const current = await connection.request(
-          '/api/UserData/GetLoggedInUser',
-          schemas.userSchema,
-        );
+        const current = await connection.request(USER_ENDPOINT, schemas.userSchema);
 
         if (
           !sameAccount(record.account, current) ||
+          !stillSelected(target, current) ||
           !canRegisterAbsence(current, record.request.kind)
         )
           throw new SafeError(
@@ -904,16 +1222,27 @@ export class InnaClient {
     );
   }
 
+  // Reads the current context without switching, so an uncertain operation stays reviewable.
   async absenceStatus(signal?: AbortSignal) {
-    return this.withUser(async (_connection, user) => {
+    return this.session(async (connection, saved) => {
+      const user = await connection.request(USER_ENDPOINT, schemas.userSchema);
       const record = await readAbsence(this.path);
 
-      if (record && !sameAccount(record.account, user))
+      if (
+        record &&
+        ![saved.account, ...Object.values(saved.students)].some((student) =>
+          sameAccount(record.account, student),
+        )
+      )
         throw new SafeError(
           'The saved absence operation belongs to another account, student, or school.',
         );
 
-      return { context: schemas.contextSchema.parse(user), operation: record ?? null };
+      return {
+        context: schemas.contextSchema.parse(user),
+        operation: record ?? null,
+        ...this.stamp(),
+      };
     }, signal);
   }
 }

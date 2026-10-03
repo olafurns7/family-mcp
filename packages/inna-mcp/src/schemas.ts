@@ -8,8 +8,14 @@ export const id = z.string().regex(/^\d+$/).max(32);
 
 export const date = z.iso.date();
 
+export const studentKey = id
+  .optional()
+  .describe(
+    'studentKey from inna_list_students. Omit for the default student saved at login or import.',
+  );
+
 export const dateRange = z
-  .object({ dateFrom: date, dateTo: date })
+  .object({ dateFrom: date, dateTo: date, studentKey })
   .strict()
   .refine((value) => value.dateFrom <= value.dateTo, 'Dates must be in order.');
 
@@ -67,6 +73,25 @@ export const userSchema = z.object({
   registerLeave: z.string(),
   student18RegisterLeave: z.string(),
   registerIllnessTomorrow: z.string(),
+  access: z.unknown().optional(),
+});
+
+const digits = z.union([id, z.number().int().nonnegative()]).transform(String);
+
+export const accessSystemSchema = z.object({ system: digits });
+
+// Only these access fields are read; identity numbers and login links are never parsed.
+export const accessStudentSchema = z.object({
+  system: digits,
+  status: digits,
+  userId: digits,
+  loggedIn: z
+    .union([z.boolean(), z.enum(['0', '1']), z.literal(0), z.literal(1)])
+    .transform((value) => value === true || value === '1' || value === 1),
+  skoli_id: digits.optional().catch(undefined),
+  skoli_heiti: z.string().optional().catch(undefined),
+  title: z.string().optional().catch(undefined),
+  nafn: z.string().optional().catch(undefined),
 });
 
 export const contextSchema = userSchema.pick({
@@ -81,6 +106,21 @@ export const contextSchema = userSchema.pick({
 });
 
 export const bindingSchema = userSchema.pick({ userId: true, studentId: true, schoolId: true });
+
+export const learnedStudentSchema = bindingSchema.extend({ studentName: z.string() });
+
+export const studentsSchema = z.array(
+  z.object({
+    studentKey: id.optional(),
+    title: z.string().optional(),
+    schoolName: z.string().optional(),
+    schoolId: id.optional(),
+    selected: z.boolean(),
+    isDefault: z.boolean(),
+    studentId: id.optional(),
+    studentName: z.string().optional(),
+  }),
+);
 
 export type User = z.infer<typeof userSchema>;
 
@@ -357,6 +397,7 @@ export const absenceInputSchema = z
     dateFrom: date,
     dateTo: date,
     reason: z.string().trim().min(1).max(2000),
+    studentKey,
   })
   .strict()
   .refine((value) => value.dateFrom <= value.dateTo, 'Dates must be in order.')
@@ -370,6 +411,7 @@ export type AbsenceInput = z.infer<typeof absenceInputSchema>;
 export const absenceRecordSchema = z.object({
   operationId: z.uuid(),
   account: bindingSchema,
+  studentKey: id.optional(),
   request: absenceInputSchema,
   state: z.enum(['prepared', 'submitting', 'submitted', 'unknown']),
   expiresAt: z.number(),

@@ -26,46 +26,161 @@ const request = {
   reason: 'Synthetic reason',
 } satisfies Parameters<InnaClient['prepareAbsence']>[0];
 
+const student: User = {
+  userId: 1,
+  studentId: '2',
+  schoolId: '3',
+  studentName: 'Synthetic student',
+  name: 'Synthetic guardian',
+  schoolLong: 'Synthetic school',
+  defaultTermId: '4',
+  isGuardian: true,
+  logInType: '2',
+  olderThan18: false,
+  registerAbsenceGuardian: '1',
+  registerAbsenceUnder18: '0',
+  registerAbsenceOver18: '1',
+  registerAbsence: '1',
+  student18RegisterAbsence: '1',
+  registerLeave: '1',
+  student18RegisterLeave: '1',
+  registerIllnessTomorrow: '1',
+};
+
+const sibling: User = {
+  ...student,
+  userId: 5,
+  studentId: '6',
+  schoolId: '8',
+  studentName: 'Synthetic sibling',
+  schoolLong: 'Synthetic second school',
+};
+
+const SIBLING = '5';
+
+const range = { dateFrom: '2040-01-02', dateTo: '2040-01-03' };
+
+// Decoys for the access fields that must never reach a tool result or the session file.
+const hidden = {
+  kennitala: '9999999999',
+  notandi_id: '8888888',
+  url_login: 'https://nam.inna.is/auth/token?token=DO-NOT-RETURN',
+};
+
+function expectClean(text: string): void {
+  for (const decoy of ['9999999999', '8888888', 'DO-NOT-RETURN', 'auth/token'])
+    expect(text).not.toContain(decoy);
+}
+
+type AccessEntry = { system: string; status: string; skoli_id?: string; skoli_heiti: string };
+
 class Provider {
   readonly calls: { url: URL; method: string; body: string | undefined }[] = [];
   posts = 0;
   failPost = false;
   redirect = false;
   rateLimit = false;
-  user: User = {
-    userId: 1,
-    studentId: '2',
-    schoolId: '3',
-    studentName: 'Synthetic student',
-    name: 'Synthetic guardian',
-    schoolLong: 'Synthetic school',
-    defaultTermId: '4',
-    isGuardian: true,
-    logInType: '2',
-    olderThan18: false,
-    registerAbsenceGuardian: '1',
-    registerAbsenceUnder18: '0',
-    registerAbsenceOver18: '1',
-    registerAbsence: '1',
-    student18RegisterAbsence: '1',
-    registerLeave: '1',
-    student18RegisterLeave: '1',
-    registerIllnessTomorrow: '1',
-  };
+  ignoreSwitch = false;
+  switchRateLimit = false;
+  numeric = false;
+  switchLocation = 'http://nam.inna.is/Components/Students/Students.html';
+  switches = 0;
+  user = student;
+  selected = '1';
+  order = ['1', SIBLING, '9'];
+  contexts = new Map([
+    ['1', student],
+    [SIBLING, sibling],
+  ]);
+
+  // Live shape: digit strings, no id key. The last entry is another Inna application.
+  entries = new Map<string, AccessEntry>([
+    ['1', { system: '1', status: '1', skoli_id: '3', skoli_heiti: 'Synthetic school' }],
+    [SIBLING, { system: '1', status: '2', skoli_id: '8', skoli_heiti: 'Synthetic second school' }],
+    ['9', { system: '2', status: '1', skoli_id: '3', skoli_heiti: 'Synthetic school' }],
+  ]);
+
+  access() {
+    return this.order.map((key) => {
+      const entry = this.entries.get(key);
+      const on = key === this.selected;
+
+      return {
+        ...hidden,
+        ...entry,
+        userId: this.numeric ? Number(key) : key,
+        system: this.numeric ? Number(entry?.system) : entry?.system,
+        loggedIn: this.numeric ? on : on ? '1' : '0',
+        isStudent: '1',
+        virkur: '1',
+        adgangur: '1',
+        nafn: this.contexts.get(key)?.studentName ?? 'Synthetic staff',
+        title: 'Synthetic role',
+        tegund: 'Synthetic kind',
+        skoli_audk: 'SYN',
+        showPersonalInfoConfirmationModal: false,
+      };
+    });
+  }
+
+  paths(from = 0): string[] {
+    return this.calls.slice(from).map((call) => call.url.pathname);
+  }
+
+  private switchStudent(url: URL, headers: Headers, options: RequestInit): Response {
+    expect(options.method).toBe('GET');
+    expect(options.body).toBeUndefined();
+    expect(headers.get('X-Requested-By')).toBeNull();
+    expect(headers.get('X-XSRF-TOKEN')).toBeNull();
+    expect(headers.get('Authorization')).toBeNull();
+    this.switches += 1;
+
+    if (this.switchRateLimit)
+      return new Response(null, { status: 429, headers: { 'Retry-After': '120' } });
+    const key = this.order[Number(url.searchParams.get('i'))];
+    const entry = key === undefined ? undefined : this.entries.get(key);
+
+    expect([...url.searchParams.keys()]).toEqual(['i', 'system', 'status', 'user_id']);
+    expect(url.searchParams.get('system')).toBe('1');
+    expect(url.searchParams.get('system')).toBe(String(entry?.system));
+    expect(url.searchParams.get('status')).toBe(String(entry?.status));
+    expect(url.searchParams.get('user_id')).toBe(key ?? '');
+
+    if (key !== undefined && !this.ignoreSwitch) {
+      this.selected = key;
+      this.user = this.contexts.get(key) ?? this.user;
+    }
+
+    return new Response('<html>Synthetic redirect</html>', {
+      status: 303,
+      headers: {
+        Location: this.switchLocation,
+        'Set-Cookie': `SESSION=synthetic-switched-${this.switches}; Path=/; Secure; HttpOnly`,
+      },
+    });
+  }
 
   fetch = async (value: string, options: RequestInit): Promise<Response> => {
     const url = new URL(value);
     expect(url.origin).toBe('https://nam.inna.is');
     expect(options.redirect).toBe('manual');
     const headers = new Headers(options.headers);
-    expect(headers.get('X-Requested-By')).toBe('XMLHttpRequest');
-    expect(headers.get('X-XSRF-TOKEN')).toBe('synthetic-xsrf');
     expect(headers.get('Cookie')).toContain('SESSION=synthetic-');
     this.calls.push({
       url,
       method: options.method ?? 'GET',
       body: z.string().optional().parse(options.body),
     });
+
+    if (url.pathname === '/auth/system') return this.switchStudent(url, headers, options);
+
+    if (url.pathname === '/Components/Students/Students.html')
+      return new Response('<html>Synthetic application</html>', {
+        headers: { 'Content-Type': 'text/html' },
+      });
+    expect(url.pathname.startsWith('/api/')).toBe(true);
+    expect(headers.get('X-Requested-By')).toBe('XMLHttpRequest');
+    expect(headers.get('X-XSRF-TOKEN')).toBe('synthetic-xsrf');
 
     if (this.redirect)
       return new Response(null, {
@@ -78,7 +193,12 @@ class Provider {
 
     if (url.pathname === '/api/UserData/GetLoggedInUser')
       return Response.json(
-        { ...this.user, studentIdNumber: 'DO-NOT-RETURN', privateToken: 'DO-NOT-RETURN' },
+        {
+          ...this.user,
+          access: this.access(),
+          studentIdNumber: 'DO-NOT-RETURN',
+          privateToken: 'DO-NOT-RETURN',
+        },
         { headers: { 'Set-Cookie': 'SESSION=synthetic-rotated; Path=/; Secure; HttpOnly' } },
       );
 
@@ -278,6 +398,7 @@ test('every read tool round-trips through MCP without marking read or fetching e
 
     const calls = [
       ['inna_session_status', {}],
+      ['inna_list_students', {}],
       ['inna_get_overview', {}],
       ['inna_get_timetable', { dateFrom: '2040-01-02', dateTo: '2040-01-03' }],
       ['inna_get_assignments', {}],
@@ -307,7 +428,7 @@ test('every read tool round-trips through MCP without marking read or fetching e
 
       expect(metadata.retrievedAt, name).toBe(new Date(NOW).toISOString());
       expect(metadata.timeZone, name).toBe('UTC');
-      expect(JSON.stringify(result)).not.toContain('DO-NOT-RETURN');
+      expectClean(JSON.stringify(result));
       expect(JSON.stringify(result)).not.toContain('synthetic-session');
     }
 
@@ -338,7 +459,7 @@ test('both opt-in absence tools round-trip through MCP, including confirmed incl
   await Promise.all([server.connect(a), client.connect(b)]);
 
   try {
-    expect((await client.listTools()).tools).toHaveLength(15);
+    expect((await client.listTools()).tools).toHaveLength(16);
 
     const prepared = await client.callTool({
       name: 'inna_prepare_absence',
@@ -476,7 +597,6 @@ test('repeated and concurrent reads stay serialized, fresh, UTC, and free of wri
     },
   });
 
-  const range = { dateFrom: '2040-01-02', dateTo: '2040-01-03' };
   const results = await Promise.all(Array.from({ length: 8 }, () => client.timetable(range)));
   expect(maximum).toBe(1);
   expect(new Set(results.map((result) => result.entries[0]?.titleShort)).size).toBe(8);
@@ -908,6 +1028,480 @@ test('rate limiting during a replacement import preserves the saved session paus
   const count = f.provider.calls.length;
   await assert.rejects(new InnaClient(f.options).overview(), /requested a pause/);
   expect(f.provider.calls).toHaveLength(count);
+});
+
+async function savedFile(path: string) {
+  return z
+    .object({
+      version: z.number(),
+      jar: z.string(),
+      account: z.object({ userId: z.number(), studentId: z.string(), schoolId: z.string() }),
+      students: z.record(z.string(), z.object({ studentId: z.string(), studentName: z.string() })),
+      pauseUntil: z.number(),
+    })
+    .parse(JSON.parse(await readFile(path, 'utf8')));
+}
+
+test('students are listed without switching or exposing identity fields', async () => {
+  const f = await fixture();
+  const listed = await f.client.listStudents();
+
+  expect(listed.students).toEqual([
+    {
+      studentKey: '1',
+      title: 'Synthetic role',
+      schoolName: 'Synthetic school',
+      schoolId: '3',
+      selected: true,
+      isDefault: true,
+      studentId: '2',
+      studentName: 'Synthetic student',
+    },
+    {
+      studentKey: SIBLING,
+      title: 'Synthetic role',
+      schoolName: 'Synthetic second school',
+      schoolId: '8',
+      selected: false,
+      isDefault: false,
+      studentId: undefined,
+      studentName: 'Synthetic sibling',
+    },
+  ]);
+  expect(listed.context.studentId).toBe('2');
+  expect(listed.retrievedAt).toBe(new Date(NOW).toISOString());
+  expectClean(JSON.stringify(listed));
+  expectClean(await readFile(f.path, 'utf8'));
+  expect(f.provider.paths()).toEqual([
+    '/api/UserData/GetLoggedInUser',
+    '/api/UserData/GetLoggedInUser',
+  ]);
+
+  await f.client.timetable({ ...range, studentKey: SIBLING });
+  const after = await f.client.listStudents();
+  expect(after.students.map((entry) => [entry.selected, entry.isDefault, entry.studentId])).toEqual(
+    [
+      [false, true, '2'],
+      [true, false, '6'],
+    ],
+  );
+  expect(after.context.studentId).toBe('6');
+  expect(f.provider.switches).toBe(1);
+});
+
+test('a session without student access entries lists its context as the single default', async () => {
+  const f = await fixture();
+  f.provider.order = ['9'];
+  const listed = await f.client.listStudents();
+
+  expect(listed.students).toEqual([
+    {
+      schoolName: 'Synthetic school',
+      schoolId: '3',
+      selected: true,
+      isDefault: true,
+      studentId: '2',
+      studentName: 'Synthetic student',
+    },
+  ]);
+  expect((await f.client.overview()).context.studentId).toBe('2');
+  await assert.rejects(f.client.overview(undefined, SIBLING), /not in this Inna session/);
+  f.provider.order = ['1', '1'];
+  await assert.rejects(f.client.listStudents(), /no usable student list/);
+  await assert.rejects(f.client.overview(undefined, '1'), /not in this Inna session/);
+  expect((await f.client.overview()).context.studentId).toBe('2');
+  expect(f.provider.switches).toBe(0);
+});
+
+test('reading the sibling and then the default switches there and back with verification', async () => {
+  const f = await fixture();
+  let from = f.provider.calls.length;
+  const timetable = await f.client.timetable({ ...range, studentKey: SIBLING });
+
+  expect(timetable.context.studentId).toBe('6');
+  expect(timetable.context.studentName).toBe('Synthetic sibling');
+  expect(f.provider.paths(from)).toEqual([
+    '/api/UserData/GetLoggedInUser',
+    '/auth/system',
+    '/Components/Students/Students.html',
+    '/api/UserData/GetLoggedInUser',
+    '/api/Timetable/GetTimetable',
+    '/api/UserData/GetLoggedInUser',
+  ]);
+  expect(f.provider.calls[from + 1]?.url.search).toBe('?i=1&system=1&status=2&user_id=5');
+  expect(f.provider.calls[from + 2]?.url.protocol).toBe('https:');
+  expect(f.provider.calls[from + 4]?.url.searchParams.get('student_id')).toBe('6');
+
+  from = f.provider.calls.length;
+  expect((await f.client.messages(1, 21, undefined, SIBLING)).context.studentId).toBe('6');
+  expect(f.provider.paths(from)).toEqual([
+    '/api/UserData/GetLoggedInUser',
+    '/api/Messages/GetReceivedMessages',
+    '/api/UserData/GetLoggedInUser',
+  ]);
+
+  from = f.provider.calls.length;
+  const overview = await f.client.overview();
+  expect(overview.context.studentId).toBe('2');
+  expect(f.provider.paths(from).slice(0, 4)).toEqual([
+    '/api/UserData/GetLoggedInUser',
+    '/auth/system',
+    '/Components/Students/Students.html',
+    '/api/UserData/GetLoggedInUser',
+  ]);
+  expect(f.provider.calls[from + 1]?.url.search).toBe('?i=0&system=1&status=1&user_id=1');
+  expect(f.provider.switches).toBe(2);
+  expect(f.provider.calls.every((call) => call.method === 'GET')).toBe(true);
+
+  const saved = await savedFile(f.path);
+  expect(saved.version).toBe(2);
+  expect(saved.account.studentId).toBe('2');
+  expect(Object.keys(saved.students).toSorted()).toEqual(['1', SIBLING]);
+  expect(saved.students[SIBLING]?.studentName).toBe('Synthetic sibling');
+  expect(saved.jar).toContain('synthetic-rotated');
+});
+
+test('a changed access order still switches by the current index', async () => {
+  const f = await fixture();
+  await f.client.timetable({ ...range, studentKey: SIBLING });
+  f.provider.order = ['9', SIBLING, '1'];
+  const from = f.provider.calls.length;
+
+  expect((await f.client.overview()).context.studentId).toBe('2');
+  expect(f.provider.calls[from + 1]?.url.search).toBe('?i=2&system=1&status=1&user_id=1');
+  f.provider.order = [SIBLING, '9', '1'];
+  expect((await f.client.grades(undefined, undefined, SIBLING)).context.studentId).toBe('6');
+  expect(
+    f.provider.calls.findLast((call) => call.url.pathname === '/auth/system')?.url.search,
+  ).toBe('?i=0&system=1&status=2&user_id=5');
+});
+
+test('an ignored, misdirected, or rate-limited switch returns no data', async () => {
+  const ignored = await fixture();
+  ignored.provider.ignoreSwitch = true;
+  await assert.rejects(
+    ignored.client.timetable({ ...range, studentKey: SIBLING }),
+    /did not select the requested student/,
+  );
+  expect(ignored.provider.paths()).not.toContain('/api/Timetable/GetTimetable');
+  expect((await savedFile(ignored.path)).students[SIBLING]).toBeUndefined();
+
+  for (const location of [
+    'https://r.inna.is/login',
+    'http://example.invalid/Components/Students/Students.html',
+    'https://nam.inna.is/Components/Other/Other.html',
+    'https://nam.inna.is:8443/Components/Students/Students.html',
+  ]) {
+    const f = await fixture();
+    f.provider.switchLocation = location;
+    await assert.rejects(f.client.overview(undefined, SIBLING), /sign-in is required/);
+    expect(f.provider.paths().slice(-1)).toEqual(['/auth/system']);
+  }
+
+  const limited = await fixture();
+  limited.provider.switchRateLimit = true;
+  await assert.rejects(limited.client.overview(undefined, SIBLING), /rate limited/);
+  expect((await savedFile(limited.path)).pauseUntil).toBe(NOW + 120_000);
+  const count = limited.provider.calls.length;
+  await assert.rejects(new InnaClient(limited.options).overview(), /requested a pause/);
+  expect(limited.provider.calls).toHaveLength(count);
+});
+
+test('unknown and non-student keys are refused without a switch request', async () => {
+  const f = await fixture();
+
+  for (const key of ['999', '9'])
+    await assert.rejects(f.client.overview(undefined, key), /not in this Inna session/);
+  await assert.rejects(f.client.overview(undefined, 'abc'));
+  expect(f.provider.switches).toBe(0);
+  expect(f.provider.paths()).not.toContain('/api/StudentTerms/GetStudentTerms');
+});
+
+test('a version 1 session file migrates and learns students on use', async () => {
+  const f = await fixture();
+  const { jar, account, pauseUntil } = await savedFile(f.path);
+  await writeFile(f.path, JSON.stringify({ version: 1, jar, account, pauseUntil }));
+  expect((await f.client.overview()).context.studentId).toBe('2');
+  const migrated = await savedFile(f.path);
+  expect(migrated.version).toBe(2);
+  expect(Object.keys(migrated.students)).toEqual(['1']);
+  expect((await f.client.overview(undefined, SIBLING)).context.studentId).toBe('6');
+  expect((await f.client.overview()).context.studentId).toBe('2');
+  expect((await stat(f.path)).mode & 0o777).toBe(0o600);
+
+  // A version 1 file whose browser session moved to the sibling switches back to its default.
+  f.provider.selected = SIBLING;
+  f.provider.user = sibling;
+  await writeFile(f.path, JSON.stringify({ version: 1, jar, account, pauseUntil }));
+  const switches = f.provider.switches;
+  expect((await f.client.overview()).context.studentId).toBe('2');
+  expect(f.provider.switches).toBe(switches + 1);
+});
+
+test('a learned student binding that later differs is refused', async () => {
+  const f = await fixture();
+  await f.client.overview(undefined, SIBLING);
+  await f.client.overview();
+  f.provider.contexts.set(SIBLING, { ...sibling, studentId: '77' });
+  const from = f.provider.calls.length;
+  await assert.rejects(f.client.overview(undefined, SIBLING), /changed account/);
+  expect(f.provider.paths(from)).not.toContain('/api/StudentTerms/GetStudentTerms');
+  expect((await savedFile(f.path)).students[SIBLING]?.studentId).toBe('6');
+
+  expectClean(await readFile(f.path, 'utf8'));
+
+  // The selected entry must agree with the returned context on user and school.
+  for (const wrong of [
+    { ...sibling, userId: 7 },
+    { ...sibling, schoolId: '3' },
+  ]) {
+    const strict = await fixture();
+    strict.provider.contexts.set(SIBLING, wrong);
+    await assert.rejects(
+      strict.client.overview(undefined, SIBLING),
+      /did not select the requested student/,
+    );
+    expect(strict.provider.paths()).not.toContain('/api/StudentTerms/GetStudentTerms');
+    expect((await savedFile(strict.path)).students[SIBLING]).toBeUndefined();
+    strict.provider.user = { ...student, schoolId: '8' };
+    strict.provider.selected = '1';
+    await assert.rejects(strict.client.overview(), /changed account/);
+    await assert.rejects(strict.client.importSession(strict.source, true), /one selected student/);
+  }
+
+  const numeric = await fixture();
+  numeric.provider.numeric = true;
+  expect((await numeric.client.overview(undefined, SIBLING)).context.studentId).toBe('6');
+  expect((await numeric.client.listStudents()).students.map((entry) => entry.selected)).toEqual([
+    false,
+    true,
+  ]);
+
+  const duplicate = await fixture();
+  duplicate.provider.contexts.set(SIBLING, { ...sibling, studentId: '2' });
+  await assert.rejects(
+    duplicate.client.overview(undefined, SIBLING),
+    /already saved under another studentKey/,
+  );
+  expect((await savedFile(duplicate.path)).students[SIBLING]).toBeUndefined();
+});
+
+test('import onto a learned sibling is refused unless the account change is deliberate', async () => {
+  const f = await fixture(true);
+  await f.client.prepareAbsence(request);
+  await f.client.overview(undefined, SIBLING);
+  const before = await readFile(f.path, 'utf8');
+  await assert.rejects(f.client.importSession(f.source), /Select the default student/);
+  expect(await readFile(f.path, 'utf8')).toBe(before);
+  expect((await f.client.absenceStatus()).operation?.account.studentId).toBe('2');
+
+  await f.client.importSession(f.source, true);
+  const replaced = await savedFile(f.path);
+  expect(replaced.account.studentId).toBe('6');
+  expect(Object.keys(replaced.students)).toEqual([SIBLING]);
+  await assert.rejects(f.client.absenceStatus(), /belongs to another account/);
+});
+
+test('a sibling preview is submitted to that student once, after switching back to it', async () => {
+  const f = await fixture(true);
+  const preview = await f.client.prepareAbsence({ ...request, studentKey: SIBLING });
+  expect(preview.studentName).toBe('Synthetic sibling');
+  expect(preview.schoolName).toBe('Synthetic second school');
+  expect(preview.studentKey).toBe(SIBLING);
+  expect(preview.account.studentId).toBe('6');
+  expect(preview.request).toEqual(request);
+
+  expect((await f.client.overview()).context.studentId).toBe('2');
+  const status = await f.client.absenceStatus();
+  expect(status.context.studentId).toBe('2');
+  expect(status.operation?.account.studentId).toBe('6');
+  expect(f.provider.selected).toBe('1');
+
+  const from = f.provider.calls.length;
+  const submitted = await f.client.submitAbsence(preview.operationId, true);
+  expect(submitted.state).toBe('submitted');
+  expect(submitted.studentKey).toBe(SIBLING);
+  expect(f.provider.paths(from).slice(0, 4)).toEqual([
+    '/api/UserData/GetLoggedInUser',
+    '/auth/system',
+    '/Components/Students/Students.html',
+    '/api/UserData/GetLoggedInUser',
+  ]);
+  expect(f.provider.paths(from).at(-1)).toBe('/api/RegisterAbsence/AddNewLeave');
+  expect(f.provider.selected).toBe(SIBLING);
+  await f.client.overview();
+  await f.client.submitAbsence(preview.operationId, true);
+  expect(f.provider.posts).toBe(1);
+});
+
+test('a switch away from the sibling during absence preflight prevents the POST', async () => {
+  for (const moveContext of [true, false]) {
+    const f = await fixture(true);
+    const preview = await f.client.prepareAbsence({ ...request, studentKey: SIBLING });
+
+    const concurrent = new InnaClient({
+      ...f.options,
+      fetch: async (url, options) => {
+        const response = await f.provider.fetch(url, options);
+
+        if (new URL(url).pathname === '/api/RegisterAbsence/GetLeaves') {
+          f.provider.selected = '1';
+
+          if (moveContext) f.provider.user = student;
+        }
+
+        return response;
+      },
+    });
+
+    await assert.rejects(
+      concurrent.submitAbsence(preview.operationId, true),
+      /changed during absence checks/,
+    );
+    expect(f.provider.posts).toBe(0);
+    expect((await f.client.absenceStatus()).operation?.state).toBe('prepared');
+  }
+});
+
+test('a changed or missing school on the selected entry discards reads and prevents the POST', async () => {
+  const changed = { system: '1', status: '2', skoli_id: '99', skoli_heiti: 'Synthetic other' };
+  const missing = { system: '1', status: '2', skoli_heiti: 'Synthetic second school' };
+
+  for (const entry of [changed, missing]) {
+    for (const endpoint of ['/api/Timetable/GetTimetable', '/api/RegisterAbsence/GetLeaves']) {
+      const f = await fixture(true);
+      const preview = await f.client.prepareAbsence({ ...request, studentKey: SIBLING });
+
+      // The context binding stays the sibling's; only its access entry stops agreeing on the school.
+      const client = new InnaClient({
+        ...f.options,
+        fetch: async (url, options) => {
+          const response = await f.provider.fetch(url, options);
+
+          if (new URL(url).pathname === endpoint) f.provider.entries.set(SIBLING, entry);
+
+          return response;
+        },
+      });
+
+      if (endpoint === '/api/Timetable/GetTimetable')
+        await assert.rejects(
+          client.timetable({ ...range, studentKey: SIBLING }),
+          /during the read.*discarded/,
+        );
+      else
+        await assert.rejects(
+          client.submitAbsence(preview.operationId, true),
+          /changed during absence checks/,
+        );
+      expect(f.provider.user.studentId).toBe('6');
+      expect(f.provider.selected).toBe(SIBLING);
+      expect(f.provider.posts).toBe(0);
+      expect((await f.client.absenceStatus()).operation?.state).toBe('prepared');
+    }
+  }
+});
+
+test('one uncertain operation blocks new previews for every student', async () => {
+  const f = await fixture(true);
+  const preview = await f.client.prepareAbsence({ ...request, studentKey: SIBLING });
+  f.provider.failPost = true;
+  await assert.rejects(f.client.submitAbsence(preview.operationId, true), /uncertain/);
+  await assert.rejects(f.client.prepareAbsence(request), /earlier absence/);
+  await assert.rejects(
+    f.client.prepareAbsence({ ...request, studentKey: SIBLING }),
+    /earlier absence/,
+  );
+  expect(f.provider.posts).toBe(1);
+});
+
+test('all 16 tools round-trip through MCP for the sibling studentKey', async () => {
+  const f = await fixture(true);
+  const server = createServer(f.options);
+  const client = new Client({ name: 'inna-students-offline', version: '1' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(a), client.connect(b)]);
+
+  try {
+    const tools = await client.listTools();
+    const keyed = { studentKey: SIBLING };
+
+    const calls = [
+      ['inna_list_students', {}],
+      ['inna_session_status', keyed],
+      ['inna_get_overview', keyed],
+      ['inna_get_timetable', { ...range, ...keyed }],
+      ['inna_get_assignments', keyed],
+      ['inna_get_assignment', { assignmentId: '5', ...keyed }],
+      ['inna_get_grades', keyed],
+      ['inna_get_course_grades', { groupId: '7', ...keyed }],
+      ['inna_get_attendance', keyed],
+      ['inna_get_materials', { groupId: '7', ...keyed }],
+      ['inna_get_messages', keyed],
+      ['inna_get_message', { messageId: '11', type: 'A', ...keyed }],
+      ['inna_get_absences', { ...range, ...keyed }],
+      ['inna_prepare_absence', { ...request, ...keyed }],
+      ['inna_absence_status', {}],
+    ] satisfies [string, object][];
+
+    expect(tools.tools.map((tool) => tool.name).toSorted()).toEqual(
+      [...calls.map(([name]) => name), 'inna_submit_absence'].toSorted(),
+    );
+
+    for (const tool of tools.tools) {
+      const accepts = JSON.stringify(tool.inputSchema).includes('studentKey');
+
+      expect(accepts, tool.name).toBe(
+        !['inna_list_students', 'inna_absence_status', 'inna_submit_absence'].includes(tool.name),
+      );
+    }
+
+    let operationId = '';
+
+    for (const [name, args] of calls) {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError, name).not.toBe(true);
+      expectClean(JSON.stringify(result));
+      expect(JSON.stringify(result)).not.toContain('synthetic-s');
+
+      const output = z
+        .object({
+          retrievedAt: z.string(),
+          timeZone: z.literal('UTC'),
+          context: z.object({ studentId: z.string() }).optional(),
+          account: z.object({ studentId: z.string() }).optional(),
+          operationId: z.string().optional(),
+        })
+        .parse(result.structuredContent);
+
+      if (name !== 'inna_list_students')
+        expect((output.context ?? output.account)?.studentId, name).toBe('6');
+      operationId = output.operationId ?? operationId;
+    }
+
+    expect(f.provider.switches).toBe(1);
+
+    const refused = await client.callTool({
+      name: 'inna_submit_absence',
+      arguments: { operationId, confirm: true, ...keyed },
+    });
+
+    expect(refused.isError).toBe(true);
+    await client.callTool({ name: 'inna_get_overview', arguments: {} });
+
+    const submitted = await client.callTool({
+      name: 'inna_submit_absence',
+      arguments: { operationId, confirm: true },
+    });
+
+    expect(submitted.isError).not.toBe(true);
+    expect(absenceRecordSchema.parse(submitted.structuredContent).account.studentId).toBe('6');
+    expect(f.provider.posts).toBe(1);
+    expect(f.provider.switches).toBe(3);
+  } finally {
+    await client.close();
+    await server.close();
+  }
 });
 
 test('dates and plain text fail safely on malformed inputs', () => {

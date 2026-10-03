@@ -137,7 +137,7 @@ WARP is currently unreliable on the tested Grok route; see the
 Install the preview and start electronic-ID login:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.1.1/packages/inna-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.2.0/packages/inna-mcp/install.sh | sh
 inna-mcp auth login
 ```
 

@@ -1,11 +1,12 @@
 # Inna MCP (preview)
 
-An unofficial local MCP for Inna school accounts. It reads the current student's
+An unofficial local MCP for Inna school accounts. It reads a student's
 timetable, assignments/homework, assignment descriptions, course assessment,
 attendance, material metadata, messages, announcements, and absence history.
 Whole-day illness registration and leave applications are an explicit opt-in.
+A guardian's session can read [several students](#several-students).
 
-The current preview is `inna-mcp@0.1.1`. The read endpoints
+The current preview is `inna-mcp@0.2.0`. The read endpoints
 were captured in a real guardian account. Electronic-ID login and private session
 reuse were verified through the initial 0.1.0 compiled native CLI; the 0.1.1
 parsing and repeated-read changes are checked offline. Absence creation is based
@@ -19,7 +20,7 @@ release checksum, and installs `~/.local/bin/inna-mcp`. No Node, npm, or Bun is
 needed at runtime.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.1.1/packages/inna-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.2.0/packages/inna-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server. Restart the MCP host,
@@ -70,12 +71,16 @@ chmod 600 /absolute/path/inna-cookie-export.json
 /absolute/path/inna-mcp serve
 ```
 
-Both login paths verify the account/student/school before saving and refuse a changed
-binding unless the owner deliberately adds `--allow-account-change`. The normal
-session file is `~/.config/inna-mcp/session.json`, or an absolute
+Both login paths verify the account/student/school before saving. The student
+selected at login or import becomes the session's default student. A later
+login or import that lands on a different binding is refused unless the owner
+deliberately adds `--allow-account-change`; when it lands on another student
+already read through this session, select the default student in the Inna
+browser session first. Replacing the default forgets the other learned students.
+The normal session file is `~/.config/inna-mcp/session.json`, or an absolute
 `INNA_SESSION_FILE` path. Shared private-file and lock helpers enforce owner-only
-files and atomic replacement. No unattended login, renewal, or student switching
-is implemented. Expiry needs a fresh explicit login/import.
+files and atomic replacement. No unattended login or renewal is implemented.
+Expiry needs a fresh explicit login/import.
 
 ### Connect an MCP host
 
@@ -117,6 +122,7 @@ exist only in the CLI; untrusted school text cannot invoke them through MCP.
 | Tool                     | Inputs / behavior                                                                                                               |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | `inna_session_status`    | Verify authentication; returns no credentials.                                                                                  |
+| `inna_list_students`     | Students in this session with their `studentKey`, the selected one, and the default. Does not switch.                           |
 | `inna_get_overview`      | Current context, terms, courses/booklists, announcements.                                                                       |
 | `inna_get_timetable`     | Inclusive `dateFrom`, `dateTo` in `YYYY-MM-DD`.                                                                                 |
 | `inna_get_assignments`   | `type`: `all` (default), `assignments`, or `exams`; current dashboard filters, plus homework.                                   |
@@ -128,9 +134,12 @@ exist only in the CLI; untrusted school text cannot invoke them through MCP.
 | `inna_get_messages`      | `rowFrom` default 1; `rowTo` default `rowFrom + 20`, maximum 100 rows beyond the start. Continue with `nextRowFrom` until null. |
 | `inna_get_message`       | `messageId` and `type` from list's `messagesId` and `table`; plain text, without mark-read.                                     |
 | `inna_get_absences`      | Inclusive date range; illness options, registered illness, and leave history.                                                   |
-| `inna_absence_status`    | Last private absence operation, including uncertain outcomes.                                                                   |
+| `inna_absence_status`    | Last private absence operation of any student, including uncertain outcomes. Does not switch; no `studentKey`.                  |
 | `inna_prepare_absence`   | Opt-in: `kind` (`sick`/`leave`), date range, reason. Whole days; one sick day per preview.                                      |
-| `inna_submit_absence`    | Opt-in: approved `operationId` and `confirm: true`.                                                                             |
+| `inna_submit_absence`    | Opt-in: approved `operationId` and `confirm: true`. Selects the preview's student; no `studentKey`.                             |
+
+Every other tool also accepts an optional `studentKey` from `inna_list_students`;
+omitting it reads the default student.
 
 Each school read returns the verified account/student/school context. Availability
 and permission follow Inna. A shared message visible in that context is not proof
@@ -161,6 +170,33 @@ honor numeric and HTTP-date `Retry-After` headers, survive process restarts,
 and have a minimum of one minute. Avoid tight retry loops and unattended login
 attempts. There is no background polling schedule or inferred deletion feed.
 
+### Several students
+
+One saved session covers every student Inna lists for the signed-in guardian.
+Call `inna_list_students`, then pass a returned `studentKey` to the read tools
+or to `inna_prepare_absence`. Without `studentKey` a tool reads the default
+student: the one selected at `auth login` or `auth import`.
+
+Inna keeps a single selected student per session, so the server switches it
+when a call asks for another student and switches back on the next call for
+the default. Before reading, it requires that Inna reports exactly the
+requested student as selected and that the returned user and school match that
+entry. The first verified read of a student records its account/student/school
+binding in the private session file; later reads must return the same binding,
+and two keys can never share a student. The context is checked again after the
+read, and any mismatch discards the result. Always identify the returned
+`context` before describing records.
+
+Poll students sequentially. A switch also changes what an open Inna browser
+session using the same cookies shows, and a switch made in that browser is
+corrected on the next call. `inna_list_students` returns the student names Inna
+lists; treat them as untrusted school text. Identity numbers and Inna's
+access links are never read, stored, or returned.
+
+Live switching between two students has not been verified by the maintainer.
+The switch request comes from Inna's delivered student application and one
+two-student user's capture; the tests use synthetic responses.
+
 ### Whole-day illness and leave
 
 ```sh
@@ -172,6 +208,10 @@ preview and get explicit human approval to transmit these details to the school
 through Inna. Only then submit its `operationId` with `confirm: true`; this flag
 represents MCP-host consent, not a separate authentication mechanism.
 
+The preview records its student. Submission takes no `studentKey`: it selects
+that student itself and refuses if Inna's selection changes during its checks.
+`inna_absence_status` reports the operation whichever student is selected.
+
 The preview expires after ten minutes. Submission rechecks account context,
 permissions, and overlapping records. A returned ID means the request was
 submitted, not that the school approved leave. Partial-day requests, cancellation,
@@ -179,7 +219,8 @@ messages, assignment submission, and grade editing are unsupported.
 
 The private `session.json.absence.json` marker is persisted before a write.
 `submitting` or `unknown` means the outcome needs owner review against Inna's
-history. The server refuses replay and new previews while that state remains.
+history. The server refuses replay and new previews, for every student, while
+that state remains.
 Logout retains the marker; do not delete or change it merely to retry. Existing
 overlapping records are conservatively refused without interpreting undocumented
 status codes.
@@ -197,8 +238,9 @@ bun run --cwd packages/inna-mcp test:installer
 ```
 
 Tests use synthetic responses only. A separately authorized live native check
-verified phone login, private session reuse, and all 13 read/status tools using
-an isolated temporary session. Real absence submission and
-persistent registration in an MCP host have not been performed.
+verified phone login, private session reuse, and the 13 read/status tools of
+0.1.1 using an isolated temporary session. Real absence submission, live
+switching between two students, and persistent registration in an MCP host
+have not been performed.
 
 See the [release process](docs/RELEASING.md) for packaging and publication gates.

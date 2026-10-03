@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0
+
+- Read several students under one saved session. The new `inna_list_students`
+  tool returns each student's `studentKey`; the read tools and
+  `inna_prepare_absence` accept it and default to the student saved at login or
+  import. The server switches Inna's selected student per request and verifies
+  the selection, user, school, and learned binding before and after each read.
+- Session files are now version 2 and record the verified binding of each
+  student read. Version 1 files are read and upgraded on the next use.
+- A login or import that lands on another learned student is refused with
+  guidance; replacing the default student forgets the learned students.
+- Absence previews record their student, submission selects it without a
+  `studentKey`, and `inna_absence_status` reports the operation of any student
+  of the session without switching. One uncertain operation still blocks new
+  previews for every student.
+- Live switching between two students is unverified by the maintainer; the
+  request is source-verified and covered by synthetic tests only.
+
 ## 0.1.1
 
 - Normalize school dates explicitly as UTC, preserve date-only and raw values,
