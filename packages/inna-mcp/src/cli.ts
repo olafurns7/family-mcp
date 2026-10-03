@@ -5,6 +5,7 @@ import { Writable } from 'node:stream';
 import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
 import { InnaClient } from './client.js';
 import { createServer } from './server.js';
+import { startKeepAlive } from './keep-alive.js';
 import { loginWithElectronicId } from './login.js';
 import manifest from '../package.json' with { type: 'json' };
 
@@ -12,6 +13,7 @@ const help = `inna-mcp — unofficial Inna school MCP (preview)
 
   inna-mcp [serve]                    Start the read-only stdio MCP server
   inna-mcp serve --allow-absence-writes Also expose confirmed whole-day illness/leave requests
+  inna-mcp serve --no-keep-alive      Do not touch the saved session every 10 minutes while serving
   inna-mcp auth login                 Electronic ID: hidden phone prompt; approve on your phone
   inna-mcp auth import FILE           Verify and save a private nam.inna.is cookie export
   inna-mcp auth status                Verify the saved session (no credentials printed)
@@ -84,6 +86,7 @@ async function main(): Promise<void> {
       version: { type: 'boolean', short: 'v' },
       'allow-absence-writes': { type: 'boolean' },
       'allow-account-change': { type: 'boolean' },
+      'no-keep-alive': { type: 'boolean' },
     },
   });
 
@@ -93,12 +96,25 @@ async function main(): Promise<void> {
   const [command = 'serve', action, source] = positionals;
 
   if (command === 'serve' && positionals.length <= 1 && !values['allow-account-change']) {
-    startStdio(() => createServer({ allowAbsenceWrites: values['allow-absence-writes'] ?? false }));
+    const keepAlive = values['no-keep-alive']
+      ? undefined
+      : startKeepAlive(new InnaClient(), { output: process.stdout });
+
+    startStdio(
+      () => {
+        const server = createServer({
+          allowAbsenceWrites: values['allow-absence-writes'] ?? false,
+        });
+
+        return keepAlive ? keepAlive.attach(server) : server;
+      },
+      { onClose: () => keepAlive?.stop() },
+    );
 
     return;
   }
 
-  if (command !== 'auth' || values['allow-absence-writes'])
+  if (command !== 'auth' || values['allow-absence-writes'] || values['no-keep-alive'])
     throw new SafeError('Invalid command. Run inna-mcp --help.');
   const client = new InnaClient();
 
