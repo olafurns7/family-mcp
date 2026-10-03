@@ -17,7 +17,14 @@ const MAX_RESPONSE_BODY_BYTES = 4 * 1024 * 1024;
 
 const date = z.iso.date();
 
-type GraphqlValue = string | number | boolean | null | string[] | Record<string, string | string[]>;
+type GraphqlValue =
+  | string
+  | number
+  | boolean
+  | null
+  | string[]
+  | Record<string, string | string[]>
+  | { first: number; after: string | null };
 
 type GraphqlVariables = Record<string, GraphqlValue>;
 
@@ -83,6 +90,18 @@ export const childSchedulesInput = scheduleFields
 
 export const eventInput = z.strictObject({ eventId: id, ageGroupId: id });
 
+const messagePageFields = {
+  first: z.number().int().min(1).max(50).default(20),
+  after: scheduleFields.shape.after,
+};
+
+export const conversationsInput = z.strictObject(messagePageFields);
+
+export const messagesInput = z.strictObject({
+  conversationId: id.describe('Conversation id from list_conversations.'),
+  ...messagePageFields,
+});
+
 const person = z.object({ id, displayName: z.string() });
 
 const profileSchema = person.extend({ children: z.array(person) });
@@ -144,18 +163,21 @@ const eventFields = `
 
 const pageFields = `pageInfo { hasNextPage endCursor }`;
 
-const pageSchema = z
-  .object({
-    edges: z.array(z.object({ node: eventSchema })),
-    pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
-  })
-  .refine(
-    (page) =>
-      !page.pageInfo.hasNextPage || (page.edges.length > 0 && Boolean(page.pageInfo.endCursor)),
-    {
-      message: 'Abler returned an incomplete pagination cursor.',
-    },
-  );
+const pageOf = <T extends z.ZodType>(node: T) =>
+  z
+    .object({
+      edges: z.array(z.object({ node })),
+      pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
+    })
+    .refine(
+      (page) =>
+        !page.pageInfo.hasNextPage || (page.edges.length > 0 && Boolean(page.pageInfo.endCursor)),
+      {
+        message: 'Abler returned an incomplete pagination cursor.',
+      },
+    );
+
+const pageSchema = pageOf(eventSchema);
 
 export const scheduleResultSchema = z.object({
   events: z.array(eventSchema),
@@ -177,6 +199,117 @@ export const childSchedulesResultSchema = z.object({
     }),
   ),
 });
+
+const messageFields = `
+  id messageBody createdAt
+  creator { id displayName }
+  attachments { id fileName description contentType }
+  recipient { isRead }
+`;
+
+// Upstream shapes accept null or missing fields more widely than observed.
+const upstreamMessageSchema = z.object({
+  id,
+  messageBody: z.string().nullish(),
+  createdAt: z.string(),
+  creator: person.nullish(),
+  attachments: z
+    .array(
+      z.object({
+        id,
+        fileName: z.string(),
+        description: z.string().nullish(),
+        contentType: z.string(),
+      }),
+    )
+    .nullish(),
+  recipient: z.object({ isRead: z.boolean().nullish() }).nullish(),
+});
+
+const upstreamConversationSchema = z.object({
+  id,
+  name: z.string().nullish(),
+  conversationType: z.string(),
+  membersCount: z.number().nullish(),
+  unreadCount: z.number(),
+  messageGroup: z.object({ id, name: z.string() }).nullish(),
+  user1: person.nullish(),
+  user2: person.nullish(),
+  messages: z.object({ edges: z.array(z.object({ node: upstreamMessageSchema })) }).nullish(),
+});
+
+const conversationPageSchema = pageOf(upstreamConversationSchema);
+
+const messagePageSchema = pageOf(upstreamMessageSchema);
+
+const messageSchema = z.object({
+  id,
+  body: z.string().nullable(),
+  createdAt: z.string(),
+  sender: person.nullable(),
+  read: z.boolean().nullable(),
+  attachments: z.array(
+    z.object({
+      id,
+      fileName: z.string(),
+      description: z.string().nullable(),
+      contentType: z.string(),
+    }),
+  ),
+});
+
+export const conversationsResultSchema = z.object({
+  unreadCount: z.number(),
+  conversations: z.array(
+    z.object({
+      id,
+      name: z.string().nullable(),
+      type: z.string(),
+      membersCount: z.number().nullable(),
+      unreadCount: z.number(),
+      group: z.object({ id, name: z.string() }).nullable(),
+      participants: z.array(person),
+      latestMessage: messageSchema.nullable(),
+    }),
+  ),
+  pageInfo: scheduleResultSchema.shape.pageInfo,
+});
+
+export const messagesResultSchema = z.object({
+  messages: z.array(messageSchema),
+  pageInfo: scheduleResultSchema.shape.pageInfo,
+});
+
+function toMessage(message: z.infer<typeof upstreamMessageSchema>) {
+  return {
+    id: message.id,
+    body: message.messageBody ?? null,
+    createdAt: message.createdAt,
+    sender: message.creator ?? null,
+    read: message.recipient?.isRead ?? null,
+    attachments: (message.attachments ?? []).map((attachment) => ({
+      id: attachment.id,
+      fileName: attachment.fileName,
+      description: attachment.description ?? null,
+      contentType: attachment.contentType,
+    })),
+  };
+}
+
+function toConversation(conversation: z.infer<typeof upstreamConversationSchema>) {
+  const latest = conversation.messages?.edges[0]?.node;
+
+  return {
+    id: conversation.id,
+    name: conversation.name ?? null,
+    type: conversation.conversationType,
+    membersCount: conversation.membersCount ?? null,
+    unreadCount: conversation.unreadCount,
+    group: conversation.messageGroup ?? null,
+    participants: [conversation.user1, conversation.user2].flatMap((user) => (user ? [user] : [])),
+    latestMessage: latest ? toMessage(latest) : null,
+  };
+}
 
 export class AblerClient {
   private readonly lifecycle = new AbortController();
@@ -501,6 +634,76 @@ export class AblerClient {
       }
 
       return eventSchema.parse(event);
+    });
+  }
+
+  async conversations(input: z.input<typeof conversationsInput> = {}) {
+    const { first, after } = conversationsInput.parse(input);
+
+    return this.session(async (jar) => {
+      const data = await this.query(
+        jar,
+        'Conversations',
+        `query Conversations($first: Int, $cursor: String) {
+        getMessageUnreadCount
+        message(first: $first, after: $cursor) {
+          edges { node {
+            id name conversationType membersCount unreadCount
+            messageGroup { id name }
+            user1 { id displayName }
+            user2 { id displayName }
+            messages(first: 1) { edges { node { ${messageFields} } } }
+          } }
+          ${pageFields}
+        }
+      }`,
+        { first, cursor: after ?? null },
+      );
+
+      const page = conversationPageSchema.parse(data.message);
+
+      if (page.pageInfo.hasNextPage && page.pageInfo.endCursor === after) {
+        throw new SafeError(
+          'Abler pagination did not advance. Retry later; do not report these conversations as complete.',
+        );
+      }
+
+      return conversationsResultSchema.parse({
+        unreadCount: data.getMessageUnreadCount,
+        conversations: page.edges.map((edge) => toConversation(edge.node)),
+        pageInfo: page.pageInfo,
+      });
+    });
+  }
+
+  async messages(input: z.input<typeof messagesInput>) {
+    const { conversationId, first, after } = messagesInput.parse(input);
+
+    return this.session(async (jar) => {
+      const data = await this.query(
+        jar,
+        'ConversationMessages',
+        `query ConversationMessages($pagination: PaginationType!, $conversationIds: [ID!]) {
+        conversationMessages(pagination: $pagination, conversationIds: $conversationIds) {
+          edges { node { ${messageFields} } }
+          ${pageFields}
+        }
+      }`,
+        { pagination: { first, after: after ?? null }, conversationIds: [conversationId] },
+      );
+
+      const page = messagePageSchema.parse(data.conversationMessages);
+
+      if (page.pageInfo.hasNextPage && page.pageInfo.endCursor === after) {
+        throw new SafeError(
+          'Abler pagination did not advance. Retry later; do not report these messages as complete.',
+        );
+      }
+
+      return messagesResultSchema.parse({
+        messages: page.edges.map((edge) => toMessage(edge.node)),
+        pageInfo: page.pageInfo,
+      });
     });
   }
 }

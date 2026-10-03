@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+- Add `list_conversations` and `list_messages`, two read-only tools for the
+  signed-in account's Abler messages. `list_conversations` returns the total
+  unread count and a page of conversations, most recently active first, each
+  with its unread count and latest message. `list_messages` pages one
+  conversation, newest message first.
+- The tools do not mark messages as read and cannot send messages. Attachment
+  URLs are not returned. Message, conversation, and attachment text is
+  untrusted data.
+
 ## 0.5.3
 
 - Cookie-file imports now require a private, regular, owner-controlled file;

@@ -21,7 +21,13 @@ import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import * as z from 'zod/v4';
 
-import { AblerClient, childSchedulesInput, scheduleInput } from '../src/api.js';
+import {
+  AblerClient,
+  childSchedulesInput,
+  conversationsInput,
+  messagesInput,
+  scheduleInput,
+} from '../src/api.js';
 import { captureCookies, importCookies, loadSession, ORIGIN, saveSession } from '../src/auth.js';
 import { createServer } from '../src/server.js';
 import { createCdpMock } from './cdp-mock.js';
@@ -619,7 +625,266 @@ test('groups and event return validated success data, and auth CLI paths stay lo
   }
 });
 
-test('all six Abler tools complete MCP round trips with optional and null upstream fields', async () => {
+test('conversations and messages send fixed variables, map null fields, and reject unsafe pages and input', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-messages-'));
+  const path = join(directory, 'session.json');
+
+  type JsonFixture =
+    | string
+    | number
+    | boolean
+    | null
+    | JsonFixture[]
+    | { [key: string]: JsonFixture };
+
+  const sentSchema = z.object({
+    operationName: z.string(),
+    query: z.string(),
+    variables: z.record(z.string(), z.json()),
+  });
+
+  const sent: z.infer<typeof sentSchema>[] = [];
+  let body = '{}';
+
+  const respond = (data: JsonFixture) => {
+    body = JSON.stringify({ data });
+  };
+
+  const fullMessage = {
+    id: 'message-a',
+    messageBody: 'Synthetic practice note',
+    createdAt: '2026-09-11T16:00:00.000Z',
+    creator: { id: 'coach', displayName: 'Coach', unknown: 'removed' },
+    attachments: [
+      {
+        id: 'file-a',
+        fileName: 'plan.pdf',
+        description: 'Synthetic plan',
+        contentType: 'application/pdf',
+        path: 'removed',
+      },
+      { id: 'file-b', fileName: 'map.png', description: null, contentType: 'image/png' },
+    ],
+    recipient: { isRead: false, unknown: 'removed' },
+    unknown: 'removed',
+  };
+
+  const sparseMessage = {
+    id: 'message-b',
+    messageBody: null,
+    createdAt: '2026-09-10T08:30:00.000Z',
+    creator: null,
+    attachments: [],
+    recipient: { isRead: null },
+  };
+
+  const expectedFull = {
+    id: 'message-a',
+    body: 'Synthetic practice note',
+    createdAt: '2026-09-11T16:00:00.000Z',
+    sender: { id: 'coach', displayName: 'Coach' },
+    read: false,
+    attachments: [
+      {
+        id: 'file-a',
+        fileName: 'plan.pdf',
+        description: 'Synthetic plan',
+        contentType: 'application/pdf',
+      },
+      { id: 'file-b', fileName: 'map.png', description: null, contentType: 'image/png' },
+    ],
+  };
+
+  const expectedSparse = {
+    id: 'message-b',
+    body: null,
+    createdAt: '2026-09-10T08:30:00.000Z',
+    sender: null,
+    read: null,
+    attachments: [],
+  };
+
+  try {
+    await saveSession(
+      path,
+      await importCookies([
+        cookie,
+        {
+          ...cookie,
+          name: 'id_token',
+          value: 'private-access',
+          expires: Date.now() / 1000 + 3600,
+        },
+      ]),
+    );
+
+    const client = new AblerClient(path, async (_url: string, options: RequestInit) => {
+      sent.push(sentSchema.parse(await new Request('https://example.test', options).json()));
+
+      return new Response(body);
+    });
+
+    const conversationPage = {
+      getMessageUnreadCount: 3,
+      message: {
+        edges: [
+          {
+            node: {
+              id: 'conversation-a',
+              name: 'Team chat',
+              conversationType: 'GROUP_CHAT',
+              membersCount: 12,
+              unreadCount: 2,
+              messageGroup: { id: 'message-group', name: 'U12', unknown: 'removed' },
+              user1: { id: 'coach', displayName: 'Coach', unknown: 'removed' },
+              user2: { id: 'parent', displayName: 'Parent' },
+              messages: { edges: [{ node: fullMessage }] },
+              lastMessage: 'removed',
+              unknown: 'removed',
+            },
+          },
+          {
+            node: {
+              id: 'conversation-b',
+              name: null,
+              conversationType: 'CHAT',
+              membersCount: null,
+              unreadCount: 0,
+              messageGroup: null,
+              user1: { id: 'parent', displayName: 'Parent' },
+              user2: null,
+              messages: { edges: [{ node: sparseMessage }] },
+            },
+          },
+          {
+            node: {
+              id: 'conversation-c',
+              conversationType: 'FUTURE_TYPE',
+              unreadCount: 1,
+              user1: null,
+              messages: { edges: [] },
+            },
+          },
+        ],
+        pageInfo: { hasNextPage: true, endCursor: 'cursor-b' },
+      },
+    };
+
+    respond(conversationPage);
+    assert.deepEqual(await client.conversations({ first: 5, after: 'cursor-a' }), {
+      unreadCount: 3,
+      conversations: [
+        {
+          id: 'conversation-a',
+          name: 'Team chat',
+          type: 'GROUP_CHAT',
+          membersCount: 12,
+          unreadCount: 2,
+          group: { id: 'message-group', name: 'U12' },
+          participants: [
+            { id: 'coach', displayName: 'Coach' },
+            { id: 'parent', displayName: 'Parent' },
+          ],
+          latestMessage: expectedFull,
+        },
+        {
+          id: 'conversation-b',
+          name: null,
+          type: 'CHAT',
+          membersCount: null,
+          unreadCount: 0,
+          group: null,
+          participants: [{ id: 'parent', displayName: 'Parent' }],
+          latestMessage: expectedSparse,
+        },
+        {
+          id: 'conversation-c',
+          name: null,
+          type: 'FUTURE_TYPE',
+          membersCount: null,
+          unreadCount: 1,
+          group: null,
+          participants: [],
+          latestMessage: null,
+        },
+      ],
+      pageInfo: { hasNextPage: true, endCursor: 'cursor-b' },
+    });
+    assert.equal(sent.at(-1)?.operationName, 'Conversations');
+    assert.deepEqual(sent.at(-1)?.variables, { first: 5, cursor: 'cursor-a' });
+    await client.conversations();
+    assert.deepEqual(sent.at(-1)?.variables, { first: 20, cursor: null });
+
+    // A missing total is unavailable data, not zero unread messages.
+    respond({ ...conversationPage, getMessageUnreadCount: null });
+    await assert.rejects(client.conversations());
+
+    respond({
+      conversationMessages: {
+        edges: [{ node: fullMessage }, { node: { ...sparseMessage, recipient: null } }],
+        pageInfo: { hasNextPage: false, endCursor: null },
+      },
+    });
+    assert.deepEqual(await client.messages({ conversationId: 'conversation-a', first: 2 }), {
+      messages: [expectedFull, expectedSparse],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    });
+    assert.equal(sent.at(-1)?.operationName, 'ConversationMessages');
+    assert.deepEqual(sent.at(-1)?.variables, {
+      pagination: { first: 2, after: null },
+      conversationIds: ['conversation-a'],
+    });
+    await client.messages({ conversationId: 'conversation-a', after: 'cursor-a' });
+    assert.deepEqual(sent.at(-1)?.variables, {
+      pagination: { first: 20, after: 'cursor-a' },
+      conversationIds: ['conversation-a'],
+    });
+
+    // Neither document asks for attachment URLs, pictures, members, or the null preview field.
+    for (const { query } of sent) {
+      assert.doesNotMatch(query, /\b(?:path|picture|initials|members|lastMessage)\b/);
+    }
+
+    const incomplete = { edges: [], pageInfo: { hasNextPage: true, endCursor: null } };
+    respond({ getMessageUnreadCount: 0, message: incomplete, conversationMessages: incomplete });
+    await assert.rejects(client.conversations(), /incomplete pagination cursor/);
+    await assert.rejects(
+      client.messages({ conversationId: 'conversation-a' }),
+      /incomplete pagination cursor/,
+    );
+
+    respond({
+      getMessageUnreadCount: 0,
+      message: {
+        edges: [{ node: { id: 'conversation-a', conversationType: 'CHAT', unreadCount: 0 } }],
+        pageInfo: { hasNextPage: true, endCursor: 'same' },
+      },
+      conversationMessages: {
+        edges: [{ node: sparseMessage }],
+        pageInfo: { hasNextPage: true, endCursor: 'same' },
+      },
+    });
+    await assert.rejects(client.conversations({ after: 'same' }), /did not advance/);
+    await assert.rejects(
+      client.messages({ conversationId: 'conversation-a', after: 'same' }),
+      /did not advance/,
+    );
+
+    const requests = sent.length;
+    await assert.rejects(client.conversations({ first: 0 }));
+    await assert.rejects(client.conversations({ first: 51 }));
+    await assert.rejects(client.messages({ conversationId: 'conversation-a', first: 0 }));
+    await assert.rejects(client.messages({ conversationId: 'conversation-a', first: 51 }));
+    await assert.rejects(client.messages({ conversationId: '' }));
+    assert.throws(() => conversationsInput.parse({ conversationId: 'conversation-a' }));
+    assert.throws(() => messagesInput.parse({ conversationId: 'conversation-a', cursor: 'x' }));
+    assert.equal(sent.length, requests);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('all eight Abler tools complete MCP round trips with optional and null upstream fields', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-mcp-roundtrip-'));
   const path = join(directory, 'session.json');
 
@@ -645,6 +910,17 @@ test('all six Abler tools complete MCP round trips with optional and null upstre
       status: null,
       coachStatus: null,
     })),
+  };
+
+  const message = {
+    id: 'message-a',
+    messageBody: 'Synthetic practice note',
+    createdAt: '2026-09-11T16:00:00.000Z',
+    creator: { id: 'coach', displayName: 'Coach' },
+    attachments: [
+      { id: 'file-a', fileName: 'plan.pdf', description: null, contentType: 'application/pdf' },
+    ],
+    recipient: { isRead: null },
   };
 
   const request = async (_url: string, init: RequestInit): Promise<Response> => {
@@ -692,6 +968,39 @@ test('all six Abler tools complete MCP round trips with optional and null upstre
             },
           },
         });
+      case 'Conversations':
+        return Response.json({
+          data: {
+            getMessageUnreadCount: 1,
+            message: {
+              edges: [
+                {
+                  node: {
+                    id: 'conversation-a',
+                    name: null,
+                    conversationType: 'CHAT',
+                    membersCount: 2,
+                    unreadCount: 1,
+                    messageGroup: null,
+                    user1: { id: 'parent', displayName: 'Parent' },
+                    user2: null,
+                    messages: { edges: [{ node: message }] },
+                  },
+                },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        });
+      case 'ConversationMessages':
+        return Response.json({
+          data: {
+            conversationMessages: {
+              edges: [{ node: message }],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        });
       default:
         throw new Error('Unexpected Abler operation.');
     }
@@ -723,6 +1032,8 @@ test('all six Abler tools complete MCP round trips with optional and null upstre
       ['list_schedule', {}],
       ['list_child_schedules', {}],
       ['get_event', { eventId: 'event-a', ageGroupId: 'age-group' }],
+      ['list_conversations', {}],
+      ['list_messages', { conversationId: 'conversation-a' }],
     ] as const) {
       const result = await client.callTool({ name, arguments: args });
       assert.notEqual(result.isError, true, `${name}: ${JSON.stringify(result.content)}`);
@@ -730,7 +1041,39 @@ test('all six Abler tools complete MCP round trips with optional and null upstre
       results.set(name, result);
     }
 
-    assert.equal(results.size, 6);
+    assert.equal(results.size, 8);
+
+    const roundTripMessage = {
+      id: 'message-a',
+      body: 'Synthetic practice note',
+      createdAt: '2026-09-11T16:00:00.000Z',
+      sender: { id: 'coach', displayName: 'Coach' },
+      read: null,
+      attachments: [
+        { id: 'file-a', fileName: 'plan.pdf', description: null, contentType: 'application/pdf' },
+      ],
+    };
+
+    assert.deepEqual(results.get('list_conversations')?.structuredContent, {
+      unreadCount: 1,
+      conversations: [
+        {
+          id: 'conversation-a',
+          name: null,
+          type: 'CHAT',
+          membersCount: 2,
+          unreadCount: 1,
+          group: null,
+          participants: [{ id: 'parent', displayName: 'Parent' }],
+          latestMessage: roundTripMessage,
+        },
+      ],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    });
+    assert.deepEqual(results.get('list_messages')?.structuredContent, {
+      messages: [roundTripMessage],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    });
     assert.deepEqual(
       z
         .object({ events: z.array(z.object({ description: z.null(), to: z.null() })) })
@@ -770,7 +1113,9 @@ test('MCP executable exposes only read tools and reports missing auth without pr
       'get_event',
       'get_profile',
       'list_child_schedules',
+      'list_conversations',
       'list_groups',
+      'list_messages',
       'list_schedule',
     ]);
     expect(tools.every((tool) => tool.outputSchema)).toBe(true);
@@ -787,6 +1132,20 @@ test('MCP executable exposes only read tools and reports missing auth without pr
     expect(typo.isError).toBe(true);
     const invalid = await client.callTool({ name: 'list_schedule', arguments: { first: 0 } });
     expect(invalid.isError).toBe(true);
+
+    for (const [name, args] of [
+      ['list_conversations', { first: 0 }],
+      ['list_conversations', { first: 51 }],
+      ['list_conversations', { conversationId: 'conversation-a' }],
+      ['list_messages', {}],
+      ['list_messages', { conversationId: '' }],
+      ['list_messages', { conversationId: 'conversation-a', first: 51 }],
+      ['list_messages', { conversationId: 'conversation-a', markRead: true }],
+    ] as const) {
+      const rejected = await client.callTool({ name, arguments: args });
+      expect(rejected.isError).toBe(true);
+      expect(JSON.stringify(rejected)).not.toContain('No saved Abler session');
+    }
   } finally {
     await client.close();
     await rm(directory, { recursive: true, force: true });

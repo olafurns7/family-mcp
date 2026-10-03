@@ -1,6 +1,6 @@
 # family-mcp
 
-Local MCP servers provide Abler sports schedules, an Icelandic InfoMentor school
+Local MCP servers provide Abler sports schedules and messages, an Icelandic InfoMentor school
 account, Inna school accounts, a Krónan grocery account, and Domino’s Iceland ordering. Each release
 is a standalone native executable, so the MCP host does not need Node, npm, or Bun
 at runtime.
@@ -10,7 +10,7 @@ in English and Icelandic.
 
 | Server                                              | Best for                            | What you get                                                                              | Login                                                                           | Platforms                       |
 | --------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------- |
-| **Abler** ([abler.io](https://www.abler.io))        | Sports schedules                    | Linked children, groups, events, and attendance records                                   | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
+| **Abler** ([abler.io](https://www.abler.io))        | Sports schedules and messages       | Linked children, groups, events, attendance records, and messages                         | `abler-mcp auth login` opens a browser once; or capture/import a Chrome session | macOS or glibc Linux, arm64/x64 |
 | **InfoMentor**                                      | Icelandic school portal             | Children, timetables, messages, notifications, and updates                                | Private credentials, a private file, or an imported session                     | macOS or glibc Linux, arm64/x64 |
 | **Inna** ([inna.is](https://www.inna.is)) | Inna school portal (preview) | Timetables, assignments, grades, attendance, messages, and opt-in whole-day absence requests | Electronic ID with phone approval, or `inna-mcp auth login --google` in a browser window | macOS or glibc Linux, arm64/x64 |
 | **Krónan** ([kronan.is](https://kronan.is))         | Icelandic grocery shopping          | Products, recipes, purchase history, shopping-note and basket edits, and confirmed orders | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
@@ -19,7 +19,7 @@ in English and Icelandic.
 ## Abler
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.5.3/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.6.0/packages/abler-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server; restart the MCP host, or
@@ -66,7 +66,7 @@ env = { ABLER_SESSION_FILE = "/absolute/path/abler-session.json" }
 
 </details>
 
-Tools: [account status, profile, groups, schedules, and events](packages/abler-mcp/README.md#tools).
+Tools: [account status, profile, groups, schedules, events, conversations, and messages](packages/abler-mcp/README.md#tools).
 
 Other sign-in paths (capture an existing Chrome session, import cookies), headless servers, file locations, troubleshooting: see [packages/abler-mcp/README.md](packages/abler-mcp/README.md).
 

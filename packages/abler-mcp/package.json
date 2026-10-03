@@ -1,7 +1,7 @@
 {
   "name": "abler-mcp",
-  "version": "0.5.3",
-  "description": "Unofficial, read-only Abler schedules MCP server with portable session authentication",
+  "version": "0.6.0",
+  "description": "Unofficial, read-only Abler schedules and messages MCP server with portable session authentication",
   "keywords": [
     "abler",
     "family",
@@ -60,7 +60,9 @@
         "list_groups",
         "list_schedule",
         "list_child_schedules",
-        "get_event"
+        "get_event",
+        "list_conversations",
+        "list_messages"
       ]
     }
   }

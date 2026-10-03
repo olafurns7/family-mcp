@@ -53,7 +53,7 @@ export const content = {
     tools: {
       abler: {
         description:
-          'Check your family’s Abler groups, practice and match schedules, and attendance.',
+          'Check your family’s Abler groups, practice and match schedules, attendance and messages.',
         login: 'Browser sign-in',
       },
       infomentor: {
@@ -113,7 +113,7 @@ export const content = {
       'Fyrirtækin hér að ofan standa ekki að verkefninu og hafa ekki lagt nafn sitt við það.',
     tools: {
       abler: {
-        description: 'Skoðaðu hópa fjölskyldunnar í Abler, æfingar, leiki og mætingar.',
+        description: 'Skoðaðu hópa fjölskyldunnar í Abler, æfingar, leiki, mætingar og skilaboð.',
         login: 'Innskráning í vafra',
       },
       infomentor: {
