@@ -111,13 +111,69 @@ API requests send the cookie jar, `X-XSRF-TOKEN`, and
 school, default term, role, and permissions. It also contains identity numbers,
 contact details, and opaque access links that must be removed from ordinary
 tool output. The initial implementation returns an explicit limited context and
-refuses a changed user/student/school binding. It does not automatically follow
-the `access` array's `url_login` links or change students.
+refuses a changed user/student/school binding. It never follows the `access`
+array's `url_login` links. Later work selects among the listed students; see
+[Student switching](#student-switching).
 
 No long-term session lifetime or unattended cookie/OAuth renewal was established.
 Save only verified sessions using the shared private session store, under the
 shared file lock. Treat redirects, access denial, rate limits, malformed JSON,
 and missing records distinctly; never return a failed feed as an empty list.
+
+### Student switching
+
+Added after the 0.1.1 release. `GetLoggedInUser` carries an `access` array with
+one entry per application context of the signed-in person. A keys-only live
+check on a one-student guardian account (values not recorded) established:
+
+- Entry keys: `adgangur`, `isStudent`, `kennitala`, `loggedIn`, `nafn`,
+  `notandi_id`, `skoli_audk`, `skoli_heiti`, `skoli_id`, `status`, `system`,
+  `tegund`, `title`, `url_login`, `userId`, `virkur`, and
+  `showPersonalInfoConfirmationModal`. There is no `id` key.
+- `system`, `status`, `userId`, `skoli_id`, `loggedIn`, `isStudent`, `virkur`,
+  `adgangur`, `notandi_id`, and `kennitala` are digit strings; `title`, `nafn`,
+  `tegund`, `skoli_heiti`, and `skoli_audk` are strings;
+  `showPersonalInfoConfirmationModal` is a boolean.
+- For the selected entry, `userId` equals the top-level numeric `userId`,
+  `skoli_id` equals `schoolId`, `skoli_heiti` equals `schoolLong`, and `nafn`
+  equals `studentName`: `nafn` is the student's name. `isStudent` is `"1"`
+  even for a guardian login, so it does not distinguish roles.
+- `url_login` is a tokenized `nam.inna.is/auth/token` link. It must never be
+  followed, stored, or returned; neither are `kennitala` and `notandi_id`.
+
+`system` 1 is the student application. Other systems (0, 2, 3, 4) are other
+Inna applications and are never switch targets.
+
+The delivered student bundle switches the selected student with a plain
+navigation, also seen in one two-student user's capture (values redacted):
+
+```text
+GET https://nam.inna.is/auth/system?i=<n>&system=<system>&status=<status>&user_id=<userId>
+```
+
+- `<n>` is the entry's index in the current `access` array; the other three
+  values come from that entry.
+- The request carries the session cookies only: no body, no `Authorization`,
+  no `X-XSRF-TOKEN`, and no `X-Requested-By`.
+- It answers 303 to `/Components/Students/Students.html`, which answers 200
+  HTML. The `Location` may be an `http://` URL; upgrade `nam.inna.is` to HTTPS
+  and never request HTTP. Afterwards the session cookie points at the other
+  student and `GetLoggedInUser` returns the new context.
+
+The client addresses a student by `studentKey`, the decimal `userId` of its
+system-1 entry, and recomputes the index from a fresh `GetLoggedInUser` on each
+call. It follows at most five hops, only to `/auth/system` or the student
+application on `https://nam.inna.is`; any other redirect is treated as sign-in
+required. After a switch it requires the target to be the only selected
+system-1 entry, the returned `userId` to equal the key, and `schoolId` to equal
+the entry's `skoli_id`, then compares the account/student/school binding with
+the one learned on the first verified read. The dashboard's `GetUserOptions`
+and `SetUserOptions` calls are not reproduced. Numeric fields are parsed as
+digit strings or integers.
+
+This is source-verified from the delivered bundle plus one user capture. The
+maintainer has not verified live switching between two students; the
+implementation is covered by synthetic tests only.
 
 ## Read endpoints
 
