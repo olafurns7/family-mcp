@@ -761,8 +761,8 @@ export async function loginInBrowser(
 
     jar = await waitForCookies(debugging, timeoutSeconds, controller.signal);
 
-    // Best-effort token capture after login completes; skip if already cancelled or in fake test mode
-    if (!controller.signal.aborted && !process.env.INNA_FAKE_IGNORE_BROWSER_CLOSE) {
+    // Best-effort token capture after login completes; skip if already cancelled
+    if (!controller.signal.aborted) {
       try {
         const tokenSignal = AbortSignal.timeout(2000);
         const combined = AbortSignal.any([controller.signal, tokenSignal]);
