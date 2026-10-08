@@ -762,15 +762,16 @@ export async function loginInBrowser(
     jar = await waitForCookies(debugging, timeoutSeconds, controller.signal);
 
     // Best-effort token capture after login completes; skip if already cancelled
-    if (!controller.signal.aborted) {
-      try {
-        const tokenSignal = AbortSignal.timeout(2000);
-        const combined = AbortSignal.any([controller.signal, tokenSignal]);
+    // Check signal again before capture to avoid any delay during shutdown
+    throwIfCancelled(controller.signal);
 
-        token = await debugging.connection.captureToken(combined);
-      } catch {
-        // Token capture is optional; proceed without it
-      }
+    try {
+      const tokenSignal = AbortSignal.timeout(2000);
+      const combined = AbortSignal.any([controller.signal, tokenSignal]);
+
+      token = await debugging.connection.captureToken(combined);
+    } catch {
+      // Token capture is optional; proceed without it
     }
   } catch (error) {
     loginError = controller.signal.aborted
