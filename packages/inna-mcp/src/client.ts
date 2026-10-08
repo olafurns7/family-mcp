@@ -98,6 +98,7 @@ function parseTokenClaims(token: string):
 
     if (!payload) return undefined;
     const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+
     const parsed = z
       .object({
         exp: z.number().optional(),
@@ -724,6 +725,7 @@ export class InnaClient {
       if (!chosen) return undefined;
 
       const { entry } = chosen;
+
       const params = new URLSearchParams({
         i: String(chosen.index),
         system: String(entry.system),
