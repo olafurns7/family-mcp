@@ -45,42 +45,29 @@ const CDP_COMMAND_TIMEOUT_MS = 10_000;
 
 const POLL_INTERVAL_MS = 100;
 
-const TOKEN_CAPTURE_TIMEOUT_MS = 12_000;
-
-// Each origin gets part of the budget, so a tab that never loads cannot starve the next origin.
-const TOKEN_ORIGIN_TIMEOUT_MS = 6_000;
-
-const TOKEN_TAB_CLOSE_TIMEOUT_MS = 2_000;
-
-// Google sign-in stores the token on r.inna.is; the main inna.is site keeps its own copy.
-const TOKEN_ORIGINS = ['https://r.inna.is', 'https://inna.is'];
-
-const TOKEN_EXPRESSION = "localStorage.getItem('id_token')";
+// Inna's sign-in application sends its JWT as a Bearer header to these origins' /auth/ endpoints.
+// It deletes the stored copy (store.remove('id_token')) just before handing off to nam.inna.is, so
+// the header is the only place the token is still observable once sign-in finishes.
+const TOKEN_ORIGINS = new Set(['https://r.inna.is', 'https://inna.is']);
 
 // Same shape login.ts accepts from the electronic-ID callback.
 const JWT_PATTERN = /^eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}$/;
 
-const jwtSchema = z.string().regex(JWT_PATTERN);
-
-// store.js saves values JSON-encoded; a bare token is accepted as well.
-const storedTokenSchema = z
+const bearerSchema = z
   .string()
-  .transform((stored) => {
-    try {
-      return z.string().parse(JSON.parse(stored));
-    } catch {
-      return stored;
-    }
-  })
-  .pipe(jwtSchema);
+  .regex(/^Bearer [^ ]+$/)
+  .transform((header) => header.slice('Bearer '.length))
+  .pipe(z.string().regex(JWT_PATTERN));
 
-const targetSchema = z.object({ targetId: z.string() });
+const requestWillBeSentSchema = z.object({
+  request: z.object({ url: z.string(), headers: z.record(z.string(), z.unknown()) }),
+});
+
+const pageTargetsSchema = z.object({
+  targetInfos: z.array(z.object({ targetId: z.string(), type: z.string(), url: z.string() })),
+});
 
 const attachSchema = z.object({ sessionId: z.string() });
-
-const evaluateSchema = z.object({
-  result: z.object({ value: z.string().nullable().optional() }),
-});
 
 type Exists = (path: string) => Promise<boolean>;
 
@@ -102,19 +89,12 @@ type PendingRequest = {
 type CdpMethod =
   | 'Browser.close'
   | 'Browser.getVersion'
+  | 'Network.enable'
   | 'Network.getCookies'
-  | 'Runtime.evaluate'
   | 'Target.attachToTarget'
-  | 'Target.closeTarget'
-  | 'Target.createTarget'
   | 'Target.getTargets';
 
-type CdpParams =
-  | { urls: string[] }
-  | { targetId: string; flatten: true }
-  | { url: string; newWindow?: boolean; background?: boolean }
-  | { targetId: string }
-  | { expression: string; returnByValue?: boolean };
+type CdpParams = { urls: string[] } | { targetId: string; flatten: true };
 
 type CdpCommand = {
   id: number;
@@ -172,6 +152,9 @@ class CdpPipe {
   private nextId = 0;
   private sessionId: string | undefined;
   private targetId: string | undefined;
+  // Page targets whose network events are watched for the Inna token, by debugging session.
+  private readonly watched = new Map<string, string>();
+  private observedToken: string | undefined;
 
   constructor(inputFd: number, outputFd: number) {
     this.input = connect({ fd: inputFd, port: 0 });
@@ -255,73 +238,50 @@ class CdpPipe {
     );
   }
 
-  // Best-effort capture of the Inna JWT that the sign-in pages keep in localStorage (store.js).
-  async captureToken(signal: AbortSignal): Promise<string | undefined> {
-    for (const origin of TOKEN_ORIGINS) {
-      if (signal.aborted) return undefined;
-
-      const token = await this.storedToken(
-        origin,
-        AbortSignal.any([signal, AbortSignal.timeout(TOKEN_ORIGIN_TIMEOUT_MS)]),
-      );
-
-      if (token) return token;
-    }
-
-    return undefined;
+  // The latest Inna JWT seen in a Bearer header, if any; never logged.
+  get capturedToken(): string | undefined {
+    return this.observedToken;
   }
 
-  // Reads id_token in a background tab on a static file, so no Inna application code runs.
-  private async storedToken(origin: string, signal: AbortSignal): Promise<string | undefined> {
-    let targetId: string | undefined;
+  // Best-effort: watches every page tab's requests so the token is seen before Inna discards it.
+  async watchForToken(signal: AbortSignal): Promise<void> {
+    const watchedTargets = new Set(this.watched.values());
 
-    try {
-      targetId = targetSchema.parse(
-        await this.request(
-          'Target.createTarget',
-          { url: `${origin}/favicon.ico`, background: true },
-          signal,
-        ),
-      ).targetId;
-
-      const { sessionId } = attachSchema.parse(
-        await this.request('Target.attachToTarget', { targetId, flatten: true }, signal),
+    const pages = pageTargetsSchema
+      .parse(await this.request('Target.getTargets', undefined, signal))
+      .targetInfos.filter(
+        (target) => target.type === 'page' && !watchedTargets.has(target.targetId),
       );
 
-      while (
-        evaluateSchema.parse(
-          await this.request(
-            'Runtime.evaluate',
-            { expression: 'location.origin', returnByValue: true },
-            signal,
-            sessionId,
-          ),
-        ).result.value !== origin
-      )
-        await delay(POLL_INTERVAL_MS, undefined, { signal });
-
-      const stored = evaluateSchema.parse(
+    for (const page of pages) {
+      const { sessionId } = attachSchema.parse(
         await this.request(
-          'Runtime.evaluate',
-          { expression: TOKEN_EXPRESSION, returnByValue: true },
+          'Target.attachToTarget',
+          { targetId: page.targetId, flatten: true },
           signal,
-          sessionId,
         ),
-      ).result.value;
+      );
 
-      return stored ? storedTokenSchema.safeParse(stored).data : undefined;
-    } catch {
-      return undefined;
-    } finally {
-      // Not tied to the abort signal: a cancelled capture still closes the tab it opened.
-      if (targetId)
-        await this.request(
-          'Target.closeTarget',
-          { targetId },
-          undefined,
-          undefined,
-          TOKEN_TAB_CLOSE_TIMEOUT_MS,
-        ).catch(() => undefined);
+      this.watched.set(sessionId, page.targetId);
+      await this.request('Network.enable', undefined, signal, sessionId);
+    }
+  }
+
+  private observeRequest(params: CdpValue): void {
+    const event = requestWillBeSentSchema.safeParse(params);
+
+    if (!event.success || !URL.canParse(event.data.request.url)) return;
+
+    const url = new URL(event.data.request.url);
+
+    if (!TOKEN_ORIGINS.has(url.origin) || !url.pathname.startsWith('/auth/')) return;
+
+    for (const [name, value] of Object.entries(event.data.request.headers)) {
+      if (name.toLowerCase() !== 'authorization') continue;
+
+      const token = bearerSchema.safeParse(value);
+
+      if (token.success) this.observedToken = token.data;
     }
   }
 
@@ -427,9 +387,15 @@ class CdpPipe {
       if (id === undefined && method === 'Target.detachedFromTarget' && params !== undefined) {
         const detached = z.object({ sessionId: z.string() }).safeParse(params);
 
-        if (detached.success && detached.data.sessionId === this.sessionId)
-          this.sessionId = undefined;
+        if (detached.success) {
+          this.watched.delete(detached.data.sessionId);
+
+          if (detached.data.sessionId === this.sessionId) this.sessionId = undefined;
+        }
       }
+
+      if (id === undefined && method === 'Network.requestWillBeSent' && params !== undefined)
+        this.observeRequest(params);
 
       if (id !== undefined)
         this.finish(
@@ -647,6 +613,9 @@ async function waitForCookies(
         AbortSignal.timeout(Math.min(10_000, deadline - Date.now())),
       ]);
 
+      // Token watching is best-effort and must never hold up the session capture.
+      await debugging.connection.watchForToken(attemptSignal).catch(() => undefined);
+
       const jar = await debugging.connection.captureCookies(attemptSignal);
       const cookies = (await jar?.getCookies(`${ORIGIN}/`)) ?? [];
 
@@ -847,11 +816,7 @@ export async function loginInBrowser(
 
     jar = await waitForCookies(debugging, timeoutSeconds, controller.signal);
 
-    // Best-effort token capture after login completes; skip if already cancelled.
-    throwIfCancelled(controller.signal);
-    token = await debugging.connection.captureToken(
-      AbortSignal.any([controller.signal, AbortSignal.timeout(TOKEN_CAPTURE_TIMEOUT_MS)]),
-    );
+    token = debugging.connection.capturedToken;
 
     if (!token && !controller.signal.aborted)
       process.stderr.write(

@@ -853,12 +853,11 @@ const FAKE_TOKEN = `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODk
 
 const SECOND_FAKE_TOKEN = `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.${'synthetic-signature-b'.repeat(2)}`;
 
-test('auth login --google captures JSON-quoted token from r.inna.is localStorage', async () => {
+test('auth login --google captures the token from the Bearer header of an r.inna.is /auth/ request', async () => {
   const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-token-r-');
   const sessionPath = join(directory, 'session.json');
   const browser = await makeFakeBrowser(directory);
   const preload = await makePreload(directory);
-  const tabLog = join(directory, 'tabs.log');
 
   const upstream = createUpstream({
     valid: true,
@@ -873,9 +872,8 @@ test('auth login --google captures JSON-quoted token from r.inna.is localStorage
       browser,
       browserEnvironment(directory, temporaryDirectory, sessionPath, {
         INNA_TEST_ORIGIN: upstream.origin,
-        INNA_FAKE_TAB_LOG: tabLog,
-        INNA_FAKE_TOKEN_ORIGIN: 'r.inna.is',
-        INNA_FAKE_TOKEN_VALUE: JSON.stringify(FAKE_TOKEN),
+        INNA_FAKE_BEARER_TOKEN: FAKE_TOKEN,
+        INNA_FAKE_BEARER_DECOY: SECOND_FAKE_TOKEN,
       }),
       20,
       preload,
@@ -884,18 +882,17 @@ test('auth login --google captures JSON-quoted token from r.inna.is localStorage
     const { exit, stdout, stderr } = await collectProcess(child);
 
     expect(exit).toBe(0);
+    // Only the expiry is logged, never the token.
+    expect(stderr.startsWith(START_MESSAGE)).toBe(true);
+    expect(stderr.slice(START_MESSAGE.length)).toMatch(/^\S+ Inna token saved \(expires \S+\)\n$/);
     expect(stdout).toBe(`Signed in. Session saved to ${sessionPath} (renewal token: yes)\n`);
     expect(stdout + stderr).not.toContain('synthetic-signature');
-    expect(await readFile(tabLog, 'utf8')).toBe(
-      'open https://r.inna.is\nclose https://r.inna.is\n',
-    );
-    expect(stderr).toContain(START_MESSAGE);
-    expect(stderr).not.toContain('Warning: inna.is renewal token not found');
 
     const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
 
     expect(saved.version).toBe(3);
     expect(saved.token).toBe(FAKE_TOKEN);
+    expect(saved.tokenRefreshedAt).toBeGreaterThan(0);
   } finally {
     await stopChild(child);
     await upstream.server.stop(true);
@@ -903,12 +900,11 @@ test('auth login --google captures JSON-quoted token from r.inna.is localStorage
   }
 });
 
-test('auth login --google captures token from inna.is localStorage when not on r.inna.is', async () => {
+test('auth login --google captures the token from an inna.is /auth/ request', async () => {
   const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-token-inna-');
   const sessionPath = join(directory, 'session.json');
   const browser = await makeFakeBrowser(directory);
   const preload = await makePreload(directory);
-  const tabLog = join(directory, 'tabs.log');
 
   const upstream = createUpstream({
     valid: true,
@@ -923,9 +919,8 @@ test('auth login --google captures token from inna.is localStorage when not on r
       browser,
       browserEnvironment(directory, temporaryDirectory, sessionPath, {
         INNA_TEST_ORIGIN: upstream.origin,
-        INNA_FAKE_TAB_LOG: tabLog,
-        INNA_FAKE_TOKEN_ORIGIN: 'inna.is',
-        INNA_FAKE_TOKEN_VALUE: SECOND_FAKE_TOKEN,
+        INNA_FAKE_BEARER_TOKEN: SECOND_FAKE_TOKEN,
+        INNA_FAKE_BEARER_ORIGIN: 'https://inna.is',
       }),
       20,
       preload,
@@ -934,18 +929,17 @@ test('auth login --google captures token from inna.is localStorage when not on r
     const { exit, stdout, stderr } = await collectProcess(child);
 
     expect(exit).toBe(0);
+    // Only the expiry is logged, never the token.
+    expect(stderr.startsWith(START_MESSAGE)).toBe(true);
+    expect(stderr.slice(START_MESSAGE.length)).toMatch(/^\S+ Inna token saved \(expires \S+\)\n$/);
     expect(stdout).toBe(`Signed in. Session saved to ${sessionPath} (renewal token: yes)\n`);
     expect(stdout + stderr).not.toContain('synthetic-signature');
-    expect(await readFile(tabLog, 'utf8')).toBe(
-      'open https://r.inna.is\nclose https://r.inna.is\nopen https://inna.is\nclose https://inna.is\n',
-    );
-    expect(stderr).toContain(START_MESSAGE);
-    expect(stderr).not.toContain('Warning: inna.is renewal token not found');
 
     const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
 
     expect(saved.version).toBe(3);
     expect(saved.token).toBe(SECOND_FAKE_TOKEN);
+    expect(saved.tokenRefreshedAt).toBeGreaterThan(0);
   } finally {
     await stopChild(child);
     await upstream.server.stop(true);
@@ -953,12 +947,11 @@ test('auth login --google captures token from inna.is localStorage when not on r
   }
 });
 
-test('auth login --google saves session without token and warns when token not found', async () => {
-  const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-no-token-');
+test('auth login --google ignores Bearer headers outside Inna /auth/ requests', async () => {
+  const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-token-decoy-');
   const sessionPath = join(directory, 'session.json');
   const browser = await makeFakeBrowser(directory);
   const preload = await makePreload(directory);
-  const tabLog = join(directory, 'tabs.log');
 
   const upstream = createUpstream({
     valid: true,
@@ -973,7 +966,8 @@ test('auth login --google saves session without token and warns when token not f
       browser,
       browserEnvironment(directory, temporaryDirectory, sessionPath, {
         INNA_TEST_ORIGIN: upstream.origin,
-        INNA_FAKE_TAB_LOG: tabLog,
+        INNA_FAKE_BEARER_TOKEN: FAKE_TOKEN,
+        INNA_FAKE_BEARER_ORIGIN: 'https://nam.inna.is',
       }),
       20,
       preload,
@@ -982,15 +976,11 @@ test('auth login --google saves session without token and warns when token not f
     const { exit, stdout, stderr } = await collectProcess(child);
 
     expect(exit).toBe(0);
+    expect(stderr).toBe(
+      `${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`,
+    );
     expect(stdout).toBe(`Signed in. Session saved to ${sessionPath} (renewal token: no)\n`);
     expect(stdout + stderr).not.toContain('synthetic-signature');
-    expect(await readFile(tabLog, 'utf8')).toBe(
-      'open https://r.inna.is\nclose https://r.inna.is\nopen https://inna.is\nclose https://inna.is\n',
-    );
-    expect(stderr).toContain(START_MESSAGE);
-    expect(stderr).toContain(
-      'Warning: inna.is renewal token not found; overnight renewal disabled.',
-    );
 
     const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
 
@@ -1004,14 +994,11 @@ test('auth login --google saves session without token and warns when token not f
   }
 });
 
-test('auth login --google closes the token capture tab when cancelled mid-read', async () => {
-  const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-token-abort-');
+test('auth login --google saves session without token and warns when token not found', async () => {
+  const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-no-token-');
   const sessionPath = join(directory, 'session.json');
-  const originalFile = await savePreviousSession(sessionPath);
   const browser = await makeFakeBrowser(directory);
   const preload = await makePreload(directory);
-  const tabLog = join(directory, 'tabs.log');
-  const readStarted = join(directory, 'token-read.started');
 
   const upstream = createUpstream({
     valid: true,
@@ -1020,38 +1007,33 @@ test('auth login --google closes the token capture tab when cancelled mid-read',
   });
 
   let child: Bun.Subprocess | undefined;
-  let state: z.infer<typeof browserStateSchema> | undefined;
 
   try {
     child = spawnLogin(
       browser,
       browserEnvironment(directory, temporaryDirectory, sessionPath, {
         INNA_TEST_ORIGIN: upstream.origin,
-        INNA_FAKE_TAB_LOG: tabLog,
-        INNA_FAKE_TOKEN_READ_STARTED: readStarted,
       }),
       20,
       preload,
     );
 
-    state = await waitForBrowserState(join(directory, 'browser.json'));
-    await waitForFile(readStarted);
-    assert.ok(child.pid);
-    process.kill(child.pid, 'SIGINT');
-
     const { exit, stdout, stderr } = await collectProcess(child);
 
-    expect(exit).toBe(1);
-    expect(stdout).toBe('');
-    expect(stderr).toBe(`${START_MESSAGE}Inna login cancelled.\n`);
-    expect(upstream.requests).toEqual([]);
-    expect(await readFile(sessionPath, 'utf8')).toBe(originalFile);
-    expect(await readFile(tabLog, 'utf8')).toBe(
-      'open https://r.inna.is\nclose https://r.inna.is\n',
+    expect(exit).toBe(0);
+    expect(stderr).toBe(
+      `${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`,
     );
-    await assert.rejects(stat(state.profile), { code: 'ENOENT' });
+    expect(stdout).toBe(`Signed in. Session saved to ${sessionPath} (renewal token: no)\n`);
+    expect(stdout + stderr).not.toContain('synthetic-signature');
+
+    const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
+
+    expect(saved.version).toBe(3);
+    expect(saved.token).toBeUndefined();
+    expect(saved.tokenRefreshedAt).toBe(0);
   } finally {
-    await stopChild(child, state?.pid);
+    await stopChild(child);
     await upstream.server.stop(true);
     await rm(directory, { recursive: true, force: true });
   }

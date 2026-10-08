@@ -1,4 +1,3 @@
-import { appendFileSync, writeFileSync } from 'node:fs';
 import { stat, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { resolve } from 'node:path';
@@ -29,9 +28,23 @@ const config = z
 
 const { profile: userDataDir, stateFile, exitFile, signalFile } = config;
 
-// Records which origins token capture opened and closed, never storage values.
-function logTab(entry: string): void {
-  if (process.env.INNA_FAKE_TAB_LOG) appendFileSync(process.env.INNA_FAKE_TAB_LOG, `${entry}\n`);
+// Decoys around the real header: wrong origin, wrong path, and a value that is not a JWT.
+function bearerRequests(): [string, string][] {
+  const token = process.env.INNA_FAKE_BEARER_TOKEN;
+
+  if (!token) return [];
+
+  const origin = process.env.INNA_FAKE_BEARER_ORIGIN ?? 'https://r.inna.is';
+
+  const decoy = process.env.INNA_FAKE_BEARER_DECOY ?? token;
+
+  return [
+    ['https://accounts.google.com/auth/access', `Bearer ${decoy}`],
+    [`${origin}/js/app.js`, `Bearer ${decoy}`],
+    [`${origin}/auth/access?callback_url=`, `Bearer ${token}`],
+    [`${origin}/auth/system?i=0`, 'Bearer not-a-jwt'],
+    ['https://nam.inna.is/auth/token', `Bearer ${decoy}`],
+  ];
 }
 
 if (process.env.INNA_FAKE_LAUNCHER === '1') {
@@ -100,9 +113,6 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
   input.on('error', () => undefined);
   output.on('error', () => undefined);
 
-  const nextTargetId = { value: 1 };
-  const createdTargets = new Map<string, { url: string; sessionId: string }>();
-
   let currentTarget = 'fake-page';
   const studentsUrl = 'https://nam.inna.is/Components/Students/Students.html#!/home';
   const session = { path: '/', expires: -1, session: true, secure: true, httpOnly: true };
@@ -165,64 +175,26 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
           },
         ],
       };
-    } else if (command.method === 'Target.attachToTarget') {
-      const targetId =
-        z.object({ targetId: z.string() }).partial().optional().parse(command.params)?.targetId ??
-        currentTarget;
+    } else if (command.method === 'Target.attachToTarget')
+      result = {
+        sessionId:
+          z.object({ targetId: z.string() }).partial().optional().parse(command.params)?.targetId ??
+          currentTarget,
+      };
+    else if (command.method === 'Network.enable') {
+      output.write(`${JSON.stringify({ id: command.id, result })}\0`);
 
-      const created = createdTargets.get(targetId);
+      // Requests Inna's sign-in application makes before the handoff; headers are synthetic.
+      for (const [url, authorization] of bearerRequests())
+        output.write(
+          `${JSON.stringify({
+            method: 'Network.requestWillBeSent',
+            sessionId: command.sessionId,
+            params: { requestId: url, request: { url, headers: { Authorization: authorization } } },
+          })}\0`,
+        );
 
-      if (created) created.sessionId = `session-${targetId}`;
-      result = { sessionId: created?.sessionId ?? targetId };
-    } else if (command.method === 'Target.createTarget') {
-      const params = z
-        .object({ url: z.string(), background: z.boolean().optional() })
-        .parse(command.params);
-
-      const targetId = `created-target-${nextTargetId.value++}`;
-
-      createdTargets.set(targetId, { url: params.url, sessionId: '' });
-      logTab(`open ${new URL(params.url).origin}`);
-      result = { targetId };
-    } else if (command.method === 'Target.closeTarget') {
-      const params = z.object({ targetId: z.string() }).parse(command.params);
-
-      const closedTarget = createdTargets.get(params.targetId);
-
-      createdTargets.delete(params.targetId);
-
-      if (closedTarget) logTab(`close ${new URL(closedTarget.url).origin}`);
-      result = { success: true };
-    } else if (command.method === 'Runtime.evaluate') {
-      const params = z
-        .object({ expression: z.string(), returnByValue: z.boolean().optional() })
-        .parse(command.params);
-
-      const url =
-        [...createdTargets.values()].find((target) => target.sessionId === command.sessionId)
-          ?.url ?? '';
-
-      if (params.expression === 'location.origin')
-        result = { result: { value: URL.canParse(url) ? new URL(url).origin : 'null' } };
-      else if (params.expression === "localStorage.getItem('id_token')") {
-        if (process.env.INNA_FAKE_TOKEN_READ_STARTED) {
-          // Never answers, so the test can cancel while the token read is in flight.
-          writeFileSync(process.env.INNA_FAKE_TOKEN_READ_STARTED, 'started');
-
-          return;
-        }
-
-        const tokenOrigin = process.env.INNA_FAKE_TOKEN_ORIGIN;
-
-        result = {
-          result: {
-            value:
-              tokenOrigin && url.startsWith(`https://${tokenOrigin}/`)
-                ? (process.env.INNA_FAKE_TOKEN_VALUE ?? null)
-                : null,
-          },
-        };
-      }
+      return;
     } else if (command.method === 'Network.getCookies') {
       if (
         process.env.INNA_FAKE_DETACH_ON_EMPTY_POLL === '1' &&
