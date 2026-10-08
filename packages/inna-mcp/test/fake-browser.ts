@@ -130,7 +130,12 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
   ];
 
   function handlePipeCommand(raw: string): void {
-    const command = z
+    const command: {
+      id: number;
+      method: string;
+      params?: unknown;
+      sessionId?: string;
+    } = z
       .object({
         id: z.number(),
         method: z.string(),
@@ -159,7 +164,8 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
         ],
       };
     } else if (command.method === 'Target.attachToTarget') {
-      const targetId = command.params?.targetId ?? currentTarget;
+      const targetId =
+        (command.params as { targetId?: string } | undefined)?.targetId ?? currentTarget;
 
       if (createdTargets[targetId]) {
         createdTargets[targetId].sessionId = `session-${targetId}`;
