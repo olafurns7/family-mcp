@@ -117,7 +117,12 @@ async function signInWithGoogle(
 
   try {
     await client.saveVerifiedSession(jar, allowAccountChange, token, controller.signal);
-    process.stdout.write(`Signed in. Session saved to ${client.path}\n`);
+
+    const tokenStatus = token ? 'yes' : 'no';
+
+    process.stdout.write(
+      `Signed in. Session saved to ${client.path} (renewal token: ${tokenStatus})\n`,
+    );
   } catch (error) {
     if (controller.signal.aborted) throw new SafeError('Inna login cancelled.');
     throw error;

@@ -95,6 +95,8 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
   output.on('error', () => undefined);
 
   let currentTarget = 'fake-page';
+  let nextTargetId = 1;
+  const createdTargets: Record<string, { url: string; sessionId: string }> = {};
   const studentsUrl = 'https://nam.inna.is/Components/Students/Students.html#!/home';
   const session = { path: '/', expires: -1, session: true, secure: true, httpOnly: true };
 
@@ -156,9 +158,51 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
           },
         ],
       };
-    } else if (command.method === 'Target.attachToTarget')
-      result = { sessionId: command.params?.targetId ?? currentTarget };
-    else if (command.method === 'Network.getCookies') {
+    } else if (command.method === 'Target.attachToTarget') {
+      const targetId = command.params?.targetId ?? currentTarget;
+
+      if (createdTargets[targetId]) {
+        createdTargets[targetId].sessionId = `session-${targetId}`;
+        result = { sessionId: createdTargets[targetId].sessionId };
+      } else {
+        result = { sessionId: targetId };
+      }
+    } else if (command.method === 'Target.createTarget') {
+      const params = z.object({ url: z.string(), background: z.boolean().optional() }).parse(command.params);
+      const targetId = `created-target-${nextTargetId++}`;
+
+      createdTargets[targetId] = { url: params.url, sessionId: '' };
+      result = { targetId };
+    } else if (command.method === 'Target.closeTarget') {
+      const params = z.object({ targetId: z.string() }).parse(command.params);
+
+      delete createdTargets[params.targetId];
+      result = { success: true };
+    } else if (command.method === 'Runtime.evaluate') {
+      const params = z
+        .object({ expression: z.string(), returnByValue: z.boolean().optional() })
+        .parse(command.params);
+
+      const targetInfo = Object.values(createdTargets).find((t) => t.sessionId === command.sessionId);
+      const url = targetInfo?.url ?? '';
+
+      let value: unknown = null;
+
+      if (params.expression === 'location.origin') {
+        if (url.startsWith('https://r.inna.is')) value = 'https://r.inna.is';
+        else if (url.startsWith('https://inna.is')) value = 'https://inna.is';
+        else value = 'https://unknown';
+      } else if (params.expression === "localStorage.getItem('id_token')") {
+        if (process.env.INNA_FAKE_TOKEN_ORIGIN === 'r.inna.is' && url.startsWith('https://r.inna.is'))
+          value = process.env.INNA_FAKE_TOKEN_VALUE ?? null;
+        else if (process.env.INNA_FAKE_TOKEN_ORIGIN === 'inna.is' && url.startsWith('https://inna.is'))
+          value = process.env.INNA_FAKE_TOKEN_VALUE ?? null;
+        else if (!process.env.INNA_FAKE_TOKEN_ORIGIN)
+          value = null;
+      }
+
+      result = { result: { value } };
+    } else if (command.method === 'Network.getCookies') {
       if (
         process.env.INNA_FAKE_DETACH_ON_EMPTY_POLL === '1' &&
         command.sessionId !== currentTarget
