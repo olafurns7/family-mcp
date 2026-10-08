@@ -129,7 +129,9 @@ function provider() {
       case 'heimdallur.inna.is/auth/island/logout-callback':
         return redirect('https://inna.is/auth/island/callback?token=synthetic');
       case 'inna.is/auth/island/callback':
-        return new Response(`<script>var jwt = "${token}"; store.set('id_token',jwt);</script>`);
+        return new Response(`<script>var jwt = "${token}"; store.set('id_token',jwt);</script>`, {
+          headers: { 'Set-Cookie': `id_token=${token}; Path=/; Domain=inna.is; Secure` },
+        });
       case 'inna.is/auth/access':
         return Response.json(access.map((entry) => Object.assign({ ssn: 'DO-NOT-SAVE' }, entry)));
       case 'inna.is/auth/user-terms-confirmed':
@@ -181,7 +183,7 @@ test('phone login replaces the polling session, completes logout relay, upgrades
   const codes: string[] = [];
   const waits: number[] = [];
 
-  const jar = await loginWithElectronicId(
+  const result = await loginWithElectronicId(
     '5550000',
     (code) => {
       expect(p.calls.some((call) => call.url.pathname === '/login/phone/authenticate')).toBe(false);
@@ -198,13 +200,14 @@ test('phone login replaces the polling session, completes logout relay, upgrades
   expect(codes).toEqual(['1234']);
   expect(p.selections).toEqual([{ i: '0', system: '1', user_id: '2', status: '3' }]);
   expect(waits).toEqual([2000, 3000]);
-  const saved = JSON.stringify(await jar.serialize());
+  const saved = JSON.stringify(await result.jar.serialize());
   expect(saved).not.toContain(token);
   expect(saved).not.toContain('synthetic-identity-cookie');
   expect(saved).not.toContain('DO-NOT-SAVE');
-  const cookies = await jar.getCookies('https://nam.inna.is/');
+  const cookies = await result.jar.getCookies('https://nam.inna.is/');
   expect(cookies.map((cookie) => cookie.key).toSorted()).toEqual(['SESSION', 'XSRF-TOKEN']);
   expect(cookies.every((cookie) => cookie.secure)).toBe(true);
+  expect(result.token).toBe(token);
 });
 
 test('phone login refuses external redirects, unaccepted terms, and an access list without a student context', async () => {
@@ -257,7 +260,7 @@ test('phone login with several student contexts picks the first or the preferred
     const p = provider();
     p.setAccess(access);
 
-    const jar = await loginWithElectronicId('5550000', () => {}, {
+    const result = await loginWithElectronicId('5550000', () => {}, {
       fetch: p.fetcher,
       wait: async () => {},
       preferredUserId,
@@ -267,8 +270,9 @@ test('phone login with several student contexts picks the first or the preferred
       preferredUserId,
       selections: [selection],
     });
-    expect((await jar.getCookies('https://nam.inna.is/')).map((cookie) => cookie.key)).toContain(
-      'SESSION',
-    );
+    expect(
+      (await result.jar.getCookies('https://nam.inna.is/')).map((cookie) => cookie.key),
+    ).toContain('SESSION');
+    expect(result.token).toBe(token);
   }
 });

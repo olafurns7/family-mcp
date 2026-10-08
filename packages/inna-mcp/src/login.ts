@@ -62,7 +62,9 @@ function trustedUrl(value: string, base?: string): URL {
   return url;
 }
 
-/** Fresh electronic-ID login only; opaque tickets and identity cookies stay in memory. */
+type LoginResult = { jar: CookieJar; token?: string };
+
+/** Fresh electronic-ID login; returns jar and inna.is token for renewal. */
 export async function loginWithElectronicId(
   phone: string,
   onCode: (code: string) => void,
@@ -72,7 +74,7 @@ export async function loginWithElectronicId(
     wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
     preferredUserId?: number | undefined;
   } = {},
-): Promise<CookieJar> {
+): Promise<LoginResult> {
   if (!/^\d{7}$/.test(phone)) throw new SafeError('Enter a seven-digit Icelandic phone number.');
   const timeout = AbortSignal.timeout(180_000);
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
@@ -337,7 +339,10 @@ export async function loginWithElectronicId(
       }
     }
 
-    return schoolJar;
+    const innaCookies = await jar.getCookies('https://inna.is/');
+    const idToken = innaCookies.find((c) => c.key === 'id_token')?.value;
+
+    return { jar: schoolJar, token: idToken ?? token };
   } catch (error) {
     if (signal.aborted) throw new SafeError('Inna login cancelled or timed out.');
 

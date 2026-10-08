@@ -1121,7 +1121,7 @@ test('the saved default user id is read locally and is absent without a session'
   expect(f.provider.calls).toHaveLength(calls);
 });
 
-test('Google browser sign-in saves a version 2 session and refuses a changed binding', async () => {
+test('Google browser sign-in saves a version 3 session and refuses a changed binding', async () => {
   const provider = new Provider();
   const login = await googleLogin(provider);
 
@@ -1129,12 +1129,12 @@ test('Google browser sign-in saves a version 2 session and refuses a changed bin
     const first = await login.run();
     expect(first).toEqual({
       exit: 0,
-      stdout: `Signed in. Session saved to ${login.path}\n`,
-      stderr: START_MESSAGE,
+      stdout: `Signed in. Session saved to ${login.path} (renewal token: no)\n`,
+      stderr: `${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`,
     });
     expect(provider.paths()).toEqual([USER_PATH]);
     const saved = await savedFile(login.path);
-    expect(saved.version).toBe(2);
+    expect(saved.version).toBe(3);
     expect(saved.account).toEqual({ userId: 1, studentId: '2', schoolId: '3' });
     expect(Object.keys(saved.students)).toEqual(['1']);
     expect(saved.jar).toContain('synthetic-rotated');
@@ -1154,13 +1154,13 @@ test('Google browser sign-in saves a version 2 session and refuses a changed bin
     expect(refused.exit).toBe(1);
     expect(refused.stdout).toBe('');
     expect(refused.stderr).toBe(
-      `${START_MESSAGE}This export changes the account, student, or school. Use --allow-account-change deliberately.\n`,
+      `${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\nThis export changes the account, student, or school. Use --allow-account-change deliberately.\n`,
     );
     expect(await readFile(login.path, 'utf8')).toBe(before);
 
     const allowed = await login.run(['--allow-account-change']);
     expect(allowed.exit).toBe(0);
-    expect(allowed.stdout).toBe(`Signed in. Session saved to ${login.path}\n`);
+    expect(allowed.stdout).toBe(`Signed in. Session saved to ${login.path} (renewal token: no)\n`);
     expect((await savedFile(login.path)).account.studentId).toBe('99');
     expectClean(await readFile(login.path, 'utf8'));
   } finally {
@@ -1280,7 +1280,7 @@ test('reading the sibling and then the default switches there and back with veri
   expect(f.provider.calls.every((call) => call.method === 'GET')).toBe(true);
 
   const saved = await savedFile(f.path);
-  expect(saved.version).toBe(2);
+  expect(saved.version).toBe(3);
   expect(saved.account.studentId).toBe('2');
   expect(Object.keys(saved.students).toSorted()).toEqual(['1', SIBLING]);
   expect(saved.students[SIBLING]?.studentName).toBe('Synthetic sibling');
@@ -1359,7 +1359,7 @@ test('a version 1 session file migrates and learns students on use', async () =>
   await writeFile(f.path, JSON.stringify({ version: 1, jar, account, pauseUntil }));
   expect((await f.client.overview()).context.studentId).toBe('2');
   const migrated = await savedFile(f.path);
-  expect(migrated.version).toBe(2);
+  expect(migrated.version).toBe(3);
   expect(Object.keys(migrated.students)).toEqual(['1']);
   expect((await f.client.overview(undefined, SIBLING)).context.studentId).toBe('6');
   expect((await f.client.overview()).context.studentId).toBe('2');

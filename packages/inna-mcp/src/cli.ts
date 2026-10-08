@@ -66,7 +66,7 @@ async function signIn(client: InnaClient, allowAccountChange: boolean): Promise<
     // A fresh login keeps the saved default student unless the owner asked to replace it.
     const preferredUserId = allowAccountChange ? undefined : await client.defaultUserId();
 
-    const jar = await loginWithElectronicId(
+    const result = await loginWithElectronicId(
       phone.value.trim(),
       (code) =>
         process.stderr.write(
@@ -75,7 +75,12 @@ async function signIn(client: InnaClient, allowAccountChange: boolean): Promise<
       { signal: controller.signal, preferredUserId },
     );
 
-    await client.saveVerifiedSession(jar, allowAccountChange, controller.signal);
+    await client.saveVerifiedSession(
+      result.jar,
+      allowAccountChange,
+      result.token,
+      controller.signal,
+    );
     process.stdout.write(`Signed in. Session saved to ${client.path}\n`);
   } catch (error) {
     if (controller.signal.aborted) throw new SafeError('Inna login cancelled.');
@@ -104,15 +109,20 @@ async function signInWithGoogle(
   browser: { browser: string | undefined; timeoutSeconds: number },
 ): Promise<void> {
   // The browser is closed and its profile removed before the session is verified and saved.
-  const jar = await loginInBrowser(browser);
+  const { jar, token } = await loginInBrowser(browser);
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.on('SIGINT', cancel);
   process.on('SIGTERM', cancel);
 
   try {
-    await client.saveVerifiedSession(jar, allowAccountChange, controller.signal);
-    process.stdout.write(`Signed in. Session saved to ${client.path}\n`);
+    await client.saveVerifiedSession(jar, allowAccountChange, token, controller.signal);
+
+    const tokenStatus = token ? 'yes' : 'no';
+
+    process.stdout.write(
+      `Signed in. Session saved to ${client.path} (renewal token: ${tokenStatus})\n`,
+    );
   } catch (error) {
     if (controller.signal.aborted) throw new SafeError('Inna login cancelled.');
     throw error;

@@ -28,6 +28,25 @@ const config = z
 
 const { profile: userDataDir, stateFile, exitFile, signalFile } = config;
 
+// Decoys around the real header: wrong origin, wrong path, and a value that is not a JWT.
+function bearerRequests(): [string, string][] {
+  const token = process.env.INNA_FAKE_BEARER_TOKEN;
+
+  if (!token) return [];
+
+  const origin = process.env.INNA_FAKE_BEARER_ORIGIN ?? 'https://r.inna.is';
+
+  const decoy = process.env.INNA_FAKE_BEARER_DECOY ?? token;
+
+  return [
+    ['https://accounts.google.com/auth/access', `Bearer ${decoy}`],
+    [`${origin}/js/app.js`, `Bearer ${decoy}`],
+    [`${origin}/auth/access?callback_url=`, `Bearer ${token}`],
+    [`${origin}/auth/system?i=0`, 'Bearer not-a-jwt'],
+    ['https://nam.inna.is/auth/token', `Bearer ${decoy}`],
+  ];
+}
+
 if (process.env.INNA_FAKE_LAUNCHER === '1') {
   const command = [process.execPath, resolve(import.meta.path), ...args];
 
@@ -132,7 +151,7 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
       .object({
         id: z.number(),
         method: z.string(),
-        params: z.object({ targetId: z.string().optional() }).optional(),
+        params: z.unknown().optional(),
         sessionId: z.string().optional(),
       })
       .parse(JSON.parse(raw));
@@ -157,8 +176,26 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
         ],
       };
     } else if (command.method === 'Target.attachToTarget')
-      result = { sessionId: command.params?.targetId ?? currentTarget };
-    else if (command.method === 'Network.getCookies') {
+      result = {
+        sessionId:
+          z.object({ targetId: z.string() }).partial().optional().parse(command.params)?.targetId ??
+          currentTarget,
+      };
+    else if (command.method === 'Network.enable') {
+      output.write(`${JSON.stringify({ id: command.id, result })}\0`);
+
+      // Requests Inna's sign-in application makes before the handoff; headers are synthetic.
+      for (const [url, authorization] of bearerRequests())
+        output.write(
+          `${JSON.stringify({
+            method: 'Network.requestWillBeSent',
+            sessionId: command.sessionId,
+            params: { requestId: url, request: { url, headers: { Authorization: authorization } } },
+          })}\0`,
+        );
+
+      return;
+    } else if (command.method === 'Network.getCookies') {
       if (
         process.env.INNA_FAKE_DETACH_ON_EMPTY_POLL === '1' &&
         command.sessionId !== currentTarget

@@ -25,6 +25,8 @@ export const savedSessionSchema = z.object({
   version: z.number(),
   jar: z.string(),
   account: z.object({ userId: z.number(), studentId: z.string(), schoolId: z.string() }),
+  token: z.string().optional(),
+  tokenRefreshedAt: z.number().optional(),
 });
 
 const savedJarSchema = z.object({

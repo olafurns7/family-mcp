@@ -45,6 +45,30 @@ const CDP_COMMAND_TIMEOUT_MS = 10_000;
 
 const POLL_INTERVAL_MS = 100;
 
+// Inna's sign-in application sends its JWT as a Bearer header to these origins' /auth/ endpoints.
+// It deletes the stored copy (store.remove('id_token')) just before handing off to nam.inna.is, so
+// the header is the only place the token is still observable once sign-in finishes.
+const TOKEN_ORIGINS = new Set(['https://r.inna.is', 'https://inna.is']);
+
+// Same shape login.ts accepts from the electronic-ID callback.
+const JWT_PATTERN = /^eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}$/;
+
+const bearerSchema = z
+  .string()
+  .regex(/^Bearer [^ ]+$/)
+  .transform((header) => header.slice('Bearer '.length))
+  .pipe(z.string().regex(JWT_PATTERN));
+
+const requestWillBeSentSchema = z.object({
+  request: z.object({ url: z.string(), headers: z.record(z.string(), z.unknown()) }),
+});
+
+const pageTargetsSchema = z.object({
+  targetInfos: z.array(z.object({ targetId: z.string(), type: z.string(), url: z.string() })),
+});
+
+const attachSchema = z.object({ sessionId: z.string() });
+
 type Exists = (path: string) => Promise<boolean>;
 
 type PathLookup = (command: string) => Promise<string | undefined>;
@@ -65,6 +89,7 @@ type PendingRequest = {
 type CdpMethod =
   | 'Browser.close'
   | 'Browser.getVersion'
+  | 'Network.enable'
   | 'Network.getCookies'
   | 'Target.attachToTarget'
   | 'Target.getTargets';
@@ -94,6 +119,7 @@ const versionSchema = z.object({ product: z.string().min(1) });
 
 const browserCookieSchema = z.looseObject({
   name: z.string(),
+  value: z.string().optional(),
   domain: z.string(),
   path: z.string(),
 });
@@ -126,6 +152,9 @@ class CdpPipe {
   private nextId = 0;
   private sessionId: string | undefined;
   private targetId: string | undefined;
+  // Page targets whose network events are watched for the Inna token, by debugging session.
+  private readonly watched = new Map<string, string>();
+  private observedToken: string | undefined;
 
   constructor(inputFd: number, outputFd: number) {
     this.input = connect({ fd: inputFd, port: 0 });
@@ -207,6 +236,53 @@ class CdpPipe {
         ),
       ),
     );
+  }
+
+  // The latest Inna JWT seen in a Bearer header, if any; never logged.
+  get capturedToken(): string | undefined {
+    return this.observedToken;
+  }
+
+  // Best-effort: watches every page tab's requests so the token is seen before Inna discards it.
+  async watchForToken(signal: AbortSignal): Promise<void> {
+    const watchedTargets = new Set(this.watched.values());
+
+    const pages = pageTargetsSchema
+      .parse(await this.request('Target.getTargets', undefined, signal))
+      .targetInfos.filter(
+        (target) => target.type === 'page' && !watchedTargets.has(target.targetId),
+      );
+
+    for (const page of pages) {
+      const { sessionId } = attachSchema.parse(
+        await this.request(
+          'Target.attachToTarget',
+          { targetId: page.targetId, flatten: true },
+          signal,
+        ),
+      );
+
+      this.watched.set(sessionId, page.targetId);
+      await this.request('Network.enable', undefined, signal, sessionId);
+    }
+  }
+
+  private observeRequest(params: CdpValue): void {
+    const event = requestWillBeSentSchema.safeParse(params);
+
+    if (!event.success || !URL.canParse(event.data.request.url)) return;
+
+    const url = new URL(event.data.request.url);
+
+    if (!TOKEN_ORIGINS.has(url.origin) || !url.pathname.startsWith('/auth/')) return;
+
+    for (const [name, value] of Object.entries(event.data.request.headers)) {
+      if (name.toLowerCase() !== 'authorization') continue;
+
+      const token = bearerSchema.safeParse(value);
+
+      if (token.success) this.observedToken = token.data;
+    }
   }
 
   async waitForClose(timeoutMs: number): Promise<boolean> {
@@ -311,9 +387,15 @@ class CdpPipe {
       if (id === undefined && method === 'Target.detachedFromTarget' && params !== undefined) {
         const detached = z.object({ sessionId: z.string() }).safeParse(params);
 
-        if (detached.success && detached.data.sessionId === this.sessionId)
-          this.sessionId = undefined;
+        if (detached.success) {
+          this.watched.delete(detached.data.sessionId);
+
+          if (detached.data.sessionId === this.sessionId) this.sessionId = undefined;
+        }
       }
+
+      if (id === undefined && method === 'Network.requestWillBeSent' && params !== undefined)
+        this.observeRequest(params);
 
       if (id !== undefined)
         this.finish(
@@ -531,6 +613,9 @@ async function waitForCookies(
         AbortSignal.timeout(Math.min(10_000, deadline - Date.now())),
       ]);
 
+      // Token watching is best-effort and must never hold up the session capture.
+      await debugging.connection.watchForToken(attemptSignal).catch(() => undefined);
+
       const jar = await debugging.connection.captureCookies(attemptSignal);
       const cookies = (await jar?.getCookies(`${ORIGIN}/`)) ?? [];
 
@@ -685,7 +770,7 @@ export async function loginInBrowser(
   options: { browser?: string | undefined; timeoutSeconds: number },
   platform = process.platform,
   env = process.env,
-): Promise<CookieJar> {
+): Promise<{ jar: CookieJar; token?: string }> {
   const { browser: override, timeoutSeconds } = options;
 
   if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1)
@@ -698,7 +783,8 @@ export async function loginInBrowser(
   let profile: string | undefined;
   let browser: Bun.Subprocess | undefined;
   let debugging: BrowserDebugging | undefined;
-  let result: CookieJar | undefined;
+  let jar: CookieJar | undefined;
+  let token: string | undefined;
   let loginError: Error | undefined;
   let cleanupError: Error | undefined;
   process.on('SIGINT', cancel);
@@ -728,7 +814,14 @@ export async function loginInBrowser(
       );
     }
 
-    result = await waitForCookies(debugging, timeoutSeconds, controller.signal);
+    jar = await waitForCookies(debugging, timeoutSeconds, controller.signal);
+
+    token = debugging.connection.capturedToken;
+
+    if (!token && !controller.signal.aborted)
+      process.stderr.write(
+        'Warning: inna.is renewal token not found; overnight renewal disabled.\n',
+      );
   } catch (error) {
     loginError = controller.signal.aborted
       ? new SafeError('Inna login cancelled.')
@@ -763,7 +856,9 @@ export async function loginInBrowser(
 
   if (loginError) throw loginError;
 
-  if (!result) throw new SafeError('Inna sign-in did not capture a complete session.');
+  if (!jar) throw new SafeError('Inna sign-in did not capture a complete session.');
 
-  return result;
+  if (token) return { jar, token };
+
+  return { jar };
 }
