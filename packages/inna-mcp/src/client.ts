@@ -97,7 +97,7 @@ function parseTokenClaims(token: string):
     const payload = parts[1];
 
     if (!payload) return undefined;
-    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const decoded: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
 
     const parsed = z
       .object({
