@@ -11,7 +11,6 @@ import { z } from 'zod';
 
 import { cookieExportSchema, cookieNames, ORIGIN, sessionJar } from './client.js';
 
-
 const macBrowsers = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
