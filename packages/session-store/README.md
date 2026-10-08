@@ -133,7 +133,45 @@ replace one. `LocalKeyFileProvider({ path, keyId? })` keeps exactly 32 raw bytes
 the record directory. It reads the key with the `readPrivateFile` checks: a regular, single-link
 file owned by the current user with no group or other bits. `createKey()` creates it exclusively
 (`wx`) with mode `0600` in a `0700` directory and flushes the file and the directory.
-`FakeKeyProvider` holds a key in memory for tests.
+`FakeKeyProvider` holds a key in memory for tests. Providers take an optional `AbortSignal`;
+`withSecretRecord` and `createSecretKey` pass theirs.
+
+`KeychainAccessorKeyProvider({ server, profile, keyId?, readTimeoutMs?, createTimeoutMs? })`
+(key source `keychain-accessor`) keeps the key in a generic password of the default (login)
+keychain: service `family-mcp.<server>`, account `<profile>.data-key`, value 64 lowercase hex
+characters. It runs Apple's `/usr/bin/security` directly, never through a shell, with only `PATH`
+and `HOME` in its environment and its output never logged:
+
+- `getKey()` runs `find-generic-password -s … -a … -w` and accepts exactly 64 hex characters and a
+  newline on stdout. The key is never in argv. The child is killed after `readTimeoutMs` (default
+  10 s, `STORE_TIMEOUT`) or on abort (`CANCELLED`).
+- `createKey()` first checks that no item exists, then runs `security -i` and writes one
+  `add-generic-password … -w <hex> -T /usr/bin/security` command to its stdin, without `-U` or
+  `-A`: the item is never updated, and its ACL trusts only the Apple tool. `-i` exits with the
+  last command's status; a zero status is still followed by reading the key back and checking, in
+  constant time, that it equals the generated key. Any
+  failure, abort or timeout (`createTimeoutMs`, default 120 s) after the write starts is
+  `STORE_WRITE_UNCERTAIN` and is never retried; running setup again creates the key only while the
+  item is still absent and otherwise refuses.
+- Exit statuses are the OSStatus truncated to 8 bits (Apple Security-61901.80.25,
+  `SecurityTool/macOS/security.c` and `keychain_find.c`): 44 item not found is `STORE_UNAVAILABLE`;
+  36 interaction not allowed (a locked keychain without UI) and 29 interaction required are
+  `STORE_LOCKED`; 51 authorization failed and 128 user cancelled are `STORE_ACCESS_DENIED`; anything
+  else, malformed output or a missing tool is `STORE_ERROR`.
+
+The binaries ship unsigned, so trusting the Apple tool is what keeps updates free of keychain
+prompts. The cost: **any process of the same user can fetch the key with `security` while the login
+keychain is unlocked**; there is no per-app isolation. Records still hold no plaintext in config or
+backups, and the key is protected while the keychain is locked. A later Developer ID release
+upgrades without rewriting data: an interactive step grants the signed binary access to the same
+item, verifies that it reads the key, then removes the `security` tool's access.
+
+`defaultKeyProvider({ server, profile, platform? })` picks the key for the platform: the keychain
+provider on macOS; on Linux a `LocalKeyFileProvider` at
+`$XDG_DATA_HOME/family-mcp/keys/<server>.<profile>.key` when `XDG_DATA_HOME` is absolute, else
+`~/.local/share/family-mcp/keys/…`, apart from the records under `~/.config`. Other platforms throw
+`STORE_UNAVAILABLE`. `defaultSecretRecordPath(server)` returns `$XDG_CONFIG_HOME/<server>/session.enc`
+(default `~/.config/<server>/session.enc`).
 
 Failures are fixed, never repaired:
 
@@ -147,6 +185,8 @@ Failures are fixed, never repaired:
   pending generation other than the next one, a migrated flag that disagrees with the generation, a
   committed marker ahead of or behind its record, a missing record after a committed write, or a
   record without a marker. Neither file is used or changed; nothing resets the store.
+- `STORE_LOCKED`, `STORE_ACCESS_DENIED`, `STORE_TIMEOUT`: the keychain is locked, refused access,
+  or did not answer in time. The key is never created as a fallback.
 - `TOO_LARGE`, plus the existing lock and file codes (`BUSY`, `CANCELLED`, `LOCK_LOST`,
   `UNSAFE_FILE`, `IO`).
 
@@ -172,4 +212,7 @@ abort at the commit point, sweeping, directory modes, default paths, and three r
 serialize read-modify-write cycles while a removal waits for an in-flight holder. The secret-record
 suite covers round trips, 1 MiB payloads, header and ciphertext tampering, wrong keys, missing and
 unsafe key files, pending-write reconciliation, stale or rolled-back markers and records, messages
-without paths or secrets, and three processes serializing encrypted updates.
+without paths or secrets, and three processes serializing encrypted updates. The keychain suite
+runs a fake `security` script, never the real tool: key read-back, argv without the key, exactly one
+stdin command, a minimal environment, output validation, every mapped exit status, killed hung
+reads and setups, unconfirmed setup writes, and the default key and record paths per platform.

@@ -14,9 +14,9 @@ export type KeyProvider = {
   readonly keySource: string;
   readonly keyId: string;
   /** Returns the existing key. Never creates one: a missing key is STORE_UNAVAILABLE. */
-  getKey(): Promise<Uint8Array>;
+  getKey(signal?: AbortSignal): Promise<Uint8Array>;
   /** Explicit setup only; refuses to replace an existing key. Use `createSecretKey`. */
-  createKey(): Promise<void>;
+  createKey(signal?: AbortSignal): Promise<void>;
 };
 
 export function keyUnavailable(cause?: unknown): SessionStoreError {
@@ -27,13 +27,13 @@ export function keyUnavailable(cause?: unknown): SessionStoreError {
   );
 }
 
-function keyExists(cause?: unknown): SessionStoreError {
+export function keyExists(cause?: unknown): SessionStoreError {
   return new SessionStoreError('STORE_ERROR', 'A store key already exists; it is never replaced.', {
     cause,
   });
 }
 
-function malformedKey(): SessionStoreError {
+export function malformedKey(): SessionStoreError {
   return new SessionStoreError('STORE_ERROR', 'The store key is malformed; it must be 32 bytes.');
 }
 
@@ -83,16 +83,17 @@ export class LocalKeyFileProvider implements KeyProvider {
   readonly backend = 'encrypted-file';
   readonly keySource = 'local-file';
   readonly keyId: string;
-  readonly #path: string;
+  /** The key file; never put it in an error message. */
+  readonly path: string;
 
   constructor(options: LocalKeyFileOptions) {
-    this.#path = options.path;
+    this.path = options.path;
     this.keyId = options.keyId ?? 'local';
   }
 
   async getKey(): Promise<Uint8Array> {
     try {
-      return checkedKey(await readPrivateBytes(this.#path, { maxBytes: KEY_BYTES }));
+      return checkedKey(await readPrivateBytes(this.path, { maxBytes: KEY_BYTES }));
     } catch (error) {
       if (!(error instanceof SessionStoreError)) throw error;
 
@@ -104,11 +105,11 @@ export class LocalKeyFileProvider implements KeyProvider {
   }
 
   async createKey(): Promise<void> {
-    await ensurePrivateDir(dirname(this.#path), { enforceMode: true });
+    await ensurePrivateDir(dirname(this.path), { enforceMode: true });
     let handle: FileHandle;
 
     try {
-      handle = await open(this.#path, 'wx', 0o600);
+      handle = await open(this.path, 'wx', 0o600);
     } catch (error) {
       if (systemErrorCode(error) === 'EEXIST') throw keyExists(error);
       throw new SessionStoreError('IO', 'Cannot create the store key. Check the key directory.', {
@@ -121,7 +122,7 @@ export class LocalKeyFileProvider implements KeyProvider {
       await handle.sync();
     } catch (error) {
       // Nothing was encrypted with a partial key yet, so it is not left behind as malformed.
-      await rm(this.#path, { force: true });
+      await rm(this.path, { force: true });
       throw new SessionStoreError('IO', 'Cannot write the store key. Check the disk.', {
         cause: error,
       });
@@ -129,6 +130,6 @@ export class LocalKeyFileProvider implements KeyProvider {
       await handle.close();
     }
 
-    await syncDirectory(dirname(this.#path));
+    await syncDirectory(dirname(this.path));
   }
 }

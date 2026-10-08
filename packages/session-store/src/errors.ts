@@ -7,6 +7,9 @@ export type SessionStoreErrorCode =
   | 'TOO_LARGE'
   | 'IO'
   | 'STORE_UNAVAILABLE'
+  | 'STORE_LOCKED'
+  | 'STORE_ACCESS_DENIED'
+  | 'STORE_TIMEOUT'
   | 'STORE_ERROR'
   | 'STORE_WRITE_UNCERTAIN'
   | 'SECRET_NOT_FOUND';

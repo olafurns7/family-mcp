@@ -91,7 +91,7 @@ export async function withSecretRecord(
     { signal: options.signal, waitMs: options.waitMs },
     async () => {
       await sweepTemp(options.path);
-      const key = checkedKey(await options.keys.getKey());
+      const key = checkedKey(await options.keys.getKey(options.signal));
       const { current, marker } = await load(options, key);
 
       if ((marker?.generation ?? 0) >= MAX_INTEGER)
@@ -125,25 +125,30 @@ export async function createSecretKey(options: SecretKeySetupOptions): Promise<v
         'STORE_ERROR',
         'The secret store is already set up; its key is never replaced.',
       );
-    await options.keys.createKey();
+    await options.keys.createKey(options.signal);
   });
+}
+
+/** Server, profile and key names: 1-64 letters, digits, dots, dashes or underscores. */
+export function checkNames(...names: string[]): void {
+  for (const name of names)
+    if (!NAME_PATTERN.test(name))
+      throw new RangeError(
+        'Store names must be 1-64 letters, digits, dots, dashes or underscores.',
+      );
 }
 
 function checkOptions(options: SecretRecordOptions): void {
   const { keys } = options;
 
-  for (const name of [
+  checkNames(
     options.server,
     options.profile,
     options.purpose,
     keys.backend,
     keys.keySource,
     keys.keyId,
-  ])
-    if (!NAME_PATTERN.test(name))
-      throw new RangeError(
-        'Store names must be 1-64 letters, digits, dots, dashes or underscores.',
-      );
+  );
 
   if (!Number.isSafeInteger(options.schema) || options.schema < 1 || options.schema > MAX_INTEGER)
     throw new RangeError('schema must be a positive integer of at most 15 digits.');
