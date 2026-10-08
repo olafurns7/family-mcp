@@ -223,6 +223,7 @@ class CdpPipe {
       );
 
       const result = z.object({ cookies: z.array(browserCookieSchema) }).parse(value);
+
       const tokenCookie = result.cookies.find(
         (cookie) =>
           cookie.name === 'id_token' &&
@@ -233,6 +234,7 @@ class CdpPipe {
       return tokenCookie?.value;
     } catch {
       process.stderr.write('Warning: Could not capture inna.is token for session renewal.\n');
+
       return undefined;
     }
   }
@@ -800,5 +802,6 @@ export async function loginInBrowser(
   if (!jar) throw new SafeError('Inna sign-in did not capture a complete session.');
 
   if (token) return { jar, token };
+
   return { jar };
 }

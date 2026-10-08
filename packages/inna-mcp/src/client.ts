@@ -94,12 +94,17 @@ function parseTokenClaims(
 
     if (!payload) return undefined;
     const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const parsed = z
+      .object({
+        exp: z.number().optional(),
+        iat: z.number().optional(),
+        orig_iat: z.number().optional(),
+      })
+      .safeParse(decoded);
 
-    return {
-      exp: typeof decoded.exp === 'number' ? decoded.exp : undefined,
-      iat: typeof decoded.iat === 'number' ? decoded.iat : undefined,
-      orig_iat: typeof decoded.orig_iat === 'number' ? decoded.orig_iat : undefined,
-    };
+    if (!parsed.success) return undefined;
+
+    return parsed.data;
   } catch {
     return undefined;
   }
@@ -703,6 +708,7 @@ export class InnaClient {
       const access = accessSchema.safeParse(await accessResponse.json());
 
       if (!access.success) return undefined;
+
       const candidates = access.data.flatMap((entry, index) =>
         entry.is_access && entry.system === 1 ? [{ entry, index }] : [],
       );
@@ -712,6 +718,7 @@ export class InnaClient {
         candidates[0];
 
       if (!chosen) return undefined;
+
       const { entry } = chosen;
       const params = new URLSearchParams({
         i: String(chosen.index),
@@ -737,6 +744,7 @@ export class InnaClient {
 
       if (schoolUrl.origin !== 'https://nam.inna.is' || schoolUrl.pathname !== '/auth/token')
         return undefined;
+
       const handoffResponse = await this.fetcher(schoolUrl.href, {
         method: 'GET',
         redirect: 'manual',
@@ -960,8 +968,10 @@ export class InnaClient {
         // treat it as if no session exists so we can save the new one.
         prior = undefined;
       }
+
       const throttle = { pauseUntil: prior?.pauseUntil ?? 0 };
       const connection = new Connection(jar, throttle, this.fetcher, this.now, signal);
+
       let user: schemas.User;
 
       try {
