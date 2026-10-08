@@ -180,12 +180,7 @@ class CdpPipe {
     let value: CdpValue;
 
     try {
-      value = await this.request(
-        'Network.getCookies',
-        { urls: [`${ORIGIN}/`, 'https://inna.is/'] },
-        signal,
-        this.sessionId,
-      );
+      value = await this.request('Network.getCookies', { urls: [`${ORIGIN}/`] }, signal, this.sessionId);
     } catch (error) {
       if (
         error instanceof CdpProtocolError &&
@@ -198,12 +193,6 @@ class CdpPipe {
     }
 
     const result = z.object({ cookies: z.array(browserCookieSchema) }).parse(value);
-    const tokenCookie = result.cookies.find(
-      (cookie) =>
-        cookie.name === 'id_token' &&
-        cookie.domain.replace(/^\./, '') === 'inna.is' &&
-        cookie.path === '/',
-    );
 
     const jar = await sessionJar(
       cookieExportSchema.parse(
@@ -215,6 +204,26 @@ class CdpPipe {
         ),
       ),
     );
+
+    let tokenCookie: typeof result.cookies[number] | undefined;
+
+    try {
+      const tokenValue = await this.request(
+        'Network.getCookies',
+        { urls: ['https://inna.is/'] },
+        signal,
+        this.sessionId,
+      );
+      const tokenResult = z.object({ cookies: z.array(browserCookieSchema) }).parse(tokenValue);
+      tokenCookie = tokenResult.cookies.find(
+        (cookie) =>
+          cookie.name === 'id_token' &&
+          cookie.domain.replace(/^\./, '') === 'inna.is' &&
+          cookie.path === '/',
+      );
+    } catch {
+      // Token capture failed, continue without token
+    }
 
     const loginResult: BrowserLoginResult = { jar };
 

@@ -949,7 +949,7 @@ export class InnaClient {
       JSON.parse(await readPrivateFile(source, { maxBytes: MAX_SESSION_BYTES })),
     );
 
-    await this.saveVerifiedSession(await sessionJar(input), allowAccountChange);
+    await this.saveVerifiedSession(await sessionJar(input), allowAccountChange, undefined);
   }
 
   /** The saved default student's user id, read locally; a fresh login prefers it. */
@@ -964,7 +964,14 @@ export class InnaClient {
     signal?: AbortSignal,
   ): Promise<void> {
     await this.locked(async () => {
-      const prior = await readSaved(this.path);
+      let prior: Saved | undefined;
+      try {
+        prior = await readSaved(this.path);
+      } catch (error) {
+        // If we can't read the existing session (corrupted, wrong permissions, etc.),
+        // treat it as if no session exists so we can save the new one.
+        prior = undefined;
+      }
       const throttle = { pauseUntil: prior?.pauseUntil ?? 0 };
       const connection = new Connection(jar, throttle, this.fetcher, this.now, signal);
       let user: schemas.User;
