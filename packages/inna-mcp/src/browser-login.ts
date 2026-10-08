@@ -243,9 +243,7 @@ class CdpPipe {
         // Attach to target with flatten
         const attachResult = z
           .object({ sessionId: z.string() })
-          .parse(
-            await this.request('Target.attachToTarget', { targetId, flatten: true }, signal),
-          );
+          .parse(await this.request('Target.attachToTarget', { targetId, flatten: true }, signal));
 
         const tabSessionId = attachResult.sessionId;
 

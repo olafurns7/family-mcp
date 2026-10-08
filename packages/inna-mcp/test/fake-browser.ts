@@ -168,7 +168,9 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
         result = { sessionId: targetId };
       }
     } else if (command.method === 'Target.createTarget') {
-      const params = z.object({ url: z.string(), background: z.boolean().optional() }).parse(command.params);
+      const params = z
+        .object({ url: z.string(), background: z.boolean().optional() })
+        .parse(command.params);
       const targetId = `created-target-${nextTargetId.value++}`;
 
       createdTargets[targetId] = { url: params.url, sessionId: '' };
@@ -183,7 +185,9 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
         .object({ expression: z.string(), returnByValue: z.boolean().optional() })
         .parse(command.params);
 
-      const targetInfo = Object.values(createdTargets).find((t) => t.sessionId === command.sessionId);
+      const targetInfo = Object.values(createdTargets).find(
+        (t) => t.sessionId === command.sessionId,
+      );
       const url = targetInfo?.url ?? '';
 
       let value: unknown = null;
@@ -193,12 +197,17 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
         else if (url.startsWith('https://inna.is')) value = 'https://inna.is';
         else value = 'https://unknown';
       } else if (params.expression === "localStorage.getItem('id_token')") {
-        if (process.env.INNA_FAKE_TOKEN_ORIGIN === 'r.inna.is' && url.startsWith('https://r.inna.is'))
+        if (
+          process.env.INNA_FAKE_TOKEN_ORIGIN === 'r.inna.is' &&
+          url.startsWith('https://r.inna.is')
+        )
           value = process.env.INNA_FAKE_TOKEN_VALUE ?? null;
-        else if (process.env.INNA_FAKE_TOKEN_ORIGIN === 'inna.is' && url.startsWith('https://inna.is'))
+        else if (
+          process.env.INNA_FAKE_TOKEN_ORIGIN === 'inna.is' &&
+          url.startsWith('https://inna.is')
+        )
           value = process.env.INNA_FAKE_TOKEN_VALUE ?? null;
-        else
-          value = null;
+        else value = null;
       }
 
       result = { result: { value } };

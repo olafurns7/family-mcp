@@ -217,7 +217,9 @@ test('auth login --google captures over a private pipe, closes the browser, then
     const state = await waitForBrowserState(stateFile);
     const { exit, stdout, stderr } = await collectProcess(child);
 
-    expect(stderr).toBe(`${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`);
+    expect(stderr).toBe(
+      `${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`,
+    );
     expect(stdout).toBe(`Signed in. Session saved to ${sessionPath} (renewal token: no)\n`);
     expect(exit).toBe(0);
     expect(stdout + stderr).not.toMatch(/synthetic-|decoy-/);
@@ -292,7 +294,9 @@ test('auth login --google waits through the Google pages until the student appli
     );
     const { exit, stderr } = await collectProcess(child);
 
-    expect(stderr).toBe(`${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`);
+    expect(stderr).toBe(
+      `${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`,
+    );
     expect(exit).toBe(0);
     expect(upstream.requests.map((request) => request.browserClosed)).toEqual([true]);
     expect((await savedCookies(sessionPath)).map(({ key }) => key).toSorted()).toEqual([
@@ -402,7 +406,9 @@ test('auth login --google closes a launcher-spawned browser child before removin
     state = await waitForBrowserState(stateFile);
     const { exit, stderr } = await collectProcess(child);
 
-    expect(stderr).toBe(`${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`);
+    expect(stderr).toBe(
+      `${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`,
+    );
     expect(exit).toBe(0);
     expect(state.profileMode).toBe(0o700);
     expect(upstream.requests).toMatchObject([{ browserClosed: true, profileRemoved: true }]);
@@ -750,7 +756,9 @@ test('auth login --google rediscovers the student tab after its pipe session det
     state = await waitForBrowserState(stateFile);
     const { exit, stderr } = await collectProcess(child);
 
-    expect(stderr).toBe(`${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`);
+    expect(stderr).toBe(
+      `${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`,
+    );
     expect(exit).toBe(0);
     expect((await savedCookies(sessionPath)).map(({ key }) => key).toSorted()).toEqual([
       'JSESSIONID',
@@ -859,7 +867,9 @@ test('auth login --google captures JSON-quoted token from r.inna.is localStorage
       browserEnvironment(directory, temporaryDirectory, sessionPath, {
         INNA_TEST_ORIGIN: upstream.origin,
         INNA_FAKE_TOKEN_ORIGIN: 'r.inna.is',
-        INNA_FAKE_TOKEN_VALUE: JSON.stringify('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.fake'),
+        INNA_FAKE_TOKEN_VALUE: JSON.stringify(
+          'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.fake',
+        ),
       }),
       20,
       preload,
@@ -874,7 +884,9 @@ test('auth login --google captures JSON-quoted token from r.inna.is localStorage
     const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
 
     expect(saved.version).toBe(3);
-    expect(saved.token).toBe('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.fake');
+    expect(saved.token).toBe(
+      'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.fake',
+    );
   } finally {
     await stopChild(child);
     await upstream.server.stop(true);
@@ -902,7 +914,8 @@ test('auth login --google captures token from inna.is localStorage when not on r
       browserEnvironment(directory, temporaryDirectory, sessionPath, {
         INNA_TEST_ORIGIN: upstream.origin,
         INNA_FAKE_TOKEN_ORIGIN: 'inna.is',
-        INNA_FAKE_TOKEN_VALUE: 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.second',
+        INNA_FAKE_TOKEN_VALUE:
+          'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.second',
       }),
       20,
       preload,
@@ -917,7 +930,9 @@ test('auth login --google captures token from inna.is localStorage when not on r
     const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
 
     expect(saved.version).toBe(3);
-    expect(saved.token).toBe('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.second');
+    expect(saved.token).toBe(
+      'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.second',
+    );
   } finally {
     await stopChild(child);
     await upstream.server.stop(true);
@@ -953,7 +968,9 @@ test('auth login --google saves session without token and warns when token not f
 
     expect(exit).toBe(0);
     expect(stderr).toContain(START_MESSAGE);
-    expect(stderr).toContain('Warning: inna.is renewal token not found; overnight renewal disabled.');
+    expect(stderr).toContain(
+      'Warning: inna.is renewal token not found; overnight renewal disabled.',
+    );
 
     const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
 
@@ -991,7 +1008,9 @@ test('auth login --google closes token capture tabs on abort', async () => {
         INNA_FAKE_DELAY_SIGTERM: '1',
         INNA_TEST_ORIGIN: upstream.origin,
         INNA_FAKE_TOKEN_ORIGIN: 'r.inna.is',
-        INNA_FAKE_TOKEN_VALUE: JSON.stringify('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.abort'),
+        INNA_FAKE_TOKEN_VALUE: JSON.stringify(
+          'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.abort',
+        ),
       }),
       20,
       preload,
