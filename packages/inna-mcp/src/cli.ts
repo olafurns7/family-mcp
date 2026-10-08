@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
-import { extractToken, loginInBrowser } from './browser-login.js';
+import { loginInBrowser } from './browser-login.js';
 import { InnaClient } from './client.js';
 import { createServer } from './server.js';
 import { startKeepAlive } from './keep-alive.js';
@@ -109,8 +109,7 @@ async function signInWithGoogle(
   browser: { browser: string | undefined; timeoutSeconds: number },
 ): Promise<void> {
   // The browser is closed and its profile removed before the session is verified and saved.
-  const jar = await loginInBrowser(browser);
-  const token = extractToken(jar);
+  const { jar, token } = await loginInBrowser(browser);
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.on('SIGINT', cancel);

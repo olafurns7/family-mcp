@@ -231,7 +231,7 @@ class CdpPipe {
       );
 
       return tokenCookie?.value;
-    } catch (error) {
+    } catch {
       process.stderr.write('Warning: Could not capture inna.is token for session renewal.\n');
       return undefined;
     }
@@ -713,7 +713,7 @@ export async function loginInBrowser(
   options: { browser?: string | undefined; timeoutSeconds: number },
   platform = process.platform,
   env = process.env,
-): Promise<CookieJar> {
+): Promise<{ jar: CookieJar; token?: string }> {
   const { browser: override, timeoutSeconds } = options;
 
   if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1)
@@ -727,6 +727,7 @@ export async function loginInBrowser(
   let browser: Bun.Subprocess | undefined;
   let debugging: BrowserDebugging | undefined;
   let jar: CookieJar | undefined;
+  let token: string | undefined;
   let loginError: Error | undefined;
   let cleanupError: Error | undefined;
   process.on('SIGINT', cancel);
@@ -760,11 +761,7 @@ export async function loginInBrowser(
 
     // Best-effort token capture after login completes
     if (jar && debugging?.connection) {
-      const token = await debugging.connection.captureToken(controller.signal);
-      if (token) {
-        // Store token temporarily on jar object for retrieval
-        (jar as CookieJar & { _innaToken?: string })._innaToken = token;
-      }
+      token = await debugging.connection.captureToken(controller.signal);
     }
   } catch (error) {
     loginError = controller.signal.aborted
@@ -802,10 +799,6 @@ export async function loginInBrowser(
 
   if (!jar) throw new SafeError('Inna sign-in did not capture a complete session.');
 
-  return jar;
-}
-
-// Extract token from jar if one was captured during browser login
-export function extractToken(jar: CookieJar): string | undefined {
-  return (jar as CookieJar & { _innaToken?: string })._innaToken;
+  if (token) return { jar, token };
+  return { jar };
 }
