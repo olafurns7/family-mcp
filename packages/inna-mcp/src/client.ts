@@ -967,6 +967,7 @@ export class InnaClient {
   ): Promise<void> {
     await this.locked(async () => {
       let prior: Saved | undefined;
+
       try {
         prior = await readSaved(this.path);
       } catch {
