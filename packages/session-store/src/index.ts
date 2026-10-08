@@ -30,6 +30,13 @@ export { FakeKeyProvider, KEY_BYTES, LocalKeyFileProvider } from './keys.js';
 
 export type { KeyProvider, LocalKeyFileOptions } from './keys.js';
 
-export { createSecretKey, readSecretRecord, withSecretRecord } from './secret.js';
+export {
+  createSecretKey,
+  readSecretRecord,
+  resetSecretStore,
+  secretStoreExists,
+  withSecretRecord,
+  withSecretStore,
+} from './secret.js';
 
-export type { SecretKeySetupOptions, SecretRecordOptions, SecretUpdate } from './secret.js';
+export type { SecretRecordOptions, SecretStore, SecretUpdate } from './secret.js';

@@ -37,18 +37,58 @@ cat /absolute/path/token.txt | kronan-mcp auth set -
 The CLI verifies the token against Krónan before saving it. A source file is
 treated as a credential: it must be a regular file you own with owner-only
 permissions (`chmod 600`), not a symlink or hard link, and you should delete it
-after the import. Never pass a token as a command-line argument. The default private file is
-`~/.config/kronan-mcp/session.json`; set
-`KRONAN_TOKEN_FILE` to use another path. New files use mode
-`0600`. Check or remove the saved token with
-`kronan-mcp auth status` and `kronan-mcp auth logout`.
-When `XDG_CONFIG_HOME` is set, it replaces `~/.config` as
-the default configuration directory.
+after the import. Never pass a token as a command-line argument.
+
+### Where the token is saved
+
+The token is saved only as an encrypted record (AES-256-GCM),
+`~/.config/kronan-mcp/session.enc`, with a non-secret `session.enc.marker` beside
+it. The record's 256-bit key is created on the first `auth set` or `auth
+migrate`. It is never regenerated, except when the key is gone and you run
+`kronan-mcp auth set` with a new token (see Troubleshooting):
+
+- **macOS:** a login-keychain item (service `family-mcp.kronan-mcp`, account
+  `default.data-key`), read through Apple's `/usr/bin/security`.
+- **Linux:** a `0600` file in its own `0700` directory,
+  `~/.local/share/family-mcp/keys/kronan-mcp.default.key`.
+
+When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is set, it replaces `~/.config` or
+`~/.local/share`.
+
+`kronan-mcp auth status` names where the token is saved and verifies it against
+Krónan. `kronan-mcp auth logout` forgets the token on this computer; the key and
+the record stay. The token stays valid until you revoke it in Krónan settings.
+
+What this protects against: the token showing up in `cat`, `grep`, agent file
+reads, commits, dotfile sync, or backups of `~/.config`. What it does not:
+anything that can read both the record and its key, such as another process of
+your user, an agent with a shell, root, or a full-home backup. On macOS any
+process of your user can read the key with `security` while the login keychain
+is unlocked. Against those it is the same as a `0600` file.
+
+### Upgrading from 0.2.0 or earlier
+
+Earlier versions saved the token in a plaintext file,
+`~/.config/kronan-mcp/session.json` or `KRONAN_TOKEN_FILE`. That file keeps
+working until you migrate, and `auth status` says so. Stop running
+`kronan-mcp` servers, then run:
+
+```sh
+kronan-mcp auth migrate
+```
+
+It reads the file, saves the encrypted record, reads it back, and removes the
+plaintext file. Running it again says `Already migrated.` and removes a leftover
+plaintext file. After migration the plaintext file is never read again; `auth
+set` also removes it. Going back to a version before the encrypted store means
+running `kronan-mcp auth set` again in that version.
 
 ## Connect an MCP host
 
-Use the installed executable's absolute path and the same absolute token-file
-path on the computer running the MCP host.
+Use the installed executable's absolute path on the computer running the MCP
+host. If you set `KRONAN_TOKEN_FILE`, which also locates the order-attempt
+record, or `XDG_CONFIG_HOME`, pass the same absolute values to the host.
+`KRONAN_TOKEN_FILE` must not point into the encrypted store or at its key.
 
 **Claude Desktop** — add this entry to its MCP JSON configuration:
 
@@ -216,8 +256,9 @@ differs. The error says that nothing was sent and no order was placed.
 
 ### One attempt per approval
 
-Every order call is recorded in a private file beside the token file
-(`<token file>.order-attempts.json`, mode `0600`). A cross-process lock covers
+Every order call is recorded in a private file beside the plaintext token file
+of earlier versions (`<token file>.order-attempts.json`, mode `0600`), whether
+or not the token was migrated. The record is not encrypted yet. A cross-process lock covers
 the record check, the checkout check, saving the attempt as `submitting`, the
 request, and saving the result, so simultaneous calls from one or more MCP hosts
 send at most one request. An attempt is `submitting`, then `accepted` or
@@ -310,17 +351,22 @@ account yet.
 
 ## Troubleshooting
 
-| Symptom                                     | Action                                                                                                                                                      |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| No saved Krónan access token                | Run `kronan-mcp auth set` and configure the same `KRONAN_TOKEN_FILE` path in your MCP host.                                                                 |
-| Cannot read the Krónan token file           | Use a regular file you own with owner-only permissions; run `chmod 600 /absolute/path/token.json` on Unix. Do not use symlinks or hard links.               |
-| Krónan denied this request                  | The token is valid but not permitted for that data. Use a token for the right user or customer group, or one with the needed permission.                    |
-| Response exceeded the 4 MiB limit           | Request a smaller page (`limit` or `pageSize`) and retry.                                                                                                   |
-| Krónan rejected the access token            | Create a new token in Krónan settings, then run `kronan-mcp auth set` again.                                                                                |
-| HTTP 429                                    | Wait before retrying; the account limit is 200 requests per 200 seconds.                                                                                    |
-| Invalid response or documented-schema error | Check account access and retry later. The API is in beta and may change; report the endpoint and package version without sharing the token or account data. |
-| The server appears to wait in a terminal    | Stdio server mode waits for MCP input. Use an MCP host, or run `kronan-mcp --help` or `kronan-mcp auth status`.                                             |
-| An earlier order call is still unresolved   | Check your orders in the Krónan app or with `get_active_order` and `list_orders`. Only then run `kronan-mcp orders clear-attempts`.                         |
+| Symptom                                     | Action                                                                                                                                                                   |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| No saved Krónan access token                | Run `kronan-mcp auth set` and configure the same `KRONAN_TOKEN_FILE` and `XDG_CONFIG_HOME` values in your MCP host.                                                      |
+| Saved in a plaintext file                   | Run `kronan-mcp auth migrate`.                                                                                                                                           |
+| Cannot read the Krónan token file           | Applies to a plaintext file before migration. Use a regular file you own with owner-only permissions (`chmod 600`). Do not use symlinks or hard links.                   |
+| Unlock your login keychain                  | macOS: unlock the login keychain (log in at the Mac, or `security unlock-keychain`), then retry.                                                                         |
+| The Krónan store key is missing             | The key was deleted. The record cannot be decrypted; `kronan-mcp auth set` replaces it with a new key and record.                                                        |
+| The last write did not complete             | An interrupted write left `session.enc` and `session.enc.marker` inconsistent. Remove both files, then run `kronan-mcp auth set`.                                        |
+| Cannot use the Krónan token store           | The record, marker, or key is damaged, unsafe, or from another key. Nothing is reset automatically; restore the key, or remove the record and marker and run `auth set`. |
+| Krónan denied this request                  | The token is valid but not permitted for that data. Use a token for the right user or customer group, or one with the needed permission.                                 |
+| Response exceeded the 4 MiB limit           | Request a smaller page (`limit` or `pageSize`) and retry.                                                                                                                |
+| Krónan rejected the access token            | Create a new token in Krónan settings, then run `kronan-mcp auth set` again.                                                                                             |
+| HTTP 429                                    | Wait before retrying; the account limit is 200 requests per 200 seconds.                                                                                                 |
+| Invalid response or documented-schema error | Check account access and retry later. The API is in beta and may change; report the endpoint and package version without sharing the token or account data.              |
+| The server appears to wait in a terminal    | Stdio server mode waits for MCP input. Use an MCP host, or run `kronan-mcp --help` or `kronan-mcp auth status`.                                                          |
+| An earlier order call is still unresolved   | Check your orders in the Krónan app or with `get_active_order` and `list_orders`. Only then run `kronan-mcp orders clear-attempts`.                                      |
 
 ## Development
 
@@ -353,7 +399,7 @@ type failures.
 Tests use synthetic tokens, injected fetch responses, and a loopback HTTP
 server. They never contact a live Krónan host. The server uses native
 `fetch`, strict Zod input/output schemas, the shared
-`@family-mcp/mcp-runtime`, and private token-file handling from
-`@family-mcp/session-store`.
+`@family-mcp/mcp-runtime`, and the encrypted token record and private-file
+handling from `@family-mcp/session-store`.
 
 This project is not affiliated with or endorsed by Krónan.

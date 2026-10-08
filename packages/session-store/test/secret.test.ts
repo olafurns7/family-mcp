@@ -14,7 +14,10 @@ import {
   SessionStoreError,
   createSecretKey,
   readSecretRecord,
+  resetSecretStore,
+  secretStoreExists,
   withSecretRecord,
+  withSecretStore,
   writePrivateFile,
   type KeyProvider,
   type SecretRecordOptions,
@@ -211,6 +214,115 @@ test('a missing key is STORE_UNAVAILABLE and is never regenerated', async () => 
     await writePrivateFile(keyPath, KEY);
     await assert.rejects(createSecretKey(fresh), hasCode('STORE_ERROR'));
     expect(new Uint8Array(await readFile(keyPath))).toEqual(KEY);
+  });
+});
+
+test('reset removes an undecryptable store only while its key is missing', async () => {
+  await scratch(async (directory) => {
+    const keyPath = join(directory, 'keys', 'test-mcp.key');
+    const store = options(directory, new LocalKeyFileProvider({ path: keyPath }));
+    await createSecretKey(store);
+    await put(store, SECRET);
+
+    // A readable store, or a key failure other than a missing key, is never reset.
+    await assert.rejects(resetSecretStore(store), hasCode('STORE_ERROR'));
+
+    const locked: KeyProvider = {
+      backend: 'encrypted-file',
+      keySource: 'local-file',
+      keyId: 'local',
+      getKey: () => Promise.reject(new SessionStoreError('STORE_LOCKED', 'Locked.')),
+      createKey: () => Promise.reject(new Error('Not called.')),
+    };
+
+    await assert.rejects(resetSecretStore({ ...store, keys: locked }), hasCode('STORE_LOCKED'));
+    expect(await readSecretRecord(store)).toBe(SECRET);
+
+    expect(await secretStoreExists(store.path)).toBe(true);
+    await rm(keyPath);
+    await resetSecretStore(store);
+    await assert.rejects(stat(store.path), { code: 'ENOENT' });
+
+    // The marker is rewritten, never removed: the store still decides after a crash here.
+    expect(await readFile(`${store.path}.marker`, 'utf8')).toBe(
+      '{"backend":"encrypted-file","keySource":"local-file","keyId":"local","profile":"default","migrated":false,"generation":0}\n',
+    );
+    expect(await secretStoreExists(store.path)).toBe(true);
+    await assert.rejects(readSecretRecord(store), hasCode('STORE_UNAVAILABLE'));
+    await resetSecretStore(store);
+
+    await createSecretKey(store);
+    await assert.rejects(readSecretRecord(store), hasCode('SECRET_NOT_FOUND'));
+    await assert.rejects(createSecretKey(store), hasCode('STORE_ERROR'));
+    expect(await put(store, 'next')).toBe('next');
+    expect(await readSecretRecord(store)).toBe('next');
+  });
+});
+
+test('a key is created only for an empty store whose key is conclusively missing', async () => {
+  await scratch(async (directory) => {
+    const keyPath = join(directory, 'keys', 'test-mcp.key');
+    const store = options(directory, new LocalKeyFileProvider({ path: keyPath }));
+    const marker = `${store.path}.marker`;
+    expect(await secretStoreExists(store.path)).toBe(false);
+
+    const empty =
+      '{"backend":"encrypted-file","keySource":"local-file","keyId":"local","profile":"default","migrated":false,"generation":0}\n';
+
+    // A pending first write, or a marker past generation 0, is never set up again.
+    for (const text of [
+      pending(empty, 1, 'AAAAAAAAAAAAAAAA'),
+      empty.replace('"migrated":false,"generation":0', '"migrated":true,"generation":1'),
+    ]) {
+      await writePrivateFile(marker, text);
+      await assert.rejects(createSecretKey(store), hasCode('STORE_ERROR'));
+      await assert.rejects(stat(keyPath), { code: 'ENOENT' });
+    }
+
+    // A generation-0 marker with a readable key is refused; with a locked key the error stays.
+    await writePrivateFile(marker, empty);
+    await writePrivateFile(keyPath, KEY);
+    await assert.rejects(createSecretKey(store), hasCode('STORE_ERROR'));
+    await rm(keyPath);
+
+    const locked: KeyProvider = {
+      backend: 'encrypted-file',
+      keySource: 'local-file',
+      keyId: 'local',
+      getKey: () => Promise.reject(new SessionStoreError('STORE_LOCKED', 'Locked.')),
+      createKey: () => Promise.reject(new Error('Not called.')),
+    };
+
+    await assert.rejects(createSecretKey({ ...store, keys: locked }), hasCode('STORE_LOCKED'));
+
+    await createSecretKey(store);
+    expect((await readFile(keyPath)).length).toBe(32);
+    expect(await put(store, SECRET)).toBe(SECRET);
+  });
+});
+
+test('withSecretStore holds one lock across setup, reads and writes', async () => {
+  await scratch(async (directory) => {
+    const store = options(directory, new FakeKeyProvider());
+
+    const result = await withSecretStore(store, async (held) => {
+      expect(await held.exists()).toBe(false);
+      await held.createKey();
+      expect(await held.update(async () => undefined)).toBeNull();
+      expect(await held.exists()).toBe(false);
+      expect(await held.update(async () => SECRET)).toBe(SECRET);
+
+      // Another caller waits for this hold instead of interleaving.
+      await assert.rejects(
+        withSecretRecord({ ...store, waitMs: 0 }, async () => 'other'),
+        hasCode('BUSY'),
+      );
+
+      return held.exists();
+    });
+
+    expect(result).toBe(true);
+    expect(await readSecretRecord(store)).toBe(SECRET);
   });
 });
 

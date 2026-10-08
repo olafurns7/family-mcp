@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { lstat } from 'node:fs/promises';
+import { lstat, rm } from 'node:fs/promises';
 
 import { SessionStoreError, systemErrorCode, throwIfAborted } from './errors.js';
 import { readPrivateFile, sweepTemp, writePrivateFile } from './files.js';
@@ -27,10 +27,17 @@ export type SecretRecordOptions = {
 /** Returns the next plaintext to store, or undefined to leave the record unchanged. */
 export type SecretUpdate = (current: string | null) => Promise<string | undefined>;
 
-export type SecretKeySetupOptions = Pick<
-  SecretRecordOptions,
-  'keys' | 'path' | 'signal' | 'waitMs'
->;
+/** A store whose record lock is already held, from `withSecretStore`. Nothing locks again. */
+export type SecretStore = {
+  /** True once a marker exists: the store then decides, also while it holds no record. */
+  exists(): Promise<boolean>;
+  /** `withSecretRecord`'s transaction. */
+  update(update: SecretUpdate): Promise<string | null>;
+  /** `createSecretKey`'s setup. */
+  createKey(): Promise<void>;
+  /** `resetSecretStore`'s recovery. */
+  reset(): Promise<void>;
+};
 
 type Marker = {
   backend: string;
@@ -77,34 +84,34 @@ const MARKER_PATTERN = new RegExp(
 const BASE64URL_PATTERN = /^[\w-]+$/;
 
 /**
+ * Hold the record's lock for all of `work`, so a caller can decide, read, set up and write in one
+ * critical section. A caller that also holds another lock always takes that one first.
+ */
+export async function withSecretStore<T>(
+  options: SecretRecordOptions,
+  work: (store: SecretStore) => Promise<T>,
+): Promise<T> {
+  checkOptions(options);
+
+  return withFileLock(options.path, { signal: options.signal, waitMs: options.waitMs }, () =>
+    work({
+      exists: () => secretStoreExists(options.path),
+      update: (update) => updateRecord(options, update),
+      createKey: () => createKey(options),
+      reset: () => reset(options),
+    }),
+  );
+}
+
+/**
  * Run `update` on the decrypted record while holding the record's lock, and store its result as
  * the next generation. Returns the stored plaintext, or null when the store holds no record.
  */
-export async function withSecretRecord(
+export function withSecretRecord(
   options: SecretRecordOptions,
   update: SecretUpdate,
 ): Promise<string | null> {
-  checkOptions(options);
-
-  return withFileLock(
-    options.path,
-    { signal: options.signal, waitMs: options.waitMs },
-    async () => {
-      await sweepTemp(options.path);
-      const key = checkedKey(await options.keys.getKey(options.signal));
-      const { current, marker } = await load(options, key);
-
-      if ((marker?.generation ?? 0) >= MAX_INTEGER)
-        throw new SessionStoreError('STORE_ERROR', 'The secret store has no generation left.');
-      throwIfAborted(options.signal);
-      const next = await update(current?.toString('utf8') ?? null);
-
-      if (next === undefined) return current?.toString('utf8') ?? null;
-      await store(options, key, marker, next);
-
-      return next;
-    },
-  );
+  return withSecretStore(options, (held) => held.update(update));
 }
 
 /** Read the record; a store that conclusively holds none throws SECRET_NOT_FOUND. */
@@ -117,16 +124,29 @@ export async function readSecretRecord(options: SecretRecordOptions): Promise<st
   return current;
 }
 
-/** Explicit first setup: create the key only while the record has neither a marker nor a record. */
-export async function createSecretKey(options: SecretKeySetupOptions): Promise<void> {
-  await withFileLock(options.path, { signal: options.signal, waitMs: options.waitMs }, async () => {
-    if ((await exists(markerPath(options.path))) || (await exists(options.path)))
-      throw new SessionStoreError(
-        'STORE_ERROR',
-        'The secret store is already set up; its key is never replaced.',
-      );
-    await options.keys.createKey(options.signal);
-  });
+/**
+ * Explicit setup: create the key while there is no record, and either no marker or a
+ * generation-0 marker without a pending write (a reset or never-written store) whose key is
+ * conclusively missing.
+ */
+export function createSecretKey(options: SecretRecordOptions): Promise<void> {
+  return withSecretStore(options, (held) => held.createKey());
+}
+
+/**
+ * Explicit re-setup after a lost key: only while `getKey` still reports STORE_UNAVAILABLE under
+ * the record lock, commit a fresh generation-0 marker first and then remove the record, which
+ * nothing can decrypt anymore. The marker stays, so the store keeps deciding after a crash at any
+ * later point. The caller then runs `createSecretKey` and writes. Any other key outcome leaves
+ * both files untouched.
+ */
+export function resetSecretStore(options: SecretRecordOptions): Promise<void> {
+  return withSecretStore(options, (held) => held.reset());
+}
+
+/** A marker exists, so the store decides even while it holds no record. */
+export function secretStoreExists(path: string): Promise<boolean> {
+  return exists(markerPath(path));
 }
 
 /** Server, profile and key names: 1-64 letters, digits, dots, dashes or underscores. */
@@ -155,6 +175,84 @@ function checkOptions(options: SecretRecordOptions): void {
 
   if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0)
     throw new RangeError('maxBytes must be a non-negative integer.');
+}
+
+async function updateRecord(
+  options: SecretRecordOptions,
+  update: SecretUpdate,
+): Promise<string | null> {
+  await sweepTemp(options.path);
+  const key = checkedKey(await options.keys.getKey(options.signal));
+  const { current, marker } = await load(options, key);
+
+  if ((marker?.generation ?? 0) >= MAX_INTEGER)
+    throw new SessionStoreError('STORE_ERROR', 'The secret store has no generation left.');
+  throwIfAborted(options.signal);
+  const next = await update(current?.toString('utf8') ?? null);
+
+  if (next === undefined) return current?.toString('utf8') ?? null;
+  await store(options, key, marker, next);
+
+  return next;
+}
+
+async function createKey(options: SecretRecordOptions): Promise<void> {
+  const marker = await readMarker(options);
+
+  if (
+    (await exists(options.path)) ||
+    (marker !== null &&
+      (marker.generation !== 0 || marker.pending !== undefined || !(await keyMissing(options))))
+  )
+    throw new SessionStoreError(
+      'STORE_ERROR',
+      'The secret store is already set up; its key is never replaced.',
+    );
+  await options.keys.createKey(options.signal);
+}
+
+async function reset(options: SecretRecordOptions): Promise<void> {
+  if (!(await keyMissing(options)))
+    throw new SessionStoreError(
+      'STORE_ERROR',
+      'The store key is available; a readable secret store is never reset.',
+    );
+  const { keys } = options;
+
+  // The fresh marker commits before the record goes, so no crash leaves a store without one.
+  await writePrivateFile(
+    markerPath(options.path),
+    encodeMarker({
+      backend: keys.backend,
+      keySource: keys.keySource,
+      keyId: keys.keyId,
+      profile: options.profile,
+      migrated: false,
+      generation: 0,
+    }),
+  );
+
+  try {
+    await rm(options.path, { force: true });
+  } catch (cause) {
+    throw new SessionStoreError('IO', 'Cannot remove the secret record. Check its permissions.', {
+      cause,
+    });
+  }
+
+  await sweepTemp(options.path);
+}
+
+/** True only for STORE_UNAVAILABLE; a readable key is false and every other failure propagates. */
+async function keyMissing(options: SecretRecordOptions): Promise<boolean> {
+  try {
+    checkedKey(await options.keys.getKey(options.signal));
+
+    return false;
+  } catch (error) {
+    if (error instanceof SessionStoreError && error.code === 'STORE_UNAVAILABLE') return true;
+    throw error;
+  }
 }
 
 async function load(

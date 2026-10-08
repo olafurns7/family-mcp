@@ -125,8 +125,25 @@ generation, pending?}`. A write first commits a marker naming the pending genera
 
 `readSecretRecord(options)` runs the same transaction without a change and throws
 `SECRET_NOT_FOUND` only when a key is present and no record was ever committed.
-`createSecretKey({ path, keys })` calls `keys.createKey()` under the record lock, and only while
-the record has no marker and no record.
+`secretStoreExists(path)` is true once a marker exists. From then on the store decides, also while
+it holds no record (after a reset or an interrupted first write); a caller must not fall back to an
+older credential source.
+
+`withSecretStore(options, work)` holds the record lock for all of `work` and hands it `exists()`,
+`update()`, `createKey()` and `reset()`: the same operations as the functions here, without taking
+the lock again, so one critical section can decide, read, set up and write. A caller that also
+holds another lock takes that one first.
+
+`createSecretKey(options)` calls `keys.createKey()` under the record lock, only while there is no
+record and either no marker or a generation-0 marker without a pending write whose key `getKey()`
+reports as `STORE_UNAVAILABLE`.
+
+`resetSecretStore(options)` is the one recovery from a lost key, for an explicit new login only:
+under the record lock it re-checks that `getKey()` fails with `STORE_UNAVAILABLE`, commits a fresh
+generation-0 marker first, then removes the record, which nothing can decrypt anymore. No path
+removes a marker, so a crash at any later point leaves a store without a record, never a missing
+store. The caller then runs `createSecretKey` and writes. A readable key (`STORE_ERROR`) or any
+other key failure leaves both files untouched.
 
 Key providers implement `getKey()`, which never creates a key, and `createKey()`, which refuses to
 replace one. `LocalKeyFileProvider({ path, keyId? })` keeps exactly 32 raw bytes in a file outside
@@ -176,7 +193,7 @@ provider on macOS; on Linux a `LocalKeyFileProvider` at
 Failures are fixed, never repaired:
 
 - `STORE_UNAVAILABLE`: the key is missing. It is never regenerated, also when the marker says the
-  store is migrated.
+  store is migrated, except through an explicit `resetSecretStore`.
 - `STORE_ERROR`: a malformed key (also from a custom provider), a record that fails
   authentication (a wrong key and tampering are not distinguished), a malformed or mismatched
   marker, or a setup on an existing store or key.

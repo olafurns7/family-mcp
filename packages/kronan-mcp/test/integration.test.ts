@@ -1,18 +1,50 @@
 import { afterAll, test, expect } from 'bun:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
-import { SessionStoreError, writePrivateFile } from '@family-mcp/session-store';
+import {
+  FakeKeyProvider,
+  LocalKeyFileProvider,
+  SessionStoreError,
+  createSecretKey,
+  resetSecretStore,
+  writePrivateFile,
+  type KeyProvider,
+  type SecretRecordOptions,
+} from '@family-mcp/session-store';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
 import manifest from '../package.json' with { type: 'json' };
 import { KronanClient } from '../src/api.js';
-import { type Claim, type Lock, claimAttempt, readAttempts } from '../src/attempts.js';
-import { loadToken, normalizeToken, removeToken, saveToken } from '../src/auth.js';
+import {
+  type Claim,
+  type Lock,
+  attemptsPath,
+  claimAttempt,
+  readAttempts,
+} from '../src/attempts.js';
+import {
+  loadSavedToken,
+  loadToken,
+  logoutToken,
+  migrateToken,
+  normalizeToken,
+  saveToken,
+} from '../src/auth.js';
 import {
   addCheckoutToOrderInput,
   addShoppingNoteLinesInput,
@@ -50,8 +82,40 @@ const TOKEN = 'synthetic-token-0123456789';
 /** Order-attempt records from this file stay in a private scratch directory. */
 const SCRATCH = await mkdtemp(join(tmpdir(), 'kronan-attempts-'));
 
-// A client built with the default attempts path must never touch the real configuration.
+// A client built with the default attempts path, and the store and its key, must never touch
+// the real configuration. CLI child processes inherit these too.
 process.env.KRONAN_TOKEN_FILE = join(SCRATCH, 'default-session.json');
+
+process.env.XDG_CONFIG_HOME = join(SCRATCH, 'config');
+
+process.env.XDG_DATA_HOME = join(SCRATCH, 'data');
+
+/** A configuration directory of its own beside a legacy token file, outside its name space. */
+const configFor = (legacy: string) => join(dirname(legacy), `config-${basename(legacy)}`);
+
+/** The encrypted record under an `XDG_CONFIG_HOME`. */
+const recordIn = (config: string) => join(config, 'kronan-mcp', 'session.enc');
+
+/** Point the legacy token file and the store's configuration directory at scratch paths. */
+async function withTokenFiles<T>(
+  legacy: string,
+  work: () => Promise<T>,
+  config = configFor(legacy),
+): Promise<T> {
+  const previous = [process.env.KRONAN_TOKEN_FILE, process.env.XDG_CONFIG_HOME];
+  process.env.KRONAN_TOKEN_FILE = legacy;
+  process.env.XDG_CONFIG_HOME = config;
+
+  try {
+    return await work();
+  } finally {
+    [process.env.KRONAN_TOKEN_FILE, process.env.XDG_CONFIG_HOME] = previous;
+  }
+}
+
+/** The plaintext token file that versions before the encrypted store wrote. */
+const writeLegacyToken = (path: string, token: string) =>
+  writePrivateFile(path, JSON.stringify({ version: 1, token }) + '\n');
 
 afterAll(() => rm(SCRATCH, { recursive: true, force: true }));
 
@@ -646,7 +710,7 @@ test('oversized token files and standard input are rejected with a size message'
       mode: 0o600,
     });
     await chmod(huge, 0o600);
-    await assert.rejects(loadToken(huge), /too large to be a token file/);
+    await withTokenFiles(huge, () => assert.rejects(loadToken(), /too large to be a token file/));
 
     const oversized = await runCli(['auth', 'set', '-'], {
       tokenFile: join(directory, 'saved.json'),
@@ -655,41 +719,39 @@ test('oversized token files and standard input are rejected with a size message'
 
     expect(oversized.exitCode).toBe(1);
     expect(oversized.stderr).toMatch(/too large to hold one access token/);
-    await assert.rejects(stat(join(directory, 'saved.json')), { code: 'ENOENT' });
+    await assert.rejects(stat(recordIn(configFor(join(directory, 'saved.json')))), {
+      code: 'ENOENT',
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test('private token file permissions, parsing, normalization, and removal', async () => {
+test('legacy token file permissions and parsing, and token normalization', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'kronan-token-test-'));
   const path = join(directory, 'session.json');
   const loosePath = join(directory, 'loose.json');
   const linkPath = join(directory, 'link.json');
   const invalidPath = join(directory, 'invalid.json');
+  const load = (legacy: string) => withTokenFiles(legacy, () => loadToken());
 
   try {
-    await saveToken(path, TOKEN);
-    expect(await loadToken(path)).toBe(TOKEN);
-    expect(await readFile(path, 'utf8')).toBe(JSON.stringify({ version: 1, token: TOKEN }) + '\n');
+    await writeLegacyToken(path, TOKEN);
+    expect(await load(path)).toBe(TOKEN);
 
     if (process.platform !== 'win32') {
-      expect((await stat(path)).mode & 0o777).toBe(0o600);
       await writeFile(loosePath, JSON.stringify({ version: 1, token: TOKEN }), { mode: 0o644 });
       await chmod(loosePath, 0o644);
-      await assert.rejects(loadToken(loosePath), /Cannot read the Krónan token file/);
+      await assert.rejects(load(loosePath), /Cannot read the Krónan token file/);
       await symlink(path, linkPath);
-      await assert.rejects(loadToken(linkPath), /Cannot read the Krónan token file/);
+      await assert.rejects(load(linkPath), /Cannot read the Krónan token file/);
     }
 
     await writeFile(invalidPath, '{"version":2,"token":"synthetic-token-0123456789"}', {
       mode: 0o600,
     });
-    await assert.rejects(loadToken(invalidPath), /Invalid Krónan token file/);
-    await assert.rejects(
-      loadToken(join(directory, 'missing.json')),
-      /No saved Krónan access token/,
-    );
+    await assert.rejects(load(invalidPath), /Invalid Krónan token file/);
+    await assert.rejects(load(join(directory, 'missing.json')), /No saved Krónan access token/);
 
     expect(normalizeToken('  ' + TOKEN + ' \n')).toBe(TOKEN);
     expect(() => normalizeToken('')).toThrow(/Invalid Krónan access token/);
@@ -698,7 +760,396 @@ test('private token file permissions, parsing, normalization, and removal', asyn
     expect(() => normalizeToken('synthetic-tökén')).toThrow(/Invalid Krónan access token/);
     expect(() => normalizeToken('x'.repeat(4097))).toThrow(/Invalid Krónan access token/);
 
-    await removeToken(join(directory, 'already-missing.json'));
+    await withTokenFiles(join(directory, 'already-missing.json'), () => logoutToken());
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('migrate moves the legacy token once; afterwards only the store is read', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kronan-migrate-'));
+  const legacy = join(directory, 'session.json');
+  const config = join(directory, 'store');
+  const secret = recordIn(config);
+  const keys = new FakeKeyProvider();
+  const attempts = `${legacy}.order-attempts.json`;
+  const other = 'synthetic-token-planted-later';
+
+  try {
+    await withTokenFiles(
+      legacy,
+      async () => {
+        await assert.rejects(
+          loadToken(keys),
+          /No saved Krónan access token. Run kronan-mcp auth set/,
+        );
+        await assert.rejects(migrateToken(keys), /No saved Krónan access token/);
+
+        await writeLegacyToken(legacy, TOKEN);
+        await writePrivateFile(attempts, 'journal bytes stay as they are');
+        expect(attemptsPath()).toBe(attempts);
+
+        expect(await loadSavedToken(keys)).toEqual({
+          token: TOKEN,
+          storage: 'Saved in a plaintext file. Run kronan-mcp auth migrate.',
+        });
+
+        expect(await migrateToken(keys)).toBe('migrated');
+        await assert.rejects(stat(legacy), { code: 'ENOENT' });
+        expect(await readFile(secret, 'utf8')).not.toContain(TOKEN);
+        expect(await readFile(`${secret}.marker`, 'utf8')).not.toContain(TOKEN);
+
+        expect(await loadSavedToken(keys)).toEqual({
+          token: TOKEN,
+          storage: 'Saved in an encrypted file.',
+        });
+
+        expect(await migrateToken(keys)).toBe('already');
+
+        // A legacy file that reappears after migration is never read; migrate removes it.
+        await writeLegacyToken(legacy, other);
+        expect(await loadToken(keys)).toBe(TOKEN);
+        expect(await migrateToken(keys)).toBe('already-removed-legacy');
+        await assert.rejects(stat(legacy), { code: 'ENOENT' });
+
+        await writeLegacyToken(legacy, other);
+        await logoutToken(keys);
+        await assert.rejects(stat(legacy), { code: 'ENOENT' });
+        await stat(secret);
+        await assert.rejects(loadToken(keys), /No saved Krónan access token/);
+        await writeLegacyToken(legacy, other);
+        await assert.rejects(loadToken(keys), /No saved Krónan access token/);
+        expect(await migrateToken(keys)).toBe('already-removed-legacy');
+
+        expect(await saveToken(TOKEN, keys)).toBe(false);
+        expect(await loadToken(keys)).toBe(TOKEN);
+
+        // The order-attempt journal keeps its path and bytes through all of it.
+        expect(attemptsPath()).toBe(attempts);
+        expect(await readFile(attempts, 'utf8')).toBe('journal bytes stay as they are');
+      },
+      config,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('store key failures fail closed with fixed messages and never fall back or reset', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kronan-store-errors-'));
+  const legacy = join(directory, 'session.json');
+  const config = join(directory, 'config');
+  const secret = recordIn(config);
+  const keyPath = join(directory, 'keys', 'kronan-mcp.default.key');
+  const keys = new LocalKeyFileProvider({ path: keyPath });
+
+  const failing = (code: SessionStoreError['code']): KeyProvider => ({
+    backend: keys.backend,
+    keySource: keys.keySource,
+    keyId: keys.keyId,
+    getKey: () => Promise.reject(new SessionStoreError(code, 'Synthetic key failure.')),
+    createKey: () => Promise.reject(new Error('A key is never created here.')),
+  });
+
+  const snapshot = async () =>
+    Promise.all([readFile(secret), readFile(`${secret}.marker`), readFile(keyPath)]);
+
+  try {
+    await withTokenFiles(
+      legacy,
+      async () => {
+        expect(await saveToken(TOKEN, keys)).toBe(false);
+        expect((await stat(keyPath)).mode & 0o777).toBe(0o600);
+        const before = await snapshot();
+        await writeLegacyToken(legacy, 'synthetic-token-stale-plaintext');
+        const messages: string[] = [];
+
+        for (const [code, pattern] of [
+          ['STORE_LOCKED', /^Unlock your login keychain and try again\.$/],
+          ['STORE_TIMEOUT', /did not answer in time/],
+          ['STORE_ACCESS_DENIED', /was denied/],
+          ['STORE_ERROR', /Cannot use the Krónan token store/],
+        ] as const) {
+          for (const work of [
+            () => loadToken(failing(code)),
+            () => saveToken(TOKEN, failing(code)),
+            () => migrateToken(failing(code)),
+            () => logoutToken(failing(code)),
+          ]) {
+            const error = await work().then(
+              () => assert.fail(`${code} was accepted.`),
+              (cause: unknown) => cause,
+            );
+
+            assert(error instanceof Error);
+            expect(error.message).toMatch(pattern);
+            messages.push(error.message);
+          }
+
+          // Nothing was reset, rewritten, or read from the plaintext file instead.
+          expect(await snapshot()).toEqual(before);
+          await stat(legacy);
+        }
+
+        // A wrong key is an authentication failure, not a missing key: auth set refuses too.
+        const wrong = new FakeKeyProvider(new Uint8Array(32).fill(9), keys.keyId);
+        Object.defineProperties(wrong, {
+          backend: { value: keys.backend },
+          keySource: { value: keys.keySource },
+        });
+        await assert.rejects(loadToken(wrong), /Cannot use the Krónan token store/);
+        await assert.rejects(saveToken(TOKEN, wrong), /Cannot use the Krónan token store/);
+        expect(await snapshot()).toEqual(before);
+
+        // A record without its marker is an interrupted write; its token is not used.
+        const marker = await readFile(`${secret}.marker`);
+        await rm(`${secret}.marker`);
+        await assert.rejects(loadToken(keys), /did not complete, so its token is not used/);
+        await writePrivateFile(`${secret}.marker`, marker);
+
+        // A deleted key fails closed everywhere except an explicit new auth set.
+        await rm(keyPath);
+
+        const missing =
+          /The Krónan store key is missing\. Run kronan-mcp auth set to save the token again\.$/;
+
+        let requests = 0;
+
+        const client = new KronanClient(
+          () => loadToken(keys),
+          async () => {
+            requests++;
+
+            return Response.json({ type: 'user', name: 'Test' });
+          },
+          join(directory, 'attempts.json'),
+        );
+
+        try {
+          await assert.rejects(client.status(), missing);
+        } finally {
+          await client.close();
+        }
+
+        expect(requests).toBe(0);
+        await assert.rejects(loadSavedToken(keys), missing);
+        await assert.rejects(migrateToken(keys), missing);
+        await assert.rejects(logoutToken(keys), missing);
+        await assert.rejects(stat(keyPath), { code: 'ENOENT' });
+        await stat(secret);
+        expect(await saveToken(TOKEN, keys)).toBe(true);
+        expect(await loadToken(keys)).toBe(TOKEN);
+        await assert.rejects(stat(legacy), { code: 'ENOENT' });
+
+        for (const message of messages) {
+          expect(message).not.toContain(TOKEN);
+          expect(message).not.toContain(directory);
+        }
+      },
+      config,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+/** The options auth.ts uses, so a test can stop a recovery at an exact step. */
+const kronanRecord = (config: string, keys: KeyProvider): SecretRecordOptions => ({
+  path: recordIn(config),
+  server: 'kronan-mcp',
+  profile: 'default',
+  purpose: 'token',
+  schema: 1,
+  maxBytes: 16_384,
+  keys,
+});
+
+test('a store with a marker never falls back to the legacy file after any crash point', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kronan-crash-'));
+  const legacy = join(directory, 'session.json');
+  const config = join(directory, 'config');
+  const keyPath = join(directory, 'keys', 'kronan-mcp.default.key');
+  const keys = new LocalKeyFileProvider({ path: keyPath });
+  const record = kronanRecord(config, keys);
+  const stale = 'synthetic-token-stale-plaintext';
+  const noToken = /No saved Krónan access token\. Run kronan-mcp auth set first\./;
+
+  try {
+    await withTokenFiles(
+      legacy,
+      async () => {
+        await saveToken(TOKEN, keys);
+        await writeLegacyToken(legacy, stale);
+        await rm(keyPath);
+
+        // Crash after the reset: a fresh marker, no record, no key.
+        await resetSecretStore(record);
+        await assert.rejects(loadToken(keys), /The Krónan store key is missing/);
+        await stat(legacy);
+
+        // Crash after the new key was created, before the write.
+        await createSecretKey(record);
+        await assert.rejects(loadSavedToken(keys), noToken);
+        await assert.rejects(loadToken(keys), noToken);
+        await logoutToken(keys);
+        await assert.rejects(stat(legacy), { code: 'ENOENT' });
+        await assert.rejects(loadToken(keys), noToken);
+
+        // A first write that stopped after its pending marker, with a legacy token present.
+        await rm(recordIn(config));
+        await writePrivateFile(
+          `${recordIn(config)}.marker`,
+          '{"backend":"encrypted-file","keySource":"local-file","keyId":"local","profile":"default","migrated":false,"generation":0,"pending":{"generation":1,"nonce":"AAAAAAAAAAAAAAAA"}}\n',
+        );
+        await writeLegacyToken(legacy, TOKEN);
+        await assert.rejects(loadToken(keys), noToken);
+        await assert.rejects(loadSavedToken(keys), noToken);
+
+        // Only the explicit migration resumes it.
+        expect(await migrateToken(keys)).toBe('migrated');
+        expect(await loadToken(keys)).toBe(TOKEN);
+        await assert.rejects(stat(legacy), { code: 'ENOENT' });
+      },
+      config,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a legacy path that aliases the store, its key, or their lock and temporaries is refused', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kronan-collide-'));
+  const config = join(directory, 'config');
+  const store = join(config, 'kronan-mcp');
+  const keyPath = join(directory, 'keys', 'kronan-mcp.default.key');
+  const keys = new LocalKeyFileProvider({ path: keyPath });
+  const alias = join(directory, 'alias');
+
+  try {
+    await withTokenFiles(join(directory, 'session.json'), () => saveToken(TOKEN, keys), config);
+    await rm(keyPath);
+    await symlink(store, alias);
+
+    const files = [
+      recordIn(config),
+      `${recordIn(config)}.marker`,
+      join(directory, 'keys', 'kronan-mcp.default.key'),
+    ];
+
+    const snapshot = () => Promise.all(files.map((file) => readFile(file).catch(() => 'absent')));
+
+    const before = await snapshot();
+
+    for (const legacy of [
+      recordIn(config),
+      `${recordIn(config)}.marker`,
+      `${recordIn(config)}.lock`,
+      `${recordIn(config)}.0123.tmp`,
+      join(store, 'session'),
+      join(alias, 'session.enc'),
+      join(alias, 'session.enc.marker'),
+      join(store, 'nested', '..', 'session.enc'),
+      keyPath,
+      join(directory, 'keys', '.', 'kronan-mcp.default.key.lock'),
+    ]) {
+      // An unresolved order journal beside the configured path keeps its bytes.
+      const journal = `${legacy}.order-attempts.json`;
+      await writePrivateFile(journal, 'unresolved journal');
+
+      await withTokenFiles(
+        legacy,
+        async () => {
+          for (const work of [
+            () => saveToken(TOKEN, keys),
+            () => migrateToken(keys),
+            () => logoutToken(keys),
+          ])
+            await assert.rejects(
+              work(),
+              /KRONAN_TOKEN_FILE overlaps the encrypted Krónan token store/,
+            );
+        },
+        config,
+      );
+
+      expect(await readFile(journal, 'utf8')).toBe('unresolved journal');
+      await rm(journal);
+      expect(await snapshot()).toEqual(before);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('logout waits for an in-flight migration instead of being undone by it', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kronan-interleave-'));
+  const legacy = join(directory, 'session.json');
+  const config = join(directory, 'config');
+  const key = new Uint8Array(32).fill(5);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+
+  /** Pauses migration inside its locks, after it read the legacy file. */
+  class PausedKeys extends FakeKeyProvider {
+    override async getKey(): Promise<Uint8Array> {
+      entered.resolve();
+      await release.promise;
+
+      return super.getKey();
+    }
+  }
+
+  try {
+    await withTokenFiles(
+      legacy,
+      async () => {
+        await writeLegacyToken(legacy, TOKEN);
+        const migrating = migrateToken(new PausedKeys(key));
+        await entered.promise;
+        let loggedOut = false;
+
+        const logout = logoutToken(new FakeKeyProvider(key)).finally(() => {
+          loggedOut = true;
+        });
+
+        // Longer than the lock's longest poll interval: logout must still be waiting.
+        await Bun.sleep(600);
+        expect(loggedOut).toBe(false);
+        release.resolve();
+        expect(await migrating).toBe('migrated');
+        await logout;
+        await assert.rejects(stat(legacy), { code: 'ENOENT' });
+        await assert.rejects(loadToken(new FakeKeyProvider(key)), /No saved Krónan access token/);
+      },
+      config,
+    );
+  } finally {
+    release.resolve();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a legacy file that cannot be removed is a fixed message after the token was saved', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kronan-cleanup-'));
+  const legacy = join(directory, 'session.json');
+  const keys = new FakeKeyProvider();
+
+  try {
+    await mkdir(join(legacy, 'occupied'), { recursive: true });
+
+    await withTokenFiles(legacy, async () => {
+      const error = await saveToken(TOKEN, keys).then(
+        () => assert.fail('A directory at the legacy path was removed.'),
+        (cause: unknown) => cause,
+      );
+
+      assert(error instanceof Error);
+      expect(error.message).toBe(
+        'Saved in the encrypted store, but the old plaintext token file could not be removed. Remove it by hand.',
+      );
+      expect(await loadToken(keys)).toBe(TOKEN);
+      await stat(join(legacy, 'occupied'));
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -2275,7 +2726,11 @@ test('stdio executable reports a missing token through MCP without stderr noise'
     command: process.execPath,
     args: ['src/cli.ts'],
     cwd: resolve('.'),
-    env: { ...process.env, KRONAN_TOKEN_FILE: join(directory, 'missing.json') },
+    env: {
+      ...process.env,
+      KRONAN_TOKEN_FILE: join(directory, 'missing.json'),
+      XDG_CONFIG_HOME: join(directory, 'config'),
+    },
     stderr: 'pipe',
   });
 
@@ -2298,6 +2753,9 @@ test('stdio executable reports a missing token through MCP without stderr noise'
 
 type CliOptions = {
   tokenFile: string;
+  /** XDG_CONFIG_HOME; default `configFor(tokenFile)`. */
+  config?: string;
+  env?: Record<string, string>;
   preloadFile?: string;
   recordFile?: string;
   status?: string;
@@ -2315,6 +2773,8 @@ async function runCli(args: string[], options: CliOptions) {
     env: {
       ...process.env,
       KRONAN_TOKEN_FILE: options.tokenFile,
+      XDG_CONFIG_HOME: options.config ?? configFor(options.tokenFile),
+      ...options.env,
       KRONAN_PRELOAD_RECORD: options.recordFile,
       KRONAN_PRELOAD_STATUS: options.status ?? '200',
     },
@@ -2379,10 +2839,13 @@ test('CLI token setup, status, logout, help, version, and unknown commands stay 
 
     expect(fromFile.exitCode).toBe(0);
     expect(fromFile.stderr).toBe('');
-    expect(await loadToken(saved)).toBe(TOKEN);
-    expect(await readFile(saved, 'utf8')).toBe(JSON.stringify({ version: 1, token: TOKEN }) + '\n');
+    expect(fromFile.stdout).toContain('verified and saved encrypted');
+    expect(await withTokenFiles(saved, () => loadToken())).toBe(TOKEN);
+    await assert.rejects(stat(saved), { code: 'ENOENT' });
+    expect(await readFile(recordIn(configFor(saved)), 'utf8')).not.toContain(TOKEN);
 
-    if (process.platform !== 'win32') expect((await stat(saved)).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32')
+      expect((await stat(recordIn(configFor(saved)))).mode & 0o777).toBe(0o600);
     expect(await readFile(fileRecord, 'utf8')).toBe(
       JSON.stringify({
         url: 'https://api.kronan.is/api/v1/me/',
@@ -2398,12 +2861,11 @@ test('CLI token setup, status, logout, help, version, and unknown commands stay 
     });
 
     expect(fromStdin.exitCode).toBe(0);
-    expect(await loadToken(stdinSaved)).toBe(TOKEN);
-    expect(await readFile(stdinSaved, 'utf8')).toBe(
-      JSON.stringify({ version: 1, token: TOKEN }) + '\n',
-    );
+    expect(await withTokenFiles(stdinSaved, () => loadToken())).toBe(TOKEN);
+    await assert.rejects(stat(stdinSaved), { code: 'ENOENT' });
 
-    if (process.platform !== 'win32') expect((await stat(stdinSaved)).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32')
+      expect((await stat(recordIn(configFor(stdinSaved)))).mode & 0o777).toBe(0o600);
     expect(await readFile(stdinRecord, 'utf8')).toBe(
       JSON.stringify({
         url: 'https://api.kronan.is/api/v1/me/',
@@ -2421,7 +2883,7 @@ test('CLI token setup, status, logout, help, version, and unknown commands stay 
     expect(rejectedSet.exitCode).toBe(1);
     expect(rejectedSet.stderr).toMatch(/Krónan rejected the access token/);
     expect(rejectedSet.stderr).not.toContain(TOKEN);
-    await assert.rejects(stat(rejected), { code: 'ENOENT' });
+    await assert.rejects(stat(recordIn(configFor(rejected))), { code: 'ENOENT' });
 
     const sharedSource = join(directory, 'shared-token.txt');
     await writeFile(sharedSource, TOKEN + '\n', { mode: 0o644 });
@@ -2448,7 +2910,7 @@ test('CLI token setup, status, logout, help, version, and unknown commands stay 
       expect(unsafeSet.exitCode).toBe(1);
       expect(unsafeSet.stderr).toMatch(pattern);
       expect(unsafeSet.stderr).not.toContain(TOKEN);
-      await assert.rejects(stat(unsafeSaved), { code: 'ENOENT' });
+      await assert.rejects(stat(recordIn(configFor(unsafeSaved))), { code: 'ENOENT' });
       await assert.rejects(stat(unsafeRecord), { code: 'ENOENT' });
     }
 
@@ -2462,7 +2924,7 @@ test('CLI token setup, status, logout, help, version, and unknown commands stay 
 
     expect(invalidToken.exitCode).toBe(1);
     expect(invalidToken.stderr).toMatch(/Invalid Krónan access token/);
-    await assert.rejects(stat(invalid), { code: 'ENOENT' });
+    await assert.rejects(stat(recordIn(configFor(invalid))), { code: 'ENOENT' });
     await assert.rejects(stat(invalidRecord), { code: 'ENOENT' });
 
     const missingStatus = await runCli(['auth', 'status'], {
@@ -2472,10 +2934,14 @@ test('CLI token setup, status, logout, help, version, and unknown commands stay 
     expect(missingStatus.exitCode).toBe(1);
     expect(missingStatus.stderr).toMatch(/No saved Krónan access token/);
 
-    await saveToken(saved, TOKEN);
+    await writeLegacyToken(saved, TOKEN);
     const logout = await runCli(['auth', 'logout'], { tokenFile: saved });
     expect(logout.exitCode).toBe(0);
     await assert.rejects(stat(saved), { code: 'ENOENT' });
+    await assert.rejects(
+      withTokenFiles(saved, () => loadToken()),
+      /No saved Krónan access token/,
+    );
 
     const version = await runCli(['--version'], { tokenFile: saved });
     expect(version.exitCode).toBe(0);
@@ -2489,6 +2955,97 @@ test('CLI token setup, status, logout, help, version, and unknown commands stay 
     expect(
       [rejectedSet.stderr, invalidToken.stderr, missingStatus.stderr, unknown.stderr].join('\n'),
     ).not.toMatch(new RegExp(TOKEN));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('CLI migrate, status and set keep no plaintext token anywhere under the default paths', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'kronan-default-paths-'));
+  const home = join(directory, 'home');
+  const preload = join(directory, 'mock-fetch.js');
+  const record = join(directory, 'request.json');
+  const legacy = join(home, 'config', 'kronan-mcp', 'session.json');
+  const next = 'synthetic-token-after-migration';
+
+  const env = {
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, 'config'),
+    XDG_DATA_HOME: join(home, 'data'),
+    KRONAN_TOKEN_FILE: '',
+  };
+
+  const run = (args: string[], input?: string) => {
+    const options: CliOptions = { tokenFile: '', env, preloadFile: preload, recordFile: record };
+
+    if (input !== undefined) options.input = input;
+
+    return runCli(args, options);
+  };
+
+  /** Every file under the scratch home, so a plaintext copy anywhere fails the test. */
+  const contents = async () => {
+    const names = await readdir(home, { recursive: true });
+    const files = [];
+
+    for (const name of names)
+      if ((await stat(join(home, name))).isFile())
+        files.push(await readFile(join(home, name), 'utf8'));
+
+    return files.join('\n');
+  };
+
+  try {
+    await writeFile(
+      preload,
+      [
+        "import { writeFile } from 'node:fs/promises';",
+        'globalThis.fetch = async (input, init) => {',
+        '  await writeFile(process.env.KRONAN_PRELOAD_RECORD, new Headers(init?.headers).get("authorization"));',
+        "  return Response.json({ type: 'user', name: 'Test' });",
+        '};',
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+    await writeLegacyToken(legacy, TOKEN);
+
+    const before = await run(['auth', 'status']);
+    expect(before.exitCode).toBe(0);
+    expect(before.stdout.split('\n')[0]).toBe(
+      'Saved in a plaintext file. Run kronan-mcp auth migrate.',
+    );
+    expect(await readFile(record, 'utf8')).toBe('AccessToken ' + TOKEN);
+
+    const migrated = await run(['auth', 'migrate']);
+    expect(migrated.exitCode).toBe(0);
+    expect(migrated.stdout).toContain('moved to the encrypted store');
+    await assert.rejects(stat(legacy), { code: 'ENOENT' });
+    expect(await contents()).not.toContain(TOKEN);
+    await stat(join(home, 'config', 'kronan-mcp', 'session.enc'));
+    expect(
+      (await stat(join(home, 'data', 'family-mcp', 'keys', 'kronan-mcp.default.key'))).mode & 0o777,
+    ).toBe(0o600);
+
+    expect((await run(['auth', 'migrate'])).stdout).toBe('Already migrated.\n');
+
+    const after = await run(['auth', 'status']);
+    expect(after.exitCode).toBe(0);
+    expect(after.stdout.split('\n')[0]).toBe('Saved in an encrypted file.');
+    expect(after.stdout + after.stderr).not.toContain(home);
+
+    const set = await run(['auth', 'set', '-'], next + '\n');
+    expect(set.exitCode).toBe(0);
+    expect(await readFile(record, 'utf8')).toBe('AccessToken ' + next);
+    const stored = await contents();
+    expect(stored).not.toContain(TOKEN);
+    expect(stored).not.toContain(next);
+
+    const logout = await run(['auth', 'logout']);
+    expect(logout.exitCode).toBe(0);
+    const status = await run(['auth', 'status']);
+    expect(status.exitCode).toBe(1);
+    expect(status.stderr).toMatch(/No saved Krónan access token/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -2567,14 +3124,14 @@ test('SIGTERM aborts a pending API request and closes the stdio process', async 
     '',
   ].join('\n');
 
-  await saveToken(tokenFile, TOKEN);
+  await withTokenFiles(tokenFile, () => saveToken(TOKEN));
   await writeFile(preload, source, { mode: 0o600 });
 
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['--preload', preload, 'src/cli.ts'],
     cwd: resolve('.'),
-    env: { ...process.env, KRONAN_TOKEN_FILE: tokenFile },
+    env: { ...process.env, KRONAN_TOKEN_FILE: tokenFile, XDG_CONFIG_HOME: configFor(tokenFile) },
     stderr: 'pipe',
   });
 
