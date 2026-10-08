@@ -94,9 +94,9 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
   input.on('error', () => undefined);
   output.on('error', () => undefined);
 
-  let currentTarget = 'fake-page';
-  let nextTargetId = 1;
+  const nextTargetId = { value: 1 };
   const createdTargets: Record<string, { url: string; sessionId: string }> = {};
+  let currentTarget = 'fake-page';
   const studentsUrl = 'https://nam.inna.is/Components/Students/Students.html#!/home';
   const session = { path: '/', expires: -1, session: true, secure: true, httpOnly: true };
 
@@ -134,7 +134,7 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
       .object({
         id: z.number(),
         method: z.string(),
-        params: z.object({ targetId: z.string().optional() }).optional(),
+        params: z.unknown().optional(),
         sessionId: z.string().optional(),
       })
       .parse(JSON.parse(raw));
@@ -169,7 +169,7 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
       }
     } else if (command.method === 'Target.createTarget') {
       const params = z.object({ url: z.string(), background: z.boolean().optional() }).parse(command.params);
-      const targetId = `created-target-${nextTargetId++}`;
+      const targetId = `created-target-${nextTargetId.value++}`;
 
       createdTargets[targetId] = { url: params.url, sessionId: '' };
       result = { targetId };
@@ -197,7 +197,7 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
           value = process.env.INNA_FAKE_TOKEN_VALUE ?? null;
         else if (process.env.INNA_FAKE_TOKEN_ORIGIN === 'inna.is' && url.startsWith('https://inna.is'))
           value = process.env.INNA_FAKE_TOKEN_VALUE ?? null;
-        else if (!process.env.INNA_FAKE_TOKEN_ORIGIN)
+        else
           value = null;
       }
 

@@ -839,3 +839,177 @@ test('help presents Google sign-in as one command and cookie import as the fallb
     await rm(directory, { recursive: true, force: true });
   }
 });
+test('auth login --google captures JSON-quoted token from r.inna.is localStorage', async () => {
+  const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-token-r-');
+  const sessionPath = join(directory, 'session.json');
+  const browser = await makeFakeBrowser(directory);
+  const preload = await makePreload(directory);
+
+  const upstream = createUpstream({
+    valid: true,
+    stateFile: join(directory, 'browser.json'),
+    exitFile: join(directory, 'browser.closed'),
+  });
+
+  let child: Bun.Subprocess | undefined;
+
+  try {
+    child = spawnLogin(
+      browser,
+      browserEnvironment(directory, temporaryDirectory, sessionPath, {
+        INNA_TEST_ORIGIN: upstream.origin,
+        INNA_FAKE_TOKEN_ORIGIN: 'r.inna.is',
+        INNA_FAKE_TOKEN_VALUE: JSON.stringify('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.fake'),
+      }),
+      20,
+      preload,
+    );
+
+    const { exit, stderr } = await collectProcess(child);
+
+    expect(exit).toBe(0);
+    expect(stderr).toContain(START_MESSAGE);
+    expect(stderr).not.toContain('Warning: inna.is renewal token not found');
+
+    const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
+
+    expect(saved.version).toBe(3);
+    expect(saved.token).toBe('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.fake');
+  } finally {
+    await stopChild(child);
+    await upstream.server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('auth login --google captures token from inna.is localStorage when not on r.inna.is', async () => {
+  const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-token-inna-');
+  const sessionPath = join(directory, 'session.json');
+  const browser = await makeFakeBrowser(directory);
+  const preload = await makePreload(directory);
+
+  const upstream = createUpstream({
+    valid: true,
+    stateFile: join(directory, 'browser.json'),
+    exitFile: join(directory, 'browser.closed'),
+  });
+
+  let child: Bun.Subprocess | undefined;
+
+  try {
+    child = spawnLogin(
+      browser,
+      browserEnvironment(directory, temporaryDirectory, sessionPath, {
+        INNA_TEST_ORIGIN: upstream.origin,
+        INNA_FAKE_TOKEN_ORIGIN: 'inna.is',
+        INNA_FAKE_TOKEN_VALUE: 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.second',
+      }),
+      20,
+      preload,
+    );
+
+    const { exit, stderr } = await collectProcess(child);
+
+    expect(exit).toBe(0);
+    expect(stderr).toContain(START_MESSAGE);
+    expect(stderr).not.toContain('Warning: inna.is renewal token not found');
+
+    const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
+
+    expect(saved.version).toBe(3);
+    expect(saved.token).toBe('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.second');
+  } finally {
+    await stopChild(child);
+    await upstream.server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('auth login --google saves session without token and warns when token not found', async () => {
+  const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-no-token-');
+  const sessionPath = join(directory, 'session.json');
+  const browser = await makeFakeBrowser(directory);
+  const preload = await makePreload(directory);
+
+  const upstream = createUpstream({
+    valid: true,
+    stateFile: join(directory, 'browser.json'),
+    exitFile: join(directory, 'browser.closed'),
+  });
+
+  let child: Bun.Subprocess | undefined;
+
+  try {
+    child = spawnLogin(
+      browser,
+      browserEnvironment(directory, temporaryDirectory, sessionPath, {
+        INNA_TEST_ORIGIN: upstream.origin,
+      }),
+      20,
+      preload,
+    );
+
+    const { exit, stderr } = await collectProcess(child);
+
+    expect(exit).toBe(0);
+    expect(stderr).toContain(START_MESSAGE);
+    expect(stderr).toContain('Warning: inna.is renewal token not found; overnight renewal disabled.');
+
+    const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
+
+    expect(saved.version).toBe(3);
+    expect(saved.token).toBeUndefined();
+    expect(saved.tokenRefreshedAt).toBe(0);
+  } finally {
+    await stopChild(child);
+    await upstream.server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('auth login --google closes token capture tabs on abort', async () => {
+  const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-token-abort-');
+  const sessionPath = join(directory, 'session.json');
+  const originalFile = await savePreviousSession(sessionPath);
+  const browser = await makeFakeBrowser(directory);
+  const preload = await makePreload(directory);
+
+  const upstream = createUpstream({
+    valid: true,
+    stateFile: join(directory, 'browser.json'),
+    exitFile: join(directory, 'browser.closed'),
+  });
+
+  let child: Bun.Subprocess | undefined;
+  let state: z.infer<typeof browserStateSchema> | undefined;
+
+  try {
+    child = spawnLogin(
+      browser,
+      browserEnvironment(directory, temporaryDirectory, sessionPath, {
+        INNA_FAKE_IGNORE_BROWSER_CLOSE: '1',
+        INNA_FAKE_DELAY_SIGTERM: '1',
+        INNA_TEST_ORIGIN: upstream.origin,
+        INNA_FAKE_TOKEN_ORIGIN: 'r.inna.is',
+        INNA_FAKE_TOKEN_VALUE: JSON.stringify('eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.abort'),
+      }),
+      20,
+      preload,
+    );
+
+    state = await waitForBrowserState(join(directory, 'browser.json'));
+    assert.ok(child.pid);
+    process.kill(child.pid, 'SIGINT');
+    await waitForFile(join(directory, 'browser.signal'));
+
+    const { exit, stderr } = await collectProcess(child);
+
+    expect(exit).toBe(1);
+    expect(stderr).toContain('Inna login cancelled.');
+    expect(await readFile(sessionPath, 'utf8')).toBe(originalFile);
+  } finally {
+    await stopChild(child, state?.pid);
+    await upstream.server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
