@@ -191,13 +191,25 @@ and a full-width limitation separated by a thin rule. Command boxes reduce their
 horizontal padding to 12px on mobile. Their focusable text uses preserved wrapping
 and can be selected manually. Setup links have a 44px minimum height at every width.
 
+### Agent-setup disclosure
+
+Below the setup link, a native `details` element offers the same setup as a
+prompt for a coding agent. It is closed by default so the lane stays short. The
+summary is a 12px, weight 590 label in the lane's main text color with a 16px
+chevron that turns a quarter when open; it is at least 44px tall, underlines on
+hover and takes the lane's focus color. Opened, it shows a second command box,
+4px below the summary, with its own header label and copy button. The prompt is
+the same English text in both languages, in the command role with preserved
+wrapping, and can be focused and selected like the install command.
+
 ### Copy button
 
 The quiet control has a 117px minimum width and 44px minimum height; mobile
 reduces minimum width to 109px. Hover uses a pale fill. Successful copying uses
 green, changes the label, disables the button for 1.8 seconds, and announces the
 service name in a polite live status for 3.5 seconds. Failure selects the visible
-command and shows manual-copy guidance. Only color and background transition
+command and shows manual-copy guidance. The agent-prompt button is the same
+control with its own label, confirmation and failure text. Only color and background transition
 (`160ms ease-out`); reduced-motion preference removes transitions.
 
 ### Navigation and focus
@@ -206,6 +218,15 @@ The EN and IS language pair remains visible, with the current page indicated by
 both `aria-current` and green fill. Links are at least 44px by 44px at every width.
 Text links underline on hover. Keyboard focus uses a 3px outline
 with a 5px offset; the skip link appears when focused.
+
+### Footer credit
+
+The footer credits the author by full name, linked to their site, followed by
+two icon-only profile links (GitHub and LinkedIn). The icons are 19px inline SVG
+marks in the muted footer color, each in a 44px by 44px target with the control
+radius, a localized accessible name, and the pale language-hover fill on hover.
+The row wraps, and at 700px it stacks above the affiliation line and the
+repository link with the rest of the footer.
 
 ## Do's and Don'ts
 

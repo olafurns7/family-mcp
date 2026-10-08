@@ -9,16 +9,20 @@
     "preview": "astro preview --host 127.0.0.1",
     "typecheck": "astro check",
     "check": "bun run typecheck && bun run build",
+    "deploy:check": "bun run check && wrangler deploy --dry-run",
     "deploy": "bun run check && wrangler deploy"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "5.3.0",
-    "astro": "7.3.3"
+    "astro": "7.3.7"
   },
   "devDependencies": {
     "@astrojs/check": "0.9.10",
     "typescript": "6.0.3",
-    "wrangler": "4.147.0"
+    "wrangler": "4.148.0"
   },
-  "packageManager": "bun@1.4.2"
+  "packageManager": "bun@1.4.2",
+  "overrides": {
+    "sharp": "0.35.5"
+  }
 }
