@@ -45,6 +45,43 @@ const CDP_COMMAND_TIMEOUT_MS = 10_000;
 
 const POLL_INTERVAL_MS = 100;
 
+const TOKEN_CAPTURE_TIMEOUT_MS = 12_000;
+
+// Each origin gets part of the budget, so a tab that never loads cannot starve the next origin.
+const TOKEN_ORIGIN_TIMEOUT_MS = 6_000;
+
+const TOKEN_TAB_CLOSE_TIMEOUT_MS = 2_000;
+
+// Google sign-in stores the token on r.inna.is; the main inna.is site keeps its own copy.
+const TOKEN_ORIGINS = ['https://r.inna.is', 'https://inna.is'];
+
+const TOKEN_EXPRESSION = "localStorage.getItem('id_token')";
+
+// Same shape login.ts accepts from the electronic-ID callback.
+const JWT_PATTERN = /^eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}$/;
+
+const jwtSchema = z.string().regex(JWT_PATTERN);
+
+// store.js saves values JSON-encoded; a bare token is accepted as well.
+const storedTokenSchema = z
+  .string()
+  .transform((stored) => {
+    try {
+      return z.string().parse(JSON.parse(stored));
+    } catch {
+      return stored;
+    }
+  })
+  .pipe(jwtSchema);
+
+const targetSchema = z.object({ targetId: z.string() });
+
+const attachSchema = z.object({ sessionId: z.string() });
+
+const evaluateSchema = z.object({
+  result: z.object({ value: z.string().nullable().optional() }),
+});
+
 type Exists = (path: string) => Promise<boolean>;
 
 type PathLookup = (command: string) => Promise<string | undefined>;
@@ -218,102 +255,74 @@ class CdpPipe {
     );
   }
 
-  // Best-effort capture of inna.is id_token from localStorage after login completes.
+  // Best-effort capture of the Inna JWT that the sign-in pages keep in localStorage (store.js).
   async captureToken(signal: AbortSignal): Promise<string | undefined> {
-    const TOKEN_REGEX = /^[\w-]+\.[\w-]+\.[\w-]+$/;
-    const origins = ['https://r.inna.is', 'https://inna.is'];
+    for (const origin of TOKEN_ORIGINS) {
+      if (signal.aborted) return undefined;
 
-    for (const origin of origins) {
-      let targetId: string | undefined;
+      const token = await this.storedToken(
+        origin,
+        AbortSignal.any([signal, AbortSignal.timeout(TOKEN_ORIGIN_TIMEOUT_MS)]),
+      );
 
-      try {
-        // Create background tab with static file to avoid SPA refresh/logout logic
-        const createResult = z
-          .object({ targetId: z.string() })
-          .parse(
-            await this.request(
-              'Target.createTarget',
-              { url: `${origin}/favicon.ico`, background: true },
-              signal,
-            ),
-          );
-
-        targetId = createResult.targetId;
-
-        // Attach to target with flatten
-        const attachResult = z
-          .object({ sessionId: z.string() })
-          .parse(await this.request('Target.attachToTarget', { targetId, flatten: true }, signal));
-
-        const tabSessionId = attachResult.sessionId;
-
-        // Wait until Runtime.evaluate of location.origin equals the origin
-        let attempts = 0;
-
-        while (attempts < 10) {
-          const originResult = z
-            .object({ result: z.object({ value: z.string() }) })
-            .parse(
-              await this.request(
-                'Runtime.evaluate',
-                { expression: 'location.origin', returnByValue: true },
-                signal,
-                tabSessionId,
-              ),
-            );
-
-          if (originResult.result.value === origin) break;
-
-          await new Promise((resolve) => setTimeout(resolve, 100));
-          attempts++;
-        }
-
-        // Get localStorage token
-        const tokenResult = z
-          .object({ result: z.object({ value: z.unknown() }) })
-          .parse(
-            await this.request(
-              'Runtime.evaluate',
-              { expression: "localStorage.getItem('id_token')", returnByValue: true },
-              signal,
-              tabSessionId,
-            ),
-          );
-
-        const rawValue = tokenResult.result.value;
-
-        if (typeof rawValue !== 'string') continue;
-
-        // Try JSON.parse first, fall back to raw string
-        let token: string;
-
-        try {
-          const parsed: unknown = JSON.parse(rawValue);
-
-          token = typeof parsed === 'string' ? parsed : rawValue;
-        } catch {
-          token = rawValue;
-        }
-
-        // Validate with JWT regex
-        if (TOKEN_REGEX.test(token)) {
-          return token;
-        }
-      } catch {
-        // Continue to next origin
-      } finally {
-        // Always close target
-        if (targetId) {
-          try {
-            await this.request('Target.closeTarget', { targetId }, signal);
-          } catch {
-            // Ignore close errors
-          }
-        }
-      }
+      if (token) return token;
     }
 
     return undefined;
+  }
+
+  // Reads id_token in a background tab on a static file, so no Inna application code runs.
+  private async storedToken(origin: string, signal: AbortSignal): Promise<string | undefined> {
+    let targetId: string | undefined;
+
+    try {
+      targetId = targetSchema.parse(
+        await this.request(
+          'Target.createTarget',
+          { url: `${origin}/favicon.ico`, background: true },
+          signal,
+        ),
+      ).targetId;
+
+      const { sessionId } = attachSchema.parse(
+        await this.request('Target.attachToTarget', { targetId, flatten: true }, signal),
+      );
+
+      while (
+        evaluateSchema.parse(
+          await this.request(
+            'Runtime.evaluate',
+            { expression: 'location.origin', returnByValue: true },
+            signal,
+            sessionId,
+          ),
+        ).result.value !== origin
+      )
+        await delay(POLL_INTERVAL_MS, undefined, { signal });
+
+      const stored = evaluateSchema.parse(
+        await this.request(
+          'Runtime.evaluate',
+          { expression: TOKEN_EXPRESSION, returnByValue: true },
+          signal,
+          sessionId,
+        ),
+      ).result.value;
+
+      return stored ? storedTokenSchema.safeParse(stored).data : undefined;
+    } catch {
+      return undefined;
+    } finally {
+      // Not tied to the abort signal: a cancelled capture still closes the tab it opened.
+      if (targetId)
+        await this.request(
+          'Target.closeTarget',
+          { targetId },
+          undefined,
+          undefined,
+          TOKEN_TAB_CLOSE_TIMEOUT_MS,
+        ).catch(() => undefined);
+    }
   }
 
   async waitForClose(timeoutMs: number): Promise<boolean> {
@@ -838,27 +847,16 @@ export async function loginInBrowser(
 
     jar = await waitForCookies(debugging, timeoutSeconds, controller.signal);
 
-    // Best-effort token capture after login completes; skip if already cancelled
-    // Check signal again before capture to avoid any delay during shutdown
+    // Best-effort token capture after login completes; skip if already cancelled.
     throwIfCancelled(controller.signal);
+    token = await debugging.connection.captureToken(
+      AbortSignal.any([controller.signal, AbortSignal.timeout(TOKEN_CAPTURE_TIMEOUT_MS)]),
+    );
 
-    try {
-      const tokenSignal = AbortSignal.timeout(12_000);
-      const combined = AbortSignal.any([controller.signal, tokenSignal]);
-
-      token = await debugging.connection.captureToken(combined);
-
-      if (!token) {
-        process.stderr.write(
-          'Warning: inna.is renewal token not found; overnight renewal disabled.\n',
-        );
-      }
-    } catch {
-      // Token capture is optional; proceed without it
+    if (!token && !controller.signal.aborted)
       process.stderr.write(
         'Warning: inna.is renewal token not found; overnight renewal disabled.\n',
       );
-    }
   } catch (error) {
     loginError = controller.signal.aborted
       ? new SafeError('Inna login cancelled.')

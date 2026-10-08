@@ -1,3 +1,4 @@
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { stat, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { resolve } from 'node:path';
@@ -27,6 +28,11 @@ const config = z
   });
 
 const { profile: userDataDir, stateFile, exitFile, signalFile } = config;
+
+// Records which origins token capture opened and closed, never storage values.
+function logTab(entry: string): void {
+  if (process.env.INNA_FAKE_TAB_LOG) appendFileSync(process.env.INNA_FAKE_TAB_LOG, `${entry}\n`);
+}
 
 if (process.env.INNA_FAKE_LAUNCHER === '1') {
   const command = [process.execPath, resolve(import.meta.path), ...args];
@@ -95,7 +101,8 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
   output.on('error', () => undefined);
 
   const nextTargetId = { value: 1 };
-  const createdTargets: Record<string, { url: string; sessionId: string }> = {};
+  const createdTargets = new Map<string, { url: string; sessionId: string }>();
+
   let currentTarget = 'fake-page';
   const studentsUrl = 'https://nam.inna.is/Components/Students/Students.html#!/home';
   const session = { path: '/', expires: -1, session: true, secure: true, httpOnly: true };
@@ -130,12 +137,7 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
   ];
 
   function handlePipeCommand(raw: string): void {
-    const command: {
-      id: number;
-      method: string;
-      params?: unknown;
-      sessionId?: string | undefined;
-    } = z
+    const command = z
       .object({
         id: z.number(),
         method: z.string(),
@@ -165,58 +167,62 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
       };
     } else if (command.method === 'Target.attachToTarget') {
       const targetId =
-        (command.params as { targetId?: string } | undefined)?.targetId ?? currentTarget;
+        z.object({ targetId: z.string() }).partial().optional().parse(command.params)?.targetId ??
+        currentTarget;
 
-      if (createdTargets[targetId]) {
-        createdTargets[targetId].sessionId = `session-${targetId}`;
-        result = { sessionId: createdTargets[targetId].sessionId };
-      } else {
-        result = { sessionId: targetId };
-      }
+      const created = createdTargets.get(targetId);
+
+      if (created) created.sessionId = `session-${targetId}`;
+      result = { sessionId: created?.sessionId ?? targetId };
     } else if (command.method === 'Target.createTarget') {
       const params = z
         .object({ url: z.string(), background: z.boolean().optional() })
         .parse(command.params);
+
       const targetId = `created-target-${nextTargetId.value++}`;
 
-      createdTargets[targetId] = { url: params.url, sessionId: '' };
+      createdTargets.set(targetId, { url: params.url, sessionId: '' });
+      logTab(`open ${new URL(params.url).origin}`);
       result = { targetId };
     } else if (command.method === 'Target.closeTarget') {
       const params = z.object({ targetId: z.string() }).parse(command.params);
 
-      delete createdTargets[params.targetId];
+      const closedTarget = createdTargets.get(params.targetId);
+
+      createdTargets.delete(params.targetId);
+
+      if (closedTarget) logTab(`close ${new URL(closedTarget.url).origin}`);
       result = { success: true };
     } else if (command.method === 'Runtime.evaluate') {
       const params = z
         .object({ expression: z.string(), returnByValue: z.boolean().optional() })
         .parse(command.params);
 
-      const targetInfo = Object.values(createdTargets).find(
-        (t) => t.sessionId === command.sessionId,
-      );
-      const url = targetInfo?.url ?? '';
+      const url =
+        [...createdTargets.values()].find((target) => target.sessionId === command.sessionId)
+          ?.url ?? '';
 
-      let value: unknown = null;
+      if (params.expression === 'location.origin')
+        result = { result: { value: URL.canParse(url) ? new URL(url).origin : 'null' } };
+      else if (params.expression === "localStorage.getItem('id_token')") {
+        if (process.env.INNA_FAKE_TOKEN_READ_STARTED) {
+          // Never answers, so the test can cancel while the token read is in flight.
+          writeFileSync(process.env.INNA_FAKE_TOKEN_READ_STARTED, 'started');
 
-      if (params.expression === 'location.origin') {
-        if (url.startsWith('https://r.inna.is')) value = 'https://r.inna.is';
-        else if (url.startsWith('https://inna.is')) value = 'https://inna.is';
-        else value = 'https://unknown';
-      } else if (params.expression === "localStorage.getItem('id_token')") {
-        if (
-          process.env.INNA_FAKE_TOKEN_ORIGIN === 'r.inna.is' &&
-          url.startsWith('https://r.inna.is')
-        )
-          value = process.env.INNA_FAKE_TOKEN_VALUE ?? null;
-        else if (
-          process.env.INNA_FAKE_TOKEN_ORIGIN === 'inna.is' &&
-          url.startsWith('https://inna.is')
-        )
-          value = process.env.INNA_FAKE_TOKEN_VALUE ?? null;
-        else value = null;
+          return;
+        }
+
+        const tokenOrigin = process.env.INNA_FAKE_TOKEN_ORIGIN;
+
+        result = {
+          result: {
+            value:
+              tokenOrigin && url.startsWith(`https://${tokenOrigin}/`)
+                ? (process.env.INNA_FAKE_TOKEN_VALUE ?? null)
+                : null,
+          },
+        };
       }
-
-      result = { result: { value } };
     } else if (command.method === 'Network.getCookies') {
       if (
         process.env.INNA_FAKE_DETACH_ON_EMPTY_POLL === '1' &&

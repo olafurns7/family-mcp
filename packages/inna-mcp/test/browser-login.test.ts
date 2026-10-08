@@ -847,11 +847,18 @@ test('help presents Google sign-in as one command and cookie import as the fallb
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+// Synthetic JWT-shaped values: header and claims are fake, the signature segment is filler.
+const FAKE_TOKEN = `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.${'synthetic-signature-a'.repeat(2)}`;
+
+const SECOND_FAKE_TOKEN = `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.${'synthetic-signature-b'.repeat(2)}`;
+
 test('auth login --google captures JSON-quoted token from r.inna.is localStorage', async () => {
   const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-token-r-');
   const sessionPath = join(directory, 'session.json');
   const browser = await makeFakeBrowser(directory);
   const preload = await makePreload(directory);
+  const tabLog = join(directory, 'tabs.log');
 
   const upstream = createUpstream({
     valid: true,
@@ -866,27 +873,29 @@ test('auth login --google captures JSON-quoted token from r.inna.is localStorage
       browser,
       browserEnvironment(directory, temporaryDirectory, sessionPath, {
         INNA_TEST_ORIGIN: upstream.origin,
+        INNA_FAKE_TAB_LOG: tabLog,
         INNA_FAKE_TOKEN_ORIGIN: 'r.inna.is',
-        INNA_FAKE_TOKEN_VALUE: JSON.stringify(
-          'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.fake',
-        ),
+        INNA_FAKE_TOKEN_VALUE: JSON.stringify(FAKE_TOKEN),
       }),
       20,
       preload,
     );
 
-    const { exit, stderr } = await collectProcess(child);
+    const { exit, stdout, stderr } = await collectProcess(child);
 
     expect(exit).toBe(0);
+    expect(stdout).toBe(`Signed in. Session saved to ${sessionPath} (renewal token: yes)\n`);
+    expect(stdout + stderr).not.toContain('synthetic-signature');
+    expect(await readFile(tabLog, 'utf8')).toBe(
+      'open https://r.inna.is\nclose https://r.inna.is\n',
+    );
     expect(stderr).toContain(START_MESSAGE);
     expect(stderr).not.toContain('Warning: inna.is renewal token not found');
 
     const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
 
     expect(saved.version).toBe(3);
-    expect(saved.token).toBe(
-      'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.fake',
-    );
+    expect(saved.token).toBe(FAKE_TOKEN);
   } finally {
     await stopChild(child);
     await upstream.server.stop(true);
@@ -899,6 +908,7 @@ test('auth login --google captures token from inna.is localStorage when not on r
   const sessionPath = join(directory, 'session.json');
   const browser = await makeFakeBrowser(directory);
   const preload = await makePreload(directory);
+  const tabLog = join(directory, 'tabs.log');
 
   const upstream = createUpstream({
     valid: true,
@@ -913,26 +923,29 @@ test('auth login --google captures token from inna.is localStorage when not on r
       browser,
       browserEnvironment(directory, temporaryDirectory, sessionPath, {
         INNA_TEST_ORIGIN: upstream.origin,
+        INNA_FAKE_TAB_LOG: tabLog,
         INNA_FAKE_TOKEN_ORIGIN: 'inna.is',
-        INNA_FAKE_TOKEN_VALUE:
-          'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.second',
+        INNA_FAKE_TOKEN_VALUE: SECOND_FAKE_TOKEN,
       }),
       20,
       preload,
     );
 
-    const { exit, stderr } = await collectProcess(child);
+    const { exit, stdout, stderr } = await collectProcess(child);
 
     expect(exit).toBe(0);
+    expect(stdout).toBe(`Signed in. Session saved to ${sessionPath} (renewal token: yes)\n`);
+    expect(stdout + stderr).not.toContain('synthetic-signature');
+    expect(await readFile(tabLog, 'utf8')).toBe(
+      'open https://r.inna.is\nclose https://r.inna.is\nopen https://inna.is\nclose https://inna.is\n',
+    );
     expect(stderr).toContain(START_MESSAGE);
     expect(stderr).not.toContain('Warning: inna.is renewal token not found');
 
     const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
 
     expect(saved.version).toBe(3);
-    expect(saved.token).toBe(
-      'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.second',
-    );
+    expect(saved.token).toBe(SECOND_FAKE_TOKEN);
   } finally {
     await stopChild(child);
     await upstream.server.stop(true);
@@ -945,6 +958,7 @@ test('auth login --google saves session without token and warns when token not f
   const sessionPath = join(directory, 'session.json');
   const browser = await makeFakeBrowser(directory);
   const preload = await makePreload(directory);
+  const tabLog = join(directory, 'tabs.log');
 
   const upstream = createUpstream({
     valid: true,
@@ -959,14 +973,20 @@ test('auth login --google saves session without token and warns when token not f
       browser,
       browserEnvironment(directory, temporaryDirectory, sessionPath, {
         INNA_TEST_ORIGIN: upstream.origin,
+        INNA_FAKE_TAB_LOG: tabLog,
       }),
       20,
       preload,
     );
 
-    const { exit, stderr } = await collectProcess(child);
+    const { exit, stdout, stderr } = await collectProcess(child);
 
     expect(exit).toBe(0);
+    expect(stdout).toBe(`Signed in. Session saved to ${sessionPath} (renewal token: no)\n`);
+    expect(stdout + stderr).not.toContain('synthetic-signature');
+    expect(await readFile(tabLog, 'utf8')).toBe(
+      'open https://r.inna.is\nclose https://r.inna.is\nopen https://inna.is\nclose https://inna.is\n',
+    );
     expect(stderr).toContain(START_MESSAGE);
     expect(stderr).toContain(
       'Warning: inna.is renewal token not found; overnight renewal disabled.',
@@ -984,12 +1004,14 @@ test('auth login --google saves session without token and warns when token not f
   }
 });
 
-test('auth login --google closes token capture tabs on abort', async () => {
+test('auth login --google closes the token capture tab when cancelled mid-read', async () => {
   const { directory, temporaryDirectory } = await makeTestDirectory('inna-login-token-abort-');
   const sessionPath = join(directory, 'session.json');
   const originalFile = await savePreviousSession(sessionPath);
   const browser = await makeFakeBrowser(directory);
   const preload = await makePreload(directory);
+  const tabLog = join(directory, 'tabs.log');
+  const readStarted = join(directory, 'token-read.started');
 
   const upstream = createUpstream({
     valid: true,
@@ -1004,28 +1026,30 @@ test('auth login --google closes token capture tabs on abort', async () => {
     child = spawnLogin(
       browser,
       browserEnvironment(directory, temporaryDirectory, sessionPath, {
-        INNA_FAKE_IGNORE_BROWSER_CLOSE: '1',
-        INNA_FAKE_DELAY_SIGTERM: '1',
         INNA_TEST_ORIGIN: upstream.origin,
-        INNA_FAKE_TOKEN_ORIGIN: 'r.inna.is',
-        INNA_FAKE_TOKEN_VALUE: JSON.stringify(
-          'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiZXhwIjoxNzM1NjY4MDAwfQ.abort',
-        ),
+        INNA_FAKE_TAB_LOG: tabLog,
+        INNA_FAKE_TOKEN_READ_STARTED: readStarted,
       }),
       20,
       preload,
     );
 
     state = await waitForBrowserState(join(directory, 'browser.json'));
+    await waitForFile(readStarted);
     assert.ok(child.pid);
     process.kill(child.pid, 'SIGINT');
-    await waitForFile(join(directory, 'browser.signal'));
 
-    const { exit, stderr } = await collectProcess(child);
+    const { exit, stdout, stderr } = await collectProcess(child);
 
     expect(exit).toBe(1);
-    expect(stderr).toContain('Inna login cancelled.');
+    expect(stdout).toBe('');
+    expect(stderr).toBe(`${START_MESSAGE}Inna login cancelled.\n`);
+    expect(upstream.requests).toEqual([]);
     expect(await readFile(sessionPath, 'utf8')).toBe(originalFile);
+    expect(await readFile(tabLog, 'utf8')).toBe(
+      'open https://r.inna.is\nclose https://r.inna.is\n',
+    );
+    await assert.rejects(stat(state.profile), { code: 'ENOENT' });
   } finally {
     await stopChild(child, state?.pid);
     await upstream.server.stop(true);
