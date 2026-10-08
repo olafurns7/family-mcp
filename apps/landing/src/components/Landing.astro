@@ -1,12 +1,13 @@
 ---
 import '@fontsource-variable/archivo/wght.css';
 import '../styles/global.css';
-import { content, repository, servers, type Locale } from '../data/content';
+import { author, content, repository, servers, type Locale } from '../data/content';
 
 interface Props { locale: Locale }
 const { locale } = Astro.props;
 const text = content[locale];
 const canonical = new URL(locale === 'is' ? '/is/' : '/', Astro.site);
+const image = new URL('/og.png', Astro.site);
 ---
 
 <!doctype html>
@@ -21,6 +22,16 @@ const canonical = new URL(locale === 'is' ? '/is/' : '/', Astro.site);
     <meta property="og:description" content={text.description} />
     <meta property="og:url" content={canonical} />
     <meta property="og:locale" content={locale === 'is' ? 'is_IS' : 'en_GB'} />
+    <meta property="og:site_name" content="Family MCP" />
+    <meta property="og:image" content={image} />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={text.imageAlt} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={text.title} />
+    <meta name="twitter:description" content={text.description} />
+    <meta name="twitter:image" content={image} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="canonical" href={canonical} />
     <link rel="alternate" hreflang="en" href="https://mcp.olinn.is/" />
@@ -84,6 +95,22 @@ const canonical = new URL(locale === 'is' ? '/is/' : '/', Astro.site);
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5" /></svg>
                   </a>
                 </div>
+                <details class="agent-setup">
+                  <summary>
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+                    <span>{text.agentSummary}</span>
+                  </summary>
+                  <div class="command-box">
+                    <div class="command-header">
+                      <span>{text.agentLabel}</span>
+                      <button type="button" class="copy-button" data-copy={`${server.id}-agent`} data-name={server.name} data-copied={text.copied} data-confirmation={text.copyPromptConfirmation} data-error={text.copyPromptError} aria-label={`${text.copyPrompt}: ${server.name}`}>
+                        <svg class="copy-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3" /></svg>
+                        <span>{text.copyPrompt}</span>
+                      </button>
+                    </div>
+                    <pre tabindex="0" aria-label={`${server.name} — ${text.agentLabel}`}><code id={`${server.id}-agent-command`} lang="en">{server.agentPrompt}</code></pre>
+                  </div>
+                </details>
               </div>
               {'limitation' in details && <p class="preview-note">{details.limitation}</p>}
             </article>
@@ -101,7 +128,19 @@ const canonical = new URL(locale === 'is' ? '/is/' : '/', Astro.site);
     </main>
 
     <footer class="site-footer container">
-      <div><p>{text.footer} <a href="https://olinn.is">Ólafur Nils</a>.</p><p>{text.affiliation}</p></div>
+      <div>
+        <div class="footer-credit">
+          <p>{text.footer} <a href={author.url}>{author.name}</a>.</p>
+          <div class="footer-profiles">
+            {author.profiles.map((profile) => (
+              <a href={profile.url} rel="me noopener" aria-label={`${author.name} ${text.profileOn} ${profile.site}`}>
+                <svg viewBox="0 0 24 24" width="19" height="19" fill="currentColor" aria-hidden="true"><path d={profile.icon} /></svg>
+              </a>
+            ))}
+          </div>
+        </div>
+        <p class="footer-affiliation">{text.affiliation}</p>
+      </div>
       <a class="footer-source" href={repository}>{text.source}<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 18 18 6M6 6h12v12" /></svg></a>
     </footer>
     <p class="copy-status" role="status" aria-live="polite" aria-atomic="true"></p>

@@ -38,6 +38,8 @@ The landing page itself does not log in, access accounts, or run an MCP server.
 
 - Brief introduction, five server descriptions, copyable install commands, and
   links to the repository and per-package setup instructions.
+- A collapsed, copyable prompt per server that asks a coding agent to install,
+  hand sign-in to the user, register the server, and read the pinned README.
 - Both English and Icelandic, with a visible language switch.
 - Use the published package versions and their pinned installer URLs.
 - Abler provides sports schedules; InfoMentor provides school information;
@@ -89,4 +91,7 @@ unconfirmed. Google's acceptance of the sign-in window is not yet verified live.
 - Keep platform, architecture and runtime details in setup documentation, not on the landing page.
 - Make capabilities and preview limitations accurate in both languages.
 - Link detailed setup instructions instead of duplicating full documentation.
+  The agent prompt carries only the install, sign-in and registration commands
+  and the setup-time safety rules; tools, file locations and troubleshooting stay
+  in the pinned README it points to.
 - Use semantic, responsive HTML with keyboard-accessible controls.

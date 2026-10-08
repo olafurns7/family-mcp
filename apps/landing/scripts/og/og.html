@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1200, initial-scale=1" />
+    <title>Family MCP share image</title>
+    <style>
+      @font-face {
+        font-family: 'Archivo Variable';
+        font-style: normal;
+        font-weight: 100 900;
+        src: url('../../node_modules/@fontsource-variable/archivo/files/archivo-latin-ext-wght-normal.woff2') format('woff2');
+        unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+      }
+      @font-face {
+        font-family: 'Archivo Variable';
+        font-style: normal;
+        font-weight: 100 900;
+        src: url('../../node_modules/@fontsource-variable/archivo/files/archivo-latin-wght-normal.woff2') format('woff2');
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+      body {
+        padding: 68px 72px 74px;
+        background: #f8faf7;
+        color: #076b67;
+        font-family: 'Archivo Variable', sans-serif;
+        font-synthesis: none;
+      }
+      .wordmark { display: flex; align-items: center; gap: 16px; font-size: 44px; font-weight: 680; letter-spacing: -0.04em; line-height: 1; }
+      .suffix { font-weight: 420; margin-left: 3px; }
+      h1 { margin: 76px 0 72px; font-size: 86px; font-weight: 620; letter-spacing: -0.037em; line-height: 1.075; }
+      h1 span { display: block; }
+      .services { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 0; padding: 0; list-style: none; color: #233b36; }
+      .services li { display: flex; align-items: center; height: 96px; padding: 0 22px; border-radius: 14px; font-size: 28px; font-weight: 630; letter-spacing: -0.03em; }
+      .abler { background: #076b67; color: #ffffff; }
+      .mint { background: #ddf0e8; }
+      .kronan { background: #f5cf82; }
+      .dominos { background: #efbaa4; }
+    </style>
+  </head>
+  <body>
+    <header class="wordmark" aria-label="Family MCP">
+      <svg viewBox="0 0 32 32" width="48" height="48" aria-hidden="true"><path d="M4 7h24M4 13h18M4 19h24M4 25h18" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" /></svg>
+      <span>family<span class="suffix">mcp</span></span>
+    </header>
+    <main>
+      <h1><span>Connect Icelandic apps</span><span>to your AI assistant.</span></h1>
+      <ul class="services" aria-label="Services">
+        <li class="abler">Abler</li>
+        <li class="mint">InfoMentor</li>
+        <li class="mint">Inna</li>
+        <li class="kronan">Krónan</li>
+        <li class="dominos">Domino’s</li>
+      </ul>
+    </main>
+  </body>
+</html>
