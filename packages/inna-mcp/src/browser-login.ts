@@ -762,7 +762,7 @@ export async function loginInBrowser(
     jar = await waitForCookies(debugging, timeoutSeconds, controller.signal);
 
     // Best-effort token capture after login completes
-    if (jar && debugging) {
+    if (jar) {
       token = await debugging.connection.captureToken(controller.signal);
     }
   } catch (error) {
