@@ -110,7 +110,10 @@ const dominos: AgentSetup = {
     '   dominos-mcp auth login',
   ],
   register: [
-    'The binary is installed at ~/.local/bin/dominos-mcp; the README has the JSON for Claude Desktop and the TOML for Codex.',
+    claudeCode,
+    '   claude mcp add dominos -- /absolute/path/to/.local/bin/dominos-mcp serve',
+    `   ${placeholders}`,
+    `   ${otherClients}`,
   ],
   rules: [
     'Ordering and payment are a preview and card charging is untested. Never create an order, even an unpaid one, without my explicit confirmation of the exact cart, pickup or delivery, and total. Never pay without my explicit confirmation of the total and the saved card I pick from the ones the unpaid order returns.',
@@ -272,7 +275,7 @@ export const content = {
       },
       inna: {
         description:
-          'Sæktu stundatöflur, verkefni, einkunnir, mætingar og skilaboð úr Innu fyrir hvern nemanda á aðganginum þínum. Þú getur líka skráð veikindi fyrir heilan dag eða sótt um leyfi með þínu samþykki.',
+          'Sæktu stundatöflur, verkefni, einkunnir, mætingar og skilaboð úr Innu fyrir hvern nemanda á aðganginum þínum. Einnig er hægt að skrá veikindi fyrir heilan dag eða sækja um leyfi, með þínu samþykki.',
         login: 'Rafræn skilríki eða tengdur Google-aðgangur',
         limitation:
           'Berðu saman öryggiskóðann sem birtist við kóðann í símanum þegar þú notar rafræn skilríki. Virkja þarf fjarvistaskráningu sérstaklega og samþykkja hverja beiðni; hvorki innsending né Google-innskráning hefur verið prófuð á raunverulegum aðgangi.',
@@ -289,7 +292,7 @@ export const content = {
           'Skoðaðu matseðilinn, athugaðu verðið og fylgstu með pöntuninni. Greiðslur með vistuðu korti eru á tilraunastigi.',
         login: 'Innskráning með SMS',
         limitation:
-          'Kortagreiðslur hafa ekki verið prófaðar og bankastaðfesting með 3-D Secure er ekki studd enn. Engin greiðsla fer fram án skýrs samþykkis þíns.',
+          'Kortagreiðslur hafa ekki verið prófaðar og bankastaðfesting með 3-D Secure er enn ekki studd. Engin greiðsla fer fram án skýrs samþykkis þíns.',
       },
     },
   },

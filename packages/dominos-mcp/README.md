@@ -44,6 +44,12 @@ MCP host, for example:
 }
 ```
 
+For Claude Code:
+
+```sh
+claude mcp add dominos -- /absolute/path/to/.local/bin/dominos-mcp serve
+```
+
 For Codex:
 
 ```toml
