@@ -652,6 +652,7 @@ export class InnaClient {
       });
 
       if (!response.ok) return undefined;
+
       const result = z
         .object({ token: z.string().min(1).max(65_536) })
         .safeParse(await response.json());
@@ -689,6 +690,7 @@ export class InnaClient {
       });
 
       if (!accessResponse.ok) return undefined;
+
       const accessSchema = z.array(
         z.object({
           system: z.number().int(),
@@ -862,29 +864,15 @@ export class InnaClient {
         return { status: 'kept' };
       }, signal);
     } catch (error) {
+      // If it's not a recognized auth error, fail immediately
       if (
         !(error instanceof SafeError) ||
         ![signInRequired().message, sessionExpired().message].includes(error.message)
       ) {
-        if (
-          saved?.token &&
-          error instanceof SafeError &&
-          error.message === signInRequired().message
-        ) {
-          try {
-            if (await this.renewSession(saved, signal)) {
-              await writePrivateFile(this.path, JSON.stringify(saved));
-
-              return { status: 'renewed' };
-            }
-          } catch {
-            // Fall through to signInRequired
-          }
-        }
-
         return { status: 'failed' };
       }
 
+      // Try to renew the session if we have a token
       if (saved?.token) {
         try {
           if (await this.renewSession(saved, signal)) {
@@ -967,7 +955,7 @@ export class InnaClient {
       let prior: Saved | undefined;
       try {
         prior = await readSaved(this.path);
-      } catch (error) {
+      } catch {
         // If we can't read the existing session (corrupted, wrong permissions, etc.),
         // treat it as if no session exists so we can save the new one.
         prior = undefined;
