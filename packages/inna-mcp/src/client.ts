@@ -976,6 +976,7 @@ export class InnaClient {
       }
 
       const throttle = { pauseUntil: prior?.pauseUntil ?? 0 };
+
       const connection = new Connection(jar, throttle, this.fetcher, this.now, signal);
 
       let user: schemas.User;
