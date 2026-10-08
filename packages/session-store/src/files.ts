@@ -60,6 +60,11 @@ export function fileChanged(before: FileState, after: FileState): boolean {
  * Symbolic links, group or world access bits, foreign owners, and oversized or changing files are rejected.
  */
 export async function readPrivateFile(path: string, options: ReadOptions): Promise<string> {
+  return (await readPrivateBytes(path, options)).toString('utf8');
+}
+
+/** {@link readPrivateFile} without text decoding, for binary files such as keys. */
+export async function readPrivateBytes(path: string, options: ReadOptions): Promise<Buffer> {
   const { maxBytes } = options;
 
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
@@ -130,7 +135,7 @@ export async function readPrivateFile(path: string, options: ReadOptions): Promi
     if (fileChanged(info, after))
       throw new SessionStoreError('IO', 'The file changed while it was being read.');
 
-    return buffer.toString('utf8', 0, length);
+    return buffer.subarray(0, length);
   } catch (error) {
     throw ioError(error, 'Cannot read the file. Check its permissions.');
   } finally {
@@ -273,7 +278,7 @@ async function sweep(
 
 // Directory flushes are best effort: the data file is already durable and renamed, and some
 // filesystems refuse to open or sync a directory handle.
-async function syncDirectory(directory: string): Promise<void> {
+export async function syncDirectory(directory: string): Promise<void> {
   if (process.platform === 'win32') return;
   let handle: FileHandle;
 

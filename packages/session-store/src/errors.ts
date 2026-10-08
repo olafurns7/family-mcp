@@ -5,7 +5,11 @@ export type SessionStoreErrorCode =
   | 'NOT_FOUND'
   | 'UNSAFE_FILE'
   | 'TOO_LARGE'
-  | 'IO';
+  | 'IO'
+  | 'STORE_UNAVAILABLE'
+  | 'STORE_ERROR'
+  | 'STORE_WRITE_UNCERTAIN'
+  | 'SECRET_NOT_FOUND';
 
 /** Every message is a literal without paths or file contents, so callers may forward it. */
 export class SessionStoreError extends Error {

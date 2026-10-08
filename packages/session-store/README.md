@@ -69,7 +69,92 @@ does not match; sweeps should still run under the lock. `defaultSessionPath(appN
 legacy file's path when one is given.
 
 Every error is a `SessionStoreError` with a `code` (`BUSY`, `CANCELLED`, `LOCK_LOST`, `NOT_FOUND`,
-`UNSAFE_FILE`, `TOO_LARGE`, `IO`) and a literal message that never contains a path or file contents.
+`UNSAFE_FILE`, `TOO_LARGE`, `IO`, and the store codes below) and a literal message that never
+contains a path, key or file contents. `readPrivateBytes` is `readPrivateFile` without decoding.
+
+## Encrypted secret records
+
+```ts
+import {
+  LocalKeyFileProvider,
+  createSecretKey,
+  readSecretRecord,
+  withSecretRecord,
+} from '@family-mcp/session-store';
+
+const store = {
+  path: recordPath, // for example ~/.config/app-mcp/session.enc
+  server: 'app-mcp',
+  profile: 'default',
+  purpose: 'session',
+  schema: 1,
+  keys: new LocalKeyFileProvider({ path: keyPath }), // e.g. $XDG_DATA_HOME/family-mcp/keys/app-mcp.key
+  maxBytes: 262_144,
+};
+
+await createSecretKey(store); // explicit setup (first login) only
+await withSecretRecord(store, async (current) => rotate(current)); // undefined keeps the record
+const session = await readSecretRecord(store);
+```
+
+`withSecretRecord(options, update)` is the one transaction for a record:
+
+- It holds `withFileLock` on the record path for the whole read, decrypt, `update`, encrypt,
+  write, read-back and marker commit, and returns only after the write has finished. `update`
+  receives the plaintext, or `null` when the store holds no record yet, and returns the next
+  plaintext or `undefined`. The caller's `signal` aborts the lock wait or stops before `update`;
+  once `update` returns a value, the write completes.
+- A record is a canonical JSON header `{v, server, profile, purpose, schema, generation, keyId,
+nonce}` on the first line, which is the AES-256-GCM additional authenticated data, and the
+  base64url ciphertext with its 128-bit tag on the second. Every write uses a fresh random 96-bit
+  nonce and the next generation under one stable 256-bit key. No name, path or authenticated field
+  contains an executable hash, version, signer or language, so another build reads the same record.
+- The record is authenticated and its server, profile, purpose, schema and key id are checked
+  before any plaintext is returned. `maxBytes` bounds the plaintext; the encoded file is bounded
+  from it before it is read. Records and markers use `readPrivateFile` and `writePrivateFile`.
+- `<path>.marker` is a non-secret JSON file `{backend, keySource, keyId, profile, migrated,
+generation, pending?}`. A write first commits a marker naming the pending generation and nonce,
+  then the record, reads the record back, and commits the marker. The lock never expires a live
+  holder, so no interrupted write can land later. The next transaction commits the marker when
+  the record is that exact authenticated candidate, and drops the pending generation when the
+  record is still at the committed generation (or still absent before a first write); a session
+  kept that way may need a new login. Recovery only considers a pending generation one past the
+  committed one, in a marker that is migrated exactly when its generation is at least 1.
+- `schema` and generations are integers of at most 15 digits. A larger schema is a `RangeError`,
+  and a store at the last generation fails with `STORE_ERROR`, both before `update` runs.
+
+`readSecretRecord(options)` runs the same transaction without a change and throws
+`SECRET_NOT_FOUND` only when a key is present and no record was ever committed.
+`createSecretKey({ path, keys })` calls `keys.createKey()` under the record lock, and only while
+the record has no marker and no record.
+
+Key providers implement `getKey()`, which never creates a key, and `createKey()`, which refuses to
+replace one. `LocalKeyFileProvider({ path, keyId? })` keeps exactly 32 raw bytes in a file outside
+the record directory. It reads the key with the `readPrivateFile` checks: a regular, single-link
+file owned by the current user with no group or other bits. `createKey()` creates it exclusively
+(`wx`) with mode `0600` in a `0700` directory and flushes the file and the directory.
+`FakeKeyProvider` holds a key in memory for tests.
+
+Failures are fixed, never repaired:
+
+- `STORE_UNAVAILABLE`: the key is missing. It is never regenerated, also when the marker says the
+  store is migrated.
+- `STORE_ERROR`: a malformed key (also from a custom provider), a record that fails
+  authentication (a wrong key and tampering are not distinguished), a malformed or mismatched
+  marker, or a setup on an existing store or key.
+- `STORE_WRITE_UNCERTAIN`: any other disagreement between the marker and the record: a record at
+  neither the committed nor the pending generation, a pending record with another nonce, a
+  pending generation other than the next one, a migrated flag that disagrees with the generation, a
+  committed marker ahead of or behind its record, a missing record after a committed write, or a
+  record without a marker. Neither file is used or changed; nothing resets the store.
+- `TOO_LARGE`, plus the existing lock and file codes (`BUSY`, `CANCELLED`, `LOCK_LOST`,
+  `UNSAFE_FILE`, `IO`).
+
+Threat model: encryption with a separately held key reduces accidental file, grep and commit
+exposure and ciphertext-only backup leaks. It does not stop root, a compromised service, or a
+same-user shell that can read the key. A key stolen together with the records is roughly a `0600`
+file. The marker detects inconsistent writes, not an attacker who rolls back both the record and
+the marker.
 
 ## Platform notes
 
@@ -84,4 +169,7 @@ run there.
 concurrent attempts, symlinked directories, in-flight ownership replacement, bounded waiting and
 no age expiry for live PIDs, hard-link rejection, inode/size/mtime checks, file owner/mode/symlink/size checks,
 abort at the commit point, sweeping, directory modes, default paths, and three real processes that
-serialize read-modify-write cycles while a removal waits for an in-flight holder.
+serialize read-modify-write cycles while a removal waits for an in-flight holder. The secret-record
+suite covers round trips, 1 MiB payloads, header and ciphertext tampering, wrong keys, missing and
+unsafe key files, pending-write reconciliation, stale or rolled-back markers and records, messages
+without paths or secrets, and three processes serializing encrypted updates.
