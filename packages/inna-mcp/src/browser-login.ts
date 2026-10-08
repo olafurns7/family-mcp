@@ -11,7 +11,6 @@ import { z } from 'zod';
 
 import { cookieExportSchema, cookieNames, ORIGIN, sessionJar } from './client.js';
 
-type BrowserLoginResult = { jar: CookieJar; token?: string };
 
 const macBrowsers = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -151,7 +150,7 @@ class CdpPipe {
   }
 
   // Undefined until a tab shows the Inna student application: cookies alone do not prove sign-in.
-  async captureCookies(signal: AbortSignal): Promise<BrowserLoginResult | undefined> {
+  async captureCookies(signal: AbortSignal): Promise<CookieJar | undefined> {
     const targetResult = z
       .object({
         targetInfos: z.array(z.object({ targetId: z.string(), type: z.string(), url: z.string() })),
@@ -182,7 +181,7 @@ class CdpPipe {
     try {
       value = await this.request(
         'Network.getCookies',
-        { urls: [`${ORIGIN}/`, 'https://inna.is/'] },
+        { urls: [`${ORIGIN}/`] },
         signal,
         this.sessionId,
       );
@@ -199,14 +198,8 @@ class CdpPipe {
 
     const result = z.object({ cookies: z.array(browserCookieSchema) }).parse(value);
 
-    const tokenCookie = result.cookies.find(
-      (cookie) =>
-        cookie.name === 'id_token' &&
-        cookie.domain.replace(/^\./, '') === 'inna.is' &&
-        cookie.path === '/',
-    );
-
-    const jar = await sessionJar(
+    // The browser also holds r.inna.is and Google cookies; only the saved-session set leaves it.
+    return sessionJar(
       cookieExportSchema.parse(
         result.cookies.filter(
           (cookie) =>
@@ -216,12 +209,33 @@ class CdpPipe {
         ),
       ),
     );
+  }
 
-    const loginResult: BrowserLoginResult = { jar };
+  // Best-effort capture of inna.is id_token after login completes. Failure only logs a warning.
+  async captureToken(signal: AbortSignal): Promise<string | undefined> {
+    if (!this.sessionId) return undefined;
 
-    if (tokenCookie?.value) loginResult.token = tokenCookie.value;
+    try {
+      const value = await this.request(
+        'Network.getCookies',
+        { urls: ['https://inna.is/'] },
+        signal,
+        this.sessionId,
+      );
 
-    return loginResult;
+      const result = z.object({ cookies: z.array(browserCookieSchema) }).parse(value);
+      const tokenCookie = result.cookies.find(
+        (cookie) =>
+          cookie.name === 'id_token' &&
+          cookie.domain.replace(/^\./, '') === 'inna.is' &&
+          cookie.path === '/',
+      );
+
+      return tokenCookie?.value;
+    } catch (error) {
+      process.stderr.write('Warning: Could not capture inna.is token for session renewal.\n');
+      return undefined;
+    }
   }
 
   async waitForClose(timeoutMs: number): Promise<boolean> {
@@ -529,7 +543,7 @@ async function waitForCookies(
   debugging: BrowserDebugging,
   timeoutSeconds: number,
   signal: AbortSignal,
-): Promise<BrowserLoginResult> {
+): Promise<CookieJar> {
   const deadline = Date.now() + timeoutSeconds * 1000;
 
   while (Date.now() < deadline) {
@@ -546,16 +560,15 @@ async function waitForCookies(
         AbortSignal.timeout(Math.min(10_000, deadline - Date.now())),
       ]);
 
-      const result = await debugging.connection.captureCookies(attemptSignal);
-
-      if (!result) continue;
-      const cookies = await result.jar.getCookies(`${ORIGIN}/`);
+      const jar = await debugging.connection.captureCookies(attemptSignal);
+      const cookies = (await jar?.getCookies(`${ORIGIN}/`)) ?? [];
 
       if (
+        jar &&
         cookies.some((cookie) => cookie.key === 'SESSION') &&
         cookies.some((cookie) => cookie.key === 'XSRF-TOKEN')
       )
-        return result;
+        return jar;
     } catch {
       throwIfCancelled(signal);
     }
@@ -565,11 +578,9 @@ async function waitForCookies(
     if (remaining > 0) await delay(Math.min(2000, remaining), undefined, { signal });
   }
 
-  const timeoutError = new SafeError(
+  throw new SafeError(
     'Inna sign-in was not finished in time, and nothing was saved. Run the command again, or use electronic ID (`inna-mcp auth login`) or `inna-mcp auth import`.',
   );
-  // Ensure error is captured before cleanup
-  throw timeoutError;
 }
 
 function closeDebugging(debugging: BrowserDebugging | undefined): void {
@@ -703,7 +714,7 @@ export async function loginInBrowser(
   options: { browser?: string | undefined; timeoutSeconds: number },
   platform = process.platform,
   env = process.env,
-): Promise<BrowserLoginResult> {
+): Promise<CookieJar> {
   const { browser: override, timeoutSeconds } = options;
 
   if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1)
@@ -716,7 +727,7 @@ export async function loginInBrowser(
   let profile: string | undefined;
   let browser: Bun.Subprocess | undefined;
   let debugging: BrowserDebugging | undefined;
-  let result: BrowserLoginResult | undefined;
+  let jar: CookieJar | undefined;
   let loginError: Error | undefined;
   let cleanupError: Error | undefined;
   process.on('SIGINT', cancel);
@@ -746,7 +757,16 @@ export async function loginInBrowser(
       );
     }
 
-    result = await waitForCookies(debugging, timeoutSeconds, controller.signal);
+    jar = await waitForCookies(debugging, timeoutSeconds, controller.signal);
+
+    // Best-effort token capture after login completes
+    if (jar && debugging?.connection) {
+      const token = await debugging.connection.captureToken(controller.signal);
+      if (token) {
+        // Store token temporarily on jar object for retrieval
+        (jar as CookieJar & { _innaToken?: string })._innaToken = token;
+      }
+    }
   } catch (error) {
     loginError = controller.signal.aborted
       ? new SafeError('Inna login cancelled.')
@@ -781,7 +801,12 @@ export async function loginInBrowser(
 
   if (loginError) throw loginError;
 
-  if (!result) throw new SafeError('Inna sign-in did not capture a complete session.');
+  if (!jar) throw new SafeError('Inna sign-in did not capture a complete session.');
 
-  return result;
+  return jar;
+}
+
+// Extract token from jar if one was captured during browser login
+export function extractToken(jar: CookieJar): string | undefined {
+  return (jar as CookieJar & { _innaToken?: string })._innaToken;
 }

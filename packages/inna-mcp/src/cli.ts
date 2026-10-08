@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
-import { loginInBrowser } from './browser-login.js';
+import { extractToken, loginInBrowser } from './browser-login.js';
 import { InnaClient } from './client.js';
 import { createServer } from './server.js';
 import { startKeepAlive } from './keep-alive.js';
@@ -109,19 +109,15 @@ async function signInWithGoogle(
   browser: { browser: string | undefined; timeoutSeconds: number },
 ): Promise<void> {
   // The browser is closed and its profile removed before the session is verified and saved.
-  const result = await loginInBrowser(browser);
+  const jar = await loginInBrowser(browser);
+  const token = extractToken(jar);
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.on('SIGINT', cancel);
   process.on('SIGTERM', cancel);
 
   try {
-    await client.saveVerifiedSession(
-      result.jar,
-      allowAccountChange,
-      result.token,
-      controller.signal,
-    );
+    await client.saveVerifiedSession(jar, allowAccountChange, token, controller.signal);
     process.stdout.write(`Signed in. Session saved to ${client.path}\n`);
   } catch (error) {
     if (controller.signal.aborted) throw new SafeError('Inna login cancelled.');

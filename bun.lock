@@ -15,9 +15,6 @@
     "packages/abler-mcp": {
       "name": "abler-mcp",
       "version": "0.6.0",
-      "bin": {
-        "abler-mcp": "dist/cli.js",
-      },
       "dependencies": {
         "@family-mcp/mcp-runtime": "workspace:^",
         "@family-mcp/session-store": "workspace:*",
@@ -29,7 +26,7 @@
         "@family-mcp/oxlint-anti-slop": "workspace:*",
         "@family-mcp/release-tooling": "workspace:*",
         "@family-mcp/tsconfig": "workspace:*",
-        "@modelcontextprotocol/client": "^2.0.0",
+        "@modelcontextprotocol/client": "^2.2.0",
         "@types/bun": "^1.2.19",
       },
     },
@@ -46,7 +43,7 @@
         "@family-mcp/oxlint-anti-slop": "workspace:*",
         "@family-mcp/release-tooling": "workspace:*",
         "@family-mcp/tsconfig": "workspace:*",
-        "@modelcontextprotocol/client": "^2.0.0",
+        "@modelcontextprotocol/client": "^2.2.0",
         "@types/bun": "^1.2.19",
       },
     },
@@ -65,7 +62,7 @@
         "@family-mcp/oxlint-anti-slop": "workspace:*",
         "@family-mcp/release-tooling": "workspace:*",
         "@family-mcp/tsconfig": "workspace:*",
-        "@modelcontextprotocol/client": "^2.0.0",
+        "@modelcontextprotocol/client": "^2.2.0",
         "@types/bun": "^1.2.19",
         "@types/node": "^22.20.2",
       },
@@ -85,7 +82,7 @@
         "@family-mcp/oxlint-anti-slop": "workspace:*",
         "@family-mcp/release-tooling": "workspace:*",
         "@family-mcp/tsconfig": "workspace:*",
-        "@modelcontextprotocol/client": "^2.0.0",
+        "@modelcontextprotocol/client": "^2.2.0",
         "@types/bun": "^1.2.19",
         "@types/node": "^22.20.2",
       },
@@ -103,7 +100,7 @@
         "@family-mcp/oxlint-anti-slop": "workspace:*",
         "@family-mcp/release-tooling": "workspace:*",
         "@family-mcp/tsconfig": "workspace:*",
-        "@modelcontextprotocol/client": "^2.0.0",
+        "@modelcontextprotocol/client": "^2.2.0",
         "@types/bun": "^1.2.19",
       },
     },
@@ -140,7 +137,7 @@
       "name": "@family-mcp/release-tooling",
       "version": "0.0.0",
       "dependencies": {
-        "@modelcontextprotocol/client": "^2.0.0",
+        "@modelcontextprotocol/client": "^2.2.0",
         "zod": "^4.6.2",
       },
       "devDependencies": {
