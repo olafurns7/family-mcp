@@ -85,7 +85,13 @@ function credentials(saved: Saved): string {
 // Decode only non-sensitive JWT claims: exp, iat, orig_iat.
 function parseTokenClaims(
   token: string,
-): { exp?: number; iat?: number; orig_iat?: number } | undefined {
+):
+  | {
+      exp?: number | undefined;
+      iat?: number | undefined;
+      orig_iat?: number | undefined;
+    }
+  | undefined {
   try {
     const parts = token.split('.');
 
