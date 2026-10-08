@@ -115,7 +115,6 @@
         "@family-mcp/oxlint-anti-slop": "workspace:*",
         "@family-mcp/tsconfig": "workspace:*",
         "@types/bun": "^1.2.19",
-        "@types/node": "^22.0.0",
       },
     },
     "packages/session-store": {
@@ -125,7 +124,6 @@
         "@family-mcp/oxlint-anti-slop": "workspace:*",
         "@family-mcp/tsconfig": "workspace:*",
         "@types/bun": "^1.2.19",
-        "@types/node": "^22.0.0",
       },
     },
     "tooling/oxlint-anti-slop": {
