@@ -152,7 +152,13 @@ window closes by itself; no cookies or passwords are copied, and an agent never
 asks for them. This requires a release after Inna 0.2.2.
 
 Configure the MCP host to run the absolute path to `~/.local/bin/inna-mcp` with
-`serve`. Read tools are enabled by default; whole-day illness and leave requests
+`serve`. For Claude Code:
+
+```sh
+claude mcp add inna -- /absolute/path/to/.local/bin/inna-mcp serve
+```
+
+Read tools are enabled by default; whole-day illness and leave requests
 require `--allow-absence-writes`, a prepared preview, and explicit approval.
 Live absence submission remains unverified.
 
@@ -232,6 +238,12 @@ dominos-mcp auth login
 ```
 
 Configure the MCP host to run the absolute path to `~/.local/bin/dominos-mcp` with `serve`.
+For Claude Code:
+
+```sh
+claude mcp add dominos -- /absolute/path/to/.local/bin/dominos-mcp serve
+```
+
 See [setup, tools, and payment behavior](packages/dominos-mcp/README.md).
 Live login, refresh, account reads, quotes, and unpaid saved-card retrieval have
 been verified. Charging remains untested; bank-verification continuation is not
