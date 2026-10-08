@@ -134,7 +134,7 @@ if (process.env.INNA_FAKE_LAUNCHER === '1') {
       id: number;
       method: string;
       params?: unknown;
-      sessionId?: string;
+      sessionId?: string | undefined;
     } = z
       .object({
         id: z.number(),
