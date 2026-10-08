@@ -217,8 +217,8 @@ test('auth login --google captures over a private pipe, closes the browser, then
     const state = await waitForBrowserState(stateFile);
     const { exit, stdout, stderr } = await collectProcess(child);
 
-    expect(stderr).toBe(START_MESSAGE);
-    expect(stdout).toBe(`Signed in. Session saved to ${sessionPath}\n`);
+    expect(stderr).toBe(`${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`);
+    expect(stdout).toBe(`Signed in. Session saved to ${sessionPath} (renewal token: no)\n`);
     expect(exit).toBe(0);
     expect(stdout + stderr).not.toMatch(/synthetic-|decoy-/);
 
@@ -292,7 +292,7 @@ test('auth login --google waits through the Google pages until the student appli
     );
     const { exit, stderr } = await collectProcess(child);
 
-    expect(stderr).toBe(START_MESSAGE);
+    expect(stderr).toBe(`${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`);
     expect(exit).toBe(0);
     expect(upstream.requests.map((request) => request.browserClosed)).toEqual([true]);
     expect((await savedCookies(sessionPath)).map(({ key }) => key).toSorted()).toEqual([
@@ -402,7 +402,7 @@ test('auth login --google closes a launcher-spawned browser child before removin
     state = await waitForBrowserState(stateFile);
     const { exit, stderr } = await collectProcess(child);
 
-    expect(stderr).toBe(START_MESSAGE);
+    expect(stderr).toBe(`${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`);
     expect(exit).toBe(0);
     expect(state.profileMode).toBe(0o700);
     expect(upstream.requests).toMatchObject([{ browserClosed: true, profileRemoved: true }]);
@@ -750,7 +750,7 @@ test('auth login --google rediscovers the student tab after its pipe session det
     state = await waitForBrowserState(stateFile);
     const { exit, stderr } = await collectProcess(child);
 
-    expect(stderr).toBe(START_MESSAGE);
+    expect(stderr).toBe(`${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`);
     expect(exit).toBe(0);
     expect((await savedCookies(sessionPath)).map(({ key }) => key).toSorted()).toEqual([
       'JSESSIONID',

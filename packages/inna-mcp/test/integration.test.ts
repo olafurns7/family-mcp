@@ -1129,8 +1129,8 @@ test('Google browser sign-in saves a version 3 session and refuses a changed bin
     const first = await login.run();
     expect(first).toEqual({
       exit: 0,
-      stdout: `Signed in. Session saved to ${login.path}\n`,
-      stderr: START_MESSAGE,
+      stdout: `Signed in. Session saved to ${login.path} (renewal token: no)\n`,
+      stderr: `${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\n`,
     });
     expect(provider.paths()).toEqual([USER_PATH]);
     const saved = await savedFile(login.path);
@@ -1154,13 +1154,13 @@ test('Google browser sign-in saves a version 3 session and refuses a changed bin
     expect(refused.exit).toBe(1);
     expect(refused.stdout).toBe('');
     expect(refused.stderr).toBe(
-      `${START_MESSAGE}This export changes the account, student, or school. Use --allow-account-change deliberately.\n`,
+      `${START_MESSAGE}Warning: inna.is renewal token not found; overnight renewal disabled.\nThis export changes the account, student, or school. Use --allow-account-change deliberately.\n`,
     );
     expect(await readFile(login.path, 'utf8')).toBe(before);
 
     const allowed = await login.run(['--allow-account-change']);
     expect(allowed.exit).toBe(0);
-    expect(allowed.stdout).toBe(`Signed in. Session saved to ${login.path}\n`);
+    expect(allowed.stdout).toBe(`Signed in. Session saved to ${login.path} (renewal token: no)\n`);
     expect((await savedFile(login.path)).account.studentId).toBe('99');
     expectClean(await readFile(login.path, 'utf8'));
   } finally {
