@@ -66,10 +66,18 @@ type CdpMethod =
   | 'Browser.close'
   | 'Browser.getVersion'
   | 'Network.getCookies'
+  | 'Runtime.evaluate'
   | 'Target.attachToTarget'
+  | 'Target.closeTarget'
+  | 'Target.createTarget'
   | 'Target.getTargets';
 
-type CdpParams = { urls: string[] } | { targetId: string; flatten: true };
+type CdpParams =
+  | { urls: string[] }
+  | { targetId: string; flatten: true }
+  | { url: string; newWindow?: boolean; background?: boolean }
+  | { targetId: string }
+  | { expression: string; returnByValue?: boolean };
 
 type CdpCommand = {
   id: number;
@@ -210,33 +218,104 @@ class CdpPipe {
     );
   }
 
-  // Best-effort capture of inna.is id_token after login completes. Failure only logs a warning.
+  // Best-effort capture of inna.is id_token from localStorage after login completes.
   async captureToken(signal: AbortSignal): Promise<string | undefined> {
-    if (!this.sessionId) return undefined;
+    const TOKEN_REGEX = /^[\w-]+\.[\w-]+\.[\w-]+$/;
+    const origins = ['https://r.inna.is', 'https://inna.is'];
 
-    try {
-      const value = await this.request(
-        'Network.getCookies',
-        { urls: ['https://inna.is/'] },
-        signal,
-        this.sessionId,
-      );
+    for (const origin of origins) {
+      let targetId: string | undefined;
 
-      const result = z.object({ cookies: z.array(browserCookieSchema) }).parse(value);
+      try {
+        // Create background tab with static file to avoid SPA refresh/logout logic
+        const createResult = z
+          .object({ targetId: z.string() })
+          .parse(
+            await this.request(
+              'Target.createTarget',
+              { url: `${origin}/favicon.ico`, background: true },
+              signal,
+            ),
+          );
 
-      const tokenCookie = result.cookies.find(
-        (cookie) =>
-          cookie.name === 'id_token' &&
-          cookie.domain.replace(/^\./, '') === 'inna.is' &&
-          cookie.path === '/',
-      );
+        targetId = createResult.targetId;
 
-      return tokenCookie?.value;
-    } catch {
-      process.stderr.write('Warning: Could not capture inna.is token for session renewal.\n');
+        // Attach to target with flatten
+        const attachResult = z
+          .object({ sessionId: z.string() })
+          .parse(
+            await this.request('Target.attachToTarget', { targetId, flatten: true }, signal),
+          );
 
-      return undefined;
+        const tabSessionId = attachResult.sessionId;
+
+        // Wait until Runtime.evaluate of location.origin equals the origin
+        let attempts = 0;
+
+        while (attempts < 10) {
+          const originResult = z
+            .object({ result: z.object({ value: z.string() }) })
+            .parse(
+              await this.request(
+                'Runtime.evaluate',
+                { expression: 'location.origin', returnByValue: true },
+                signal,
+                tabSessionId,
+              ),
+            );
+
+          if (originResult.result.value === origin) break;
+
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          attempts++;
+        }
+
+        // Get localStorage token
+        const tokenResult = z
+          .object({ result: z.object({ value: z.unknown() }) })
+          .parse(
+            await this.request(
+              'Runtime.evaluate',
+              { expression: "localStorage.getItem('id_token')", returnByValue: true },
+              signal,
+              tabSessionId,
+            ),
+          );
+
+        const rawValue = tokenResult.result.value;
+
+        if (typeof rawValue !== 'string') continue;
+
+        // Try JSON.parse first, fall back to raw string
+        let token: string;
+
+        try {
+          const parsed: unknown = JSON.parse(rawValue);
+
+          token = typeof parsed === 'string' ? parsed : rawValue;
+        } catch {
+          token = rawValue;
+        }
+
+        // Validate with JWT regex
+        if (TOKEN_REGEX.test(token)) {
+          return token;
+        }
+      } catch {
+        // Continue to next origin
+      } finally {
+        // Always close target
+        if (targetId) {
+          try {
+            await this.request('Target.closeTarget', { targetId }, signal);
+          } catch {
+            // Ignore close errors
+          }
+        }
+      }
     }
+
+    return undefined;
   }
 
   async waitForClose(timeoutMs: number): Promise<boolean> {
@@ -766,12 +845,21 @@ export async function loginInBrowser(
     throwIfCancelled(controller.signal);
 
     try {
-      const tokenSignal = AbortSignal.timeout(2000);
+      const tokenSignal = AbortSignal.timeout(12_000);
       const combined = AbortSignal.any([controller.signal, tokenSignal]);
 
       token = await debugging.connection.captureToken(combined);
+
+      if (!token) {
+        process.stderr.write(
+          'Warning: inna.is renewal token not found; overnight renewal disabled.\n',
+        );
+      }
     } catch {
       // Token capture is optional; proceed without it
+      process.stderr.write(
+        'Warning: inna.is renewal token not found; overnight renewal disabled.\n',
+      );
     }
   } catch (error) {
     loginError = controller.signal.aborted
