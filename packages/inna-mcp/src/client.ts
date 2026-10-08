@@ -83,7 +83,9 @@ function credentials(saved: Saved): string {
 }
 
 // Decode only non-sensitive JWT claims: exp, iat, orig_iat.
-function parseTokenClaims(token: string): { exp?: number; iat?: number; orig_iat?: number } | undefined {
+function parseTokenClaims(
+  token: string,
+): { exp?: number; iat?: number; orig_iat?: number } | undefined {
   try {
     const parts = token.split('.');
 
@@ -630,6 +632,7 @@ export class InnaClient {
     try {
       return await work(new Connection(jar, saved, this.fetcher, this.now, signal), saved);
     } finally {
+      saved.version = 3;
       saved.jar = JSON.stringify(await jar.serialize());
       await writePrivateFile(this.path, JSON.stringify(saved));
     }
@@ -643,11 +646,15 @@ export class InnaClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: saved.token }),
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+          : AbortSignal.timeout(30_000),
       });
 
       if (!response.ok) return undefined;
-      const result = z.object({ token: z.string().min(1).max(65_536) }).safeParse(await response.json());
+      const result = z
+        .object({ token: z.string().min(1).max(65_536) })
+        .safeParse(await response.json());
 
       if (!result.success) return undefined;
       const timestamp = new Date(this.now()).toISOString();
@@ -676,7 +683,9 @@ export class InnaClient {
       const accessResponse = await this.fetcher('https://inna.is/auth/access', {
         method: 'GET',
         headers: { Authorization: `Bearer ${token}` },
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+          : AbortSignal.timeout(30_000),
       });
 
       if (!accessResponse.ok) return undefined;
@@ -713,7 +722,9 @@ export class InnaClient {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: '{}',
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+          : AbortSignal.timeout(30_000),
       });
 
       if (!schoolResponse.ok) return undefined;
@@ -727,12 +738,15 @@ export class InnaClient {
       const handoffResponse = await this.fetcher(schoolUrl.href, {
         method: 'GET',
         redirect: 'manual',
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+          : AbortSignal.timeout(30_000),
       });
 
       const jar = new CookieJar();
 
-      for (const cookie of handoffResponse.headers.getSetCookie()) await jar.setCookie(cookie, ORIGIN);
+      for (const cookie of handoffResponse.headers.getSetCookie())
+        await jar.setCookie(cookie, ORIGIN);
 
       const cookies = await jar.getCookies(ORIGIN);
 
@@ -852,7 +866,11 @@ export class InnaClient {
         !(error instanceof SafeError) ||
         ![signInRequired().message, sessionExpired().message].includes(error.message)
       ) {
-        if (saved?.token && error instanceof SafeError && error.message === signInRequired().message) {
+        if (
+          saved?.token &&
+          error instanceof SafeError &&
+          error.message === signInRequired().message
+        ) {
           try {
             if (await this.renewSession(saved, signal)) {
               await writePrivateFile(this.path, JSON.stringify(saved));

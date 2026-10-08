@@ -129,10 +129,9 @@ function provider() {
       case 'heimdallur.inna.is/auth/island/logout-callback':
         return redirect('https://inna.is/auth/island/callback?token=synthetic');
       case 'inna.is/auth/island/callback':
-        return new Response(
-          `<script>var jwt = "${token}"; store.set('id_token',jwt);</script>`,
-          { headers: { 'Set-Cookie': `id_token=${token}; Path=/; Domain=inna.is; Secure` } },
-        );
+        return new Response(`<script>var jwt = "${token}"; store.set('id_token',jwt);</script>`, {
+          headers: { 'Set-Cookie': `id_token=${token}; Path=/; Domain=inna.is; Secure` },
+        });
       case 'inna.is/auth/access':
         return Response.json(access.map((entry) => Object.assign({ ssn: 'DO-NOT-SAVE' }, entry)));
       case 'inna.is/auth/user-terms-confirmed':
@@ -271,9 +270,9 @@ test('phone login with several student contexts picks the first or the preferred
       preferredUserId,
       selections: [selection],
     });
-    expect((await result.jar.getCookies('https://nam.inna.is/')).map((cookie) => cookie.key)).toContain(
-      'SESSION',
-    );
+    expect(
+      (await result.jar.getCookies('https://nam.inna.is/')).map((cookie) => cookie.key),
+    ).toContain('SESSION');
     expect(result.token).toBe(token);
   }
 });

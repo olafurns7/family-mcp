@@ -1121,7 +1121,7 @@ test('the saved default user id is read locally and is absent without a session'
   expect(f.provider.calls).toHaveLength(calls);
 });
 
-test('Google browser sign-in saves a version 2 session and refuses a changed binding', async () => {
+test('Google browser sign-in saves a version 3 session and refuses a changed binding', async () => {
   const provider = new Provider();
   const login = await googleLogin(provider);
 
@@ -1134,7 +1134,7 @@ test('Google browser sign-in saves a version 2 session and refuses a changed bin
     });
     expect(provider.paths()).toEqual([USER_PATH]);
     const saved = await savedFile(login.path);
-    expect(saved.version).toBe(2);
+    expect(saved.version).toBe(3);
     expect(saved.account).toEqual({ userId: 1, studentId: '2', schoolId: '3' });
     expect(Object.keys(saved.students)).toEqual(['1']);
     expect(saved.jar).toContain('synthetic-rotated');
@@ -1280,7 +1280,7 @@ test('reading the sibling and then the default switches there and back with veri
   expect(f.provider.calls.every((call) => call.method === 'GET')).toBe(true);
 
   const saved = await savedFile(f.path);
-  expect(saved.version).toBe(2);
+  expect(saved.version).toBe(3);
   expect(saved.account.studentId).toBe('2');
   expect(Object.keys(saved.students).toSorted()).toEqual(['1', SIBLING]);
   expect(saved.students[SIBLING]?.studentName).toBe('Synthetic sibling');
@@ -1359,7 +1359,7 @@ test('a version 1 session file migrates and learns students on use', async () =>
   await writeFile(f.path, JSON.stringify({ version: 1, jar, account, pauseUntil }));
   expect((await f.client.overview()).context.studentId).toBe('2');
   const migrated = await savedFile(f.path);
-  expect(migrated.version).toBe(2);
+  expect(migrated.version).toBe(3);
   expect(Object.keys(migrated.students)).toEqual(['1']);
   expect((await f.client.overview(undefined, SIBLING)).context.studentId).toBe('6');
   expect((await f.client.overview()).context.studentId).toBe('2');

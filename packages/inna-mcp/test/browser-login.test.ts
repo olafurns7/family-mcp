@@ -250,7 +250,7 @@ test('auth login --google captures over a private pipe, closes the browser, then
       expect(cookie).toMatchObject({ domain: 'nam.inna.is', path: '/', secure: true });
     expect(await readFile(sessionPath, 'utf8')).not.toContain('decoy');
     expect(savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')))).toMatchObject(
-      { version: 2, account: { userId: 1, studentId: '2', schoolId: '3' } },
+      { version: 3, account: { userId: 1, studentId: '2', schoolId: '3' } },
     );
     expect((await stat(sessionPath)).mode & 0o777).toBe(0o600);
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });

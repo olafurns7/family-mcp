@@ -138,6 +138,7 @@ owner-only file permissions (in the same session.json file). While
 - Automatically renews the nam.inna.is school session when it expires
 
 When a school session expires, the server uses the saved token to:
+
 1. Refresh the inna.is token via `POST https://inna.is/auth/refresh`
 2. Mint a fresh nam.inna.is school session for the saved student
 3. Verify the account/student/school remain unchanged

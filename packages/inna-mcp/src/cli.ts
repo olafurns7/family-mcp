@@ -75,7 +75,12 @@ async function signIn(client: InnaClient, allowAccountChange: boolean): Promise<
       { signal: controller.signal, preferredUserId },
     );
 
-    await client.saveVerifiedSession(result.jar, allowAccountChange, result.token, controller.signal);
+    await client.saveVerifiedSession(
+      result.jar,
+      allowAccountChange,
+      result.token,
+      controller.signal,
+    );
     process.stdout.write(`Signed in. Session saved to ${client.path}\n`);
   } catch (error) {
     if (controller.signal.aborted) throw new SafeError('Inna login cancelled.');
@@ -111,7 +116,12 @@ async function signInWithGoogle(
   process.on('SIGTERM', cancel);
 
   try {
-    await client.saveVerifiedSession(result.jar, allowAccountChange, result.token, controller.signal);
+    await client.saveVerifiedSession(
+      result.jar,
+      allowAccountChange,
+      result.token,
+      controller.signal,
+    );
     process.stdout.write(`Signed in. Session saved to ${client.path}\n`);
   } catch (error) {
     if (controller.signal.aborted) throw new SafeError('Inna login cancelled.');

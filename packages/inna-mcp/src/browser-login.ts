@@ -96,6 +96,7 @@ const versionSchema = z.object({ product: z.string().min(1) });
 
 const browserCookieSchema = z.looseObject({
   name: z.string(),
+  value: z.string().optional(),
   domain: z.string(),
   path: z.string(),
 });
@@ -197,12 +198,12 @@ class CdpPipe {
     }
 
     const result = z.object({ cookies: z.array(browserCookieSchema) }).parse(value);
-    const token = result.cookies.find(
+    const tokenCookie = result.cookies.find(
       (cookie) =>
         cookie.name === 'id_token' &&
         cookie.domain.replace(/^\./, '') === 'inna.is' &&
         cookie.path === '/',
-    )?.value;
+    );
 
     const jar = await sessionJar(
       cookieExportSchema.parse(
@@ -215,7 +216,11 @@ class CdpPipe {
       ),
     );
 
-    return { jar, token };
+    const loginResult: BrowserLoginResult = { jar };
+
+    if (tokenCookie?.value) loginResult.token = tokenCookie.value;
+
+    return loginResult;
   }
 
   async waitForClose(timeoutMs: number): Promise<boolean> {
