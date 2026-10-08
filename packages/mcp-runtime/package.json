@@ -22,7 +22,8 @@
   "devDependencies": {
     "@family-mcp/oxlint-anti-slop": "workspace:*",
     "@family-mcp/tsconfig": "workspace:*",
-    "@types/bun": "^1.2.19"
+    "@types/bun": "^1.2.19",
+    "@types/node": "^22.0.0"
   },
   "packageManager": "bun@1.4.2"
 }
