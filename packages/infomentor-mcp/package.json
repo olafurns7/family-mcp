@@ -48,7 +48,7 @@
     "@family-mcp/oxlint-anti-slop": "workspace:*",
     "@family-mcp/release-tooling": "workspace:*",
     "@family-mcp/tsconfig": "workspace:*",
-    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/client": "^2.2.0",
     "@types/bun": "^1.2.19",
     "@types/node": "^22.20.2"
   },
