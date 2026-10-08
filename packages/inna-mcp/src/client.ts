@@ -54,12 +54,15 @@ function noPreview(): SafeError {
 }
 
 // Version 1 files hold one binding; they are read as version 2 without learned students.
+// Version 2 adds learned students. Version 3 adds the inna.is token for renewal.
 const savedSchema = z.object({
-  version: z.union([z.literal(1), z.literal(2)]),
+  version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   jar: z.string().max(MAX_SESSION_BYTES),
   account: schemas.bindingSchema,
   students: z.record(schemas.id, schemas.learnedStudentSchema).default({}),
   pauseUntil: z.number().default(0),
+  token: z.string().max(65_536).optional(),
+  tokenRefreshedAt: z.number().default(0),
 });
 
 type Saved = z.infer<typeof savedSchema>;
@@ -77,6 +80,27 @@ function credentials(saved: Saved): string {
     );
 
   return createHash('sha256').update(pairs.toSorted().join('\n')).digest('hex');
+}
+
+// Decode only non-sensitive JWT claims: exp, iat, orig_iat.
+function parseTokenClaims(token: string): { exp?: number; iat?: number; orig_iat?: number } | undefined {
+  try {
+    const parts = token.split('.');
+
+    if (parts.length !== 3) return undefined;
+    const payload = parts[1];
+
+    if (!payload) return undefined;
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+
+    return {
+      exp: typeof decoded.exp === 'number' ? decoded.exp : undefined,
+      iat: typeof decoded.iat === 'number' ? decoded.iat : undefined,
+      orig_iat: typeof decoded.orig_iat === 'number' ? decoded.orig_iat : undefined,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 type Student = z.infer<typeof schemas.accessStudentSchema> & { index: number };
@@ -512,9 +536,10 @@ export type ClientOptions = {
   fetch?: Fetch;
   now?: () => number;
   allowAbsenceWrites?: boolean;
+  log?: (message: string) => void;
 };
 
-export type KeepAlive = { status: 'kept' | 'skipped' | 'signInRequired' | 'failed' };
+export type KeepAlive = { status: 'kept' | 'skipped' | 'signInRequired' | 'failed' | 'renewed' };
 
 export class InnaClient {
   readonly path: string;
@@ -523,6 +548,7 @@ export class InnaClient {
   private readonly fetcher: Fetch;
   private readonly now: () => number;
   private readonly allowAbsenceWrites: boolean;
+  private readonly log: (message: string) => void;
 
   constructor(options: ClientOptions = {}) {
     this.path = options.sessionFile ?? sessionPath();
@@ -531,6 +557,7 @@ export class InnaClient {
     this.fetcher = options.fetch ?? globalThis.fetch;
     this.now = options.now ?? Date.now;
     this.allowAbsenceWrites = options.allowAbsenceWrites ?? false;
+    this.log = options.log ?? ((message) => process.stderr.write(`${message}\n`));
   }
 
   private async locked<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -566,7 +593,29 @@ export class InnaClient {
           'No Inna session. Run inna-mcp auth login or auth import with a private cookie export.',
         );
 
-      return this.persisting(saved, work, signal);
+      try {
+        return await this.persisting(saved, work, signal);
+      } catch (error) {
+        if (
+          saved.token &&
+          error instanceof SafeError &&
+          (error.message === signInRequired().message || error.message === sessionExpired().message)
+        ) {
+          const timestamp = new Date(this.now()).toISOString();
+
+          this.log(`${timestamp} Session expired, attempting automatic renewal`);
+
+          if (await this.renewSession(saved, signal)) {
+            await writePrivateFile(this.path, JSON.stringify(saved));
+
+            return await this.persisting(saved, work, signal);
+          }
+
+          this.log(`${timestamp} Automatic renewal failed`);
+        }
+
+        throw error;
+      }
     }, signal);
   }
 
@@ -586,9 +635,178 @@ export class InnaClient {
     }
   }
 
+  private async refreshToken(saved: Saved, signal?: AbortSignal): Promise<string | undefined> {
+    if (!saved.token) return undefined;
+
+    try {
+      const response = await this.fetcher('https://inna.is/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: saved.token }),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+      });
+
+      if (!response.ok) return undefined;
+      const result = z.object({ token: z.string().min(1).max(65_536) }).safeParse(await response.json());
+
+      if (!result.success) return undefined;
+      const timestamp = new Date(this.now()).toISOString();
+      const claims = parseTokenClaims(result.data.token);
+
+      if (claims?.exp) {
+        const expiresAt = new Date(claims.exp * 1000).toISOString();
+
+        this.log(`${timestamp} Inna token refreshed (expires ${expiresAt})`);
+      } else {
+        this.log(`${timestamp} Inna token refreshed`);
+      }
+
+      return result.data.token;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async mintSchoolSession(
+    saved: Saved,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<CookieJar | undefined> {
+    try {
+      const accessResponse = await this.fetcher('https://inna.is/auth/access', {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+      });
+
+      if (!accessResponse.ok) return undefined;
+      const accessSchema = z.array(
+        z.object({
+          system: z.number().int(),
+          user_id: z.number().int(),
+          status: z.number().int(),
+          is_access: z.boolean(),
+        }),
+      );
+
+      const access = accessSchema.safeParse(await accessResponse.json());
+
+      if (!access.success) return undefined;
+      const candidates = access.data.flatMap((entry, index) =>
+        entry.is_access && entry.system === 1 ? [{ entry, index }] : [],
+      );
+
+      const chosen =
+        candidates.find((candidate) => candidate.entry.user_id === saved.account.userId) ??
+        candidates[0];
+
+      if (!chosen) return undefined;
+      const { entry } = chosen;
+      const params = new URLSearchParams({
+        i: String(chosen.index),
+        system: String(entry.system),
+        user_id: String(entry.user_id),
+        status: String(entry.status),
+      });
+
+      const schoolResponse = await this.fetcher(`https://inna.is/auth/system?${params}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: '{}',
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+      });
+
+      if (!schoolResponse.ok) return undefined;
+      const schoolResult = z.object({ url: z.string() }).safeParse(await schoolResponse.json());
+
+      if (!schoolResult.success) return undefined;
+      const schoolUrl = new URL(schoolResult.data.url);
+
+      if (schoolUrl.origin !== 'https://nam.inna.is' || schoolUrl.pathname !== '/auth/token')
+        return undefined;
+      const handoffResponse = await this.fetcher(schoolUrl.href, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+      });
+
+      const jar = new CookieJar();
+
+      for (const cookie of handoffResponse.headers.getSetCookie()) await jar.setCookie(cookie, ORIGIN);
+
+      const cookies = await jar.getCookies(ORIGIN);
+
+      if (
+        !cookies.some((c) => c.key === 'SESSION') ||
+        !cookies.some((c) => c.key === 'JSESSIONID') ||
+        !cookies.some((c) => c.key === 'XSRF-TOKEN')
+      )
+        return undefined;
+
+      const schoolJar = new CookieJar();
+
+      for (const cookie of cookies) {
+        if (cookieNames.has(cookie.key)) {
+          cookie.secure = true;
+          await schoolJar.setCookie(cookie, ORIGIN);
+        }
+      }
+
+      return schoolJar;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async renewSession(saved: Saved, signal?: AbortSignal): Promise<boolean> {
+    if (!saved.token) return false;
+    const timestamp = new Date(this.now()).toISOString();
+
+    this.log(`${timestamp} Attempting session renewal`);
+    const refreshed = await this.refreshToken(saved, signal);
+
+    if (!refreshed) {
+      this.log(`${timestamp} Token refresh failed`);
+
+      return false;
+    }
+
+    const jar = await this.mintSchoolSession(saved, refreshed, signal);
+
+    if (!jar) {
+      this.log(`${timestamp} School session minting failed`);
+
+      return false;
+    }
+
+    const connection = new Connection(jar, saved, this.fetcher, this.now, signal);
+
+    try {
+      const user = await connection.request(USER_ENDPOINT, schemas.userSchema);
+
+      if (!sameAccount(saved.account, user)) {
+        this.log(`${timestamp} Renewed session has different account`);
+
+        return false;
+      }
+
+      saved.token = refreshed;
+      saved.tokenRefreshedAt = this.now();
+      saved.jar = JSON.stringify(await jar.serialize());
+      this.log(`${timestamp} Session renewed successfully`);
+
+      return true;
+    } catch {
+      this.log(`${timestamp} Session renewal verification failed`);
+
+      return false;
+    }
+  }
+
   /**
    * Touches the saved session so Inna does not idle it out. Reads no school data, never
    * switches or learns a student, and reports every failure as a status instead of throwing.
+   * Also refreshes the inna.is token when it's close to expiry (within 6 hours).
    */
   async keepAlive(signal?: AbortSignal): Promise<KeepAlive> {
     let saved: Saved | undefined;
@@ -599,6 +817,25 @@ export class InnaClient {
 
         if (!saved || saved.pauseUntil > this.now() || credentials(saved) === this.refused)
           return { status: 'skipped' };
+
+        if (saved.token) {
+          const claims = parseTokenClaims(saved.token);
+
+          if (claims?.exp) {
+            const expiresIn = claims.exp * 1000 - this.now();
+            const sixHours = 6 * 60 * 60 * 1000;
+
+            if (expiresIn < sixHours) {
+              const refreshed = await this.refreshToken(saved, signal);
+
+              if (refreshed) {
+                saved.token = refreshed;
+                saved.tokenRefreshedAt = this.now();
+                await writePrivateFile(this.path, JSON.stringify(saved));
+              }
+            }
+          }
+        }
 
         await this.persisting(
           saved,
@@ -614,9 +851,34 @@ export class InnaClient {
       if (
         !(error instanceof SafeError) ||
         ![signInRequired().message, sessionExpired().message].includes(error.message)
-      )
+      ) {
+        if (saved?.token && error instanceof SafeError && error.message === signInRequired().message) {
+          try {
+            if (await this.renewSession(saved, signal)) {
+              await writePrivateFile(this.path, JSON.stringify(saved));
+
+              return { status: 'renewed' };
+            }
+          } catch {
+            // Fall through to signInRequired
+          }
+        }
+
         return { status: 'failed' };
-      // Taken from the jar as written back, so a cookie set by the refusal itself is included.
+      }
+
+      if (saved?.token) {
+        try {
+          if (await this.renewSession(saved, signal)) {
+            await writePrivateFile(this.path, JSON.stringify(saved));
+
+            return { status: 'renewed' };
+          }
+        } catch {
+          // Fall through to signInRequired
+        }
+      }
+
       this.refused = saved && credentials(saved);
 
       return { status: 'signInRequired' };
@@ -680,6 +942,7 @@ export class InnaClient {
   async saveVerifiedSession(
     jar: CookieJar,
     allowAccountChange = false,
+    token?: string,
     signal?: AbortSignal,
   ): Promise<void> {
     await this.locked(async () => {
@@ -712,11 +975,13 @@ export class InnaClient {
       }
 
       const candidate: Saved = {
-        version: 2,
+        version: 3,
         jar: JSON.stringify(await jar.serialize()),
         account: schemas.bindingSchema.parse(user),
         students: { ...kept },
         pauseUntil: throttle.pauseUntil,
+        token: token && token.length > 10 ? token : undefined,
+        tokenRefreshedAt: token ? this.now() : 0,
       };
 
       if (studentEntries(user)?.length) {
@@ -727,6 +992,17 @@ export class InnaClient {
             'Inna did not report one selected student matching this session. Select the intended student in Inna and sign in again.',
           );
         candidate.students[key] = schemas.learnedStudentSchema.parse(user);
+      }
+
+      if (token) {
+        const claims = parseTokenClaims(token);
+
+        if (claims?.exp) {
+          const timestamp = new Date(this.now()).toISOString();
+          const expiresAt = new Date(claims.exp * 1000).toISOString();
+
+          this.log(`${timestamp} Inna token saved (expires ${expiresAt})`);
+        }
       }
 
       signal?.throwIfAborted();

@@ -11,6 +11,8 @@ import { z } from 'zod';
 
 import { cookieExportSchema, cookieNames, ORIGIN, sessionJar } from './client.js';
 
+type BrowserLoginResult = { jar: CookieJar; token?: string };
+
 const macBrowsers = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -148,7 +150,7 @@ class CdpPipe {
   }
 
   // Undefined until a tab shows the Inna student application: cookies alone do not prove sign-in.
-  async captureCookies(signal: AbortSignal): Promise<CookieJar | undefined> {
+  async captureCookies(signal: AbortSignal): Promise<BrowserLoginResult | undefined> {
     const targetResult = z
       .object({
         targetInfos: z.array(z.object({ targetId: z.string(), type: z.string(), url: z.string() })),
@@ -179,7 +181,7 @@ class CdpPipe {
     try {
       value = await this.request(
         'Network.getCookies',
-        { urls: [`${ORIGIN}/`] },
+        { urls: [`${ORIGIN}/`, 'https://inna.is/'] },
         signal,
         this.sessionId,
       );
@@ -195,9 +197,14 @@ class CdpPipe {
     }
 
     const result = z.object({ cookies: z.array(browserCookieSchema) }).parse(value);
+    const token = result.cookies.find(
+      (cookie) =>
+        cookie.name === 'id_token' &&
+        cookie.domain.replace(/^\./, '') === 'inna.is' &&
+        cookie.path === '/',
+    )?.value;
 
-    // The browser also holds r.inna.is and Google cookies; only the saved-session set leaves it.
-    return sessionJar(
+    const jar = await sessionJar(
       cookieExportSchema.parse(
         result.cookies.filter(
           (cookie) =>
@@ -207,6 +214,8 @@ class CdpPipe {
         ),
       ),
     );
+
+    return { jar, token };
   }
 
   async waitForClose(timeoutMs: number): Promise<boolean> {
@@ -514,7 +523,7 @@ async function waitForCookies(
   debugging: BrowserDebugging,
   timeoutSeconds: number,
   signal: AbortSignal,
-): Promise<CookieJar> {
+): Promise<BrowserLoginResult> {
   const deadline = Date.now() + timeoutSeconds * 1000;
 
   while (Date.now() < deadline) {
@@ -531,15 +540,16 @@ async function waitForCookies(
         AbortSignal.timeout(Math.min(10_000, deadline - Date.now())),
       ]);
 
-      const jar = await debugging.connection.captureCookies(attemptSignal);
-      const cookies = (await jar?.getCookies(`${ORIGIN}/`)) ?? [];
+      const result = await debugging.connection.captureCookies(attemptSignal);
+
+      if (!result) continue;
+      const cookies = await result.jar.getCookies(`${ORIGIN}/`);
 
       if (
-        jar &&
         cookies.some((cookie) => cookie.key === 'SESSION') &&
         cookies.some((cookie) => cookie.key === 'XSRF-TOKEN')
       )
-        return jar;
+        return result;
     } catch {
       throwIfCancelled(signal);
     }
@@ -685,7 +695,7 @@ export async function loginInBrowser(
   options: { browser?: string | undefined; timeoutSeconds: number },
   platform = process.platform,
   env = process.env,
-): Promise<CookieJar> {
+): Promise<BrowserLoginResult> {
   const { browser: override, timeoutSeconds } = options;
 
   if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1)
@@ -698,7 +708,7 @@ export async function loginInBrowser(
   let profile: string | undefined;
   let browser: Bun.Subprocess | undefined;
   let debugging: BrowserDebugging | undefined;
-  let result: CookieJar | undefined;
+  let result: BrowserLoginResult | undefined;
   let loginError: Error | undefined;
   let cleanupError: Error | undefined;
   process.on('SIGINT', cancel);
