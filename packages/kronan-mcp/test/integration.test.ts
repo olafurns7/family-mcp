@@ -865,7 +865,11 @@ test('store key failures fail closed with fixed messages and never fall back or 
         const messages: string[] = [];
 
         for (const [code, pattern] of [
-          ['STORE_LOCKED', /^Unlock your login keychain and try again\.$/],
+          ['STORE_LOCKED', /^The Krónan store key is locked\. Unlock it and try again\.$/],
+          [
+            'STORE_BACKEND_RETIRED',
+            /macOS Keychain, which is no longer used\. .* run kronan-mcp auth set again\.$/,
+          ],
           ['STORE_TIMEOUT', /did not answer in time/],
           ['STORE_ACCESS_DENIED', /was denied/],
           ['STORE_ERROR', /Cannot use the Krónan token store/],

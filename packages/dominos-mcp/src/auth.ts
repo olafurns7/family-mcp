@@ -8,7 +8,9 @@ import {
   defaultSessionPath,
   LocalKeyFileProvider,
   readPrivateFile,
+  retiredStorePaths,
   SessionStoreError,
+  startupCheck,
   sweepTemp,
   withFileLock,
   withSecretStore,
@@ -73,16 +75,18 @@ export const sessionPath = () =>
 function storeError(error: SessionStoreError): SafeError {
   switch (error.code) {
     case 'STORE_LOCKED':
-      return new SafeError('Unlock your login keychain and try again.');
+      return new SafeError('The Domino’s store key is locked. Unlock it and try again.');
     case 'STORE_ACCESS_DENIED':
-      return new SafeError(
-        'Access to the Domino’s store key was denied. Allow dominos-mcp to use the login keychain and try again.',
-      );
+      return new SafeError('Access to the Domino’s store key was denied.');
     case 'STORE_TIMEOUT':
-      return new SafeError('The login keychain did not answer in time. Try again.');
+      return new SafeError('The Domino’s store key did not answer in time. Try again.');
     case 'STORE_UNAVAILABLE':
       return new SafeError(
         'The Domino’s store key is missing. Run dominos-mcp auth login to sign in again.',
+      );
+    case 'STORE_BACKEND_RETIRED':
+      return new SafeError(
+        'The Domino’s session store was set up with the macOS Keychain, which is no longer used. Remove the Domino’s secret store files and run dominos-mcp auth login again.',
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new SafeError(
@@ -117,7 +121,7 @@ async function guarded<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-/** `keys` is a test seam; the default is the macOS Keychain or a Linux key file. */
+/** `keys` is a test seam; the default is the store's key file. */
 function sessionRecord(keys?: KeyProvider, signal?: AbortSignal): SecretRecordOptions {
   return {
     path: defaultSecretRecordPath('dominos-mcp'),
@@ -127,6 +131,7 @@ function sessionRecord(keys?: KeyProvider, signal?: AbortSignal): SecretRecordOp
     schema: 1,
     maxBytes: SESSION_MAX_BYTES,
     keys: keys ?? defaultKeyProvider({ server: 'dominos-mcp', profile: 'default' }),
+    retired: retiredStorePaths('dominos-mcp'),
     signal,
   };
 }
@@ -165,11 +170,7 @@ async function storeDecides(store: SecretStore, record: SecretRecordOptions): Pr
   return (await store.exists()) || (await exists(record.path));
 }
 
-function storageName(keys: KeyProvider): string {
-  return keys.keySource === 'keychain-accessor'
-    ? 'an encrypted file whose key is in the macOS Keychain'
-    : 'an encrypted file';
-}
+const STORAGE = 'an encrypted file';
 
 /** Create the key when it is missing; only an explicit new login may reset a lost key's store. */
 async function prepareKey(
@@ -330,11 +331,7 @@ export async function withSession<T>(
       if (current === null || current === undefined)
         throw new SafeError('No saved Domino’s session. Run dominos-mcp auth login first.');
 
-      return work(
-        current,
-        (next) => saveRefreshed(store, record, next),
-        `Saved in ${storageName(record.keys)}.`,
-      );
+      return work(current, (next) => saveRefreshed(store, record, next), `Saved in ${STORAGE}.`);
     });
   } catch (error) {
     // Errors from `work` pass through; store setup and taking the lock are mapped here.
@@ -481,7 +478,7 @@ export async function requestCode(phone: string, request: Request = fetch): Prom
 
 /**
  * Exchange the SMS code and save the verified session in the store, then remove any plaintext
- * file. The key is prepared and the store read first, so a locked keychain or an unusable store
+ * file. The key is prepared and the store read first, so an unusable store
  * refuses before the code is used. True if a store whose key was lost was reset.
  */
 export async function login(
@@ -552,5 +549,17 @@ export function logout(path = sessionPath(), keys?: KeyProvider): Promise<void> 
   return changeSession(path, keys, async (store, record) => {
     if (await storeDecides(store, record)) await store.write(encodeRecord(null));
     await removeLegacy(path);
+  });
+}
+
+/**
+ * The CLI's store preflight before it serves or runs an auth command: false, after one stderr
+ * line, when the store is unsafe; a notice when an earlier build's store is still on disk.
+ */
+export function checkStoreAtStartup(): Promise<boolean> {
+  return startupCheck({
+    server: 'dominos-mcp',
+    signIn: 'dominos-mcp auth login',
+    store: () => sessionRecord(),
   });
 }

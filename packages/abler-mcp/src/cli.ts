@@ -8,6 +8,7 @@ import type { CookieJar } from 'tough-cookie';
 import { AblerClient } from './api.js';
 import {
   captureCookies,
+  checkStoreAtStartup,
   cookieInputSchema,
   importCookies,
   logoutSession,
@@ -89,6 +90,13 @@ async function main() {
 
   if (values.version) {
     console.log(VERSION);
+
+    return;
+  }
+
+  // The store is checked before anything serves or touches it; help and version never do.
+  if (!(await checkStoreAtStartup())) {
+    process.exitCode = 1;
 
     return;
   }

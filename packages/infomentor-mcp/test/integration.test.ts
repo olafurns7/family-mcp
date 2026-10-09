@@ -2103,24 +2103,27 @@ test('store failures give fixed messages without paths and never fall back to th
     );
     await allRefuse(/damaged, unsafe, or not readable/);
 
-    // A locked keychain refuses, and the key is never created as a fallback.
+    // A locked key refuses, and the key is never created as a fallback.
     await anotherHome(store);
     await login({ sessionFile: file, credentialsFile, fetch: routes.fetch });
 
     const locked: KeyProvider = {
-      backend: 'keychain',
-      keySource: 'keychain-accessor',
+      backend: 'locked',
+      keySource: 'locked-key',
       keyId: 'test',
       getKey: async () => {
         throw new SessionStoreError('STORE_LOCKED', 'Locked.');
       },
-      createKey: async () => assert.fail('A locked keychain must not get a new key.'),
+      createKey: async () => assert.fail('A locked key must not get a new key.'),
     };
 
-    await assert.rejects(read(locked), refused(/Unlock your login keychain/));
+    await assert.rejects(
+      read(locked),
+      refused(/The InfoMentor store key is locked\. Unlock it and try again\./),
+    );
     await assert.rejects(
       login({ sessionFile: file, credentialsFile, fetch: routes.fetch, keys: locked }),
-      refused(/Unlock your login keychain/),
+      refused(/The InfoMentor store key is locked\. Unlock it and try again\./),
     );
   } finally {
     await rm(tree.directory, { recursive: true, force: true });

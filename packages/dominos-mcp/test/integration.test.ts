@@ -700,9 +700,13 @@ test('store failures have fixed messages, change no file and never fall back', a
     const before = await files();
 
     for (const [code, message] of [
-      ['STORE_LOCKED', /Unlock your login keychain and try again\./],
+      ['STORE_LOCKED', /The Domino’s store key is locked\. Unlock it and try again\.$/],
       ['STORE_TIMEOUT', /did not answer in time/],
-      ['STORE_ACCESS_DENIED', /Allow dominos-mcp to use the login keychain/],
+      ['STORE_ACCESS_DENIED', /Access to the Domino’s store key was denied\.$/],
+      [
+        'STORE_BACKEND_RETIRED',
+        /macOS Keychain, which is no longer used\. .* run dominos-mcp auth login again\.$/,
+      ],
       ['STORE_UNAVAILABLE', /store key is missing\. Run dominos-mcp auth login/],
       ['STORE_ERROR', /damaged, unsafe, or not readable/],
     ] as const) {

@@ -47,3 +47,7 @@ export {
 export type { SecretRecordOptions, SecretStore, SecretUpdate, StoreCheck } from './secret.js';
 
 export { StoreRefusal } from './storage.js';
+
+export { startupCheck } from './startup.js';
+
+export type { StartupCheckOptions } from './startup.js';

@@ -7,13 +7,14 @@ import { startStdio } from '@family-mcp/mcp-runtime';
 import { KronanClient } from './api.js';
 import { attemptsPath, clearAttempts, listAttempts } from './attempts.js';
 import {
-  TOKEN_MAX_BYTES,
+  checkStoreAtStartup,
   loadSavedToken,
   logoutToken,
   migrateToken,
   normalizeToken,
   readTokenSource,
   saveToken,
+  TOKEN_MAX_BYTES,
 } from './auth.js';
 import { createServer, VERSION } from './server.js';
 
@@ -28,8 +29,8 @@ const help = `kronan-mcp — unofficial Krónan MCP server (products, shopping n
   kronan-mcp --version              Print the installed version
 
 Create the access token in Krónan's settings (User or Customer group page; Auðkenni login required).
-Never pass the token as a command-line argument. The token is saved encrypted; its key is in the macOS
-Keychain, or in a private key file on Linux.
+Never pass the token as a command-line argument. The token is saved encrypted with a private key
+file, in ~/Library/Application Support/family-mcp on macOS or under ~/.config and ~/.local/share on Linux.
 Order calls are recorded beside KRONAN_TOKEN_FILE (the plaintext token file of older versions); an
 unresolved record blocks further order calls for that checkout.
 Clear records only after checking your Krónan orders, never to get around an unknown outcome.
@@ -179,6 +180,13 @@ async function main() {
 
   if (values.version) {
     console.log(VERSION);
+
+    return;
+  }
+
+  // The store is checked before anything serves or touches it; help and version never do.
+  if (!(await checkStoreAtStartup())) {
+    process.exitCode = 1;
 
     return;
   }

@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
 import { loginInBrowser } from './browser-login.js';
-import { InnaClient, type SavedSession } from './client.js';
+import { InnaClient, checkStoreAtStartup, type SavedSession } from './client.js';
 import { createServer } from './server.js';
 import { startKeepAlive } from './keep-alive.js';
 import { loginWithElectronicId } from './login.js';
@@ -148,6 +148,14 @@ async function main(): Promise<void> {
   if (values.help) return void process.stdout.write(help);
 
   if (values.version) return void process.stdout.write(`${manifest.version}\n`);
+
+  // The store is checked before anything serves or touches it; help and version never do.
+  if (!(await checkStoreAtStartup())) {
+    process.exitCode = 1;
+
+    return;
+  }
+
   const [command = 'serve', action, source] = positionals;
 
   const browserOptions = values.timeout !== undefined || values.browser !== undefined;
