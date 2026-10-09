@@ -27,6 +27,10 @@ export const DEFAULT_WAIT_MS = 30_000;
 
 const MAX_POLL_MS = 250;
 
+// Immediate retries still allowed once the deadline has passed, so a zero wait can finish
+// recovering a dead owner; each is one rename and one directory read.
+const LATE_RETRIES = 3;
+
 const OWNER_PATTERN = /^([1-9]\d*)-[\da-f-]{36}$/;
 
 const MAX_PID = 2_147_483_647;
@@ -69,9 +73,11 @@ async function acquire(path: string, options: LockOptions): Promise<Release> {
   await rejectHardLinkedTarget(path);
   const owner = `${process.pid}-${randomUUID()}`;
   const temporary = join(dirname(directory), `${basename(path)}.lock-tmp.${owner}`);
-  const deadline = Date.now() + waitMs;
+  // Monotonic: a wall-clock step can neither extend nor cut the wait.
+  const deadline = performance.now() + waitMs;
   let pollMs = 25;
   let spins = 0;
+  let lateRetries = 0;
   let permissionMisses = 0;
 
   try {
@@ -98,20 +104,24 @@ async function acquire(path: string, options: LockOptions): Promise<Release> {
           'Cannot create the session lock. Check the session directory permissions.',
         );
 
-      if (occupant !== 'busy') {
-        // Progress was made; yield occasionally so a pathological directory cannot spin.
-        if (++spins % 16 === 0) await sleep(pollMs, signal);
+      const remaining = deadline - performance.now();
 
-        continue;
-      }
+      if (remaining <= 0 && occupant !== 'busy') lateRetries++;
+      const step = nextStep(occupant, remaining, lateRetries);
 
-      const remaining = deadline - Date.now();
-
-      if (remaining <= 0)
+      if (step === 'give-up')
         throw new SessionStoreError(
           'BUSY',
           'Another process holds the session lock. Retry after its operation finishes.',
         );
+
+      if (step === 'retry') {
+        // Yield occasionally so a pathological directory cannot spin.
+        if (++spins % 16 === 0 && remaining > 0) await sleep(Math.min(pollMs, remaining), signal);
+
+        continue;
+      }
+
       await sleep(Math.min(pollMs, remaining), signal);
       pollMs = Math.min(pollMs * 2, MAX_POLL_MS);
     }
@@ -128,6 +138,21 @@ async function acquire(path: string, options: LockOptions): Promise<Release> {
   }
 
   return release;
+}
+
+/**
+ * After a failed attempt: progress (a dead owner or an empty shell removed) retries at once, a
+ * live owner is waited for, and neither outlasts the deadline. `lateRetries` counts progress
+ * after the deadline, including this one; a few still retry, so a zero wait can finish a recovery.
+ */
+export function nextStep(
+  occupant: 'busy' | 'missing' | 'retry',
+  remaining: number,
+  lateRetries: number,
+): 'retry' | 'wait' | 'give-up' {
+  if (remaining > 0) return occupant === 'busy' ? 'wait' : 'retry';
+
+  return occupant !== 'busy' && lateRetries <= LATE_RETRIES ? 'retry' : 'give-up';
 }
 
 async function lockDirectory(path: string): Promise<string> {

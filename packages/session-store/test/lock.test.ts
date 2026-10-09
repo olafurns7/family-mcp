@@ -17,9 +17,11 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { SessionStoreError, sweepTemp, withFileLock } from '../src/index.js';
+import { nextStep } from '../src/lock.js';
 
 const hasCode =
   (code: string) =>
@@ -330,5 +332,55 @@ test('rejects hard-linked session targets before running work', async () => {
     assert.deepEqual((await readdir(directory)).toSorted(), ['alias.json', 'session.json']);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('the deadline holds while the lock keeps changing hands', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'session-store-churn-'));
+  const file = join(directory, 'session.json');
+  const exited = spawn(process.execPath, ['-e', '']);
+  await once(exited, 'exit');
+  assert.ok(exited.pid);
+  const worker = fileURLToPath(new URL('./lock-churn-worker.ts', import.meta.url));
+
+  const churn = spawn(process.execPath, [worker, file, String(exited.pid)], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+
+  const churnExit = once(churn, 'exit');
+
+  try {
+    await once(churn.stdout, 'data');
+
+    for (const waitMs of [0, 200]) {
+      const started = performance.now();
+
+      // Each attempt either wins a gap between recoveries or gives up as BUSY; neither may hang.
+      const [outcome] = await Promise.allSettled([
+        withFileLock(file, { waitMs }, async () => 'acquired'),
+      ]);
+
+      if (outcome.status === 'rejected') assert.ok(busy(outcome.reason));
+
+      expect(performance.now() - started).toBeLessThan(waitMs + 1000);
+    }
+  } finally {
+    churn.kill();
+    await churnExit;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test('every retry outcome obeys the deadline', () => {
+  expect(nextStep('busy', 10, 0)).toBe('wait');
+  expect(nextStep('retry', 10, 0)).toBe('retry');
+  expect(nextStep('missing', 10, 0)).toBe('retry');
+  expect(nextStep('busy', 0, 0)).toBe('give-up');
+
+  // Past the deadline, progress gets a few immediate retries, then gives up like a busy lock.
+  for (const occupant of ['retry', 'missing'] as const) {
+    expect(nextStep(occupant, 0, 1)).toBe('retry');
+    expect(nextStep(occupant, -5, 3)).toBe('retry');
+    expect(nextStep(occupant, -5, 4)).toBe('give-up');
   }
 });
