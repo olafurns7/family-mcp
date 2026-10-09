@@ -3,6 +3,7 @@
 //! Rust server and the TypeScript CLI can share one store. The key is a local file on macOS and
 //! Linux; nothing here runs security(1) or reaches the Keychain. Unix only.
 
+mod backup;
 mod errors;
 mod files;
 mod keys;
@@ -10,13 +11,15 @@ mod lock;
 mod paths;
 mod seam;
 mod secret;
+mod spawn;
+mod storage;
 
 pub use errors::{Cancel, Code, Error, Result};
 pub use files::{
     DEFAULT_SWEEP_AGE, ensure_private_dir, read_private_bytes, read_private_file, sweep_temp,
     write_private_file,
 };
-pub use keys::{FakeKeyProvider, KEY_BYTES, Key, KeyProvider, LocalKeyFileProvider};
+pub use keys::{FakeKeyProvider, KEY_BYTES, Key, KeyProvider, LocalKeyFileProvider, Publish};
 pub use lock::{DEFAULT_WAIT, LockOptions, with_file_lock};
 pub use paths::{
     KEY_BACKEND, StoreEnvironment, default_key_provider, default_secret_record_path,
@@ -25,6 +28,6 @@ pub use paths::{
 };
 pub use seam::{TEST_LS, TEST_SEAM, TEST_TMUTIL, test_seam};
 pub use secret::{
-    SecretRecordOptions, SecretStore, create_secret_key, read_secret_record, secret_store_exists,
-    with_secret_record, with_secret_store,
+    SecretRecordOptions, SecretStore, StoreCheck, check_secret_store, create_secret_key,
+    read_secret_record, secret_store_exists, with_secret_record, with_secret_store,
 };

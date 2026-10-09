@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use rustix::fs::OFlags;
@@ -40,7 +40,7 @@ pub(crate) fn uuid() -> Result<String> {
     ))
 }
 
-fn is_uuid(text: &str) -> bool {
+pub(crate) fn is_uuid(text: &str) -> bool {
     text.len() == 36
         && text.bytes().enumerate().all(|(at, byte)| match at {
             8 | 13 | 18 | 23 => byte == b'-',
@@ -53,6 +53,27 @@ pub(crate) fn suffixed(path: &Path, suffix: &str) -> PathBuf {
     let mut name = OsString::from(path);
     name.push(suffix);
     name.into()
+}
+
+/// Node's `normalize`: `.` and `..` resolved lexically, repeated and trailing separators dropped.
+pub(crate) fn normalize(path: &Path) -> PathBuf {
+    let mut normal = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                normal.pop();
+            }
+            Component::CurDir => {}
+            other => normal.push(other),
+        }
+    }
+    normal
+}
+
+/// Node's `resolve`: absolute against the working directory, then normalized.
+pub(crate) fn resolve(path: &Path) -> PathBuf {
+    normalize(&std::env::current_dir().unwrap_or_default().join(path))
 }
 
 /// Node's `dirname`: a bare file name lives in `.`.
@@ -68,8 +89,9 @@ pub(crate) fn parent(path: &Path) -> &Path {
 pub(crate) const LINKED_FILE: &str =
     "This file has a second name (a hard link). Remove the other name and start again.";
 
-// The startup check's "Other users can open this file." with the command, for readers that print
-// no path.
+pub(crate) const OPEN_FILE: &str = "Other users can open this file.";
+
+// OPEN_FILE and its command, for readers that print no path.
 const OPEN_FILE_FIX: &str = "Other users can open this file. Make it owner-only with chmod 600.";
 
 pub(crate) const FOREIGN_FILE: &str =

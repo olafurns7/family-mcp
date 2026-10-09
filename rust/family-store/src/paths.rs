@@ -1,8 +1,9 @@
 use std::ffi::OsString;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::errors::{Code, Error, Result};
+use crate::files::normalize;
 use crate::keys::{KeyProvider, LocalKeyFileProvider};
 use crate::seam::test_seam;
 use crate::secret::check_names;
@@ -231,20 +232,4 @@ fn plain_name(app_name: &str) -> Result<&str> {
         return Err(Error::invalid("appName must be a plain directory name."));
     }
     Ok(app_name)
-}
-
-/// Node's `join` resolves `.` and `..` lexically; the same file must come out here.
-fn normalize(path: &Path) -> PathBuf {
-    let mut normal = PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            Component::ParentDir => {
-                normal.pop();
-            }
-            Component::CurDir => {}
-            other => normal.push(other),
-        }
-    }
-    normal
 }

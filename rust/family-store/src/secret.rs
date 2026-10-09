@@ -9,12 +9,14 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rustix::io::Errno;
 
+use crate::backup::exclude_from_backups;
 use crate::errors::{Cancel, Code, Error, Result, errno};
 use crate::files::{
-    DEFAULT_SWEEP_AGE, random, read_private_bytes, suffixed, sweep_temp, write_private_file,
+    DEFAULT_SWEEP_AGE, parent, random, read_private_bytes, suffixed, sweep_temp, write_private_file,
 };
-use crate::keys::{Key, KeyProvider};
+use crate::keys::{Key, KeyProvider, key_temporary};
 use crate::lock::{DEFAULT_WAIT, LockOptions, with_file_lock};
+use crate::storage::{StorePaths, check_store_paths, store_directories};
 
 #[derive(Clone)]
 pub struct SecretRecordOptions {
@@ -253,6 +255,14 @@ pub fn with_secret_store<T, E: From<Error>>(
     work: impl FnOnce(&mut SecretStore) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
     check_options(options)?;
+    // Before the lock: a refused store gets no lock directory. The record's directory is made and
+    // excluded from backups here, before any record or marker is written in it.
+    check_store_paths(&StorePaths {
+        directories: &store_directories(&options.path),
+        create: true,
+        ..StorePaths::default()
+    })?;
+    exclude_from_backups(&[parent(&options.path)], false)?;
     let lock = LockOptions {
         cancel: options.cancel.clone(),
         wait: options.wait,
@@ -289,6 +299,51 @@ pub fn read_secret_record(options: &SecretRecordOptions) -> Result<String> {
 /// [`SecretStore::create_key`] under its own lock hold.
 pub fn create_secret_key(options: &SecretRecordOptions) -> Result<()> {
     with_secret_store(options, |held| held.create_key())
+}
+
+/// What the startup preflight found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreCheck {
+    /// A marker exists at the store's path.
+    pub exists: bool,
+}
+
+/// Startup preflight: refuse unsafe store directories and files before serving, with an
+/// UNSAFE_FILE error whose `path()` names what to fix. It checks the store directories, the
+/// directories above them, and the key, record and marker files (macOS ACLs included), and passes
+/// when nothing exists yet. On macOS it then confirms the Time Machine exclusion of the existing
+/// store directories, applying it again when it was lost. It reads no secret, takes no lock and
+/// creates nothing. A key with the recognised second name of an interrupted publication passes;
+/// its next `get_key` removes that name.
+pub fn check_secret_store(options: &SecretRecordOptions) -> Result<StoreCheck> {
+    let path = options.path.as_path();
+    let key = options.keys.key_file();
+    let mut directories = store_directories(path);
+
+    for directory in key.map(store_directories).unwrap_or_default() {
+        if !directories.contains(&directory) {
+            directories.push(directory);
+        }
+    }
+    let mut files: Vec<PathBuf> = key.map(Path::to_path_buf).into_iter().collect();
+    files.extend([path.to_path_buf(), marker_path(path)]);
+    let allow_link = |file: &Path, info: &fs::Metadata| -> Result<bool> {
+        Ok(Some(file) == key && key_temporary(file, info)?.is_some())
+    };
+    check_store_paths(&StorePaths {
+        directories: &directories,
+        files: &files,
+        create: false,
+        allow_link: Some(&allow_link),
+    })?;
+    // An existing store's exclusion is applied again if it was lost; missing directories wait.
+    let mut excluded = vec![parent(path)];
+    excluded.extend(key.map(parent));
+    exclude_from_backups(&excluded, true)?;
+
+    Ok(StoreCheck {
+        exists: secret_store_exists(path)?,
+    })
 }
 
 /// A marker exists, so the store decides even while it holds no record.
