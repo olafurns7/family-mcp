@@ -93,6 +93,9 @@ function createUpstream(options: { valid: boolean; stateFile: string; exitFile: 
     async fetch(request) {
       const path = new URL(request.url).pathname;
 
+      // Local port scanners probe new listeners at `/`; the client never requests it.
+      if (path === '/') return new Response(null, { status: 404 });
+
       const state = browserStateSchema.parse(JSON.parse(await readFile(options.stateFile, 'utf8')));
 
       requests.push({
