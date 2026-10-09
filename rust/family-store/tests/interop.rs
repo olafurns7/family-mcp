@@ -5,6 +5,7 @@ mod common;
 
 use std::fs;
 use std::io::{BufRead, BufReader};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use std::time::Duration;
 
 use common::*;
 use family_store::{
-    Code, Error, KEY_BACKEND, LocalKeyFileProvider, SecretRecordOptions, create_secret_key,
+    Code, Error, LocalKeyFileProvider, SecretRecordOptions, TEST_SEAM, create_secret_key,
     read_secret_record, with_secret_record, with_secret_store,
 };
 
@@ -56,7 +57,7 @@ impl Shared {
             .arg(&self.key)
             .args(arguments)
             .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0")
-            .env(KEY_BACKEND, "file")
+            .env(TEST_SEAM, "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -113,7 +114,12 @@ fn rust_read(store: &SecretRecordOptions) -> String {
 }
 
 fn copy_tree(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
+    // A store directory is owner-only; both languages refuse any other.
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(to)
+        .unwrap();
 
     for entry in fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
@@ -320,7 +326,7 @@ fn a_lock_left_by_a_killed_holder_is_recovered_by_the_other_language() {
         ])
         .env(HOLD_RECORD, &store.path)
         .env(HOLD_KEY, &shared.key)
-        .env(KEY_BACKEND, "file")
+        .env(TEST_SEAM, "1")
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();

@@ -40,7 +40,7 @@ impl Home {
             .env("XDG_DATA_HOME", self.0.join(".local/share"))
             .env("ABLER_SESSION_FILE", self.0.join("legacy.json"))
             .env("ABLER_TEST_ORIGIN", origin)
-            .env("FAMILY_MCP_KEY_BACKEND", "file");
+            .env("FAMILY_MCP_STORE_TEST_SEAM", "1");
         command
     }
 

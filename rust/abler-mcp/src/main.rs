@@ -38,7 +38,7 @@ const HELP: &str = "abler-mcp — unofficial read-only Abler MCP server
   abler-mcp auth import FILE        Import browser cookie JSON; use - for stdin
   abler-mcp auth retry-candidate    Verify and use a session whose verification failed earlier
   abler-mcp auth migrate            Move a session saved by an older version out of its plaintext file
-  abler-mcp auth status             Show where the session is saved and verify it against Abler
+  abler-mcp auth status             Show how the session is saved and verify it against Abler
   abler-mcp auth logout             Remove the saved session and failed-import candidates
   abler-mcp --version               Print the installed version
 

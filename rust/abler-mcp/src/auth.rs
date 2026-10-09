@@ -121,7 +121,7 @@ impl From<Fail> for Held {
     }
 }
 
-/// `keys` is a test seam; the default is the macOS Keychain or a Linux key file.
+/// `keys` is a test seam; the default is the store's key file.
 fn session_record(
     keys: Option<Arc<dyn KeyProvider>>,
     cancel: Cancel,
@@ -129,18 +129,30 @@ fn session_record(
     let path = default_secret_record_path(APP)?;
     let keys = match keys {
         Some(keys) => keys,
-        None => {
-            // A test never reaches the login Keychain: the test build refuses to choose a key
-            // without the variable that selects the key file.
-            #[cfg(feature = "test-origin")]
-            assert!(
-                std::env::var_os(family_store::KEY_BACKEND)
-                    .is_some_and(|backend| backend == "file"),
-                "Tests must keep FAMILY_MCP_KEY_BACKEND=file; the Keychain is never used."
-            );
-            default_key_provider(APP, "default")?
-        }
+        None => default_key_provider(APP, "default")?,
     };
+    // A test never reaches the real store. The test build refuses to choose one unless the store
+    // test seam points it at absolute XDG directories, as the packages' bunfig preload does, or
+    // the production layout sits under a scratch HOME in the temporary directory.
+    #[cfg(feature = "test-origin")]
+    {
+        let environment = family_store::StoreEnvironment::current();
+        let absolute = |variable: &Option<std::ffi::OsString>| {
+            variable
+                .as_deref()
+                .is_some_and(|value| Path::new(value).is_absolute())
+        };
+        let scratch = match environment.test_seam {
+            true => absolute(&environment.xdg_config_home) && absolute(&environment.xdg_data_home),
+            false => environment
+                .home
+                .is_some_and(|home| home.starts_with(std::env::temp_dir())),
+        };
+        assert!(
+            scratch,
+            "Tests must keep FAMILY_MCP_STORE_TEST_SEAM=1 with scratch XDG directories, or a scratch HOME; the real store is never used."
+        );
+    }
     let mut record = SecretRecordOptions::new(
         path,
         APP,
@@ -342,13 +354,7 @@ fn lost(record: &Path) -> Fail {
     ))
 }
 
-fn storage_name(keys: &dyn KeyProvider) -> &'static str {
-    if keys.key_source() == "keychain-accessor" {
-        "Saved in an encrypted file whose key is in the macOS Keychain."
-    } else {
-        "Saved in an encrypted file."
-    }
-}
+const STORAGE: &str = "Saved in an encrypted file.";
 
 /// Hold the store lock for all of `work`, so refreshes and requests use one session. Before the
 /// store has a marker the legacy file is authoritative and rotations are written back to it; once
@@ -362,7 +368,6 @@ pub fn with_session<T>(
 ) -> Result<T> {
     let record = session_record(keys, cancel.clone()).map_err(|error| store_error(&error))?;
     let held = Cell::new(false);
-    let storage = storage_name(&*record.keys);
 
     let outcome = with_secret_store(&record, |store| -> std::result::Result<T, Held> {
         held.set(true);
@@ -399,7 +404,7 @@ pub fn with_session<T>(
         })?;
         let mut session = Session {
             jar,
-            storage,
+            storage: STORAGE,
             target: Target::Store {
                 store,
                 record: &record.path,

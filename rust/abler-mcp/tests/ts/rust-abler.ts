@@ -21,9 +21,9 @@ const rustBinary = process.env.ABLER_RUST_BINARY;
 
 if (!rustBinary) throw new RangeError('ABLER_RUST_BINARY must name the Rust abler-mcp binary.');
 
-// Rust: the store key is the key file in every test, never the login Keychain.
-if (process.env.FAMILY_MCP_KEY_BACKEND !== 'file')
-  throw new RangeError('Tests must keep FAMILY_MCP_KEY_BACKEND=file; the Keychain is never used.');
+// Rust: the binary keeps its store in scratch directories only through the store test seam.
+if (process.env.FAMILY_MCP_STORE_TEST_SEAM !== '1')
+  throw new RangeError('Tests must keep FAMILY_MCP_STORE_TEST_SEAM=1; the real store is never used.');
 
 /** A closed loopback port: a case without an upstream can never reach Abler. */
 export const NOWHERE = 'http://127.0.0.1:9';
@@ -207,7 +207,7 @@ export async function spawnCli(preload: string | undefined, args: string[], opti
     stdin: loaded.stdin ? await stdinOf(loaded.stdin) : (options.stdin ?? 'ignore'),
     env: {
       ...options.env,
-      FAMILY_MCP_KEY_BACKEND: 'file',
+      FAMILY_MCP_STORE_TEST_SEAM: '1',
       ABLER_TEST_ORIGIN: served?.origin ?? NOWHERE,
     },
   });
@@ -251,8 +251,8 @@ afterAll(() => {
 });
 
 /**
- * The store failures the binary can meet on Linux, in place of a provider that throws `code`:
- * the macOS Keychain's STORE_LOCKED, STORE_TIMEOUT and STORE_ACCESS_DENIED are Rust unit tests.
+ * The store failures a key file can give the binary, in place of a provider that throws `code`;
+ * codes no key file produces are Rust unit tests.
  */
 export function failing(code: 'STORE_UNAVAILABLE' | 'STORE_ERROR'): KeyFile {
   return new KeyFile(code === 'STORE_ERROR' ? new Uint8Array(31) : undefined);

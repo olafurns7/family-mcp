@@ -20,8 +20,9 @@ fn bun_test(file: &str, passed: usize) {
         .current_dir(manifest.join("../../packages/abler-mcp"))
         .env("ABLER_RUST_BINARY", env!("CARGO_BIN_EXE_abler-mcp"))
         .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0")
-        // The TypeScript package and every binary the cases start use the key file, never the Keychain.
-        .env("FAMILY_MCP_KEY_BACKEND", "file")
+        // The TypeScript package and every binary the cases start keep their store in scratch
+        // directories (the package's bunfig preload sets the same).
+        .env("FAMILY_MCP_STORE_TEST_SEAM", "1")
         .output()
         .unwrap();
     let report = String::from_utf8_lossy(&output.stderr);

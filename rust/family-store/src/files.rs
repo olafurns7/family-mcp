@@ -64,12 +64,25 @@ pub(crate) fn parent(path: &Path) -> &Path {
     }
 }
 
+// Shared with the store's startup check, which prints the path and any command beside them.
+pub(crate) const LINKED_FILE: &str =
+    "This file has a second name (a hard link). Remove the other name and start again.";
+
+// The startup check's "Other users can open this file." with the command, for readers that print
+// no path.
+const OPEN_FILE_FIX: &str = "Other users can open this file. Make it owner-only with chmod 600.";
+
+pub(crate) const FOREIGN_FILE: &str =
+    "This file belongs to another user, often root after a sudo run.";
+
+pub(crate) const LINK_FILE: &str =
+    "This file is a link to another file. Put the real file here and start again.";
+
+pub(crate) const NOT_A_FILE: &str = "Something other than a plain file is at this path.";
+
 pub(crate) fn assert_no_hard_links(nlink: u64) -> Result<()> {
     if nlink > 1 {
-        return Err(Error::new(
-            Code::UnsafeFile,
-            "Files with hard links are not supported.",
-        ));
+        return Err(Error::new(Code::UnsafeFile, LINKED_FILE));
     }
     Ok(())
 }
@@ -90,14 +103,8 @@ pub fn read_private_bytes(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
         .open(path)
         .map_err(|error| match errno(&error) {
             Some(Errno::NOENT) => Error::caused(Code::NotFound, "The file does not exist.", error),
-            Some(Errno::LOOP | Errno::MLINK) => Error::caused(
-                Code::UnsafeFile,
-                "The path is a symbolic link; use a regular file.",
-                error,
-            ),
-            Some(Errno::ISDIR) => {
-                Error::caused(Code::UnsafeFile, "The path is not a regular file.", error)
-            }
+            Some(Errno::LOOP | Errno::MLINK) => Error::caused(Code::UnsafeFile, LINK_FILE, error),
+            Some(Errno::ISDIR) => Error::caused(Code::UnsafeFile, NOT_A_FILE, error),
             _ => Error::io(
                 error,
                 "Cannot open the file. Check its path and permissions.",
@@ -107,25 +114,16 @@ pub fn read_private_bytes(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
     let info = file.metadata().map_err(read_failed)?;
 
     if !info.is_file() {
-        return Err(Error::new(
-            Code::UnsafeFile,
-            "The path is not a regular file.",
-        ));
+        return Err(Error::new(Code::UnsafeFile, NOT_A_FILE));
     }
     assert_no_hard_links(info.nlink())?;
 
     if info.mode() & 0o077 != 0 {
-        return Err(Error::new(
-            Code::UnsafeFile,
-            "The file is accessible to other users; use owner-only permissions (chmod 600).",
-        ));
+        return Err(Error::new(Code::UnsafeFile, OPEN_FILE_FIX));
     }
 
     if info.uid() != rustix::process::getuid().as_raw() {
-        return Err(Error::new(
-            Code::UnsafeFile,
-            "The file is owned by another user.",
-        ));
+        return Err(Error::new(Code::UnsafeFile, FOREIGN_FILE));
     }
 
     if info.size() > max_bytes as u64 {

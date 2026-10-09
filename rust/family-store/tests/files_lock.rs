@@ -171,3 +171,50 @@ fn the_lock_excludes_reports_a_lost_owner_and_recovers_a_dead_one() {
         Some(Code::Cancelled)
     );
 }
+
+#[test]
+fn the_deadline_holds_while_the_lock_keeps_changing_hands() {
+    let scratch = Scratch::new();
+    let file = scratch.join("session.json");
+    let lock = scratch.join("session.json.lock");
+    let mut child = Command::new("/usr/bin/true").spawn().unwrap();
+    let dead = child.id();
+    child.wait().unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Keeps handing the lock to a dead owner, as test/lock-churn-worker.ts does.
+    let churn = {
+        let (lock, stop) = (lock.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let mut turn = 0u64;
+
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                turn += 1;
+                let owner = format!("{dead}-{turn:08x}-0000-4000-8000-{turn:012x}");
+                let mut name = lock.clone().into_os_string();
+                name.push(format!("-churn.{owner}"));
+                let temporary = std::path::PathBuf::from(name);
+                fs::create_dir(&temporary).unwrap();
+                fs::write(temporary.join(&owner), "").unwrap();
+
+                if fs::rename(&temporary, &lock).is_err() {
+                    let _ = fs::remove_dir_all(&temporary);
+                }
+            }
+        })
+    };
+
+    for wait in [Duration::ZERO, Duration::from_millis(200)] {
+        let started = std::time::Instant::now();
+        let options = LockOptions {
+            wait,
+            ..LockOptions::default()
+        };
+        // Each attempt either wins a gap between recoveries or gives up as BUSY; neither may hang.
+        let outcome = with_file_lock(&file, &options, || Ok::<_, Error>(()));
+        assert!(matches!(code(outcome), None | Some(Code::Busy)));
+        assert!(started.elapsed() < wait + Duration::from_secs(1));
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    churn.join().unwrap();
+}

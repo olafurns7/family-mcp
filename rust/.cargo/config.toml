@@ -1,0 +1,7 @@
+# Every process cargo runs, tests included, gets the store test seam, as each package's bunfig.toml
+# preload does for Bun: macOS then follows XDG like Linux and runs tmutil only through a test's
+# fake, so no test reaches the real store under ~/Library/Application Support/family-mcp. A test
+# that needs the production layout removes the variable in a child with a scratch HOME. Release
+# builds run the binary outside cargo, where nothing sets it.
+[env]
+FAMILY_MCP_STORE_TEST_SEAM = "1"

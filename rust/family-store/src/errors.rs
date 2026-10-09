@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -18,6 +19,7 @@ pub enum Code {
     StoreAccessDenied,
     StoreTimeout,
     StoreError,
+    StoreBackendRetired,
     StoreWriteUncertain,
     SecretNotFound,
     InvalidArgument,
@@ -39,6 +41,7 @@ impl Code {
             Code::StoreAccessDenied => "STORE_ACCESS_DENIED",
             Code::StoreTimeout => "STORE_TIMEOUT",
             Code::StoreError => "STORE_ERROR",
+            Code::StoreBackendRetired => "STORE_BACKEND_RETIRED",
             Code::StoreWriteUncertain => "STORE_WRITE_UNCERTAIN",
             Code::SecretNotFound => "SECRET_NOT_FOUND",
             Code::InvalidArgument => "INVALID_ARGUMENT",
@@ -48,12 +51,16 @@ impl Code {
 
 type Cause = Box<dyn std::error::Error + Send + Sync>;
 
-/// Every message is a literal without paths or file contents, so callers may forward it.
+/// Every message is a literal without paths or file contents, so callers may forward it. A
+/// refused store path (the TypeScript package's `StoreRefusal`) also carries that path, for the
+/// owner's terminal only, and the command that fixes it when there is one.
 #[derive(Debug)]
 pub struct Error {
     pub code: Code,
     pub message: &'static str,
     cause: Option<Cause>,
+    path: Option<PathBuf>,
+    fix: Option<&'static str>,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -64,15 +71,39 @@ impl Error {
             code,
             message,
             cause: None,
+            path: None,
+            fix: None,
         }
     }
 
     pub fn caused(code: Code, message: &'static str, cause: impl Into<Cause>) -> Self {
         Self {
-            code,
-            message,
             cause: Some(cause.into()),
+            ..Self::new(code, message)
         }
+    }
+
+    /// An UNSAFE_FILE refusal of `path`; `fix` is the command that fixes it once the path is added.
+    pub fn refusal(
+        message: &'static str,
+        path: impl Into<PathBuf>,
+        fix: Option<&'static str>,
+    ) -> Self {
+        Self {
+            path: Some(path.into()),
+            fix,
+            ..Self::new(Code::UnsafeFile, message)
+        }
+    }
+
+    /// The refused store path; never put it in a message an MCP client sees.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// The command that fixes a refused path, to be followed by that path.
+    pub fn fix(&self) -> Option<&'static str> {
+        self.fix
     }
 
     pub(crate) fn io(cause: std::io::Error, message: &'static str) -> Self {

@@ -13,6 +13,10 @@ pub const DEFAULT_WAIT: Duration = Duration::from_secs(30);
 
 const MAX_POLL: Duration = Duration::from_millis(250);
 
+// Immediate retries still allowed once the deadline has passed, so a zero wait can finish
+// recovering a dead owner; each is one rename and one directory read.
+const LATE_RETRIES: u32 = 3;
+
 const MAX_PID: u64 = 2_147_483_647;
 
 const CREATE_FAILED: &str =
@@ -101,9 +105,11 @@ fn acquire(path: &Path, options: &LockOptions) -> Result<Held> {
     reject_hard_linked_target(path)?;
     let owner = format!("{}-{}", std::process::id(), uuid()?);
     let temporary = real_parent.join(format!("{name}.lock-tmp.{owner}"));
+    // Monotonic: a wall-clock step can neither extend nor cut the wait.
     let deadline = Instant::now() + options.wait;
     let mut poll = Duration::from_millis(25);
     let mut spins = 0u32;
+    let mut late_retries = 0;
     let mut permission_misses = 0;
 
     DirBuilder::new()
@@ -129,26 +135,32 @@ fn acquire(path: &Path, options: &LockOptions) -> Result<Held> {
                     return Err(Error::new(Code::Io, CREATE_FAILED));
                 }
             }
-
-            if occupant != Occupant::Busy {
-                // Progress was made; yield occasionally so a pathological directory cannot spin.
-                spins += 1;
-
-                if spins.is_multiple_of(16) {
-                    std::thread::sleep(poll);
-                }
-                continue;
-            }
             let remaining = deadline.saturating_duration_since(Instant::now());
 
-            if remaining.is_zero() {
-                return Err(Error::new(
-                    Code::Busy,
-                    "Another process holds the session lock. Retry after its operation finishes.",
-                ));
+            if remaining.is_zero() && occupant != Occupant::Busy {
+                late_retries += 1;
             }
-            std::thread::sleep(poll.min(remaining));
-            poll = (poll * 2).min(MAX_POLL);
+
+            match next_step(&occupant, remaining, late_retries) {
+                Step::GiveUp => {
+                    return Err(Error::new(
+                        Code::Busy,
+                        "Another process holds the session lock. Retry after its operation finishes.",
+                    ));
+                }
+                Step::Retry => {
+                    // Yield occasionally so a pathological directory cannot spin.
+                    spins += 1;
+
+                    if spins.is_multiple_of(16) && !remaining.is_zero() {
+                        std::thread::sleep(poll.min(remaining));
+                    }
+                }
+                Step::Wait => {
+                    std::thread::sleep(poll.min(remaining));
+                    poll = (poll * 2).min(MAX_POLL);
+                }
+            }
         }
     })();
 
@@ -201,11 +213,31 @@ fn publish(temporary: &Path, directory: &Path) -> Result<Publish> {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum Occupant {
     Busy,
     Missing,
     Retry,
+}
+
+#[derive(Debug, PartialEq)]
+enum Step {
+    Retry,
+    Wait,
+    GiveUp,
+}
+
+/// After a failed attempt: progress (a dead owner or an empty shell removed) retries at once, a
+/// live owner is waited for, and neither outlasts the deadline. `late_retries` counts progress
+/// after the deadline, including this one; a few still retry, so a zero wait can finish a recovery.
+fn next_step(occupant: &Occupant, remaining: Duration, late_retries: u32) -> Step {
+    match (remaining.is_zero(), occupant) {
+        (false, Occupant::Busy) => Step::Wait,
+        (false, _) => Step::Retry,
+        (true, Occupant::Busy) => Step::GiveUp,
+        (true, _) if late_retries <= LATE_RETRIES => Step::Retry,
+        (true, _) => Step::GiveUp,
+    }
 }
 
 fn inspect(directory: &Path) -> Result<Occupant> {
@@ -288,4 +320,25 @@ fn remove_owner(directory: &Path, owner: Option<&str>) -> Result<bool> {
         return Err(Error::io(error, RELEASE_FAILED));
     }
     Ok(missing)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_retry_outcome_obeys_the_deadline() {
+        let some = Duration::from_millis(10);
+        assert_eq!(next_step(&Occupant::Busy, some, 0), Step::Wait);
+        assert_eq!(next_step(&Occupant::Retry, some, 0), Step::Retry);
+        assert_eq!(next_step(&Occupant::Missing, some, 0), Step::Retry);
+        assert_eq!(next_step(&Occupant::Busy, Duration::ZERO, 0), Step::GiveUp);
+
+        // Past the deadline, progress gets a few immediate retries, then gives up like a busy lock.
+        for occupant in [Occupant::Retry, Occupant::Missing] {
+            assert_eq!(next_step(&occupant, Duration::ZERO, 1), Step::Retry);
+            assert_eq!(next_step(&occupant, Duration::ZERO, 3), Step::Retry);
+            assert_eq!(next_step(&occupant, Duration::ZERO, 4), Step::GiveUp);
+        }
+    }
 }
