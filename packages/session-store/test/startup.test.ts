@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,6 +10,7 @@ import {
   createSecretKey,
   startupCheck,
   withSecretRecord,
+  withSecretStore,
 } from '../src/index.js';
 
 async function scratch(work: (directory: string) => Promise<void>): Promise<void> {
@@ -139,5 +140,37 @@ test('an earlier build’s store gets the exact cleanup commands, by metadata on
     expect(after.text).not.toContain('Sign in again');
     expect(after.text).not.toContain('security delete-generic-password');
     expect(after.text).toContain(`'${join(old, 'test-mcp.default.key')}'`);
+  });
+});
+
+test('the current store is never named as old, also through a link', async () => {
+  await scratch(async (root) => {
+    const current = store(root);
+    await createSecretKey(current);
+    await withSecretRecord(current, async () => 'secret');
+    await mkdir(`${current.path}.lock`);
+
+    // An old layout that is the current one under another name: a linked directory and a link.
+    await symlink(join(root, 'family-mcp'), join(root, 'alias'));
+    await mkdir(join(root, 'old'));
+    await symlink(current.keys.path, join(root, 'old', 'test-mcp.default.key'));
+
+    const aliases = [
+      join(root, 'alias', 'test-mcp', 'session.enc'),
+      join(root, 'alias', 'test-mcp', 'session.enc.marker'),
+      join(root, 'alias', 'test-mcp', 'session.enc.lock'),
+      join(root, 'old', 'test-mcp.default.key'),
+    ];
+
+    expect(await check({ store: () => store(root, aliases) })).toEqual({ passed: true, text: '' });
+    expect(await withSecretStore(store(root, aliases), (held) => held.exists())).toBe(true);
+
+    // A really separate old file is still named, and only that one.
+    const separate = join(root, 'old', 'session.enc');
+    await writeFile(separate, 'x', { mode: 0o600 });
+    const { text } = await check({ store: () => store(root, [...aliases, separate]) });
+    expect(text).toContain(`  rm '${separate}'\n`);
+    expect(text).not.toContain(join(root, 'alias'));
+    expect(text).not.toContain('test-mcp.default.key');
   });
 });

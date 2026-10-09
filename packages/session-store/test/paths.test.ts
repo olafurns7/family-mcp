@@ -202,6 +202,32 @@ test('retired macOS layouts are named by path only', () => {
   });
 });
 
+test('XDG variables that point into Application Support never name the current store', () => {
+  const old = [
+    '/Users/scratch/.config/test-mcp/session.enc',
+    '/Users/scratch/.config/test-mcp/session.enc.marker',
+    '/Users/scratch/.config/test-mcp/session.enc.lock',
+    '/Users/scratch/.local/share/family-mcp/keys/test-mcp.default.key',
+  ];
+
+  for (const [config, data] of [
+    [MAC_ROOT, join('/Users/scratch', 'Library', 'Application Support')],
+    [`${MAC_ROOT}/`, '/Users/scratch/Library/./Application Support/'],
+    [`${MAC_ROOT}/../family-mcp`, '/Users/scratch/Library/Application Support//'],
+  ])
+    withEnvironment(production({ XDG_CONFIG_HOME: config, XDG_DATA_HOME: data }), () => {
+      expect(retiredStorePaths('test-mcp', 'default', { platform: 'darwin' })).toEqual(old);
+    });
+
+  // Only one of them overlapping: the other one's old paths stay.
+  withEnvironment(production({ XDG_CONFIG_HOME: MAC_ROOT, XDG_DATA_HOME: '/data' }), () => {
+    expect(retiredStorePaths('test-mcp', 'default', { platform: 'darwin' })).toEqual([
+      ...old,
+      '/data/family-mcp/keys/test-mcp.default.key',
+    ]);
+  });
+});
+
 test('no source file reaches the Keychain or security(1)', async () => {
   const source = fileURLToPath(new URL('../src/', import.meta.url));
 

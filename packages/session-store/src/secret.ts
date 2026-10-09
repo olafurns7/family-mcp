@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { lstat, rm } from 'node:fs/promises';
+import { lstat, rm, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { excludeFromBackups } from './backup.js';
@@ -171,10 +171,7 @@ export async function withSecretStore<T>(
           exists: async () => {
             usable();
 
-            return (
-              (await secretStoreExists(options.path)) ||
-              (await existingPaths(options.retired ?? [])).length > 0
-            );
+            return (await secretStoreExists(options.path)) || (await leftovers(options)).length > 0;
           },
           read: async () => (await open()).current,
           write,
@@ -280,10 +277,53 @@ export async function checkSecretStore(
     recheck: true,
   });
 
-  return {
-    exists: await secretStoreExists(path),
-    retired: await existingPaths(options.retired ?? []),
-  };
+  return { exists: await secretStoreExists(path), retired: await leftovers(options) };
+}
+
+/**
+ * The `retired` files that exist and are not the current store's record, marker, lock or key
+ * under another name (a link to it, or a directory link above it), compared by device and inode.
+ */
+async function leftovers(
+  options: Pick<SecretRecordOptions, 'path' | 'keys' | 'retired'>,
+): Promise<string[]> {
+  const found = await existingPaths(options.retired ?? []);
+
+  if (found.length === 0) return found;
+  const { path, keys } = options;
+
+  const current = [path, markerPath(path), `${path}.lock`].concat(
+    keys instanceof LocalKeyFileProvider ? [keys.path] : [],
+  );
+
+  const identities = new Set<string>();
+
+  for (const file of current) {
+    const id = await identity(file);
+
+    if (id !== undefined) identities.add(id);
+  }
+
+  const kept: string[] = [];
+
+  for (const file of found) {
+    const id = await identity(file);
+
+    if (id === undefined || !identities.has(id)) kept.push(file);
+  }
+
+  return kept;
+}
+
+/** Device and inode of what `path` names, following links; undefined when nothing is there. */
+async function identity(path: string): Promise<string | undefined> {
+  try {
+    const info = await stat(path);
+
+    return `${info.dev}:${info.ino}`;
+  } catch {
+    return undefined;
+  }
 }
 
 /** A marker exists, so the store decides even while it holds no record. */
