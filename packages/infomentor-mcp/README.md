@@ -232,7 +232,7 @@ MCP process environment. An explicit or configured credentials file takes
 precedence over username/password environment variables.
 
 Supply **the path only**, never the file contents or password in chat. After a
-successful login from a file, the CLI (and `infomentor_setup_status`) prints
+successful login from a file, the CLI (and `infomentor_setup_status`, when the call named the file) prints
 `Your InfoMentor sign-in is stored in the encrypted store. You can delete <file> now.`
 Delete it then: renewal uses the stored sign-in. This works without a browser,
 loopback server, or keyring daemon.
@@ -409,8 +409,8 @@ baseline. Logout removes the collection snapshots with the session.
 ```text
 infomentor-mcp [auth] [serve|login|status|migrate|logout] [options]
 
---session FILE          Older plaintext session path, read until auth migrate;
-                        collection snapshots stay beside it
+--session FILE          Older plaintext session path, read until auth migrate or the
+                        next login or import; collection snapshots stay beside it
 --credentials FILE      Private username/password JSON file for login, migrate, and
                         renewal when no sign-in is stored
 --import FILE           login: verify and import a version-2 session

@@ -12,12 +12,14 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spyOn, test } from 'bun:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import {
+  LocalKeyFileProvider,
   SessionStoreError,
   createSecretKey,
   resetSecretStore,
@@ -1214,6 +1216,56 @@ test('login timeout includes session-lock contention and makes no HTTP request',
   }
 });
 
+test('a login whose store write committed reports a late removal failure, not a timeout', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-committed-timeout-'));
+  const file = join(directory, 'session.json');
+  const credentialsFile = join(directory, 'credentials.json');
+  const routes = fixture();
+  await writeSession(await savedSession(), file);
+  await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
+  let verified = false;
+
+  // The store write's key read outlasts the login deadline once InfoMentor has verified.
+  class SlowKeys extends LocalKeyFileProvider {
+    override async getKey(): Promise<Uint8Array> {
+      const key = await super.getKey();
+
+      if (verified) await delay(400);
+
+      return key;
+    }
+  }
+
+  // After the legacy file was read, a directory in its place makes its removal fail.
+  routes.selection.onParent = () => {
+    if (verified) return;
+    verified = true;
+    rmSync(file);
+    mkdirSync(file);
+  };
+
+  try {
+    await assert.rejects(
+      login({
+        sessionFile: file,
+        credentialsFile,
+        fetch: routes.fetch,
+        timeoutMs: 200,
+        keys: new SlowKeys({ path: store.key }),
+      }),
+      {
+        code: 'INVALID_CONFIGURATION',
+        message:
+          'Cannot remove the plaintext InfoMentor session file. Any encrypted-store change already completed; remove it by hand.',
+      },
+    );
+    assert.deepEqual((await readStored(store)).credentials, credentials);
+  } finally {
+    routes.restore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('session and credential files that are world-readable or symlinked are refused for reads and imports', async () => {
   if (process.platform === 'win32') return;
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-guards-'));
@@ -1335,6 +1387,21 @@ test('explicit login or import cannot silently replace a session verified for an
     // The same account may sign in again.
     await login({ sessionFile: file, credentialsFile, fetch: routes.fetch });
     assert.equal((await readStored(store)).session?.accountId, 'parent-1');
+
+    // A sign-in from the server's configured file never echoes that path to the MCP caller.
+    process.env['INFOMENTOR_CREDENTIALS_FILE'] = credentialsFile;
+
+    try {
+      await client.callTool({ name: 'infomentor_login', arguments: {} });
+      const configured = await finished();
+      assert.equal(configured.state, 'succeeded');
+      assert.equal(
+        configured.message,
+        'Session saved in the encrypted store. Call infomentor_session_status to verify access.',
+      );
+    } finally {
+      delete process.env['INFOMENTOR_CREDENTIALS_FILE'];
+    }
 
     // A stored session of another account is protected the same way. An import keeps the stored
     // sign-in only for the same verified account.

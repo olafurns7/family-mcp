@@ -180,6 +180,8 @@ export async function login(options: LoginOptions = {}): Promise<string | undefi
   const legacy = sessionPath(options.sessionFile);
   const deadline = loginDeadline(options.timeoutMs);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+  // Once the record is written, a late plaintext-removal failure reports itself, not a timeout.
+  const write = { committed: false };
 
   try {
     return await changeSession(legacy, options.keys, signal, async (store, record) => {
@@ -189,11 +191,15 @@ export async function login(options: LoginOptions = {}): Promise<string | undefi
       const session = sessionFromHttp(http);
       requireSameAccount(previous.session, session, options.allowAccountChange);
       throwIfAborted(signal);
-      await commitChange(store, legacy, { version: 1, session, credentials });
+      await commitChange(store, legacy, { version: 1, session, credentials }, () => {
+        write.committed = true;
+      });
 
       return file;
     });
   } catch (error) {
+    if (write.committed) throw error;
+
     if (deadline.aborted && !options.signal?.aborted) throw loginTimedOut();
     throwIfAborted(options.signal);
     throw error;

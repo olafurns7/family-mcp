@@ -464,8 +464,10 @@ export async function commitChange(
   store: SecretStore,
   legacy: string,
   value: StoredRecord,
+  onCommitted?: () => void,
 ): Promise<void> {
   await store.write(encodeRecord(value));
+  onCommitted?.();
   await removeLegacy(legacy);
 }
 

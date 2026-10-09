@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdirSync, rmSync } from 'node:fs';
 import {
   mkdtemp,
   chmod,
@@ -10,6 +11,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -2475,6 +2477,38 @@ test('a jar that cannot be written back removes the record and is never offered 
   expect(await bytes(`${f.path}.absence.json`)).toBe(absence);
 });
 
+test('a failed write-back with unchanged cookies keeps the record for the next read', async () => {
+  const f = await fixture(true);
+  await f.client.overview(); // Settles the cookie the fake rotates to on every user read.
+  const record = await bytes(f.store.path);
+  const marker = `${f.store.path}.marker`;
+  const markerBytes = await readFile(marker);
+  let blocked = false;
+
+  // After the read, a directory in place of the marker makes the write-back fail before any
+  // file changed; Inna returned the same cookie, so nothing was spent.
+  const client = new InnaClient({
+    ...f.options,
+    fetch: async (input, init) => {
+      if (blocked) {
+        blocked = false;
+        rmSync(marker);
+        mkdirSync(marker);
+      }
+
+      return f.provider.fetch(input, init);
+    },
+  });
+
+  blocked = true;
+  await assert.rejects(client.overview(), /^SafeError: Cannot access the private Inna files\./);
+  expect(await bytes(f.store.path)).toBe(record);
+
+  await rm(marker, { recursive: true });
+  await writeFile(marker, markerBytes, { mode: 0o600 });
+  expect(await client.overview()).toBeDefined();
+});
+
 const storeOperations = (client: InnaClient) => [
   () => client.overview(),
   () => client.status(),
@@ -2546,7 +2580,8 @@ test('store failures are fixed messages or a keep-alive status; only a login or 
     replaced: true,
   });
   expect((await f.client.status()).authenticated).toBe(true);
-  expect(await bytes(f.path)).toBe('planted plaintext session');
+  // The sign-in that replaced the store also removes the leftover plaintext file.
+  expect(await bytes(f.path)).toBeUndefined();
   expect(await bytes(`${f.path}.absence.json`)).toBe(files[4]);
   expect(await plaintextCookies(f)).toEqual([]);
 });
@@ -2565,6 +2600,33 @@ test('a store with a marker but no record never reads the plaintext file, and mi
   expect(f.provider.calls).toHaveLength(calls);
   expect(await bytes(f.path)).toBe(legacy);
   expect(await f.client.migrate()).toBe('migrated');
+  await assert.rejects(stat(f.path), /ENOENT/);
+  expect((await f.client.overview()).context.studentId).toBe('2');
+});
+
+test('any read sweeps a stale absence-record temporary and keeps a fresh one', async () => {
+  const f = await fixture();
+  const stale = `${f.path}.absence.json.${crypto.randomUUID()}.tmp`;
+  const fresh = `${f.path}.absence.json.${crypto.randomUUID()}.tmp`;
+  await writeFile(stale, 'synthetic', { mode: 0o600 });
+  await writeFile(fresh, 'synthetic', { mode: 0o600 });
+  await utimes(stale, 0, 0);
+  await f.client.status();
+  await assert.rejects(stat(stale), /ENOENT/);
+  await stat(fresh);
+});
+
+test('a sign-in onto a store that already decides removes a leftover plaintext file', async () => {
+  const f = await fixture();
+  await writeFile(f.path, 'planted plaintext session', { mode: 0o600 });
+  await f.client.importSession(f.source);
+  await assert.rejects(stat(f.path), /ENOENT/);
+
+  // Also on a marker without a record, as a reset that died before its write leaves it.
+  await rm(f.store.key);
+  await resetStored(f.store);
+  await writeFile(f.path, 'planted plaintext session', { mode: 0o600 });
+  await f.client.importSession(f.source);
   await assert.rejects(stat(f.path), /ENOENT/);
   expect((await f.client.overview()).context.studentId).toBe('2');
 });
@@ -2672,10 +2734,55 @@ test('the record limit is exactly the largest session the schema accepts', async
   expect(Buffer.byteLength(text)).toBe(RECORD_MAX_BYTES);
   await updateStored(f.store, () => text);
   expect(await readStored(f.store)).toBe(text);
-  expect(
-    savedSchema.safeParse({ ...worst, students: { ...worst.students, 1: worst.account } }).success,
-  ).toBe(false);
   expect(savedSchema.safeParse({ ...worst, jar: `${worst.jar}x` }).success).toBe(false);
+});
+
+test('a session with more saved students than the bound is refused with one fixed message', async () => {
+  const f = await fixture();
+
+  const tooMany =
+    /^SafeError: This Inna session holds more saved students than this version keeps\. Run inna-mcp auth logout, then sign in again\.$/;
+
+  const saved = parseSaved(await readStored(f.store));
+
+  const withStudents = (count: number) =>
+    JSON.stringify({
+      ...saved,
+      students: Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [
+          digits(index),
+          {
+            userId: index + 100,
+            studentId: digits(index),
+            schoolId: '3',
+            studentName: 'Synthetic',
+          },
+        ]),
+      ),
+    });
+
+  // Learning a 65th student is refused; only the jar is written back.
+  await updateStored(f.store, () => withStudents(64));
+  const before = await generation(f.store);
+  await assert.rejects(f.client.overview(undefined, SIBLING), tooMany);
+  expect(await generation(f.store)).toBe(before + 1);
+  const after = parseSaved(await readStored(f.store));
+  expect(Object.keys(after.students).toSorted()).toEqual(
+    Object.keys(parseSaved(withStudents(64)).students).toSorted(),
+  );
+
+  // A stored record or an unmigrated plaintext file holding 65 is refused before any request.
+  await updateStored(f.store, () => withStudents(65));
+  const record = await bytes(f.store.path);
+  const calls = f.provider.calls.length;
+  await assert.rejects(f.client.overview(), tooMany);
+  expect(await bytes(f.store.path)).toBe(record);
+
+  const client = new InnaClient({ ...f.options, store: storeAt(join(f.directory, 'unmigrated')) });
+  await writeFile(f.path, withStudents(65), { mode: 0o600 });
+  await assert.rejects(client.overview(), tooMany);
+  await assert.rejects(client.migrate(), tooMany);
+  expect(f.provider.calls).toHaveLength(calls);
 });
 
 test('clients sharing one store are serialized, and logout waits for a request in flight', async () => {

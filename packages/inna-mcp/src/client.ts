@@ -90,15 +90,27 @@ export const savedSchema = z.object({
         studentName: z.string().transform((name) => name.slice(0, MAX_NAME_LENGTH)),
       }),
     )
-    .refine((students) => Object.keys(students).length <= MAX_STUDENTS)
     .default({}),
   pauseUntil: z.number().default(0),
 });
 
 type Saved = z.infer<typeof savedSchema>;
 
+/** The student bound keeps RECORD_MAX_BYTES finite; checked after a parse for its own message. */
+function bounded(saved: Saved): Saved {
+  if (Object.keys(saved.students).length > MAX_STUDENTS) throw tooManyStudents();
+
+  return saved;
+}
+
+function tooManyStudents(): SafeError {
+  return new SafeError(
+    'This Inna session holds more saved students than this version keeps. Run inna-mcp auth logout, then sign in again.',
+  );
+}
+
 /** The store record's plaintext: the saved session, or null after logout. */
-const encode = (saved: Saved | null) => JSON.stringify(saved && savedSchema.parse(saved));
+const encode = (saved: Saved | null) => JSON.stringify(saved && bounded(savedSchema.parse(saved)));
 
 function uncertain(): SafeError {
   return new SafeError(
@@ -169,15 +181,17 @@ async function stored(store: SecretStore): Promise<Saved | null | undefined> {
 
   if (text === null) return undefined;
 
-  try {
-    const saved = savedSchema.nullable().parse(JSON.parse(text));
+  let saved: Saved | null;
 
-    return saved && { ...saved, version: 2 };
+  try {
+    saved = savedSchema.nullable().parse(JSON.parse(text));
   } catch {
     throw new SafeError(
       'Invalid Inna session store record. Run inna-mcp auth login or auth import again.',
     );
   }
+
+  return saved && bounded({ ...saved, version: 2 });
 }
 
 /** The legacy session file is a credential; remove it and its orphaned temporaries, never the absence record. */
@@ -438,8 +452,7 @@ function learn(
       'Inna returned a student already saved under another studentKey. The result was discarded.',
     );
 
-  if (Object.keys(saved.students).length >= MAX_STUDENTS)
-    throw new SafeError('This Inna session has too many saved students. Sign in again.');
+  if (Object.keys(saved.students).length >= MAX_STUDENTS) throw tooManyStudents();
   const learned = schemas.learnedStudentSchema.parse(user);
   saved.students[key] = learned;
 
@@ -470,19 +483,20 @@ function canRegisterAbsence(user: schemas.User, kind: schemas.AbsenceInput['kind
 }
 
 async function readSaved(path: string): Promise<Saved | undefined> {
+  let saved: Saved;
+
   try {
-    return {
-      ...savedSchema.parse(
-        JSON.parse(await readPrivateFile(path, { maxBytes: MAX_SESSION_BYTES })),
-      ),
-      version: 2,
-    };
+    saved = savedSchema.parse(
+      JSON.parse(await readPrivateFile(path, { maxBytes: MAX_SESSION_BYTES })),
+    );
   } catch (error) {
     if (error instanceof SessionStoreError && error.code === 'NOT_FOUND') return undefined;
     throw new SafeError(
       'Cannot read the Inna session. Check its format and owner-only permissions.',
     );
   }
+
+  return bounded({ ...saved, version: 2 });
 }
 
 async function readAbsence(path: string): Promise<AbsenceRecord | undefined> {
@@ -825,21 +839,23 @@ export class InnaClient {
     signal?: AbortSignal,
   ): Promise<T> {
     const jar = await CookieJar.deserialize(saved.jar);
+    const before = credentials(saved);
 
     try {
       return await work(new Connection(jar, saved, this.fetcher, this.now, signal), saved);
     } finally {
       saved.jar = JSON.stringify(await jar.serialize());
-      await this.writeBack(held, saved);
+      await this.writeBack(held, saved, before);
     }
   }
 
-  private async writeBack(held: Held, saved: Saved): Promise<void> {
+  private async writeBack(held: Held, saved: Saved, before: string): Promise<void> {
     try {
       await held.write(saved);
     } catch (error) {
-      if (!held.decides) throw error;
-      // Inna may have rotated the cookies, so the record must never offer the old ones again.
+      // Unchanged cookies are still valid: keep the record and report the store failure.
+      if (!held.decides || credentials(saved) === before) throw error;
+      // Inna rotated the cookies, so the record must never offer the old ones again.
       // Removing it under the held lock reads as STORE_WRITE_UNCERTAIN until the next login.
       await rm(held.record.path, { force: true }).catch(() => undefined);
       throw uncertain();
@@ -1017,8 +1033,8 @@ export class InnaClient {
 
       await held.store.write(text);
 
-      // The store decides from here on, so the plaintext file would never be read again.
-      if (!held.decides) await removeLegacy(this.path);
+      // The store decides from here on, so a plaintext file would never be read again.
+      await removeLegacy(this.path);
 
       return { storage: storageName(held.record.keys), replaced: lost && held.decides };
     }, signal);

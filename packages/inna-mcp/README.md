@@ -158,9 +158,10 @@ Processes on one machine coordinate with two file locks, always taken in this
 order: `session.json.lock` beside the plaintext session path, which also guards
 the absence record, then `session.enc.lock` beside the encrypted record. A
 request waits up to 30 seconds for a busy lock and then fails; retry later. If
-Inna may have changed the cookies and they cannot be written back, the record is
-removed so the old cookies are never offered again: the next command reports
-that the last write did not complete, and you sign in again.
+Inna changed the cookies and they cannot be written back, the record is removed
+so the old cookies are never offered again: the next command reports that the
+last write did not complete, and you sign in again. When the cookies did not
+change, the record is kept and the command reports the store error.
 
 What this protects against: cookies showing up in `cat`, `grep`, agent file
 reads, commits, dotfile sync, or backups of `~/.config`. What it does not:

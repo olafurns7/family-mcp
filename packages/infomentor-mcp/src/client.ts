@@ -483,11 +483,10 @@ export class InfoMentorClient {
           timeoutMs: parsed.timeoutSeconds * 1000,
         };
 
-        credentialsFile = await login(
-          parsed.credentialsFile
-            ? { ...options, credentialsFile: parsed.credentialsFile }
-            : options,
-        );
+        // Advise deleting only the file this call named, never the server's configured path.
+        if (parsed.credentialsFile)
+          credentialsFile = await login({ ...options, credentialsFile: parsed.credentialsFile });
+        else await login(options);
       }
 
       this.setupStatus = {

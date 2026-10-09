@@ -79,7 +79,9 @@ rerun with `--stop-running`.
 infomentor-mcp login --credentials /absolute/path/credentials.json
 ```
 
-Expected output starts with `Signed in. Session saved to`.
+Expected output starts with `Signed in. Session saved in the encrypted store.` The
+sign-in is stored there too, for automatic renewal, so you can then delete the
+credentials file. Upgrading from 0.8.0 or earlier? Run `infomentor-mcp auth migrate` once.
 <details>
 <summary>Connect to Claude Desktop, Claude Code, or Codex</summary>
 
@@ -157,6 +159,9 @@ claude mcp add inna -- /absolute/path/to/.local/bin/inna-mcp serve
 Read tools are enabled by default; whole-day illness and leave requests
 require `--allow-absence-writes`, a prepared preview, and explicit approval.
 Live absence submission remains unverified.
+
+Upgrading from Inna 0.3.0 or earlier? Stop running `inna-mcp` servers and run
+`inna-mcp auth migrate` once to move the saved session into the encrypted store.
 
 See [setup, tools, and cookie import for a machine without a desktop](packages/inna-mcp/README.md).
 
