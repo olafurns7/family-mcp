@@ -1,0 +1,28 @@
+[package]
+name = "kronan-mcp"
+# Kept equal to packages/kronan-mcp/package.json; a test compares them.
+version = "0.2.0"
+description = "Unofficial Krónan grocery MCP server for products, the shopping note, the basket, and confirmed orders"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Test seam only: KRONAN_TEST_ORIGIN redirects requests (never the token's destination host) to a
+# local fake upstream. Off by default, so a release build always talks to https://api.kronan.is.
+test-origin = []
+
+[dependencies]
+family-store = { path = "../family-store" }
+mcp-runtime = { path = "../mcp-runtime" }
+rmcp = { version = "=3.5.1", default-features = false, features = ["server"] }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+tokio = { version = "=1.53.2", features = ["rt", "macros", "sync", "time"] }
+
+[dev-dependencies]
+# Its unit tests open scratch stores in their own process, with the store test seam on.
+family-store = { path = "../family-store", features = ["test-seam"] }
