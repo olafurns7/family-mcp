@@ -16,6 +16,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,10 +31,12 @@ import {
   withSecretStore,
   type SecretRecordOptions,
 } from '../src/index.js';
+import { keyTemporary } from '../src/keys.js';
 import {
   aclEntries,
   aclProblem,
   ancestorProblem,
+  checkStorePaths,
   ownedDirectoryProblem,
   type StoreStat,
 } from '../src/storage.js';
@@ -518,5 +521,32 @@ test('only the store’s own temporary of the same key is recovered', async () =
     expect((await lstat(temporary)).nlink).toBe(2);
     expect(Buffer.from(await keys.getKey())).toEqual(bytes);
     expect(await readdir(join(root, 'family-mcp', 'keys'))).toEqual(['test-mcp.default.key']);
+  });
+});
+
+test('a key whose recognised second name another process just removed passes', async () => {
+  await scratch(async (root) => {
+    const { key, keys } = layout(root);
+    await keys.createKey();
+    const temporary = `${key}.${TEMPORARY}.tmp`;
+    await link(key, temporary);
+
+    // The other process's recovery lands between this check's lstat and its own lookup.
+    const recovered = async (file: string, info: Stats) => {
+      await rm(temporary, { force: true });
+
+      return (await keyTemporary(file, info)) !== undefined;
+    };
+
+    await checkStorePaths({ directories: [], files: [key], allowLink: recovered });
+    expect((await lstat(key)).nlink).toBe(1);
+
+    // A second name that stays is still refused, also when the hook does not recognise it.
+    const stray = join(root, 'stray.key');
+    await link(key, stray);
+    await assert.rejects(
+      checkStorePaths({ directories: [], files: [key], allowLink: recovered }),
+      refused(HARD_LINKS, key),
+    );
   });
 });

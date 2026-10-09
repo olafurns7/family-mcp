@@ -164,11 +164,25 @@ export async function checkStorePaths(options: {
   }
 
   for (const file of options.files ?? []) {
-    const info = await lstatOrMissing(file);
+    let info = await lstatOrMissing(file);
 
     if (info === undefined) continue;
-    const linked = info.isFile() && info.nlink === 2 && (await options.allowLink?.(file, info));
-    const problem = privateFileProblem(info, uid, linked ? 2 : 1);
+    let links = 1;
+
+    if (info.isFile() && info.nlink === 2 && options.allowLink !== undefined)
+      if (await options.allowLink(file, info)) links = 2;
+      else {
+        // Another process may have removed the recognised second name after the lstat above:
+        // look once more, and take the file only if it is the same one, now with one name.
+        const fresh = await lstatOrMissing(file);
+
+        if (fresh === undefined) continue;
+
+        if (fresh.isFile() && fresh.dev === info.dev && fresh.ino === info.ino && fresh.nlink === 1)
+          info = fresh;
+      }
+
+    const problem = privateFileProblem(info, uid, links);
 
     if (problem !== undefined) throw new StoreRefusal(problem, file);
     checked.push({ path: file, info, role: 'owned' });
