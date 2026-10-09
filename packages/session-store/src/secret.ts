@@ -27,8 +27,9 @@ export type SecretRecordOptions = {
   waitMs?: number | undefined;
   /**
    * Files of an earlier layout of this store (`retiredStorePaths`). While one exists the store
-   * decides (`exists()` is true), so an older plaintext credential is never imported over it.
-   * They are only checked for existence, never read.
+   * decides (`exists()` is true), so an older plaintext credential is never imported over it; that
+   * includes a link or entry that cannot be followed. Only one shown to be the current store under
+   * another name is ignored. They are only checked by metadata, never read.
    */
   retired?: readonly string[] | undefined;
 };
@@ -171,7 +172,10 @@ export async function withSecretStore<T>(
           exists: async () => {
             usable();
 
-            return (await secretStoreExists(options.path)) || (await leftovers(options)).length > 0;
+            return (
+              (await secretStoreExists(options.path)) ||
+              (await leftovers(options)).deciding.length > 0
+            );
           },
           read: async () => (await open()).current,
           write,
@@ -244,7 +248,11 @@ export function resetSecretStore(options: SecretRecordOptions): Promise<void> {
 export type StoreCheck = {
   /** A marker exists at the store's path. */
   exists: boolean;
-  /** The `retired` files that exist: an earlier layout to clean up after a new sign-in. */
+  /**
+   * The `retired` files that exist and are shown to be separate from the current store: an
+   * earlier layout to clean up after a new sign-in. An old entry that cannot be followed is left
+   * out here, although it still makes the store decide.
+   */
   retired: string[];
 };
 
@@ -277,23 +285,25 @@ export async function checkSecretStore(
     recheck: true,
   });
 
-  return { exists: await secretStoreExists(path), retired: await leftovers(options) };
+  return { exists: await secretStoreExists(path), retired: (await leftovers(options)).named };
 }
 
 /**
- * The `retired` files that exist and are not the current store's record, marker, lock or key
- * under another name. The current files are protected by canonical directory entry (the resolved
+ * The `retired` files that exist, split by use. `deciding` holds every one not shown to be the
+ * current store's record, marker, lock or key under another name: an old entry whose link or
+ * metadata cannot be followed still decides, so a broken old store never lets an older plaintext
+ * credential back in. `named` holds only those shown to be separate files, safe to name in a
+ * cleanup command. The current files are protected by canonical directory entry (the resolved
  * directory plus the file name), which an atomic save leaves unchanged, and by device and inode
- * for any other alias. A name followed through its links to a current entry is that entry. A
- * name whose metadata cannot be read is left out, and nothing is named at all when the current
- * files cannot be, so no cleanup command can ever point at the store in use.
+ * for any other alias. A name followed through its links to a current entry is that entry. When
+ * the current files cannot be read, nothing is named and every old entry decides.
  */
 async function leftovers(
   options: Pick<SecretRecordOptions, 'path' | 'keys' | 'retired'>,
-): Promise<string[]> {
+): Promise<{ named: string[]; deciding: string[] }> {
   const found = await existingPaths(options.retired ?? []);
 
-  if (found.length === 0) return found;
+  if (found.length === 0) return { named: [], deciding: [] };
   const { path, keys } = options;
 
   const current = [path, markerPath(path), `${path}.lock`].concat(
@@ -313,23 +323,25 @@ async function leftovers(
       if (id !== undefined) identities.add(id);
     }
   } catch {
-    return [];
+    return { named: [], deciding: found };
   }
 
-  const kept: string[] = [];
+  const named: string[] = [];
+  const deciding: string[] = [];
 
   for (const file of found) {
-    try {
-      const id = await identity(file);
+    // Undefined when the name cannot be followed: gone, dangling, unreadable or looping.
+    const entry = await linkedEntry(file).catch(() => undefined);
+    const id = await identity(file).catch(() => undefined);
 
-      if (id !== undefined && !identities.has(id) && !entries.has(await linkedEntry(file)))
-        kept.push(file);
-    } catch {
-      // Gone or unreadable: not shown to be a separate file, so not named.
-    }
+    if ((entry !== undefined && entries.has(entry)) || (id !== undefined && identities.has(id)))
+      continue;
+    deciding.push(file);
+
+    if (entry !== undefined && id !== undefined) named.push(file);
   }
 
-  return kept;
+  return { named, deciding };
 }
 
 /** The resolved directory plus the file name; undefined when the directory does not exist. */

@@ -205,6 +205,90 @@ test('the current store is never named as old, also through a link', async () =>
   });
 });
 
+test('an old entry that cannot be followed is never named and still decides', async () => {
+  await scratch(async (root) => {
+    const current = store(root);
+    const old = join(root, 'old');
+    const hidden = join(root, 'hidden');
+    await mkdir(old);
+    await mkdir(hidden);
+    await writeFile(join(hidden, 'session.enc.marker'), 'x', { mode: 0o600 });
+
+    // No sign-in yet. A link to the current lock is the store in use under another name, so it
+    // neither decides nor is named, also while a hold has the lock.
+    const lock = join(old, 'session.enc.lock');
+    await symlink(`${current.path}.lock`, lock);
+    expect(await check({ store: () => store(root, [lock]) })).toEqual({ passed: true, text: '' });
+    expect(await withSecretStore(store(root, [lock]), (held) => held.exists())).toBe(false);
+
+    // A dangling link and a link into a folder that cannot be opened exist by lstat, but their
+    // targets cannot be followed: not shown to be separate, so not named, and the store decides.
+    const dangling = join(old, 'session.enc.marker');
+    const blocked = join(old, 'session.enc');
+    await symlink(join(root, 'missing', 'session.enc.marker'), dangling);
+    await symlink(join(hidden, 'session.enc.marker'), blocked);
+    await chmod(hidden, 0o000);
+
+    try {
+      for (const entry of [dangling, blocked]) {
+        expect(await check({ store: () => store(root, [lock, entry]) })).toEqual({
+          passed: true,
+          text: '',
+        });
+        expect(await withSecretStore(store(root, [lock, entry]), (held) => held.exists())).toBe(
+          true,
+        );
+      }
+    } finally {
+      await chmod(hidden, 0o700);
+    }
+
+    // Once followable, the separate old file is named again.
+    const { text } = await check({ store: () => store(root, [lock, blocked]) });
+    expect(text).toContain(`  rm '${blocked}'\n`);
+    expect(text).not.toContain(lock);
+  });
+});
+
+test('when the current files cannot be read, no old entry is named and every one decides', async () => {
+  await scratch(async (root) => {
+    const current = store(root);
+    const separate = join(root, 'old', 'session.enc');
+    await mkdir(join(root, 'old'));
+    await writeFile(separate, 'x', { mode: 0o600 });
+
+    // The key's metadata cannot be read, so no old entry can be shown to be another file.
+    const { stat } = fs;
+
+    function statDenyingKey(
+      path: PathLike,
+      options?: StatOptions & { bigint?: false | undefined },
+    ): Promise<Stats>;
+    function statDenyingKey(
+      path: PathLike,
+      options: StatOptions & { bigint: true },
+    ): Promise<BigIntStats>;
+    function statDenyingKey(path: PathLike, options?: StatOptions): Promise<Stats | BigIntStats>;
+    async function statDenyingKey(path: PathLike, options?: StatOptions) {
+      if (path === current.keys.path) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+
+      return stat(path, options);
+    }
+
+    const spy = spyOn(fs, 'stat').mockImplementation(statDenyingKey);
+
+    try {
+      expect(await check({ store: () => store(root, [separate]) })).toEqual({
+        passed: true,
+        text: '',
+      });
+      expect(await withSecretStore(store(root, [separate]), (held) => held.exists())).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 test('a save during the check never makes the current store look old', async () => {
   await scratch(async (root) => {
     const current = store(root);
