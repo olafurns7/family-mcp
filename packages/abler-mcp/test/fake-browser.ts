@@ -74,6 +74,38 @@ if (process.env.ABLER_FAKE_LAUNCHER === '1') {
     output.destroy();
   }
 
+  process.on('SIGTERM', () => {
+    writeFile(signalFile, 'SIGTERM')
+      .then(async () => {
+        if (process.env.ABLER_FAKE_IGNORE_SIGTERM === '1') return;
+
+        if (process.env.ABLER_FAKE_DELAY_SIGTERM === '1') {
+          setTimeout(() => {
+            closeFakeBrowser().catch(() => {
+              process.exitCode = 1;
+            });
+          }, 10_000);
+
+          return;
+        }
+
+        return closeFakeBrowser();
+      })
+      .catch(() => {
+        process.exitCode = 1;
+      });
+  });
+
+  await writeFile(
+    stateFile,
+    JSON.stringify({
+      pid: process.pid,
+      profile: userDataDir,
+      profileMode: (await stat(userDataDir)).mode & 0o777,
+      transport: 'pipe',
+    }),
+  );
+
   const input = connect({ fd: 3, port: 0 });
   const output = connect({ fd: 4, port: 0 });
   let buffer = '';
@@ -185,36 +217,4 @@ if (process.env.ABLER_FAKE_LAUNCHER === '1') {
         });
       }, 10);
   }
-
-  await writeFile(
-    stateFile,
-    JSON.stringify({
-      pid: process.pid,
-      profile: userDataDir,
-      profileMode: (await stat(userDataDir)).mode & 0o777,
-      transport: 'pipe',
-    }),
-  );
-
-  process.on('SIGTERM', () => {
-    writeFile(signalFile, 'SIGTERM')
-      .then(async () => {
-        if (process.env.ABLER_FAKE_IGNORE_SIGTERM === '1') return;
-
-        if (process.env.ABLER_FAKE_DELAY_SIGTERM === '1') {
-          setTimeout(() => {
-            closeFakeBrowser().catch(() => {
-              process.exitCode = 1;
-            });
-          }, 10_000);
-
-          return;
-        }
-
-        return closeFakeBrowser();
-      })
-      .catch(() => {
-        process.exitCode = 1;
-      });
-  });
 }

@@ -349,6 +349,33 @@ await test('Turbo release synchronization preserves root README pins', async () 
     await setVersion('inna-mcp', '2.3.4');
     await setVersion('abler-mcp', '1.2.4');
     synchronize();
+    // The Rust crate that provides abler-mcp follows the package version, in its manifest and lock.
+    assert.match(
+      await readFile(join(workspace, 'rust/abler-mcp/Cargo.toml'), 'utf8'),
+      /^version = "1\.2\.4"$/m,
+    );
+    assert.match(
+      await readFile(join(workspace, 'rust/Cargo.lock'), 'utf8'),
+      /^name = "abler-mcp"\nversion = "1\.2\.4"$/m,
+    );
+    await writeFile(
+      join(workspace, 'rust/abler-mcp/Cargo.toml'),
+      (await readFile(join(workspace, 'rust/abler-mcp/Cargo.toml'), 'utf8')).replace(
+        'version = "1.2.4"',
+        'version = "1.2.3"',
+      ),
+    );
+
+    const check = [
+      fileURLToPath(new URL('./sync-version.mjs', import.meta.url)),
+      '--package',
+      join(workspace, 'packages/abler-mcp'),
+      '--check',
+    ];
+
+    assert.equal(spawnSync(process.execPath, check).status, 1);
+    synchronize();
+    assert.equal(spawnSync(process.execPath, check).status, 0);
     let output = await readFile(rootReadme, 'utf8');
     assert.match(output, /abler-mcp@1\.2\.4\/packages\/abler-mcp\/install\.sh/);
     assert.match(output, /infomentor-mcp@4\.5\.6\/packages\/infomentor-mcp\/install\.sh/);

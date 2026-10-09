@@ -45,6 +45,19 @@ jobs:
           node-version: 24
       - run: bun install --frozen-lockfile
       - run: bunx turbo run test
+      - name: Check the Rust workspace with the toolchain pinned in rust/rust-toolchain.toml
+        working-directory: rust
+        run: |
+          # The Linux archives are static musl executables; their C code needs musl-gcc.
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools; fi
+          rustup toolchain install
+          cargo fmt --check
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+          # Nothing sets FAMILY_MCP_STORE_TEST_SEAM for Cargo: each test turns the store test seam
+          # on itself and gives every child scratch HOME and XDG directories, so `cargo run` keeps
+          # the production store policy (family-store/tests/launch.rs) and a plain run is isolated.
+          FAMILY_MCP_BUN="$(command -v bun)" cargo test --all-features --locked --no-fail-fast
+          FAMILY_MCP_BUN="$(command -v bun)" cargo test --locked -p family-store
       - run: bunx turbo run test:binary test:installer
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

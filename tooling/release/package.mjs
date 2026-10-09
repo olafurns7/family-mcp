@@ -33,6 +33,11 @@ const manifestSchema = z.object({
   familyMcp: z.object({
     release: z.object({
       tools: z.array(z.string()).nonempty(),
+      /** The crate in rust/ that provides the executable; without it, Bun compiles src/cli.ts. */
+      rust: z
+        .string()
+        .regex(/^[a-z][a-z0-9-]*$/)
+        .optional(),
       extraFiles: z
         .array(
           z.object({

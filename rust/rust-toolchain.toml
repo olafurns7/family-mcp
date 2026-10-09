@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+# The Linux release archives (tooling/release/build-binary.mjs); they also need musl-gcc.
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]

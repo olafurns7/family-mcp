@@ -30,3 +30,6 @@ token.txt
 
 # agent worktrees
 .worktrees/
+
+# rust build output
+rust/target/
