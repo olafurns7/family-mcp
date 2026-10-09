@@ -227,7 +227,7 @@ export async function checkStorePaths(options: {
 }
 
 // More expansions than this above one store directory are a loop or an attack; macOS stops at 32.
-const MAX_LINKS = 40;
+export const MAX_LINKS = 40;
 
 /**
  * The existing directories above `directory`, each checked, along the route the kernel takes:

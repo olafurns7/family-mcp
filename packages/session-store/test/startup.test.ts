@@ -1,6 +1,8 @@
-import { expect, test } from 'bun:test';
+import { expect, spyOn, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import type { BigIntStats, PathLike, StatOptions, Stats } from 'node:fs';
+import * as fs from 'node:fs/promises';
 import { chmod, link, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -200,5 +202,66 @@ test('the current store is never named as old, also through a link', async () =>
     expect(text).toContain(`  rm '${separate}'\n`);
     expect(text).not.toContain(join(root, 'alias'));
     expect(text).not.toContain('test-mcp.default.key');
+  });
+});
+
+test('a save during the check never makes the current store look old', async () => {
+  await scratch(async (root) => {
+    const current = store(root);
+    await createSecretKey(current);
+    await withSecretRecord(current, async () => 'secret');
+
+    // The current files under other names: a linked directory, a link to the record, and a link
+    // to the lock, which exists only while a save runs.
+    await symlink(join(root, 'family-mcp'), join(root, 'alias'));
+    await mkdir(join(root, 'old'));
+    await symlink(current.path, join(root, 'old', 'session.enc'));
+    await symlink(`${current.path}.lock`, join(root, 'old', 'session.enc.lock'));
+
+    const aliases = [
+      join(root, 'alias', 'test-mcp', 'session.enc'),
+      join(root, 'alias', 'test-mcp', 'session.enc.marker'),
+      join(root, 'old', 'session.enc'),
+      join(root, 'old', 'session.enc.lock'),
+    ];
+
+    // Another process saves right after the check first looks at the record: the atomic rename
+    // gives the record and its marker new inodes before the check looks at the old names.
+    const { stat } = fs;
+    let saved = false;
+
+    function statThenSave(
+      path: PathLike,
+      options?: StatOptions & { bigint?: false | undefined },
+    ): Promise<Stats>;
+    function statThenSave(
+      path: PathLike,
+      options: StatOptions & { bigint: true },
+    ): Promise<BigIntStats>;
+    function statThenSave(path: PathLike, options?: StatOptions): Promise<Stats | BigIntStats>;
+    async function statThenSave(path: PathLike, options?: StatOptions) {
+      const info = await stat(path, options);
+
+      if (!saved && path === current.path) {
+        saved = true;
+        await withSecretRecord(current, async () => 'saved meanwhile');
+      }
+
+      return info;
+    }
+
+    const spy = spyOn(fs, 'stat').mockImplementation(statThenSave);
+
+    try {
+      expect(await check({ store: () => store(root, aliases) })).toEqual({
+        passed: true,
+        text: '',
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(saved).toBe(true);
+    expect(await withSecretRecord(current, async () => undefined)).toBe('saved meanwhile');
   });
 });

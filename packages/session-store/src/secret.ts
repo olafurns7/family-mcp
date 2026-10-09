@@ -1,13 +1,13 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { lstat, rm, stat } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { lstat, readlink, realpath, rm, stat } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { excludeFromBackups } from './backup.js';
 import { SessionStoreError, systemErrorCode, throwIfAborted } from './errors.js';
 import { readPrivateFile, sweepTemp, writePrivateFile } from './files.js';
 import { LocalKeyFileProvider, checkedKey, keyTemporary, type KeyProvider } from './keys.js';
 import { withFileLock } from './lock.js';
-import { checkStorePaths, storeDirectories } from './storage.js';
+import { MAX_LINKS, checkStorePaths, storeDirectories } from './storage.js';
 
 export type SecretRecordOptions = {
   /** Canonical record path. Its lock is `<path>.lock` and its non-secret marker `<path>.marker`. */
@@ -282,7 +282,11 @@ export async function checkSecretStore(
 
 /**
  * The `retired` files that exist and are not the current store's record, marker, lock or key
- * under another name (a link to it, or a directory link above it), compared by device and inode.
+ * under another name. The current files are protected by canonical directory entry (the resolved
+ * directory plus the file name), which an atomic save leaves unchanged, and by device and inode
+ * for any other alias. A name followed through its links to a current entry is that entry. A
+ * name whose metadata cannot be read is left out, and nothing is named at all when the current
+ * files cannot be, so no cleanup command can ever point at the store in use.
  */
 async function leftovers(
   options: Pick<SecretRecordOptions, 'path' | 'keys' | 'retired'>,
@@ -296,23 +300,60 @@ async function leftovers(
     keys instanceof LocalKeyFileProvider ? [keys.path] : [],
   );
 
+  const entries = new Set<string>();
   const identities = new Set<string>();
 
-  for (const file of current) {
-    const id = await identity(file);
+  try {
+    for (const file of current) {
+      const entry = await directoryEntry(file);
+      const id = await identity(file);
 
-    if (id !== undefined) identities.add(id);
+      if (entry !== undefined) entries.add(entry);
+
+      if (id !== undefined) identities.add(id);
+    }
+  } catch {
+    return [];
   }
 
   const kept: string[] = [];
 
   for (const file of found) {
-    const id = await identity(file);
+    try {
+      const id = await identity(file);
 
-    if (id === undefined || !identities.has(id)) kept.push(file);
+      if (id !== undefined && !identities.has(id) && !entries.has(await linkedEntry(file)))
+        kept.push(file);
+    } catch {
+      // Gone or unreadable: not shown to be a separate file, so not named.
+    }
   }
 
   return kept;
+}
+
+/** The resolved directory plus the file name; undefined when the directory does not exist. */
+async function directoryEntry(path: string): Promise<string | undefined> {
+  try {
+    return join(await realpath(dirname(path)), basename(path));
+  } catch (error) {
+    if (systemErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+/** The directory entry `path` reaches after its links, by `lstat` and `readlink`: never opened. */
+async function linkedEntry(path: string): Promise<string> {
+  let entry = path;
+
+  for (let hops = 0; hops <= MAX_LINKS; hops++) {
+    entry = join(await realpath(dirname(entry)), basename(entry));
+
+    if (!(await lstat(entry)).isSymbolicLink()) return entry;
+    entry = resolve(dirname(entry), await readlink(entry));
+  }
+
+  throw new SessionStoreError('IO', 'Too many links.');
 }
 
 /** Device and inode of what `path` names, following links; undefined when nothing is there. */
@@ -321,8 +362,9 @@ async function identity(path: string): Promise<string | undefined> {
     const info = await stat(path);
 
     return `${info.dev}:${info.ino}`;
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (systemErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
   }
 }
 
