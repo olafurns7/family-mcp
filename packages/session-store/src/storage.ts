@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, parse, resolve, sep } from 'node:p
 
 import { SessionStoreError, systemErrorCode } from './errors.js';
 import { FOREIGN_FILE, LINKED_FILE, OPEN_FILE } from './files.js';
+import { TEST_LS, testSeam } from './seam.js';
 import { runBounded } from './spawn.js';
 
 /**
@@ -351,6 +352,17 @@ const CHANGING = new Set([
 
 const ACL_ENTRY = /^ \d+: (\S+)(?: inherited)? (allow|deny) (\S+)$/;
 
+// `ls` answers in milliseconds, but a loaded Mac can stall it: a working one took over 5 s on a
+// busy CI runner. The bound only ends a hung child; a listing that runs out still fails closed.
+const ACL_TIMEOUT_MS = 20_000;
+
+/** The ls to run: Apple's, or a test's fake under the test seam. */
+function ls(): string {
+  const fake = process.env[TEST_LS];
+
+  return testSeam() && fake !== undefined && isAbsolute(fake) ? fake : '/bin/ls';
+}
+
 // An ACL listing changes the inode's ctime, so an unchanged inode keeps its last answer.
 const aclCache = new Map<string, true>();
 
@@ -370,8 +382,8 @@ async function checkAcls(checked: readonly Checked[]): Promise<void> {
   if (unknown.some(({ path }) => path.includes('\n')))
     throw new StoreRefusal('The store path contains a line break.', unknown[0]?.path ?? '');
 
-  const listing = await runBounded('/bin/ls', ['-ldef', '--', ...unknown.map(({ path }) => path)], {
-    timeoutMs: 5000,
+  const listing = await runBounded(ls(), ['-ldef', '--', ...unknown.map(({ path }) => path)], {
+    timeoutMs: ACL_TIMEOUT_MS,
     maxBytes: 1_048_576,
   });
 

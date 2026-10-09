@@ -25,6 +25,7 @@ import {
   LocalKeyFileProvider,
   SessionStoreError,
   StoreRefusal,
+  TEST_LS,
   checkSecretStore,
   createSecretKey,
   withSecretRecord,
@@ -425,6 +426,39 @@ test.skipIf(process.platform !== 'darwin')(
       // A read-only grant above the store cannot replace anything below it.
       acl('+a', 'everyone allow list,search', root);
       expect((await checkSecretStore(store)).exists).toBe(true);
+    });
+  },
+);
+
+test.skipIf(process.platform !== 'darwin')(
+  'a slow ACL listing is waited for, and a failed one is still refused',
+  async () => {
+    await scratch(async (root) => {
+      const saved = process.env[TEST_LS];
+      const executable = join(root, 'ls');
+      const log = join(root, 'ls.log');
+
+      // The child gets only PATH and HOME, so the script carries its own paths.
+      const install = (body: string) =>
+        writeFile(executable, `#!/bin/sh\necho run >> '${log}'\n${body}\n`, { mode: 0o700 });
+
+      try {
+        process.env[TEST_LS] = executable;
+
+        await install('exit 1');
+        await assert.rejects(
+          checkStorePaths({ directories: [join(root, 'failed')], create: [join(root, 'failed')] }),
+          (error) => error instanceof SessionStoreError && error.code === 'IO',
+        );
+
+        // Longer than the 5 s bound that a loaded CI runner once hit with a working ls.
+        await install('sleep 6\nexec /bin/ls "$@"');
+        await checkStorePaths({ directories: [join(root, 'slow')], create: [join(root, 'slow')] });
+        expect(await readFile(log, 'utf8')).toBe('run\nrun\n');
+      } finally {
+        if (saved === undefined) delete process.env[TEST_LS];
+        else process.env[TEST_LS] = saved;
+      }
     });
   },
 );
