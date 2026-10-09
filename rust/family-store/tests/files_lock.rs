@@ -66,11 +66,16 @@ fn sweeps_remove_only_this_files_own_temporaries() {
     let scratch = Scratch::new();
     let file = scratch.join("session.json");
     let own = scratch.join("session.json.0b0e5cbb-7d1c-4d7a-9d0e-3f2a6c1b8e4f.tmp");
-    let kept = [
+    let mut kept = vec![
         scratch.join("session.json.not-a-uuid.tmp"),
         scratch.join("other.json.0b0e5cbb-7d1c-4d7a-9d0e-3f2a6c1b8e4f.tmp"),
-        scratch.join("session.json.0B0E5CBB-7D1C-4D7A-9D0E-3F2A6C1B8E4F.tmp"),
     ];
+    // An upper-case name is another file only where names are case-sensitive (not macOS's default).
+    fs::write(scratch.join("case-probe"), "").unwrap();
+    if !scratch.join("CASE-PROBE").exists() {
+        kept.push(scratch.join("session.json.0B0E5CBB-7D1C-4D7A-9D0E-3F2A6C1B8E4F.tmp"));
+    }
+    fs::remove_file(scratch.join("case-probe")).unwrap();
 
     for path in kept.iter().chain([&own]) {
         fs::write(path, "").unwrap();
@@ -126,7 +131,7 @@ fn the_lock_excludes_reports_a_lost_owner_and_recovers_a_dead_one() {
     assert_eq!(code(lost), Some(Code::LockLost));
 
     // An owner whose process is gone is taken over; a malformed or live owner is not.
-    let mut child = Command::new("/bin/true").spawn().unwrap();
+    let mut child = Command::new("/usr/bin/true").spawn().unwrap();
     let dead = child.id();
     child.wait().unwrap();
     let id = "0b0e5cbb-7d1c-4d7a-9d0e-3f2a6c1b8e4f";

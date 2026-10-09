@@ -53,7 +53,7 @@ jobs:
           rustup toolchain install
           cargo fmt --check
           cargo clippy --all-targets --all-features --locked -- -D warnings
-          FAMILY_MCP_BUN="$(command -v bun)" cargo test --all-features --locked
+          FAMILY_MCP_BUN="$(command -v bun)" cargo test --all-features --locked --no-fail-fast
       - run: bunx turbo run test:binary test:installer
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
