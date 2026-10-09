@@ -23,6 +23,7 @@ import {
   LocalKeyFileProvider,
   SessionStoreError,
   createSecretKey,
+  existingPaths,
   readSecretRecord,
   resetSecretStore,
   secretStoreExists,
@@ -787,5 +788,65 @@ test('a custom key provider with a malformed key is STORE_ERROR before any read 
     await refuses(store, 'STORE_ERROR');
     await assert.rejects(stat(store.path));
     await assert.rejects(stat(`${store.path}.marker`));
+  });
+});
+
+test('a store set up with the retired Keychain accessor is refused and only a new sign-in resets it', async () => {
+  await scratch(async (directory) => {
+    const keys = new LocalKeyFileProvider({ path: join(directory, 'keys', 'test-mcp.key') });
+    const store = options(directory, keys);
+    const marker = `${store.path}.marker`;
+
+    await mkdir(join(directory, 'records'), { mode: 0o700 });
+
+    await writeFile(
+      marker,
+      '{"backend":"encrypted-file","keySource":"keychain-accessor","keyId":"keychain","profile":"default","migrated":true,"generation":1}\n',
+      { mode: 0o600 },
+    );
+
+    await writeFile(store.path, forge(store, 1, SECRET), { mode: 0o600 });
+
+    // Without a key file the key is missing first; the sign-in's reset replaces the store.
+    await assert.rejects(readSecretRecord(store), hasCode('STORE_UNAVAILABLE'));
+    await resetSecretStore(store);
+    await createSecretKey(store);
+    expect(await put(store, SECRET)).toBe(SECRET);
+    expect(await readFile(marker, 'utf8')).toContain('"keySource":"local-file"');
+
+    // With a key file present the marker itself is the refusal; nothing changes.
+    await writeFile(
+      marker,
+      '{"backend":"encrypted-file","keySource":"keychain-accessor","keyId":"keychain","profile":"default","migrated":true,"generation":1}\n',
+      { mode: 0o600 },
+    );
+
+    const before = await readFile(store.path, 'utf8');
+
+    await assert.rejects(
+      readSecretRecord(store),
+      (cause: unknown) =>
+        hasCode('STORE_BACKEND_RETIRED')(cause) &&
+        cause instanceof Error &&
+        cause.message ===
+          'The secret store was set up with the macOS Keychain, which is no longer used. Remove the store files and sign in again.',
+    );
+    await refuses(store, 'STORE_BACKEND_RETIRED');
+    expect(await readFile(store.path, 'utf8')).toBe(before);
+  });
+});
+
+test('files of a retired layout make the store decide without being read', async () => {
+  await scratch(async (directory) => {
+    const old = join(directory, 'old', 'session.enc.marker');
+    const store = { ...options(directory), retired: [join(directory, 'missing'), old] };
+
+    expect(await withSecretStore(store, (held) => held.exists())).toBe(false);
+    await mkdir(join(directory, 'old'));
+    // Unreadable and malformed: existence is all that is checked.
+    await writeFile(old, 'not a marker', { mode: 0o000 });
+    expect(await withSecretStore(store, (held) => held.exists())).toBe(true);
+    expect(await withSecretStore(store, (held) => held.read())).toBeNull();
+    expect(await existingPaths(store.retired)).toEqual([old]);
   });
 });

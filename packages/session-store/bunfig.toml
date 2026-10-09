@@ -1,2 +1,2 @@
 [test]
-preload = ["./test/key-file-only.ts"]
+preload = ["./test/store-test-seam.ts"]

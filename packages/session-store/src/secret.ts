@@ -22,6 +22,12 @@ export type SecretRecordOptions = {
   signal?: AbortSignal | undefined;
   /** Longest wait for a busy lock. Default 30 s. */
   waitMs?: number | undefined;
+  /**
+   * Files of an earlier layout of this store (`retiredStorePaths`). While one exists the store
+   * decides (`exists()` is true), so an older plaintext credential is never imported over it.
+   * They are only checked for existence, never read.
+   */
+  retired?: readonly string[] | undefined;
 };
 
 /** Returns the next plaintext to store, or undefined to leave the record unchanged. */
@@ -90,6 +96,8 @@ const MARKER_PATTERN = new RegExp(
 
 const BASE64URL_PATTERN = /^[\w-]+$/;
 
+const RETIRED_KEY_SOURCE = 'keychain-accessor';
+
 /**
  * Hold the record's lock for all of `work`, so a caller can decide, read, set up and write in one
  * critical section. A caller that also holds another lock always takes that one first. The handle
@@ -149,7 +157,10 @@ export async function withSecretStore<T>(
           exists: async () => {
             usable();
 
-            return secretStoreExists(options.path);
+            return (
+              (await secretStoreExists(options.path)) ||
+              (await existingPaths(options.retired ?? [])).length > 0
+            );
           },
           read: async () => (await open()).current,
           write,
@@ -218,6 +229,15 @@ export function resetSecretStore(options: SecretRecordOptions): Promise<void> {
 /** A marker exists, so the store decides even while it holds no record. */
 export function secretStoreExists(path: string): Promise<boolean> {
   return exists(markerPath(path));
+}
+
+/** The paths that exist, by `lstat` only: nothing is followed, opened or read. */
+export async function existingPaths(paths: readonly string[]): Promise<string[]> {
+  const found: string[] = [];
+
+  for (const path of paths) if (await exists(path)) found.push(path);
+
+  return found;
 }
 
 /** Server, profile and key names: 1-64 letters, digits, dots, dashes or underscores. */
@@ -533,6 +553,13 @@ async function readMarker(options: SecretRecordOptions): Promise<Marker | null> 
     throw new SessionStoreError('STORE_ERROR', 'The secret store marker is malformed.');
   const [, backend, keySource, keyId, profile, migrated, generation, pending, nonce] = match;
   const { keys } = options;
+
+  // Set up by an earlier build through security(1), which no server runs any more.
+  if (keySource === RETIRED_KEY_SOURCE && keys.keySource !== RETIRED_KEY_SOURCE)
+    throw new SessionStoreError(
+      'STORE_BACKEND_RETIRED',
+      'The secret store was set up with the macOS Keychain, which is no longer used. Remove the store files and sign in again.',
+    );
 
   if (
     backend !== keys.backend ||
