@@ -27,6 +27,7 @@ import {
   pidIsRunning,
   savedCookies,
   savedSessionSchema,
+  storeHome,
   spawnCli,
   spawnLogin,
   START_MESSAGE,
@@ -35,6 +36,7 @@ import {
   waitForBrowserState,
   waitForFile,
 } from './browser-harness.js';
+import { filesContaining, readStored, storeAt } from './scratch.js';
 
 const USER_PATH = '/api/UserData/GetLoggedInUser';
 
@@ -218,7 +220,7 @@ test('auth login --google captures over a private pipe, closes the browser, then
     const { exit, stdout, stderr } = await collectProcess(child);
 
     expect(stderr).toBe(START_MESSAGE);
-    expect(stdout).toBe(`Signed in. Session saved to ${sessionPath}\n`);
+    expect(stdout).toBe('Signed in. Saved in an encrypted file.\n');
     expect(exit).toBe(0);
     expect(stdout + stderr).not.toMatch(/synthetic-|decoy-/);
 
@@ -238,7 +240,7 @@ test('auth login --google captures over a private pipe, closes the browser, then
     expect(upstream.requests[0]?.cookie).toContain('SESSION=synthetic-session');
     expect(upstream.requests[0]?.cookie).not.toContain('decoy');
 
-    const cookies = await savedCookies(sessionPath);
+    const cookies = await savedCookies(directory);
 
     expect(cookies.map(({ key, value }) => `${key}=${value}`).toSorted()).toEqual([
       'JSESSIONID=synthetic-jsession',
@@ -248,11 +250,24 @@ test('auth login --google captures over a private pipe, closes the browser, then
 
     for (const cookie of cookies)
       expect(cookie).toMatchObject({ domain: 'nam.inna.is', path: '/', secure: true });
-    expect(await readFile(sessionPath, 'utf8')).not.toContain('decoy');
-    expect(savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')))).toMatchObject(
-      { version: 2, account: { userId: 1, studentId: '2', schoolId: '3' } },
-    );
-    expect((await stat(sessionPath)).mode & 0o777).toBe(0o600);
+    const store = storeAt(storeHome(directory));
+    const saved = await readStored(store);
+    expect(saved).not.toContain('decoy');
+    expect(savedSessionSchema.parse(JSON.parse(saved))).toMatchObject({
+      version: 2,
+      account: { userId: 1, studentId: '2', schoolId: '3' },
+    });
+    expect((await stat(store.path)).mode & 0o777).toBe(0o600);
+    // The session exists only encrypted: no plaintext file, and no cookie value on disk.
+    await assert.rejects(stat(sessionPath), { code: 'ENOENT' });
+    expect(
+      await filesContaining(
+        ['synthetic-session', 'synthetic-jsession', 'synthetic-xsrf'],
+        sessions,
+        storeHome(directory),
+        temporaryDirectory,
+      ),
+    ).toEqual([]);
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(await readdir(temporaryDirectory)).toEqual([]);
     expect(await readFile(exitFile, 'utf8')).toBe('closed');
@@ -295,7 +310,7 @@ test('auth login --google waits through the Google pages until the student appli
     expect(stderr).toBe(START_MESSAGE);
     expect(exit).toBe(0);
     expect(upstream.requests.map((request) => request.browserClosed)).toEqual([true]);
-    expect((await savedCookies(sessionPath)).map(({ key }) => key).toSorted()).toEqual([
+    expect((await savedCookies(directory)).map(({ key }) => key).toSorted()).toEqual([
       'JSESSIONID',
       'SESSION',
       'XSRF-TOKEN',
@@ -438,6 +453,7 @@ test('auth login --google timeout closes a launcher-spawned browser child', asyn
     expect(exit).toBe(1);
     expect(stderr).toBe(START_MESSAGE + TIMEOUT_MESSAGE);
     await assert.rejects(stat(sessionPath), { code: 'ENOENT' });
+    await assert.rejects(stat(storeAt(storeHome(directory)).path), { code: 'ENOENT' });
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(await readFile(join(directory, 'browser.closed'), 'utf8')).toBe('closed');
     expect(pidIsRunning(state.pid)).toBe(false);
@@ -568,6 +584,7 @@ test('auth login --google keeps the previous session when verification refuses t
     expect(stdout).toBe('');
     expect(upstream.requests).toMatchObject([{ browserClosed: true, profileRemoved: true }]);
     await assert.rejects(stat(sessionPath), { code: 'ENOENT' });
+    await assert.rejects(stat(storeAt(storeHome(directory)).path), { code: 'ENOENT' });
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(await readFile(exitFile, 'utf8')).toBe('closed');
     expect(pidIsRunning(state.pid)).toBe(false);
@@ -717,6 +734,7 @@ test('auth login --google errors when an ignored launcher child may still be run
     );
     expect(stdout).toBe('');
     await assert.rejects(stat(sessionPath), { code: 'ENOENT' });
+    await assert.rejects(stat(storeAt(storeHome(directory)).path), { code: 'ENOENT' });
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(pidIsRunning(state.pid)).toBe(true);
   } finally {
@@ -752,7 +770,7 @@ test('auth login --google rediscovers the student tab after its pipe session det
 
     expect(stderr).toBe(START_MESSAGE);
     expect(exit).toBe(0);
-    expect((await savedCookies(sessionPath)).map(({ key }) => key).toSorted()).toEqual([
+    expect((await savedCookies(directory)).map(({ key }) => key).toSorted()).toEqual([
       'JSESSIONID',
       'SESSION',
       'XSRF-TOKEN',

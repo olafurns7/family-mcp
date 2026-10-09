@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { z } from 'zod';
+import { readStored, storeAt, storeEnvironment } from './scratch.js';
 
 const root = resolve(import.meta.dir, '..');
 
@@ -39,8 +40,13 @@ const savedJarSchema = z.object({
   ),
 });
 
-export async function savedCookies(path: string) {
-  const saved = savedSessionSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+/** The scratch home holding the encrypted store of a CLI run with `browserEnvironment`. */
+export const storeHome = (directory: string) => join(directory, 'store');
+
+export async function savedCookies(directory: string) {
+  const saved = savedSessionSchema.parse(
+    JSON.parse(await readStored(storeAt(storeHome(directory)))),
+  );
 
   return savedJarSchema.parse(JSON.parse(saved.jar)).cookies;
 }
@@ -124,6 +130,7 @@ export function browserEnvironment(
   return {
     ...process.env,
     INNA_SESSION_FILE: sessionPath,
+    ...storeEnvironment(storeHome(directory)),
     // A test that forgets --browser must fail instead of opening the machine's real browser.
     INNA_BROWSER: join(directory, 'no-browser-selected'),
     INNA_FAKE_BROWSER_STATE: join(directory, 'browser.json'),

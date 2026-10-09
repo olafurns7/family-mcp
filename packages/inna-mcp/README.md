@@ -25,7 +25,9 @@ curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.3.0
 
 Upgrading replaces the command but not a running server. Restart the MCP host,
 or rerun the installer with `--stop-running`. The installer does not change
-saved school sessions or absence-operation records.
+saved school sessions or absence-operation records. After upgrading from 0.3.0
+or earlier, run `inna-mcp auth migrate` once (see
+[Upgrading from 0.3.0](#upgrading-from-030)).
 
 To build before publication, use the pinned Bun 1.4.2 from the repository root:
 
@@ -51,7 +53,7 @@ enter the electronic-ID PIN only on the phone. Never send the PIN in chat.
 
 The CLI uses the captured HTTP flow without a browser. Opaque identity-provider
 tickets and Inna access tokens stay in memory. Only verified school cookies are
-saved using the same shared session-store helpers as cookie import. Login stops
+saved, in the same encrypted record as after a cookie import. Login stops
 when additional device verification or new terms acceptance requires browser
 interaction; it never accepts terms.
 
@@ -121,10 +123,83 @@ login or import that lands on a different binding is refused unless the owner
 deliberately adds `--allow-account-change`; when it lands on another student
 already read through this session, select the default student in the Inna
 browser session first. Replacing the default forgets the other learned students.
-The normal session file is `~/.config/inna-mcp/session.json`, or an absolute
-`INNA_SESSION_FILE` path. Shared private-file and lock helpers enforce owner-only
-files and atomic replacement. No unattended login or renewal is implemented.
-Expiry needs a fresh explicit login/import.
+No unattended login or renewal is implemented. Expiry needs a fresh explicit
+login/import.
+
+### Where the session is saved
+
+The session (the `nam.inna.is` cookies, rewritten after every request, with the
+default and learned student bindings and any rate-limit pause) is saved only as
+one encrypted record (AES-256-GCM), `~/.config/inna-mcp/session.enc`, with a
+non-secret `session.enc.marker` beside it. The record's 256-bit key is created on
+the first login, import or migrate. It is never regenerated, except when the key
+is gone and you sign in again with `auth login` or `auth import`:
+
+- **macOS:** a login-keychain item (service `family-mcp.inna-mcp`, account
+  `default.data-key`), read through Apple's `/usr/bin/security`.
+- **Linux:** a `0600` file in its own `0700` directory,
+  `~/.local/share/family-mcp/keys/inna-mcp.default.key`.
+
+When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is set, it replaces `~/.config` or
+`~/.local/share`; set the same values for sign-in and the MCP host. Windows is
+unsupported by the encrypted store.
+
+`inna-mcp auth status` verifies the session and names where it is saved, as does
+`inna_session_status` (`storage`). `inna-mcp auth logout` forgets the session on
+this computer; the key, the record and the absence record stay.
+
+The [absence record](#whole-day-illness-and-leave) is not part of the encrypted
+record. It stays a plaintext owner-only file, `session.json.absence.json` in
+`~/.config/inna-mcp/`, or `<INNA_SESSION_FILE>.absence.json` when that variable
+is set. It holds the prepared request (dates, reason, student and school ids),
+no cookies. Login, import, migrate and logout never change or remove it.
+
+Processes on one machine coordinate with two file locks, always taken in this
+order: `session.json.lock` beside the plaintext session path, which also guards
+the absence record, then `session.enc.lock` beside the encrypted record. A
+request waits up to 30 seconds for a busy lock and then fails; retry later. If
+Inna may have changed the cookies and they cannot be written back, the record is
+removed so the old cookies are never offered again: the next command reports
+that the last write did not complete, and you sign in again.
+
+What this protects against: cookies showing up in `cat`, `grep`, agent file
+reads, commits, dotfile sync, or backups of `~/.config`. What it does not:
+anything that can read both the record and its key, such as another process of
+your user, an agent with a shell, root, or a full-home backup. On macOS any
+process of your user can read the key with `security` while the login keychain is
+unlocked. Against those it is the same as a `0600` file.
+
+| Message                                | Action                                                                                                                                                            |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Saved in a plaintext file              | Run `inna-mcp auth migrate`.                                                                                                                                      |
+| Unlock your login keychain             | macOS: unlock the login keychain, then retry.                                                                                                                     |
+| The Inna store key is missing          | The key was deleted. The record cannot be decrypted; `inna-mcp auth login` or `auth import` replaces it with a new key and record.                                |
+| The last write … did not complete      | `session.enc` and `session.enc.marker` disagree, or the record was removed after a failed write. Remove both files, then sign in again.                           |
+| Cannot use the Inna session store      | The record, marker, or key is damaged, unsafe, or from another key. Nothing is reset automatically; restore the key, or remove the record and marker and sign in. |
+| INNA_SESSION_FILE overlaps the … store | Point `INNA_SESSION_FILE` away from the encrypted record, its marker and lock, and the key file.                                                                  |
+
+Never remove the absence record to fix a session-store message.
+
+### Upgrading from 0.3.0
+
+Versions up to 0.3.0 saved the session in a plaintext file,
+`~/.config/inna-mcp/session.json` or an absolute `INNA_SESSION_FILE` path. That
+file keeps working, written back after every request as before, until you
+migrate, and `auth status` says `Saved in a plaintext file. Run inna-mcp auth
+migrate.` Stop running `inna-mcp` servers, then run:
+
+```sh
+inna-mcp auth migrate
+```
+
+It saves the session in the encrypted record, reads it back, and removes the
+plaintext session file. The absence record beside it is left exactly as it is.
+Running it again says `Already migrated.` and removes a leftover plaintext
+session file. After migration the plaintext session file is never read again; a
+login or import before migration also moves the session into the record and
+removes the file. Keep `INNA_SESSION_FILE` set as before if you used it: it still
+names where the absence record is. It must not point into the encrypted store or
+at its key. Going back to 0.3.0 means signing in again in that version.
 
 ### Keeping the session alive
 
@@ -137,7 +212,9 @@ prevent an idle timeout: how long Inna keeps a session is unmeasured, and a
 session Inna ends for any other reason still needs a fresh login or import.
 After Inna asks for sign-in, the requests stop until the saved session cookies
 change, which a new login or import does. Rewriting the same cookies, as a tool
-call or a second `serve` on the same session file does, does not restart them.
+call or a second `serve` on the same session does, does not restart them. A
+session-store failure only skips that request; the keep-alive never resets the
+store.
 A restarted server asks once more. They also wait out a rate-limit pause, and
 they stop when the MCP connection closes.
 
@@ -179,15 +256,16 @@ command = "/absolute/path/to/.local/bin/inna-mcp"
 args = ["serve"]
 ```
 
-An absolute `INNA_SESSION_FILE` may be set in the host's private environment.
-Auth login/import and logout
+An absolute `INNA_SESSION_FILE`, `XDG_CONFIG_HOME` or `XDG_DATA_HOME` may be set
+in the host's private environment; use the same values for sign-in.
+Auth login/import, migrate and logout
 exist only in the CLI; untrusted school text cannot invoke them through MCP.
 
 ## Tools
 
 | Tool                     | Inputs / behavior                                                                                                               |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `inna_session_status`    | Verify authentication; returns no credentials.                                                                                  |
+| `inna_session_status`    | Verify authentication and name where the session is saved (`storage`); returns no credentials.                                  |
 | `inna_list_students`     | Students in this session with their `studentKey`, the selected one, and the default. Does not switch.                           |
 | `inna_get_overview`      | Current context, terms, courses/booklists, announcements.                                                                       |
 | `inna_get_timetable`     | Inclusive `dateFrom`, `dateTo` in `YYYY-MM-DD`.                                                                                 |
@@ -248,7 +326,7 @@ when a call asks for another student and switches back on the next call for
 the default. Before reading, it requires that Inna reports exactly the
 requested student as selected and that the returned user and school match that
 entry. The first verified read of a student records its account/student/school
-binding in the private session file; later reads must return the same binding,
+binding in the saved session; later reads must return the same binding,
 and two keys can never share a student. The context is checked again after the
 read, and any mismatch discards the result. Always identify the returned
 `context` before describing records.
@@ -289,7 +367,9 @@ permissions, and overlapping records. A returned ID means the request was
 submitted, not that the school approved leave. Partial-day requests, cancellation,
 messages, assignment submission, and grade editing are unsupported.
 
-The private `session.json.absence.json` marker is persisted before a write.
+The private `session.json.absence.json` marker, a plaintext owner-only file
+[outside the encrypted record](#where-the-session-is-saved), is persisted before
+a write.
 `submitting` or `unknown` means the outcome needs owner review against Inna's
 history. The server refuses replay and new previews, for every student, while
 that state remains.

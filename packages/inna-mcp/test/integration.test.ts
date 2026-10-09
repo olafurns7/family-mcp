@@ -1,12 +1,34 @@
 import { afterEach, expect, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, chmod, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  chmod,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { z } from 'zod';
-import { InnaClient, type KeepAlive } from '../src/client.js';
+import { SafeError } from '@family-mcp/mcp-runtime';
+import {
+  LocalKeyFileProvider,
+  SessionStoreError,
+  type KeyProvider,
+} from '@family-mcp/session-store';
+import {
+  InnaClient,
+  MAX_SESSION_BYTES,
+  RECORD_MAX_BYTES,
+  savedSchema,
+  type KeepAlive,
+} from '../src/client.js';
 import { startKeepAlive } from '../src/keep-alive.js';
 import { createServer } from '../src/server.js';
 import {
@@ -18,7 +40,17 @@ import {
   spawnLogin,
   START_MESSAGE,
   stopChild,
+  storeHome,
 } from './browser-harness.js';
+import {
+  filesContaining,
+  readStored,
+  resetStored,
+  storeAt,
+  storeEnvironment,
+  updateStored,
+  type Store,
+} from './scratch.js';
 import {
   absencePreviewSchema,
   absenceRecordSchema,
@@ -392,11 +424,20 @@ async function fixture(allowAbsenceWrites = false) {
     { mode: 0o600 },
   );
   const provider = new Provider();
-  const options = { sessionFile: path, fetch: provider.fetch, now: () => NOW, allowAbsenceWrites };
+  const store = storeAt(join(directory, 'store'));
+
+  const options = {
+    sessionFile: path,
+    store,
+    fetch: provider.fetch,
+    now: () => NOW,
+    allowAbsenceWrites,
+  };
+
   const client = new InnaClient(options);
   await client.importSession(source);
 
-  return { client, provider, options, path, source };
+  return { client, provider, options, path, source, store, directory };
 }
 
 afterEach(async () => {
@@ -635,7 +676,7 @@ test('repeated and concurrent reads stay serialized, fresh, UTC, and free of wri
 
   expect(f.provider.posts).toBe(0);
   expect(f.provider.calls.every((call) => call.method === 'GET')).toBe(true);
-  expect((await stat(f.path)).mode & 0o777).toBe(0o600);
+  expect((await stat(f.store.path)).mode & 0o777).toBe(0o600);
 });
 
 test('a student switch during a read discards the fetched records', async () => {
@@ -686,9 +727,7 @@ test('numeric and HTTP-date rate-limit pauses survive restart and expire at the 
 
     await assert.rejects(limited.messages(), /rate limited/);
 
-    const saved = z
-      .object({ pauseUntil: z.number() })
-      .parse(JSON.parse(await readFile(f.path, 'utf8')));
+    const saved = z.object({ pauseUntil: z.number() }).parse(JSON.parse(await readStored(f.store)));
 
     expect(saved.pauseUntil).toBe(NOW + wait);
     const restarted = new InnaClient({ ...f.options, now: () => now });
@@ -934,14 +973,14 @@ test('failed and stalled response bodies are cancelled without returning a false
 
 test('private import, principal binding, redirect refusal, and shared rate-limit pause', async () => {
   const f = await fixture();
-  expect((await stat(f.path)).mode & 0o777).toBe(0o600);
+  expect((await stat(f.store.path)).mode & 0o777).toBe(0o600);
   await chmod(f.source, 0o644);
   await assert.rejects(f.client.importSession(f.source));
   await chmod(f.source, 0o600);
-  const before = await readFile(f.path, 'utf8');
+  const before = await readStored(f.store);
   f.provider.user = { ...f.provider.user, studentId: '99' };
   await assert.rejects(f.client.importSession(f.source), /changes the account/);
-  expect(await readFile(f.path, 'utf8')).toBe(before);
+  expect(await readStored(f.store)).toBe(before);
   await assert.rejects(f.client.overview(), /changed account/);
   f.provider.user = { ...f.provider.user, studentId: '2' };
   f.provider.redirect = true;
@@ -1057,7 +1096,7 @@ test('rate limiting during a replacement import preserves the saved session paus
   expect(f.provider.calls).toHaveLength(count);
 });
 
-async function savedFile(path: string) {
+function parseSaved(text: string) {
   return z
     .object({
       version: z.number(),
@@ -1066,7 +1105,11 @@ async function savedFile(path: string) {
       students: z.record(z.string(), z.object({ studentId: z.string(), studentName: z.string() })),
       pauseUntil: z.number(),
     })
-    .parse(JSON.parse(await readFile(path, 'utf8')));
+    .parse(JSON.parse(text));
+}
+
+async function savedFile(store: Store) {
+  return parseSaved(await readStored(store));
 }
 
 // Runs the real CLI with the fake browser; its nam.inna.is requests reach the synthetic Provider.
@@ -1105,7 +1148,7 @@ async function googleLogin(provider: Provider, extra: string[] = []) {
     }
   }
 
-  return { path, run, stop: () => bridge.stop(true) };
+  return { path, store: storeAt(storeHome(directory)), run, stop: () => bridge.stop(true) };
 }
 
 test('the saved default user id is read locally and is absent without a session', async () => {
@@ -1129,26 +1172,31 @@ test('Google browser sign-in saves a version 2 session and refuses a changed bin
     const first = await login.run();
     expect(first).toEqual({
       exit: 0,
-      stdout: `Signed in. Session saved to ${login.path}\n`,
+      stdout: 'Signed in. Saved in an encrypted file.\n',
       stderr: START_MESSAGE,
     });
     expect(provider.paths()).toEqual([USER_PATH]);
-    const saved = await savedFile(login.path);
+    const saved = await savedFile(login.store);
     expect(saved.version).toBe(2);
     expect(saved.account).toEqual({ userId: 1, studentId: '2', schoolId: '3' });
     expect(Object.keys(saved.students)).toEqual(['1']);
     expect(saved.jar).toContain('synthetic-rotated');
     expect(saved.jar).toContain('synthetic-xsrf');
     expect(saved.jar).not.toContain('decoy');
-    expect((await stat(login.path)).mode & 0o777).toBe(0o600);
+    expect((await stat(login.store.path)).mode & 0o777).toBe(0o600);
 
-    const client = new InnaClient({ sessionFile: login.path, fetch: provider.fetch });
+    const client = new InnaClient({
+      sessionFile: login.path,
+      store: login.store,
+      fetch: provider.fetch,
+    });
+
     expect(await client.status()).toMatchObject({
       authenticated: true,
       context: { studentId: '2' },
     });
 
-    const before = await readFile(login.path, 'utf8');
+    const before = await readStored(login.store);
     provider.user = { ...provider.user, studentId: '99' };
     const refused = await login.run();
     expect(refused.exit).toBe(1);
@@ -1156,13 +1204,13 @@ test('Google browser sign-in saves a version 2 session and refuses a changed bin
     expect(refused.stderr).toBe(
       `${START_MESSAGE}This export changes the account, student, or school. Use --allow-account-change deliberately.\n`,
     );
-    expect(await readFile(login.path, 'utf8')).toBe(before);
+    expect(await readStored(login.store)).toBe(before);
 
     const allowed = await login.run(['--allow-account-change']);
     expect(allowed.exit).toBe(0);
-    expect(allowed.stdout).toBe(`Signed in. Session saved to ${login.path}\n`);
-    expect((await savedFile(login.path)).account.studentId).toBe('99');
-    expectClean(await readFile(login.path, 'utf8'));
+    expect(allowed.stdout).toBe('Signed in. Saved in an encrypted file.\n');
+    expect((await savedFile(login.store)).account.studentId).toBe('99');
+    expectClean(await readStored(login.store));
   } finally {
     await login.stop();
   }
@@ -1197,7 +1245,7 @@ test('students are listed without switching or exposing identity fields', async 
   expect(listed.context.studentId).toBe('2');
   expect(listed.retrievedAt).toBe(new Date(NOW).toISOString());
   expectClean(JSON.stringify(listed));
-  expectClean(await readFile(f.path, 'utf8'));
+  expectClean(await readStored(f.store));
   expect(f.provider.paths()).toEqual([
     '/api/UserData/GetLoggedInUser',
     '/api/UserData/GetLoggedInUser',
@@ -1279,7 +1327,7 @@ test('reading the sibling and then the default switches there and back with veri
   expect(f.provider.switches).toBe(2);
   expect(f.provider.calls.every((call) => call.method === 'GET')).toBe(true);
 
-  const saved = await savedFile(f.path);
+  const saved = await savedFile(f.store);
   expect(saved.version).toBe(2);
   expect(saved.account.studentId).toBe('2');
   expect(Object.keys(saved.students).toSorted()).toEqual(['1', SIBLING]);
@@ -1310,7 +1358,7 @@ test('an ignored, misdirected, or rate-limited switch returns no data', async ()
     /did not select the requested student/,
   );
   expect(ignored.provider.paths()).not.toContain('/api/Timetable/GetTimetable');
-  expect((await savedFile(ignored.path)).students[SIBLING]).toBeUndefined();
+  expect((await savedFile(ignored.store)).students[SIBLING]).toBeUndefined();
 
   for (const location of [
     'https://r.inna.is/login',
@@ -1337,7 +1385,7 @@ test('an ignored, misdirected, or rate-limited switch returns no data', async ()
   const limited = await fixture();
   limited.provider.switchRateLimit = true;
   await assert.rejects(limited.client.overview(undefined, SIBLING), /rate limited/);
-  expect((await savedFile(limited.path)).pauseUntil).toBe(NOW + 120_000);
+  expect((await savedFile(limited.store)).pauseUntil).toBe(NOW + 120_000);
   const count = limited.provider.calls.length;
   await assert.rejects(new InnaClient(limited.options).overview(), /requested a pause/);
   expect(limited.provider.calls).toHaveLength(count);
@@ -1355,23 +1403,40 @@ test('unknown and non-student keys are refused without a switch request', async 
 
 test('a version 1 session file migrates and learns students on use', async () => {
   const f = await fixture();
-  const { jar, account, pauseUntil } = await savedFile(f.path);
-  await writeFile(f.path, JSON.stringify({ version: 1, jar, account, pauseUntil }));
-  expect((await f.client.overview()).context.studentId).toBe('2');
-  const migrated = await savedFile(f.path);
+  const { jar, account, pauseUntil } = await savedFile(f.store);
+  const version1 = JSON.stringify({ version: 1, jar, account, pauseUntil });
+  // Before any store exists the plaintext file is authoritative and is written back in place.
+  const store = storeAt(join(f.directory, 'unmigrated'));
+  const client = new InnaClient({ ...f.options, store });
+  await writeFile(f.path, version1, { mode: 0o600 });
+  expect((await client.overview()).context.studentId).toBe('2');
+  const migrated = parseSaved(await readFile(f.path, 'utf8'));
   expect(migrated.version).toBe(2);
   expect(Object.keys(migrated.students)).toEqual(['1']);
-  expect((await f.client.overview(undefined, SIBLING)).context.studentId).toBe('6');
-  expect((await f.client.overview()).context.studentId).toBe('2');
+  expect((await client.overview(undefined, SIBLING)).context.studentId).toBe('6');
+  expect((await client.overview()).context.studentId).toBe('2');
   expect((await stat(f.path)).mode & 0o777).toBe(0o600);
+  expect(await client.status()).toMatchObject({
+    authenticated: true,
+    storage: 'Saved in a plaintext file. Run inna-mcp auth migrate.',
+  });
+  await assert.rejects(stat(store.path), /ENOENT/);
+  await assert.rejects(stat(`${store.path}.marker`), /ENOENT/);
 
   // A version 1 file whose browser session moved to the sibling switches back to its default.
   f.provider.selected = SIBLING;
   f.provider.user = sibling;
-  await writeFile(f.path, JSON.stringify({ version: 1, jar, account, pauseUntil }));
+  await writeFile(f.path, version1, { mode: 0o600 });
   const switches = f.provider.switches;
-  expect((await f.client.overview()).context.studentId).toBe('2');
+  expect((await client.overview()).context.studentId).toBe('2');
   expect(f.provider.switches).toBe(switches + 1);
+
+  // The same version 1 value in the store record is read as version 2 too.
+  f.provider.selected = '1';
+  f.provider.user = student;
+  await updateStored(f.store, () => version1);
+  expect((await f.client.overview()).context.studentId).toBe('2');
+  expect((await savedFile(f.store)).version).toBe(2);
 });
 
 test('a learned student binding that later differs is refused', async () => {
@@ -1382,9 +1447,9 @@ test('a learned student binding that later differs is refused', async () => {
   const from = f.provider.calls.length;
   await assert.rejects(f.client.overview(undefined, SIBLING), /changed account/);
   expect(f.provider.paths(from)).not.toContain('/api/StudentTerms/GetStudentTerms');
-  expect((await savedFile(f.path)).students[SIBLING]?.studentId).toBe('6');
+  expect((await savedFile(f.store)).students[SIBLING]?.studentId).toBe('6');
 
-  expectClean(await readFile(f.path, 'utf8'));
+  expectClean(await readStored(f.store));
 
   // The selected entry must agree with the returned context on user and school.
   for (const wrong of [
@@ -1398,7 +1463,7 @@ test('a learned student binding that later differs is refused', async () => {
       /did not select the requested student/,
     );
     expect(strict.provider.paths()).not.toContain('/api/StudentTerms/GetStudentTerms');
-    expect((await savedFile(strict.path)).students[SIBLING]).toBeUndefined();
+    expect((await savedFile(strict.store)).students[SIBLING]).toBeUndefined();
     strict.provider.user = { ...student, schoolId: '8' };
     strict.provider.selected = '1';
     await assert.rejects(strict.client.overview(), /changed account/);
@@ -1419,20 +1484,20 @@ test('a learned student binding that later differs is refused', async () => {
     duplicate.client.overview(undefined, SIBLING),
     /already saved under another studentKey/,
   );
-  expect((await savedFile(duplicate.path)).students[SIBLING]).toBeUndefined();
+  expect((await savedFile(duplicate.store)).students[SIBLING]).toBeUndefined();
 });
 
 test('import onto a learned sibling is refused unless the account change is deliberate', async () => {
   const f = await fixture(true);
   await f.client.prepareAbsence(request);
   await f.client.overview(undefined, SIBLING);
-  const before = await readFile(f.path, 'utf8');
+  const before = await readStored(f.store);
   await assert.rejects(f.client.importSession(f.source), /Select the default student/);
-  expect(await readFile(f.path, 'utf8')).toBe(before);
+  expect(await readStored(f.store)).toBe(before);
   expect((await f.client.absenceStatus()).operation?.account.studentId).toBe('2');
 
   await f.client.importSession(f.source, true);
-  const replaced = await savedFile(f.path);
+  const replaced = await savedFile(f.store);
   expect(replaced.account.studentId).toBe('6');
   expect(Object.keys(replaced.students)).toEqual([SIBLING]);
   await assert.rejects(f.client.absenceStatus(), /belongs to another account/);
@@ -1689,19 +1754,19 @@ function scheduled(client: InnaClient) {
 
 test('keep-alive makes one user request, persists the rotated cookie, and returns only a status', async () => {
   const f = await fixture();
-  const before = await savedFile(f.path);
+  const before = await savedFile(f.store);
   const count = f.provider.calls.length;
   f.provider.rotation = 'synthetic-kept';
   const result = await f.client.keepAlive();
   expect(result).toEqual({ status: 'kept' });
   expectClean(JSON.stringify(result));
   expect(f.provider.paths(count)).toEqual([USER_PATH]);
-  const after = await savedFile(f.path);
+  const after = await savedFile(f.store);
   expect(after.jar).toContain('synthetic-kept');
   expect(before.jar).not.toContain('synthetic-kept');
   expect({ ...after, jar: '' }).toEqual({ ...before, jar: '' });
-  expectClean(await readFile(f.path, 'utf8'));
-  expect((await stat(f.path)).mode & 0o777).toBe(0o600);
+  expectClean(await readStored(f.store));
+  expect((await stat(f.store.path)).mode & 0o777).toBe(0o600);
 });
 
 test('keep-alive makes no request without a session or during a pause', async () => {
@@ -1711,19 +1776,20 @@ test('keep-alive makes no request without a session or during a pause', async ()
   expect(await f.client.keepAlive()).toEqual({ status: 'skipped' });
   expect(f.provider.calls).toHaveLength(count);
   await assert.rejects(stat(f.path), /ENOENT/);
+  expect(await readStored(f.store)).toBe('null');
 
   const limited = await fixture();
   const s = scheduled(limited.client);
   limited.provider.rateLimit = true;
   expect(await s.tick()).toEqual({ status: 'failed' });
-  expect((await savedFile(limited.path)).pauseUntil).toBe(NOW + 60_000);
+  expect((await savedFile(limited.store)).pauseUntil).toBe(NOW + 60_000);
   limited.provider.rateLimit = false;
   const paused = limited.provider.calls.length;
-  const file = await readFile(limited.path, 'utf8');
+  const file = await readStored(limited.store);
   expect(await s.tick()).toEqual({ status: 'skipped' });
   expect(await new InnaClient(limited.options).keepAlive()).toEqual({ status: 'skipped' });
   expect(limited.provider.calls).toHaveLength(paused);
-  expect(await readFile(limited.path, 'utf8')).toBe(file);
+  expect(await readStored(limited.store)).toBe(file);
   s.scheduler.stop();
 });
 
@@ -1756,14 +1822,14 @@ test('an expired session stops the keep-alive until a new import replaces it', a
 
 test('keep-alive on a session the browser moved to the sibling neither switches nor relearns', async () => {
   const f = await fixture();
-  const before = await savedFile(f.path);
+  const before = await savedFile(f.store);
   f.provider.selected = SIBLING;
   f.provider.user = sibling;
   const count = f.provider.calls.length;
   expect(await f.client.keepAlive()).toEqual({ status: 'kept' });
   expect(f.provider.paths(count)).toEqual([USER_PATH]);
   expect(f.provider.switches).toBe(0);
-  const after = await savedFile(f.path);
+  const after = await savedFile(f.store);
   expect(after.account).toEqual(before.account);
   expect(after.students).toEqual(before.students);
   expect(Object.keys(after.students)).toEqual(['1']);
@@ -1838,12 +1904,11 @@ test('two servers sharing a refused session stop asking, and replaced credential
     for (const client of clients) {
       // Cookie access times have millisecond resolution; each round must land on a new one.
       await new Promise((resolve) => setTimeout(resolve, 2));
-      const before = await readFile(f.path, 'utf8');
+      const before = await readStored(f.store);
       statuses.push((await client.keepAlive()).status);
 
       // A refused request rewrites cookie access times; that alone must not look like a new session.
-      if (statuses.at(-1) === 'signInRequired')
-        expect(await readFile(f.path, 'utf8')).not.toBe(before);
+      if (statuses.at(-1) === 'signInRequired') expect(await readStored(f.store)).not.toBe(before);
     }
 
   expect(statuses).toEqual([
@@ -1874,9 +1939,8 @@ test('a cookie value rotated by Inna counts as new credentials for a refused ses
   f.provider.unauthorized = true;
   expect(await f.client.keepAlive()).toEqual({ status: 'signInRequired' });
   expect(await f.client.keepAlive()).toEqual({ status: 'skipped' });
-  const saved = await readFile(f.path, 'utf8');
-  expect(saved).toContain('synthetic-rotated');
-  await writeFile(f.path, saved.replace('synthetic-rotated', 'synthetic-other'), { mode: 0o600 });
+  expect(await readStored(f.store)).toContain('synthetic-rotated');
+  await updateStored(f.store, (saved) => saved.replace('synthetic-rotated', 'synthetic-other'));
   const count = f.provider.calls.length;
   expect(await f.client.keepAlive()).toEqual({ status: 'signInRequired' });
   expect(await f.client.keepAlive()).toEqual({ status: 'skipped' });
@@ -1981,7 +2045,11 @@ async function runtimeProbe(body: string) {
   const child = Bun.spawn({
     cmd: [process.execPath, '-e', script],
     cwd: new URL('..', import.meta.url).pathname,
-    env: { ...process.env, INNA_SESSION_FILE: join(directory, 'session.json') },
+    env: {
+      ...process.env,
+      INNA_SESSION_FILE: join(directory, 'session.json'),
+      ...storeEnvironment(join(directory, 'store')),
+    },
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -2157,7 +2225,11 @@ test('the keep-alive opt-out is a serve flag only', async () => {
 
     const child = Bun.spawn({
       cmd: [process.execPath, join(import.meta.dir, '../src/cli.ts'), ...args],
-      env: { ...process.env, INNA_SESSION_FILE: join(directory, 'session.json') },
+      env: {
+        ...process.env,
+        INNA_SESSION_FILE: join(directory, 'session.json'),
+        ...storeEnvironment(join(directory, 'store')),
+      },
       stdout: 'pipe',
       stderr: 'pipe',
     });
@@ -2174,4 +2246,487 @@ test('dates and plain text fail safely on malformed inputs', () => {
   expect(plainText('<p>A &amp; B</p><style>hidden</style><script>hidden</script><p>C</p>')).toBe(
     'A & B\n\nC',
   );
+});
+
+const COOKIE_VALUES = [
+  'synthetic-session',
+  'synthetic-xsrf',
+  'synthetic-rotated',
+  'synthetic-kept',
+  'synthetic-planted',
+];
+
+// The owner's own cookie export is the only plaintext copy a test directory may hold.
+async function plaintextCookies(f: { directory: string; source: string }) {
+  return (await filesContaining(COOKIE_VALUES, f.directory)).filter((path) => path !== f.source);
+}
+
+const failing = (code: SessionStoreError['code']): KeyProvider => ({
+  backend: 'encrypted-file',
+  keySource: 'local-file',
+  keyId: 'local',
+  getKey: async () => {
+    throw new SessionStoreError(code, 'synthetic key failure');
+  },
+  createKey: async () => undefined,
+});
+
+const bytes = (path: string) => readFile(path).then(String, () => undefined);
+
+// Everything a store operation could change, the absence record included.
+const storeFiles = (f: { path: string; store: ReturnType<typeof storeAt> }) =>
+  Promise.all(
+    [f.store.path, `${f.store.path}.marker`, f.store.key, f.path, `${f.path}.absence.json`].map(
+      bytes,
+    ),
+  );
+
+async function generation(store: Store) {
+  return Number(
+    /"generation":(\d+)/.exec(await readFile(`${store.path}.marker`, 'utf8'))?.[1] ?? Number.NaN,
+  );
+}
+
+test('the session is saved only encrypted after import, keep-alive, and reads', async () => {
+  const f = await fixture(true);
+  expect(await plaintextCookies(f)).toEqual([]);
+  expect(await f.client.status()).toMatchObject({
+    authenticated: true,
+    storage: 'Saved in an encrypted file.',
+  });
+  await assert.rejects(stat(f.path), /ENOENT/);
+  expect((await stat(f.store.path)).mode & 0o777).toBe(0o600);
+  expect((await stat(f.store.key)).mode & 0o777).toBe(0o600);
+
+  f.provider.rotation = 'synthetic-kept';
+  expect(await f.client.keepAlive()).toEqual({ status: 'kept' });
+  expect(await readStored(f.store)).toContain('synthetic-kept');
+  await f.client.prepareAbsence(request);
+  await f.client.overview(undefined, SIBLING);
+  expect(await plaintextCookies(f)).toEqual([]);
+  // The absence record stays a plaintext private file beside the legacy session path.
+  expect(JSON.parse((await bytes(`${f.path}.absence.json`)) ?? '')).toMatchObject({
+    state: 'prepared',
+  });
+});
+
+test('auth migrate moves a plaintext session once; later plaintext files are never read', async () => {
+  const f = await fixture(true);
+  const preview = await f.client.prepareAbsence(request);
+  const absence = await bytes(`${f.path}.absence.json`);
+  const legacy = await readStored(f.store);
+  const planted = legacy.replaceAll('synthetic-rotated', 'synthetic-planted');
+  const store = storeAt(join(f.directory, 'unmigrated'));
+  const cookies: string[] = [];
+
+  const client = new InnaClient({
+    ...f.options,
+    store,
+    fetch: (url, options) => {
+      cookies.push(new Headers(options.headers).get('Cookie') ?? '');
+
+      return f.provider.fetch(url, options);
+    },
+  });
+
+  expect(await client.status()).toEqual({ authenticated: false });
+  await assert.rejects(client.migrate(), /^SafeError: No Inna session\./);
+  await assert.rejects(stat(`${store.path}.marker`), /ENOENT/);
+
+  await writeFile(f.path, legacy, { mode: 0o600 });
+  expect(await client.status()).toMatchObject({
+    storage: 'Saved in a plaintext file. Run inna-mcp auth migrate.',
+  });
+  expect((await client.absenceStatus()).operation?.operationId).toBe(preview.operationId);
+  expect(await client.migrate()).toBe('migrated');
+  await assert.rejects(stat(f.path), /ENOENT/);
+  expect(parseSaved(await readStored(store)).account).toEqual(parseSaved(legacy).account);
+  expect(await client.status()).toMatchObject({ storage: 'Saved in an encrypted file.' });
+  expect(await client.migrate()).toBe('already');
+  expect(await plaintextCookies(f)).toEqual([]);
+
+  // A plaintext file planted after the marker exists is removed unread.
+  await writeFile(f.path, planted, { mode: 0o600 });
+  expect(await client.keepAlive()).toEqual({ status: 'kept' });
+  expect((await client.overview()).context.studentId).toBe('2');
+  expect((await client.absenceStatus()).operation?.operationId).toBe(preview.operationId);
+  expect(await bytes(f.path)).toBe(planted);
+  expect(await client.migrate()).toBe('already-removed-legacy');
+  await assert.rejects(stat(f.path), /ENOENT/);
+
+  // Logout keeps the store deciding, so a planted file stays unread and login is still needed.
+  await client.logout();
+  await writeFile(f.path, planted, { mode: 0o600 });
+  const calls = f.provider.calls.length;
+  expect(await client.status()).toEqual({ authenticated: false });
+  expect(await client.keepAlive()).toEqual({ status: 'skipped' });
+  expect(await client.defaultUserId()).toBeUndefined();
+  await assert.rejects(client.overview(), /^SafeError: No Inna session\./);
+  expect(f.provider.calls).toHaveLength(calls);
+  expect(await client.migrate()).toBe('already-removed-legacy');
+  expect(await readStored(store)).toBe('null');
+  expect(cookies.join('\n')).not.toContain('synthetic-planted');
+  expect(cookies.length).toBeGreaterThan(0);
+  expect(await bytes(`${f.path}.absence.json`)).toBe(absence);
+});
+
+test('the CLI migrates a plaintext session, reports where it is saved, and repeats safely', async () => {
+  const f = await fixture();
+  const directory = join(f.directory, 'cli');
+  const path = join(directory, 'session.json');
+  await mkdir(directory);
+  await writeFile(path, await readStored(f.store), { mode: 0o600 });
+  await writeFile(`${path}.absence.json`, 'synthetic absence record', { mode: 0o600 });
+
+  async function run(...args: string[]) {
+    const child = Bun.spawn({
+      cmd: [process.execPath, join(import.meta.dir, '../src/cli.ts'), 'auth', ...args],
+      env: {
+        ...process.env,
+        INNA_SESSION_FILE: path,
+        ...storeEnvironment(join(directory, 'store')),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    return {
+      exit: await child.exited,
+      stdout: await new Response(child.stdout).text(),
+      stderr: await new Response(child.stderr).text(),
+    };
+  }
+
+  expect(await run('migrate')).toEqual({
+    exit: 0,
+    stdout: 'Inna session moved to the encrypted store; the plaintext file was removed.\n',
+    stderr: '',
+  });
+  await assert.rejects(stat(path), /ENOENT/);
+  expect(await filesContaining(COOKIE_VALUES, directory)).toEqual([]);
+  expect(await readStored(storeAt(join(directory, 'store')))).toBe(await readStored(f.store));
+  expect((await run('migrate')).stdout).toBe('Already migrated.\n');
+  await writeFile(path, 'not a session', { mode: 0o600 });
+  expect((await run('migrate')).stdout).toBe(
+    'Already migrated. Removed the leftover plaintext session file.\n',
+  );
+  expect(await run('logout')).toMatchObject({ exit: 0, stderr: '' });
+  expect(await run('status')).toEqual({ exit: 0, stdout: 'No saved Inna session.\n', stderr: '' });
+  expect(await bytes(`${path}.absence.json`)).toBe('synthetic absence record');
+});
+
+test('a login or import before migration moves the plaintext session into the store', async () => {
+  const f = await fixture(true);
+  await f.client.prepareAbsence(request);
+  await f.client.overview(undefined, SIBLING);
+  await f.client.overview();
+  const absence = await bytes(`${f.path}.absence.json`);
+  const legacy = await readStored(f.store);
+  const store = storeAt(join(f.directory, 'unmigrated'));
+  const client = new InnaClient({ ...f.options, store });
+  await writeFile(f.path, legacy, { mode: 0o600 });
+
+  // The plaintext session still decides what an import may replace.
+  f.provider.user = { ...f.provider.user, studentId: '99' };
+  await assert.rejects(client.importSession(f.source), /changes the account/);
+  expect(await bytes(f.path)).toBe(legacy);
+  await assert.rejects(stat(`${store.path}.marker`), /ENOENT/);
+  await assert.rejects(stat(store.key), /ENOENT/);
+
+  f.provider.user = { ...f.provider.user, studentId: '2' };
+  expect(await client.importSession(f.source)).toEqual({
+    storage: 'Saved in an encrypted file.',
+    replaced: false,
+  });
+  await assert.rejects(stat(f.path), /ENOENT/);
+  // The students learned before the import are kept, as in a replacement import.
+  expect(Object.keys((await savedFile(store)).students).toSorted()).toEqual(['1', SIBLING]);
+  expect(await plaintextCookies(f)).toEqual([]);
+  expect(await bytes(`${f.path}.absence.json`)).toBe(absence);
+});
+
+test('a jar that cannot be written back removes the record and is never offered again', async () => {
+  const f = await fixture(true);
+  await f.client.prepareAbsence(request);
+  const absence = await bytes(`${f.path}.absence.json`);
+  const uncertain = /^SafeError: The last write to the Inna session store did not complete/;
+  f.provider.rotation = `synthetic-huge-${'x'.repeat(MAX_SESSION_BYTES)}`;
+  await assert.rejects(f.client.overview(), uncertain);
+  f.provider.rotation = 'synthetic-rotated';
+  await assert.rejects(stat(f.store.path), /ENOENT/);
+  await writeFile(f.path, 'planted plaintext session', { mode: 0o600 });
+  const files = await storeFiles(f);
+  const calls = f.provider.calls.length;
+
+  for (const refused of [
+    () => f.client.overview(),
+    () => f.client.status(),
+    () => f.client.absenceStatus(),
+    () => f.client.defaultUserId(),
+    () => f.client.checkStore(),
+    () => f.client.migrate(),
+    () => f.client.logout(),
+    () => f.client.importSession(f.source),
+  ])
+    await assert.rejects(refused(), uncertain);
+  expect(await f.client.keepAlive()).toEqual({ status: 'failed' });
+  expect(f.provider.calls).toHaveLength(calls);
+  expect(await storeFiles(f)).toEqual(files);
+  expect(await bytes(`${f.path}.absence.json`)).toBe(absence);
+});
+
+const storeOperations = (client: InnaClient) => [
+  () => client.overview(),
+  () => client.status(),
+  () => client.absenceStatus(),
+  () => client.migrate(),
+  () => client.logout(),
+];
+
+test('store failures are fixed messages or a keep-alive status; only a login or import replaces a lost key', async () => {
+  const f = await fixture(true);
+  await f.client.prepareAbsence(request);
+  await writeFile(f.path, 'planted plaintext session', { mode: 0o600 });
+  const files = await storeFiles(f);
+  const calls = f.provider.calls.length;
+
+  for (const [code, message] of [
+    ['STORE_LOCKED', 'Unlock your login keychain and try again.'],
+    ['STORE_ACCESS_DENIED', 'Access to the Inna store key was denied.'],
+    ['STORE_TIMEOUT', 'The login keychain did not answer in time. Try again.'],
+    ['STORE_ERROR', 'Cannot use the Inna session store.'],
+    ['IO', 'Cannot access the private Inna files.'],
+  ] as const) {
+    const client = new InnaClient({
+      ...f.options,
+      store: { path: f.store.path, keys: failing(code) },
+    });
+
+    for (const refused of [
+      ...storeOperations(client),
+      () => client.defaultUserId(),
+      () => client.checkStore(),
+      () => client.importSession(f.source),
+    ]) {
+      await assert.rejects(refused(), (error: Error) => {
+        assert(error instanceof SafeError);
+        expect(error.message).toStartWith(message);
+        expect(error.message).not.toContain(f.directory);
+        expect(error.message).not.toContain('synthetic');
+
+        return true;
+      });
+    }
+
+    expect(await client.keepAlive()).toEqual({ status: 'failed' });
+  }
+
+  // A lost key refuses everything except the explicit sign-in that replaces the store.
+  await rm(f.store.key);
+
+  for (const refused of storeOperations(f.client))
+    await assert.rejects(
+      refused(),
+      /^SafeError: The Inna store key is missing\. Run inna-mcp auth/,
+    );
+  expect(await f.client.keepAlive()).toEqual({ status: 'failed' });
+  expect(await f.client.defaultUserId()).toBeUndefined();
+  await f.client.checkStore();
+  expect(f.provider.calls).toHaveLength(calls);
+  expect(await storeFiles(f)).toEqual([files[0], files[1], undefined, files[3], files[4]]);
+
+  // A failed sign-in replaces nothing either.
+  f.provider.unauthorized = true;
+  await assert.rejects(f.client.importSession(f.source), /sign-in is required/);
+  f.provider.unauthorized = false;
+  expect(await storeFiles(f)).toEqual([files[0], files[1], undefined, files[3], files[4]]);
+
+  expect(await f.client.importSession(f.source)).toEqual({
+    storage: 'Saved in an encrypted file.',
+    replaced: true,
+  });
+  expect((await f.client.status()).authenticated).toBe(true);
+  expect(await bytes(f.path)).toBe('planted plaintext session');
+  expect(await bytes(`${f.path}.absence.json`)).toBe(files[4]);
+  expect(await plaintextCookies(f)).toEqual([]);
+});
+
+test('a store with a marker but no record never reads the plaintext file, and migrate resumes', async () => {
+  const f = await fixture();
+  const legacy = await readStored(f.store);
+  // A sign-in that replaced a lost key's store and died before writing the new record.
+  await rm(f.store.key);
+  await resetStored(f.store);
+  await writeFile(f.path, legacy, { mode: 0o600 });
+  const calls = f.provider.calls.length;
+  expect(await f.client.status()).toEqual({ authenticated: false });
+  expect(await f.client.keepAlive()).toEqual({ status: 'skipped' });
+  await assert.rejects(f.client.overview(), /^SafeError: No Inna session\./);
+  expect(f.provider.calls).toHaveLength(calls);
+  expect(await bytes(f.path)).toBe(legacy);
+  expect(await f.client.migrate()).toBe('migrated');
+  await assert.rejects(stat(f.path), /ENOENT/);
+  expect((await f.client.overview()).context.studentId).toBe('2');
+});
+
+test('a record without its marker is uncertain, not a reason to read the plaintext file', async () => {
+  const f = await fixture();
+  const legacy = await readStored(f.store);
+  await rm(`${f.store.path}.marker`);
+  await writeFile(f.path, legacy, { mode: 0o600 });
+  const files = await storeFiles(f);
+  const calls = f.provider.calls.length;
+
+  for (const refused of [...storeOperations(f.client), () => f.client.importSession(f.source)])
+    await assert.rejects(refused(), /^SafeError: The last write to the Inna session store/);
+  expect(await f.client.keepAlive()).toEqual({ status: 'failed' });
+  expect(f.provider.calls).toHaveLength(calls);
+  expect(await storeFiles(f)).toEqual(files);
+});
+
+test('a session path that overlaps the store, its key, or their namespaces is refused untouched', async () => {
+  const f = await fixture(true);
+  await f.client.prepareAbsence(request);
+  const files = await storeFiles(f);
+  const link = join(f.directory, 'link');
+  await symlink(join(f.directory, 'store'), link);
+  const elsewhere = new LocalKeyFileProvider({ path: join(f.directory, 'elsewhere', 'key') });
+
+  const aliases: Pick<
+    ConstructorParameters<typeof InnaClient>[0] & object,
+    'sessionFile' | 'store'
+  >[] = [
+    { sessionFile: f.store.path },
+    { sessionFile: `${f.store.path}.marker` },
+    { sessionFile: `${f.store.path}.lock` },
+    { sessionFile: f.store.key },
+    { sessionFile: join(`${f.store.path}.lock`, 'session.json') },
+    { sessionFile: join(link, 'config', 'inna-mcp', 'session.enc') },
+    { sessionFile: f.store.path.replace(/\.enc$/, '') },
+    { store: { path: `${f.path}.absence.json`, keys: elsewhere } },
+    { store: { path: `${f.path}.lock`, keys: elsewhere } },
+    { store: { path: join(`${f.path}.absence.json.lock`, 'session.enc'), keys: elsewhere } },
+    { store: { path: f.store.path, keys: new LocalKeyFileProvider({ path: f.path }) } },
+    {
+      store: {
+        path: f.store.path,
+        keys: new LocalKeyFileProvider({ path: `${f.path}.absence.json` }),
+      },
+    },
+  ];
+
+  for (const alias of aliases) {
+    const client = new InnaClient({ ...f.options, ...alias });
+
+    for (const refused of [
+      () => client.overview(),
+      () => client.status(),
+      () => client.absenceStatus(),
+      () => client.defaultUserId(),
+      () => client.checkStore(),
+      () => client.importSession(f.source),
+      () => client.migrate(),
+      () => client.logout(),
+    ])
+      await assert.rejects(
+        refused(),
+        /^SafeError: INNA_SESSION_FILE overlaps the encrypted Inna session store or its key\. Choose another path\.$/,
+      );
+    expect(await client.keepAlive()).toEqual({ status: 'failed' });
+    expect(await storeFiles(f)).toEqual(files);
+  }
+
+  expect((await readdir(join(f.directory, 'store', 'config', 'inna-mcp'))).toSorted()).toEqual([
+    'session.enc',
+    'session.enc.marker',
+  ]);
+  await assert.rejects(stat(join(f.directory, 'elsewhere')), /ENOENT/);
+  expect((await f.client.absenceStatus()).operation?.state).toBe('prepared');
+});
+
+const digits = (index: number) => String(index).padStart(32, '9');
+
+test('the record limit is exactly the largest session the schema accepts', async () => {
+  const f = await fixture();
+  const control = '\u0001';
+
+  const worst = savedSchema.parse({
+    version: 2,
+    jar: control.repeat(MAX_SESSION_BYTES),
+    account: { userId: Number.MAX_SAFE_INTEGER, studentId: digits(0), schoolId: digits(0) },
+    students: Object.fromEntries(
+      Array.from({ length: 64 }, (_, index) => [
+        digits(index),
+        {
+          userId: Number.MAX_SAFE_INTEGER,
+          studentId: digits(index),
+          schoolId: digits(index),
+          studentName: control.repeat(1000),
+        },
+      ]),
+    ),
+    pauseUntil: -Number.MAX_VALUE,
+  });
+
+  const text = JSON.stringify(worst);
+  expect(Buffer.byteLength(text)).toBe(RECORD_MAX_BYTES);
+  await updateStored(f.store, () => text);
+  expect(await readStored(f.store)).toBe(text);
+  expect(
+    savedSchema.safeParse({ ...worst, students: { ...worst.students, 1: worst.account } }).success,
+  ).toBe(false);
+  expect(savedSchema.safeParse({ ...worst, jar: `${worst.jar}x` }).success).toBe(false);
+});
+
+test('clients sharing one store are serialized, and logout waits for a request in flight', async () => {
+  const f = await fixture();
+  let active = 0;
+  let maximum = 0;
+  const gate = Promise.withResolvers<void>();
+  let hold = false;
+
+  const options = {
+    ...f.options,
+    fetch: async (url: string, init: RequestInit) => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+
+      try {
+        if (hold) await gate.promise;
+        else await new Promise((resolve) => setTimeout(resolve, 2));
+
+        return await f.provider.fetch(url, init);
+      } finally {
+        active -= 1;
+      }
+    },
+  };
+
+  const clients = [new InnaClient(options), new InnaClient(options), new InnaClient(options)];
+  const before = await generation(f.store);
+
+  await Promise.all(
+    clients.flatMap((client) => [client.overview(), client.keepAlive(), client.listStudents()]),
+  );
+  expect(maximum).toBe(1);
+  // Each of the nine operations wrote its jar back once, in its own hold.
+  expect(await generation(f.store)).toBe(before + 9);
+
+  hold = true;
+  const reading = clients[0]?.keepAlive();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  let loggedOut = false;
+
+  const logout = (async () => {
+    await clients[1]?.logout();
+    loggedOut = true;
+  })();
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(loggedOut).toBe(false);
+  gate.resolve();
+  expect(await reading).toEqual({ status: 'kept' });
+  await logout;
+  expect(await readStored(f.store)).toBe('null');
+  expect(maximum).toBe(1);
 });

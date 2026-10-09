@@ -1,23 +1,48 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { unlink } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
+import { lstat, realpath, rm } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { Cookie, CookieJar } from 'tough-cookie';
 import { z } from 'zod';
 import { SafeError, readBody } from '@family-mcp/mcp-runtime';
 import {
+  LocalKeyFileProvider,
+  defaultKeyProvider,
+  defaultSecretRecordPath,
   defaultSessionPath,
   readPrivateFile,
   writePrivateFile,
   withFileLock,
+  withSecretStore,
   SessionStoreError,
   sweepTemp,
+  type KeyProvider,
+  type SecretRecordOptions,
+  type SecretStore,
 } from '@family-mcp/session-store';
 import * as schemas from './schemas.js';
 import { normalizeDate, parseDates } from './dates.js';
 
 export const ORIGIN = 'https://nam.inna.is';
 
-const MAX_SESSION_BYTES = 262_144;
+export const MAX_SESSION_BYTES = 262_144;
+
+const MAX_STUDENTS = 64;
+
+const MAX_NAME_LENGTH = 256;
+
+// A string character is at most six bytes of JSON (an escaped control character or surrogate).
+const BINDING_BYTES = '{"userId":,"studentId":"","schoolId":""}'.length + 16 + 32 + 32;
+
+const STUDENT_BYTES =
+  '"":,'.length + 32 + BINDING_BYTES + ',"studentName":""'.length + 6 * MAX_NAME_LENGTH;
+
+/** The largest JSON the saved-session schema can produce, so a valid session always fits. */
+export const RECORD_MAX_BYTES =
+  '{"version":2,"jar":"","account":,"students":{},"pauseUntil":}'.length +
+  6 * MAX_SESSION_BYTES +
+  BINDING_BYTES +
+  (MAX_STUDENTS * STUDENT_BYTES - 1) +
+  24;
 
 export const cookieNames = new Set(['SESSION', 'JSESSIONID', 'XSRF-TOKEN']);
 
@@ -54,15 +79,193 @@ function noPreview(): SafeError {
 }
 
 // Version 1 files hold one binding; they are read as version 2 without learned students.
-const savedSchema = z.object({
+export const savedSchema = z.object({
   version: z.union([z.literal(1), z.literal(2)]),
   jar: z.string().max(MAX_SESSION_BYTES),
   account: schemas.bindingSchema,
-  students: z.record(schemas.id, schemas.learnedStudentSchema).default({}),
+  students: z
+    .record(
+      schemas.id,
+      schemas.learnedStudentSchema.extend({
+        studentName: z.string().transform((name) => name.slice(0, MAX_NAME_LENGTH)),
+      }),
+    )
+    .refine((students) => Object.keys(students).length <= MAX_STUDENTS)
+    .default({}),
   pauseUntil: z.number().default(0),
 });
 
 type Saved = z.infer<typeof savedSchema>;
+
+/** The store record's plaintext: the saved session, or null after logout. */
+const encode = (saved: Saved | null) => JSON.stringify(saved && savedSchema.parse(saved));
+
+function uncertain(): SafeError {
+  return new SafeError(
+    'The last write to the Inna session store did not complete, so its session is not used. Remove the Inna secret store files and run inna-mcp auth login again.',
+  );
+}
+
+/** Fixed messages: a store failure never shows a path, key or cookie, and never falls back. */
+function storeError(error: SessionStoreError): SafeError {
+  switch (error.code) {
+    case 'STORE_LOCKED':
+      return new SafeError('Unlock your login keychain and try again.');
+    case 'STORE_ACCESS_DENIED':
+      return new SafeError(
+        'Access to the Inna store key was denied. Allow inna-mcp to use the login keychain and try again.',
+      );
+    case 'STORE_TIMEOUT':
+      return new SafeError('The login keychain did not answer in time. Try again.');
+    case 'STORE_UNAVAILABLE':
+      return new SafeError(
+        'The Inna store key is missing. Run inna-mcp auth login or auth import to sign in again.',
+      );
+    case 'STORE_WRITE_UNCERTAIN':
+      return uncertain();
+    case 'STORE_ERROR':
+      return new SafeError(
+        'Cannot use the Inna session store. Its files or key are damaged, unsafe, or not readable.',
+      );
+    default:
+      return new SafeError(
+        'Cannot access the private Inna files. Check permissions or wait for another operation.',
+      );
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+
+    return true;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
+    throw new SafeError('Cannot inspect the private Inna files. Check their permissions.');
+  }
+}
+
+function storageName(keys: KeyProvider): string {
+  return keys.keySource === 'keychain-accessor'
+    ? 'Saved in an encrypted file whose key is in the macOS Keychain.'
+    : 'Saved in an encrypted file.';
+}
+
+/** True when the key is missing; any other key failure is thrown. */
+async function keyLost(record: SecretRecordOptions): Promise<boolean> {
+  try {
+    await record.keys.getKey(record.signal);
+
+    return false;
+  } catch (error) {
+    if (error instanceof SessionStoreError && error.code === 'STORE_UNAVAILABLE') return true;
+    throw error;
+  }
+}
+
+/** The committed record: a session, null after logout, or undefined while the store holds none. */
+async function stored(store: SecretStore): Promise<Saved | null | undefined> {
+  const text = await store.read();
+
+  if (text === null) return undefined;
+
+  try {
+    const saved = savedSchema.nullable().parse(JSON.parse(text));
+
+    return saved && { ...saved, version: 2 };
+  } catch {
+    throw new SafeError(
+      'Invalid Inna session store record. Run inna-mcp auth login or auth import again.',
+    );
+  }
+}
+
+/** The legacy session file is a credential; remove it and its orphaned temporaries, never the absence record. */
+async function removeLegacy(path: string): Promise<boolean> {
+  try {
+    const found = await exists(path);
+    await rm(path, { force: true });
+    await sweepTemp(path);
+
+    return found;
+  } catch {
+    throw new SafeError(
+      'Cannot remove the old plaintext Inna session file. Any encrypted-store change already completed; remove that file by hand.',
+    );
+  }
+}
+
+/** Resolve symbolic links in the longest existing prefix, so aliases compare equal. */
+async function canonical(path: string): Promise<string> {
+  let existing = resolve(path);
+  const rest: string[] = [];
+
+  for (;;) {
+    try {
+      return join(await realpath(existing), ...rest);
+    } catch (error) {
+      const parent = dirname(existing);
+
+      if (
+        parent === existing ||
+        !(error instanceof Error && 'code' in error && error.code === 'ENOENT')
+      )
+        throw new SafeError('Cannot resolve the Inna session paths. Check their permissions.');
+      rest.unshift(basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+/** Same file, or one name is the other's `<name>.` namespace (lock, marker, temporaries) beside it. */
+function overlaps(first: string, second: string): boolean {
+  const [a, b] = [basename(first), basename(second)];
+
+  return (
+    dirname(first) === dirname(second) &&
+    (a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`))
+  );
+}
+
+/** The path and every directory above it, short of the root. */
+const lineage = (path: string): string[] =>
+  dirname(path) === path ? [] : [path, ...lineage(dirname(path))];
+
+/**
+ * The legacy file is locked, swept and removed, and the store can be reset, so neither the legacy
+ * file nor its absence record may hold, or sit inside a directory of, the record or the key file,
+ * or the reverse. Checked before anything is touched.
+ */
+async function rejectCollisions(record: SecretRecordOptions, legacy: string): Promise<void> {
+  const files = [await canonical(legacy), await canonical(`${legacy}.absence.json`)];
+  const owned = [await canonical(record.path)];
+
+  if (record.keys instanceof LocalKeyFileProvider) owned.push(await canonical(record.keys.path));
+
+  if (
+    files.some((file) =>
+      owned.some(
+        (path) =>
+          lineage(file).some((up) => overlaps(up, path)) ||
+          lineage(path).some((up) => overlaps(file, up)),
+      ),
+    )
+  )
+    throw new SafeError(
+      'INNA_SESSION_FILE overlaps the encrypted Inna session store or its key. Choose another path.',
+    );
+}
+
+/** One hold of the legacy lock and the store lock: where the session is, and how to save it there. */
+type Held = {
+  store: SecretStore;
+  record: SecretRecordOptions;
+  /** A marker, or even a lone record, means the store decides; the legacy file is never read. */
+  decides: boolean;
+  storage: string;
+  read(): Promise<Saved | undefined>;
+  write(saved: Saved): Promise<void>;
+};
 
 const jarSchema = z.object({
   cookies: z.array(z.object({ key: z.string(), value: z.string().default('') })),
@@ -234,6 +437,9 @@ function learn(
     throw new SafeError(
       'Inna returned a student already saved under another studentKey. The result was discarded.',
     );
+
+  if (Object.keys(saved.students).length >= MAX_STUDENTS)
+    throw new SafeError('This Inna session has too many saved students. Sign in again.');
   const learned = schemas.learnedStudentSchema.parse(user);
   saved.students[key] = learned;
 
@@ -508,13 +714,21 @@ async function select(
 }
 
 export type ClientOptions = {
+  /** The pre-store plaintext session file; the absence record keeps its path beside it. */
   sessionFile?: string;
+  /** Test seam: the default is the platform record path and the macOS Keychain or a Linux key file. */
+  store?: { path: string; keys: KeyProvider };
   fetch?: Fetch;
   now?: () => number;
   allowAbsenceWrites?: boolean;
 };
 
 export type KeepAlive = { status: 'kept' | 'skipped' | 'signInRequired' | 'failed' };
+
+export type MigrateResult = 'migrated' | 'already' | 'already-removed-legacy';
+
+/** Where the session was saved, and whether a store whose key was lost was replaced for it. */
+export type SavedSession = { storage: string; replaced: boolean };
 
 export class InnaClient {
   readonly path: string;
@@ -523,6 +737,7 @@ export class InnaClient {
   private readonly fetcher: Fetch;
   private readonly now: () => number;
   private readonly allowAbsenceWrites: boolean;
+  private readonly store: ClientOptions['store'];
 
   constructor(options: ClientOptions = {}) {
     this.path = options.sessionFile ?? sessionPath();
@@ -531,21 +746,53 @@ export class InnaClient {
     this.fetcher = options.fetch ?? globalThis.fetch;
     this.now = options.now ?? Date.now;
     this.allowAbsenceWrites = options.allowAbsenceWrites ?? false;
+    this.store = options.store;
   }
 
-  private async locked<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  /**
+   * Every operation holds the legacy file's lock, which also guards the absence record, and the
+   * store's lock inside it: always in that order, and never taken again within the hold.
+   */
+  private async locked<T>(work: (held: Held) => Promise<T>, signal?: AbortSignal): Promise<T> {
     try {
+      const record: SecretRecordOptions = {
+        path: this.store?.path ?? defaultSecretRecordPath('inna-mcp'),
+        server: 'inna-mcp',
+        profile: 'default',
+        purpose: 'session',
+        schema: 1,
+        maxBytes: RECORD_MAX_BYTES,
+        keys: this.store?.keys ?? defaultKeyProvider({ server: 'inna-mcp', profile: 'default' }),
+        signal,
+      };
+
+      await rejectCollisions(record, this.path);
+
       return await withFileLock(this.path, { signal }, async () => {
         await sweepTemp(this.path);
         await sweepTemp(`${this.path}.absence.json`);
 
-        return work();
+        return withSecretStore(record, async (store) => {
+          const decides = (await store.exists()) || (await exists(record.path));
+
+          return work({
+            store,
+            record,
+            decides,
+            storage: decides
+              ? storageName(record.keys)
+              : 'Saved in a plaintext file. Run inna-mcp auth migrate.',
+            read: async () =>
+              decides ? ((await stored(store)) ?? undefined) : readSaved(this.path),
+            write: (saved) =>
+              decides
+                ? store.write(encode(saved))
+                : writePrivateFile(this.path, JSON.stringify(saved)),
+          });
+        });
       });
     } catch (error) {
-      if (error instanceof SessionStoreError)
-        throw new SafeError(
-          'Cannot access the private Inna files. Check permissions or wait for another operation.',
-        );
+      if (error instanceof SessionStoreError) throw storeError(error);
       throw error;
     }
   }
@@ -558,20 +805,21 @@ export class InnaClient {
     work: (connection: Connection, saved: Saved) => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
-    return this.locked(async () => {
-      const saved = await readSaved(this.path);
+    return this.locked(async (held) => {
+      const saved = await held.read();
 
       if (!saved)
         throw new SafeError(
           'No Inna session. Run inna-mcp auth login or auth import with a private cookie export.',
         );
 
-      return this.persisting(saved, work, signal);
+      return this.persisting(held, saved, work, signal);
     }, signal);
   }
 
   // Runs work on the saved cookies and always writes back the jar and any rate-limit pause.
   private async persisting<T>(
+    held: Held,
     saved: Saved,
     work: (connection: Connection, saved: Saved) => Promise<T>,
     signal?: AbortSignal,
@@ -582,25 +830,39 @@ export class InnaClient {
       return await work(new Connection(jar, saved, this.fetcher, this.now, signal), saved);
     } finally {
       saved.jar = JSON.stringify(await jar.serialize());
-      await writePrivateFile(this.path, JSON.stringify(saved));
+      await this.writeBack(held, saved);
+    }
+  }
+
+  private async writeBack(held: Held, saved: Saved): Promise<void> {
+    try {
+      await held.write(saved);
+    } catch (error) {
+      if (!held.decides) throw error;
+      // Inna may have rotated the cookies, so the record must never offer the old ones again.
+      // Removing it under the held lock reads as STORE_WRITE_UNCERTAIN until the next login.
+      await rm(held.record.path, { force: true }).catch(() => undefined);
+      throw uncertain();
     }
   }
 
   /**
    * Touches the saved session so Inna does not idle it out. Reads no school data, never
-   * switches or learns a student, and reports every failure as a status instead of throwing.
+   * switches or learns a student, and reports every failure, store failures included, as a
+   * status instead of throwing. It never resets the store.
    */
   async keepAlive(signal?: AbortSignal): Promise<KeepAlive> {
     let saved: Saved | undefined;
 
     try {
-      return await this.locked(async () => {
-        saved = await readSaved(this.path);
+      return await this.locked(async (held) => {
+        saved = await held.read();
 
         if (!saved || saved.pauseUntil > this.now() || credentials(saved) === this.refused)
           return { status: 'skipped' };
 
         await this.persisting(
+          held,
           saved,
           async (connection) => {
             await connection.request(USER_ENDPOINT, schemas.userSchema);
@@ -662,28 +924,44 @@ export class InnaClient {
     return this.withStudent(async () => studentKey, work, signal, verifyAfter);
   }
 
-  async importSession(source: string, allowAccountChange = false): Promise<void> {
+  async importSession(source: string, allowAccountChange = false): Promise<SavedSession> {
     if (!isAbsolute(source)) throw new SafeError('The cookie export path must be absolute.');
 
     const input = cookieExportSchema.parse(
       JSON.parse(await readPrivateFile(source, { maxBytes: MAX_SESSION_BYTES })),
     );
 
-    await this.saveVerifiedSession(await sessionJar(input), allowAccountChange);
+    return this.saveVerifiedSession(await sessionJar(input), allowAccountChange);
+  }
+
+  /**
+   * Refuses an unusable session store before the owner signs in, instead of after. A lost key
+   * is not a refusal: the login replaces that store.
+   */
+  async checkStore(): Promise<void> {
+    await this.locked(async (held) => {
+      if (held.decides && !(await keyLost(held.record))) await stored(held.store);
+    });
   }
 
   /** The saved default student's user id, read locally; a fresh login prefers it. */
   async defaultUserId(): Promise<number | undefined> {
-    return this.locked(async () => (await readSaved(this.path))?.account.userId);
+    return this.locked(async (held) =>
+      held.decides && (await keyLost(held.record))
+        ? undefined
+        : (await held.read())?.account.userId,
+    );
   }
 
   async saveVerifiedSession(
     jar: CookieJar,
     allowAccountChange = false,
     signal?: AbortSignal,
-  ): Promise<void> {
-    await this.locked(async () => {
-      const prior = await readSaved(this.path);
+  ): Promise<SavedSession> {
+    return this.locked(async (held) => {
+      // Only this explicit login or import may replace a store whose key is lost.
+      const lost = await keyLost(held.record);
+      const prior = lost && held.decides ? undefined : await held.read();
       const throttle = { pauseUntil: prior?.pauseUntil ?? 0 };
       const connection = new Connection(jar, throttle, this.fetcher, this.now, signal);
       let user: schemas.User;
@@ -693,7 +971,7 @@ export class InnaClient {
       } catch (error) {
         if (prior && throttle.pauseUntil > prior.pauseUntil) {
           prior.pauseUntil = throttle.pauseUntil;
-          await writePrivateFile(this.path, JSON.stringify(prior));
+          await held.write(prior);
         }
 
         throw error;
@@ -729,25 +1007,70 @@ export class InnaClient {
         candidate.students[key] = schemas.learnedStudentSchema.parse(user);
       }
 
+      const text = encode(candidate);
       signal?.throwIfAborted();
-      await writePrivateFile(this.path, JSON.stringify(candidate));
+
+      if (lost) {
+        if (held.decides) await held.store.reset();
+        await held.store.createKey();
+      }
+
+      await held.store.write(text);
+
+      // The store decides from here on, so the plaintext file would never be read again.
+      if (!held.decides) await removeLegacy(this.path);
+
+      return { storage: storageName(held.record.keys), replaced: lost && held.decides };
     }, signal);
   }
 
-  async logout(): Promise<void> {
-    await this.locked(async () => {
-      const saved = await readSaved(this.path);
+  /**
+   * Move the legacy session into the store, which reads it back before it commits; only then
+   * does the plaintext file go. A store with a marker but no record (an interrupted first write
+   * or reset) takes the explicit migration. Never resets a store, never touches the absence record.
+   */
+  async migrate(): Promise<MigrateResult> {
+    return this.locked(async (held) => {
+      if (held.decides && (await stored(held.store)) !== undefined)
+        return (await removeLegacy(this.path)) ? 'already-removed-legacy' : 'already';
+      const legacy = await readSaved(this.path);
 
-      if (saved) await unlink(this.path);
+      if (!legacy)
+        throw new SafeError(
+          'No Inna session. Run inna-mcp auth login or auth import with a private cookie export.',
+        );
+      const text = encode(legacy);
+
+      // A store that decides was just read, so a missing key here belongs to a store never used.
+      if (await keyLost(held.record)) await held.store.createKey();
+
+      await held.store.write(text);
+      await removeLegacy(this.path);
+
+      return 'migrated';
+    });
+  }
+
+  async logout(): Promise<void> {
+    await this.locked(async (held) => {
+      // A logged-out record keeps the store deciding, so a planted legacy file is never read.
+      if (held.decides) await held.store.write(encode(null));
+      await removeLegacy(this.path);
       // A logout cannot discard evidence of a possibly submitted absence.
     });
   }
 
   async status(signal?: AbortSignal, studentKey?: string) {
-    if (!(await readSaved(this.path))) return { authenticated: false };
+    const storage = await this.locked(
+      async (held) => ((await held.read()) ? held.storage : undefined),
+      signal,
+    );
+
+    if (!storage) return { authenticated: false };
 
     return this.withUser(studentKey, signal, async (_connection, user) => ({
       authenticated: true,
+      storage,
       context: schemas.contextSchema.parse(user),
     }));
   }
