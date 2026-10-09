@@ -852,7 +852,9 @@ name = "kronan-mcp"
 version = "0.2.0"
 dependencies = [
  "family-store",
+ "icu_properties",
  "mcp-runtime",
+ "reqwest",
  "rmcp",
  "serde_json",
  "tokio",

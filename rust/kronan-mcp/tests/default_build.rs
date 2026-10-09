@@ -36,4 +36,16 @@ fn the_default_build_ignores_the_test_variables() {
     for variable in VARIABLES {
         assert!(!mentions(&built, variable));
     }
+    assert!(mentions(&built, b"https://api.kronan.is"));
+}
+
+/// Not vacuous: the search finds the variables in the binary that reads them.
+#[cfg(feature = "test-origin")]
+#[test]
+fn the_test_build_names_the_test_variables() {
+    let built = Path::new(env!("CARGO_BIN_EXE_kronan-mcp"));
+
+    for variable in VARIABLES {
+        assert!(mentions(built, variable));
+    }
 }

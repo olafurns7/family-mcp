@@ -1,11 +1,17 @@
 //! kronan-mcp: the command line of packages/kronan-mcp/src/cli.ts.
 
+mod api;
 mod auth;
 mod error;
+mod input;
+mod js;
 mod server;
+mod shapes;
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
+use crate::api::Client;
 use crate::error::{Fail, Result};
 
 const HELP: &str = "kronan-mcp — unofficial Krónan MCP server (products, shopping note, basket, and confirmed orders)
@@ -100,7 +106,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> std::result::Result<Arg
 
 /// Serve until stdin ends or SIGINT or SIGTERM arrives, then cancel and wait for operations.
 async fn serve() -> Result<()> {
-    mcp_runtime::serve_stdio(server::Kronan)
+    let client = Arc::new(Client::new()?);
+
+    mcp_runtime::serve_stdio(server::Kronan { client })
         .await
         .map_err(|_| Fail::Unknown)
 }

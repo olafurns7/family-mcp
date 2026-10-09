@@ -46,3 +46,13 @@ fn bun_test(file: &str, passed: usize) {
 fn the_startup_cases_pass_against_this_binary() {
     bun_test("startup.test.ts", 1);
 }
+
+#[test]
+fn the_read_integration_cases_pass_against_this_binary() {
+    bun_test("integration.test.ts", 5);
+}
+
+#[test]
+fn the_loopback_case_passes_against_this_binary() {
+    bun_test("loopback.test.ts", 1);
+}
