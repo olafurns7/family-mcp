@@ -4,6 +4,7 @@ import { isAbsolute, join } from 'node:path';
 
 import { SessionStoreError } from './errors.js';
 import { LocalKeyFileProvider, type KeyProvider } from './keys.js';
+import { testSeam } from './seam.js';
 import { checkNames } from './secret.js';
 
 export type SessionPathOptions = {
@@ -22,18 +23,6 @@ export type DefaultKeyProviderOptions = StorePathOptions & {
 };
 
 const APP_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
-/**
- * Test seam only: with `FAMILY_MCP_STORE_TEST_SEAM=1` macOS honours absolute XDG directories like
- * Linux, so a test run keeps its store in scratch directories, and Time Machine exclusion runs
- * only through `FAMILY_MCP_STORE_TEST_TMUTIL`. Production never sets it, so the macOS store
- * cannot be moved into iCloud Drive, Desktop or Documents by an XDG variable.
- */
-export const TEST_SEAM = 'FAMILY_MCP_STORE_TEST_SEAM';
-
-export function testSeam(): boolean {
-  return process.env[TEST_SEAM] === '1';
-}
 
 /** True where the store lives under `~/Library/Application Support/family-mcp`. */
 export function macStore(platform: NodeJS.Platform = process.platform): boolean {
