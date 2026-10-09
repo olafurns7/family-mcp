@@ -59,7 +59,7 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'STORE_BACKEND_RETIRED':
       return new SafeError(
-        'The Krónan token store was set up with the macOS Keychain, which is no longer used. Remove the Krónan secret store files and run kronan-mcp auth set again.',
+        'The Krónan token store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from the Krónan store folder, then run kronan-mcp auth set again.',
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new SafeError(
@@ -150,7 +150,7 @@ async function prepareKey(
   reset: boolean,
 ): Promise<boolean> {
   try {
-    await record.keys.getKey(record.signal);
+    await store.checkKey();
 
     return false;
   } catch (error) {

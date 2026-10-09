@@ -135,7 +135,7 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'STORE_BACKEND_RETIRED':
       return new SafeError(
-        'The Inna session store was set up with the macOS Keychain, which is no longer used. Remove the Inna secret store files and run inna-mcp auth login again.',
+        'The Inna session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from the Inna store folder, then run inna-mcp auth login again.',
       );
     case 'STORE_WRITE_UNCERTAIN':
       return uncertain();
@@ -163,10 +163,10 @@ async function exists(path: string): Promise<boolean> {
 
 const STORAGE = 'Saved in an encrypted file.';
 
-/** True when the key is missing; any other key failure is thrown. */
-async function keyLost(record: SecretRecordOptions): Promise<boolean> {
+/** True when the key is missing; any other key failure, a retired store first, is thrown. */
+async function keyLost(store: SecretStore): Promise<boolean> {
   try {
-    await record.keys.getKey(record.signal);
+    await store.checkKey();
 
     return false;
   } catch (error) {
@@ -955,16 +955,14 @@ export class InnaClient {
    */
   async checkStore(): Promise<void> {
     await this.locked(async (held) => {
-      if (held.decides && !(await keyLost(held.record))) await stored(held.store);
+      if (held.decides && !(await keyLost(held.store))) await stored(held.store);
     });
   }
 
   /** The saved default student's user id, read locally; a fresh login prefers it. */
   async defaultUserId(): Promise<number | undefined> {
     return this.locked(async (held) =>
-      held.decides && (await keyLost(held.record))
-        ? undefined
-        : (await held.read())?.account.userId,
+      held.decides && (await keyLost(held.store)) ? undefined : (await held.read())?.account.userId,
     );
   }
 
@@ -975,7 +973,7 @@ export class InnaClient {
   ): Promise<SavedSession> {
     return this.locked(async (held) => {
       // Only this explicit login or import may replace a store whose key is lost.
-      const lost = await keyLost(held.record);
+      const lost = await keyLost(held.store);
       const prior = lost && held.decides ? undefined : await held.read();
       const throttle = { pauseUntil: prior?.pauseUntil ?? 0 };
       const connection = new Connection(jar, throttle, this.fetcher, this.now, signal);
@@ -1057,7 +1055,7 @@ export class InnaClient {
       const text = encode(legacy);
 
       // A store that decides was just read, so a missing key here belongs to a store never used.
-      if (await keyLost(held.record)) await held.store.createKey();
+      if (await keyLost(held.store)) await held.store.createKey();
 
       await held.store.write(text);
       await removeLegacy(this.path);

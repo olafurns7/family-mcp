@@ -53,6 +53,12 @@ export type SecretStore = {
   createKey(): Promise<void>;
   /** `resetSecretStore`'s recovery. */
   reset(): Promise<void>;
+  /**
+   * Confirm the key is there without reading the record: STORE_BACKEND_RETIRED first for a store
+   * set up through the retired Keychain accessor, then whatever `getKey` throws (STORE_UNAVAILABLE
+   * while the key is missing).
+   */
+  checkKey(): Promise<void>;
 };
 
 type Marker = {
@@ -132,7 +138,7 @@ export async function withSecretStore<T>(
       const open = async () => {
         usable();
         await sweepTemp(options.path);
-        const key = state?.key ?? checkedKey(await options.keys.getKey(options.signal));
+        const key = state?.key ?? (await currentKey(options));
         const { current, marker } = await load(options, key);
         state = { key, marker };
 
@@ -185,6 +191,10 @@ export async function withSecretStore<T>(
           },
           createKey: () => changing(() => createKey(options)),
           reset: () => changing(() => reset(options)),
+          checkKey: async () => {
+            usable();
+            await currentKey(options);
+          },
         });
       } finally {
         ended = new SessionStoreError('STORE_ERROR', 'This secret store hold has ended.');
@@ -339,6 +349,9 @@ async function createKey(options: SecretRecordOptions): Promise<void> {
 }
 
 async function reset(options: SecretRecordOptions): Promise<void> {
+  // A missing key is what that build leaves; its record may still open with the Keychain key.
+  await refuseRetired(options);
+
   if (!(await keyMissing(options)))
     throw new SessionStoreError(
       'STORE_ERROR',
@@ -368,6 +381,32 @@ async function reset(options: SecretRecordOptions): Promise<void> {
   }
 
   await sweepTemp(options.path);
+}
+
+/** The key, after a store of the retired Keychain accessor is refused. */
+async function currentKey(options: SecretRecordOptions): Promise<Uint8Array> {
+  await refuseRetired(options);
+
+  return checkedKey(await options.keys.getKey(options.signal));
+}
+
+/**
+ * STORE_BACKEND_RETIRED when the marker names the retired Keychain accessor, before any key is
+ * asked for. Only the marker's key source is read here; every other marker problem is left to
+ * `readMarker`.
+ */
+async function refuseRetired(options: SecretRecordOptions): Promise<void> {
+  if (options.keys.keySource === RETIRED_KEY_SOURCE) return;
+  let text: string;
+
+  try {
+    text = await readPrivateFile(markerPath(options.path), { maxBytes: MARKER_MAX_BYTES });
+  } catch (error) {
+    if (error instanceof SessionStoreError && error.code === 'NOT_FOUND') return;
+    throw error;
+  }
+
+  if (MARKER_PATTERN.exec(text)?.[2] === RETIRED_KEY_SOURCE) throw retiredBackend();
 }
 
 /** True only for STORE_UNAVAILABLE; a readable key is false and every other failure propagates. */
@@ -606,10 +645,7 @@ async function readMarker(options: SecretRecordOptions): Promise<Marker | null> 
 
   // Set up by an earlier build through security(1), which no server runs any more.
   if (keySource === RETIRED_KEY_SOURCE && keys.keySource !== RETIRED_KEY_SOURCE)
-    throw new SessionStoreError(
-      'STORE_BACKEND_RETIRED',
-      'The secret store was set up with the macOS Keychain, which is no longer used. Remove the store files and sign in again.',
-    );
+    throw retiredBackend();
 
   if (
     backend !== keys.backend ||
@@ -657,6 +693,13 @@ async function exists(path: string): Promise<boolean> {
       cause: error,
     });
   }
+}
+
+function retiredBackend(): SessionStoreError {
+  return new SessionStoreError(
+    'STORE_BACKEND_RETIRED',
+    'This store is a leftover of an earlier test build that kept its key in the macOS Keychain, which is no longer used. Remove session.enc and session.enc.marker from the store folder, then sign in again.',
+  );
 }
 
 function unauthenticated(cause?: unknown): SessionStoreError {

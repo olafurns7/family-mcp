@@ -262,7 +262,7 @@ function storeError(error: SessionStoreError): StoreFailure {
       );
     case 'STORE_BACKEND_RETIRED':
       return new StoreFailure(
-        'The Abler session store was set up with the macOS Keychain, which is no longer used. Remove the Abler secret store files and run abler-mcp auth login again.',
+        'The Abler session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from the Abler store folder, then run abler-mcp auth login again.',
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new StoreFailure(
@@ -366,7 +366,7 @@ async function prepareKey(
   reset: boolean,
 ): Promise<boolean> {
   try {
-    await record.keys.getKey(record.signal);
+    await store.checkKey();
 
     return false;
   } catch (error) {

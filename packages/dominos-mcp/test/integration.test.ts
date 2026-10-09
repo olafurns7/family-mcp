@@ -705,7 +705,7 @@ test('store failures have fixed messages, change no file and never fall back', a
       ['STORE_ACCESS_DENIED', /Access to the Domino’s store key was denied\.$/],
       [
         'STORE_BACKEND_RETIRED',
-        /macOS Keychain, which is no longer used\. .* run dominos-mcp auth login again\.$/,
+        /leftover of an earlier test build .* run dominos-mcp auth login again\.$/,
       ],
       ['STORE_UNAVAILABLE', /store key is missing\. Run dominos-mcp auth login/],
       ['STORE_ERROR', /damaged, unsafe, or not readable/],

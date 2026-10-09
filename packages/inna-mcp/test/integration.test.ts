@@ -2528,7 +2528,7 @@ test('store failures are fixed messages or a keep-alive status; only a login or 
     ['STORE_LOCKED', 'The Inna store key is locked. Unlock it and try again.'],
     ['STORE_ACCESS_DENIED', 'Access to the Inna store key was denied.'],
     ['STORE_TIMEOUT', 'The Inna store key did not answer in time. Try again.'],
-    ['STORE_BACKEND_RETIRED', 'The Inna session store was set up with the macOS Keychain'],
+    ['STORE_BACKEND_RETIRED', 'The Inna session store is a leftover of an earlier test build'],
     ['STORE_ERROR', 'Cannot use the Inna session store.'],
     ['IO', 'Cannot access the private Inna files.'],
   ] as const) {

@@ -868,7 +868,7 @@ test('store key failures fail closed with fixed messages and never fall back or 
           ['STORE_LOCKED', /^The Krónan store key is locked\. Unlock it and try again\.$/],
           [
             'STORE_BACKEND_RETIRED',
-            /macOS Keychain, which is no longer used\. .* run kronan-mcp auth set again\.$/,
+            /leftover of an earlier test build .* run kronan-mcp auth set again\.$/,
           ],
           ['STORE_TIMEOUT', /did not answer in time/],
           ['STORE_ACCESS_DENIED', /was denied/],

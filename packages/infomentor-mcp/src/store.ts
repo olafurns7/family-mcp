@@ -104,7 +104,7 @@ function storeError(error: SessionStoreError): InfoMentorError {
     case 'STORE_BACKEND_RETIRED':
       return new InfoMentorError(
         'INVALID_SESSION',
-        'The InfoMentor session store was set up with the macOS Keychain, which is no longer used. Remove the InfoMentor secret store files and run infomentor-mcp login again.',
+        'The InfoMentor session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from the InfoMentor store folder, then run infomentor-mcp login again.',
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new InfoMentorError(
@@ -217,7 +217,7 @@ async function prepareKey(
   reset: boolean,
 ): Promise<void> {
   try {
-    await record.keys.getKey(record.signal);
+    await store.checkKey();
   } catch (error) {
     if (!(error instanceof SessionStoreError && error.code === 'STORE_UNAVAILABLE')) throw error;
 
