@@ -11,6 +11,7 @@ export type SessionStoreErrorCode =
   | 'STORE_ACCESS_DENIED'
   | 'STORE_TIMEOUT'
   | 'STORE_ERROR'
+  | 'STORE_BACKEND_RETIRED'
   | 'STORE_WRITE_UNCERTAIN'
   | 'SECRET_NOT_FOUND';
 

@@ -1851,7 +1851,7 @@ test('auth migrate moves the plaintext session once, optionally with the sign-in
             HOME: store.home,
             XDG_CONFIG_HOME: process.env['XDG_CONFIG_HOME'],
             XDG_DATA_HOME: process.env['XDG_DATA_HOME'],
-            FAMILY_MCP_KEY_BACKEND: 'file',
+            FAMILY_MCP_STORE_TEST_SEAM: '1',
             INFOMENTOR_SESSION_PATH: file,
           },
           timeout: 10_000,

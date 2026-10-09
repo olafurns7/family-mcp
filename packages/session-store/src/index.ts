@@ -18,13 +18,16 @@ export { DEFAULT_WAIT_MS, withFileLock } from './lock.js';
 
 export type { LockOptions } from './lock.js';
 
-export { defaultKeyProvider, defaultSecretRecordPath, defaultSessionPath } from './paths.js';
+export {
+  TEST_SEAM,
+  defaultKeyProvider,
+  defaultSecretRecordPath,
+  defaultSessionPath,
+  retiredStorePaths,
+  testSeam,
+} from './paths.js';
 
-export type { DefaultKeyProviderOptions, SessionPathOptions } from './paths.js';
-
-export { KeychainAccessorKeyProvider } from './keychain.js';
-
-export type { KeychainAccessorOptions } from './keychain.js';
+export type { DefaultKeyProviderOptions, SessionPathOptions, StorePathOptions } from './paths.js';
 
 export { FakeKeyProvider, KEY_BYTES, LocalKeyFileProvider } from './keys.js';
 
@@ -32,6 +35,7 @@ export type { KeyProvider, LocalKeyFileOptions } from './keys.js';
 
 export {
   createSecretKey,
+  existingPaths,
   readSecretRecord,
   resetSecretStore,
   secretStoreExists,
