@@ -25,7 +25,7 @@ export {
   retiredStorePaths,
 } from './paths.js';
 
-export { TEST_SEAM, TEST_TMUTIL, testSeam } from './seam.js';
+export { TEST_LS, TEST_SEAM, TEST_TMUTIL, testSeam } from './seam.js';
 
 export type { DefaultKeyProviderOptions, SessionPathOptions, StorePathOptions } from './paths.js';
 
@@ -47,3 +47,7 @@ export {
 export type { SecretRecordOptions, SecretStore, SecretUpdate, StoreCheck } from './secret.js';
 
 export { StoreRefusal } from './storage.js';
+
+export { startupCheck } from './startup.js';
+
+export type { StartupCheckOptions } from './startup.js';

@@ -7,7 +7,7 @@ import { importSession, login } from './login.js';
 import { InfoMentorClient } from './client.js';
 import { createServer, packageInfo, type ServerOptions } from './server.js';
 import { InfoMentorError, sessionPath } from './session.js';
-import { deleteCredentialsAdvice, migrate } from './store.js';
+import { checkStoreAtStartup, deleteCredentialsAdvice, migrate } from './store.js';
 
 const help = [
   'Usage: infomentor-mcp [auth] [command] [options]',
@@ -15,7 +15,7 @@ const help = [
   'Commands:',
   '  login              Sign in over HTTPS using privately injected secrets or a credentials file;',
   '                     the session and that sign-in are saved in the encrypted store',
-  '  status             Verify the saved session and show where it is stored',
+  '  status             Verify the saved session and show how it is stored',
   '  migrate            Move a session saved by an older version out of its plaintext file;',
   '                     with --credentials, also store that sign-in for automatic renewal',
   '  logout             Delete the local session and stored sign-in (does not revoke it on',
@@ -41,8 +41,9 @@ const help = [
   'Environment: INFOMENTOR_SESSION_PATH, INFOMENTOR_CREDENTIALS_FILE,',
   '             INFOMENTOR_USERNAME (kennitala or username), INFOMENTOR_PASSWORD',
   '',
-  'The session and the stored sign-in live in ~/.config/infomentor-mcp/session.enc, encrypted',
-  'with a key kept in the macOS Keychain or in ~/.local/share/family-mcp/keys on Linux.',
+  'The session and the stored sign-in are saved encrypted, with the key in a separate private',
+  'file: ~/Library/Application Support/family-mcp on macOS; ~/.config/infomentor-mcp with the key',
+  'in ~/.local/share/family-mcp/keys on Linux.',
 ].join('\n');
 
 const stdout = (message: string): void => {
@@ -95,6 +96,13 @@ async function main(): Promise<void> {
 
   if (values.version) {
     stdout(packageInfo.version);
+
+    return;
+  }
+
+  // The store is checked before anything serves or touches it; help and version never do.
+  if (!(await checkStoreAtStartup())) {
+    process.exitCode = 1;
 
     return;
   }

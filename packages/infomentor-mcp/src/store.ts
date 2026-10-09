@@ -1,11 +1,13 @@
 import { lstat, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
-  LocalKeyFileProvider,
-  SessionStoreError,
   defaultKeyProvider,
   defaultSecretRecordPath,
+  LocalKeyFileProvider,
   readPrivateFile,
+  retiredStorePaths,
+  SessionStoreError,
+  startupCheck,
   sweepTemp,
   withSecretStore,
   type KeyProvider,
@@ -79,30 +81,20 @@ export const deleteCredentialsAdvice = (file: string): string =>
 /** Fixed messages: a store failure never shows a path, key or secret, and never falls back. */
 function storeError(error: SessionStoreError): InfoMentorError {
   switch (error.code) {
-    case 'STORE_LOCKED':
-      return new InfoMentorError(
-        'INVALID_CONFIGURATION',
-        'Unlock your login keychain and try again.',
-      );
-    case 'STORE_ACCESS_DENIED':
-      return new InfoMentorError(
-        'INVALID_CONFIGURATION',
-        'Access to the InfoMentor store key was denied. Allow infomentor-mcp to use the login keychain and try again.',
-      );
-    case 'STORE_TIMEOUT':
-      return new InfoMentorError(
-        'INVALID_CONFIGURATION',
-        'The login keychain did not answer in time. Try again.',
-      );
     case 'STORE_UNAVAILABLE':
       return new InfoMentorError(
         'INVALID_SESSION',
         'The InfoMentor store key is missing. Run infomentor-mcp login to sign in again.',
       );
+    case 'STORE_BACKEND_RETIRED':
+      return new InfoMentorError(
+        'INVALID_SESSION',
+        'The InfoMentor session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from ~/Library/Application Support/family-mcp/infomentor-mcp, then run infomentor-mcp login again.',
+      );
     case 'STORE_WRITE_UNCERTAIN':
       return new InfoMentorError(
         'INVALID_SESSION',
-        'The last write to the InfoMentor session store did not complete, so its session is not used. Remove the InfoMentor secret store files and run infomentor-mcp login again.',
+        'The last write to the InfoMentor session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the InfoMentor store folder (~/Library/Application Support/family-mcp/infomentor-mcp on macOS, ~/.config/infomentor-mcp on Linux by default), then run infomentor-mcp login again.',
       );
     case 'BUSY':
       return new InfoMentorError(
@@ -124,6 +116,11 @@ function storeError(error: SessionStoreError): InfoMentorError {
         'INVALID_SESSION',
         'The InfoMentor session is larger than the store allows. Run infomentor-mcp login again.',
       );
+    case 'UNSAFE_FILE':
+      return new InfoMentorError(
+        'INVALID_CONFIGURATION',
+        'Cannot use the InfoMentor session store. Run infomentor-mcp status in a terminal; it shows what is wrong and where. Do not delete the store first.',
+      );
     default:
       return new InfoMentorError(
         'INVALID_SESSION',
@@ -142,7 +139,7 @@ async function guarded<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-/** `keys` is a test seam; the default is the macOS Keychain or a Linux key file. */
+/** `keys` is a test seam; the default is the store's key file. */
 function sessionRecord(keys?: KeyProvider, signal?: AbortSignal): SecretRecordOptions {
   return {
     path: defaultSecretRecordPath('infomentor-mcp'),
@@ -152,6 +149,7 @@ function sessionRecord(keys?: KeyProvider, signal?: AbortSignal): SecretRecordOp
     schema: 1,
     maxBytes: RECORD_MAX_BYTES,
     keys: keys ?? defaultKeyProvider({ server: 'infomentor-mcp', profile: 'default' }),
+    retired: retiredStorePaths('infomentor-mcp'),
     signal,
   };
 }
@@ -200,11 +198,7 @@ async function storeDecides(store: SecretStore, record: SecretRecordOptions): Pr
   return (await store.exists()) || (await exists(record.path));
 }
 
-function storageName(keys: KeyProvider): string {
-  return keys.keySource === 'keychain-accessor'
-    ? 'an encrypted file whose key is in the macOS Keychain'
-    : 'an encrypted file';
-}
+const STORAGE = 'an encrypted file';
 
 /** Create the key when it is missing; only an explicit login or import may reset a lost key's store. */
 async function prepareKey(
@@ -213,7 +207,7 @@ async function prepareKey(
   reset: boolean,
 ): Promise<void> {
   try {
-    await record.keys.getKey(record.signal);
+    await store.checkKey();
   } catch (error) {
     if (!(error instanceof SessionStoreError && error.code === 'STORE_UNAVAILABLE')) throw error;
 
@@ -397,7 +391,7 @@ export function withSession<T>(
       return work({
         session,
         credentials: stored.credentials,
-        storage: `Saved in ${storageName(record.keys)}. ${
+        storage: `Saved in ${STORAGE}. ${
           stored.credentials
             ? 'Your InfoMentor sign-in is stored there for automatic renewal.'
             : 'No InfoMentor sign-in is stored for automatic renewal.'
@@ -502,5 +496,17 @@ export function logout(legacy: string, keys?: KeyProvider): Promise<void> {
   return changeSession(legacy, keys, undefined, async (store, record) => {
     if (await storeDecides(store, record)) await store.write(encodeRecord(LOGGED_OUT));
     await removeLegacy(legacy, true);
+  });
+}
+
+/**
+ * The CLI's store preflight before it serves or runs an auth command: false, after one stderr
+ * line, when the store is unsafe; a notice when an earlier build's store is still on disk.
+ */
+export function checkStoreAtStartup(): Promise<boolean> {
+  return startupCheck({
+    server: 'infomentor-mcp',
+    signIn: 'infomentor-mcp login',
+    store: () => sessionRecord(),
   });
 }

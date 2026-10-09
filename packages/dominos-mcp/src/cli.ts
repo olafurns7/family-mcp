@@ -6,14 +6,21 @@ import { parseArgs } from 'node:util';
 import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
 
 import manifest from '../package.json' with { type: 'json' };
-import { login, logout, migrate, requestCode, sessionStorage } from './auth.js';
+import {
+  checkStoreAtStartup,
+  login,
+  logout,
+  migrate,
+  requestCode,
+  sessionStorage,
+} from './auth.js';
 
 const help = `dominos-mcp — unofficial Domino’s Iceland MCP
 
   dominos-mcp [serve]       Start the stdio MCP server
   dominos-mcp auth login    Sign in with a phone number and SMS code (hidden input)
   dominos-mcp auth migrate  Move a session saved by an older version out of its plaintext file
-  dominos-mcp auth status   Show where the session is saved and verify it
+  dominos-mcp auth status   Show how the session is saved and verify it
   dominos-mcp auth logout   Remove the local login
   dominos-mcp --version     Print the installed version
 
@@ -74,6 +81,14 @@ async function main(): Promise<void> {
   if (values.help) return void process.stdout.write(help);
 
   if (values.version) return void process.stdout.write(`${manifest.version}\n`);
+
+  // The store is checked before anything serves or touches it; help and version never do.
+  if (!(await checkStoreAtStartup())) {
+    process.exitCode = 1;
+
+    return;
+  }
+
   const [command = 'serve', action] = positionals;
 
   if (command === 'auth' && positionals.length === 2) {

@@ -700,9 +700,16 @@ test('store failures have fixed messages, change no file and never fall back', a
     const before = await files();
 
     for (const [code, message] of [
-      ['STORE_LOCKED', /Unlock your login keychain and try again\./],
-      ['STORE_TIMEOUT', /did not answer in time/],
-      ['STORE_ACCESS_DENIED', /Allow dominos-mcp to use the login keychain/],
+      [
+        'UNSAFE_FILE',
+        /Run dominos-mcp auth status in a terminal; it shows what is wrong and where\. Do not delete the store first\.$/,
+      ],
+      // A code no key file produces gets the general text.
+      ['STORE_LOCKED', /damaged, unsafe, or not readable/],
+      [
+        'STORE_BACKEND_RETIRED',
+        /leftover of an earlier test build .* run dominos-mcp auth login again\.$/,
+      ],
       ['STORE_UNAVAILABLE', /store key is missing\. Run dominos-mcp auth login/],
       ['STORE_ERROR', /damaged, unsafe, or not readable/],
     ] as const) {

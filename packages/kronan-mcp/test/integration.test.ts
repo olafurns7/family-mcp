@@ -865,9 +865,16 @@ test('store key failures fail closed with fixed messages and never fall back or 
         const messages: string[] = [];
 
         for (const [code, pattern] of [
-          ['STORE_LOCKED', /^Unlock your login keychain and try again\.$/],
-          ['STORE_TIMEOUT', /did not answer in time/],
-          ['STORE_ACCESS_DENIED', /was denied/],
+          [
+            'UNSAFE_FILE',
+            /^Cannot use the Krónan token store\. Run kronan-mcp auth status in a terminal; it shows what is wrong and where\. Do not delete the store first\.$/,
+          ],
+          [
+            'STORE_BACKEND_RETIRED',
+            /leftover of an earlier test build .* run kronan-mcp auth set again\.$/,
+          ],
+          // A code no key file produces gets the general text.
+          ['STORE_LOCKED', /damaged, unsafe, or not readable/],
           ['STORE_ERROR', /Cannot use the Krónan token store/],
         ] as const) {
           for (const work of [

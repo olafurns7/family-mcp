@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
 import { loginInBrowser } from './browser-login.js';
-import { InnaClient, type SavedSession } from './client.js';
+import { InnaClient, checkStoreAtStartup, type SavedSession } from './client.js';
 import { createServer } from './server.js';
 import { startKeepAlive } from './keep-alive.js';
 import { loginWithElectronicId } from './login.js';
@@ -18,7 +18,7 @@ const help = `inna-mcp — unofficial Inna school MCP (preview)
   inna-mcp auth login                 Electronic ID: hidden phone prompt; approve on your phone
   inna-mcp auth login --google        Google: sign in in the browser window that opens
   inna-mcp auth import FILE           Fallback without a desktop: save a private cookie export
-  inna-mcp auth status                Verify the saved session and say where it is saved
+  inna-mcp auth status                Verify the saved session and say how it is saved
   inna-mcp auth migrate               Move an older version's plaintext session into the encrypted store
   inna-mcp auth logout                Remove the local session; retain absence evidence
   inna-mcp --version                  Print the executable version
@@ -148,6 +148,14 @@ async function main(): Promise<void> {
   if (values.help) return void process.stdout.write(help);
 
   if (values.version) return void process.stdout.write(`${manifest.version}\n`);
+
+  // The store is checked before anything serves or touches it; help and version never do.
+  if (!(await checkStoreAtStartup())) {
+    process.exitCode = 1;
+
+    return;
+  }
+
   const [command = 'serve', action, source] = positionals;
 
   const browserOptions = values.timeout !== undefined || values.browser !== undefined;

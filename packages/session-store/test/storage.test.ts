@@ -16,6 +16,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,16 +25,19 @@ import {
   LocalKeyFileProvider,
   SessionStoreError,
   StoreRefusal,
+  TEST_LS,
   checkSecretStore,
   createSecretKey,
   withSecretRecord,
   withSecretStore,
   type SecretRecordOptions,
 } from '../src/index.js';
+import { keyTemporary } from '../src/keys.js';
 import {
   aclEntries,
   aclProblem,
   ancestorProblem,
+  checkStorePaths,
   ownedDirectoryProblem,
   type StoreStat,
 } from '../src/storage.js';
@@ -47,25 +51,25 @@ const UID = process.getuid?.() ?? 0;
 
 const OTHER = UID + 4242;
 
-const E1 = 'The store directory is a symbolic link; use a real directory.';
+const E1 =
+  'This store folder is a link to another place. Replace it with a real folder and start again.';
 
-const E2 = 'The store directory is owned by another user.';
+const E2 = 'This store folder belongs to another user, often root after a sudo run.';
 
-const E3 =
-  'The store directory is accessible to other users; use owner-only permissions (chmod 700).';
+const E3 = 'Other users can open this store folder.';
 
-const E4 =
-  'A directory above the store is writable by other users; remove their write permission (chmod go-w).';
+const E4 = 'Other users can write to a folder above the store.';
 
-const E5 = 'A directory above the store is owned by another user.';
+const E5 = 'A folder above the store belongs to another user.';
 
-const HARD_LINKS = 'Files with hard links are not supported.';
+const HARD_LINKS =
+  'This file has a second name (a hard link). Remove the other name and start again.';
 
 const OWNED_ACL =
-  'The store path grants access to other users through an access control list; remove it (chmod -N).';
+  'Extra sharing permissions (an access control list, set in Finder’s Get Info) let other users in.';
 
 const ANCESTOR_ACL =
-  'A directory above the store lets other users change it through an access control list; remove that entry (chmod -a).';
+  'Extra sharing permissions (an access control list) on a folder above the store let other users change it. List them with ls -led and remove the entry that allows another user to write.';
 
 const TEMPORARY = '0f0e0d0c-0b0a-4908-8706-050403020100';
 
@@ -140,7 +144,7 @@ test('store directory and ancestor decisions are pure', () => {
   expect(ownedDirectoryProblem(fake('directory', 0o40750), UID)).toBe(E3);
   expect(ownedDirectoryProblem(fake('directory', 0o40701), UID)).toBe(E3);
   expect(ownedDirectoryProblem(fake('file', 0o100600), UID)).toBe(
-    'The directory path is not a directory.',
+    'Something other than a folder is at this store path. Move it away and start again.',
   );
 
   expect(ancestorProblem(fake('directory', 0o40755), UID, UID)).toBeUndefined();
@@ -230,10 +234,7 @@ test('the preflight refuses unsafe files without reading the key', async () => {
       await chmod(file, 0o644);
       await assert.rejects(
         checkSecretStore(store),
-        refused(
-          'The file is accessible to other users; use owner-only permissions (chmod 600).',
-          file,
-        ),
+        refused('Other users can open this file.', file),
       );
       await chmod(file, 0o600);
 
@@ -249,7 +250,10 @@ test('the preflight refuses unsafe files without reading the key', async () => {
     await symlink(join(root, 'elsewhere.key'), store.key);
     await assert.rejects(
       checkSecretStore(store),
-      refused('The path is a symbolic link; use a regular file.', store.key),
+      refused(
+        'This file is a link to another file. Put the real file here and start again.',
+        store.key,
+      ),
     );
     expect(store.keys.reads).toBe(reads);
   });
@@ -341,6 +345,58 @@ test('ancestors that another user could replace are refused, also above a missin
   });
 });
 
+test('every link above the store is followed, also links inside a link’s target', async () => {
+  // The written route and the final target are safe; the hop between them is replaceable.
+  const outside = await mkdtemp(join(tmpdir(), 'session-store-hop-'));
+
+  try {
+    await scratch(async (root) => {
+      const open = join(outside, 'open');
+      await mkdir(open, { mode: 0o700 });
+      await chmod(open, 0o777);
+      await mkdir(join(root, 'safe'), { mode: 0o700 });
+      await symlink(join(root, 'safe'), join(open, 'hop'));
+      await symlink(join(open, 'hop'), join(root, 'alias'));
+      const store = layout(join(root, 'alias'));
+
+      await assert.rejects(checkSecretStore(store), refused(E4, await realpath(open)));
+      await assert.rejects(
+        withSecretStore(store, async () => assert.fail()),
+        refused(E4, await realpath(open)),
+      );
+      await assert.rejects(store.keys.createKey(), refused(E4, await realpath(open)));
+      expect(await readdir(join(root, 'safe'))).toEqual([]);
+
+      // The same hop through a relative link.
+      await symlink('safe', join(root, 'relative'));
+      await rm(join(open, 'hop'));
+      await symlink(join(root, 'relative'), join(open, 'hop'));
+      await assert.rejects(checkSecretStore(store), refused(E4, await realpath(open)));
+
+      // Once the hop's directory is safe, the route is.
+      await chmod(open, 0o755);
+      expect(await checkSecretStore(store)).toEqual({ exists: false, retired: [] });
+      await createSecretKey(store);
+      expect(await readdir(join(root, 'safe'))).toEqual(['family-mcp']);
+
+      // A loop of links is refused, not followed forever.
+      await symlink(join(root, 'loop-b'), join(root, 'loop-a'));
+      await symlink(join(root, 'loop-a'), join(root, 'loop-b'));
+      await assert.rejects(
+        checkSecretStore(layout(join(root, 'loop-a'))),
+        refused(
+          'A link in a folder above the store is broken, loops back on itself, or leads into a folder you cannot open.',
+        ),
+      );
+      // chmod -R cannot pass a loop on cleanup.
+      await rm(join(root, 'loop-a'));
+      await rm(join(root, 'loop-b'));
+    });
+  } finally {
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 test.skipIf(process.platform !== 'darwin')(
   'macOS ACLs that grant other users access are refused; deny entries pass',
   async () => {
@@ -370,6 +426,39 @@ test.skipIf(process.platform !== 'darwin')(
       // A read-only grant above the store cannot replace anything below it.
       acl('+a', 'everyone allow list,search', root);
       expect((await checkSecretStore(store)).exists).toBe(true);
+    });
+  },
+);
+
+test.skipIf(process.platform !== 'darwin')(
+  'a slow ACL listing is waited for, and a failed one is still refused',
+  async () => {
+    await scratch(async (root) => {
+      const saved = process.env[TEST_LS];
+      const executable = join(root, 'ls');
+      const log = join(root, 'ls.log');
+
+      // The child gets only PATH and HOME, so the script carries its own paths.
+      const install = (body: string) =>
+        writeFile(executable, `#!/bin/sh\necho run >> '${log}'\n${body}\n`, { mode: 0o700 });
+
+      try {
+        process.env[TEST_LS] = executable;
+
+        await install('exit 1');
+        await assert.rejects(
+          checkStorePaths({ directories: [join(root, 'failed')], create: [join(root, 'failed')] }),
+          (error) => error instanceof SessionStoreError && error.code === 'IO',
+        );
+
+        // Longer than the 5 s bound that a loaded CI runner once hit with a working ls.
+        await install('sleep 6\nexec /bin/ls "$@"');
+        await checkStorePaths({ directories: [join(root, 'slow')], create: [join(root, 'slow')] });
+        expect(await readFile(log, 'utf8')).toBe('run\nrun\n');
+      } finally {
+        if (saved === undefined) delete process.env[TEST_LS];
+        else process.env[TEST_LS] = saved;
+      }
     });
   },
 );
@@ -468,5 +557,32 @@ test('only the store’s own temporary of the same key is recovered', async () =
     expect((await lstat(temporary)).nlink).toBe(2);
     expect(Buffer.from(await keys.getKey())).toEqual(bytes);
     expect(await readdir(join(root, 'family-mcp', 'keys'))).toEqual(['test-mcp.default.key']);
+  });
+});
+
+test('a key whose recognised second name another process just removed passes', async () => {
+  await scratch(async (root) => {
+    const { key, keys } = layout(root);
+    await keys.createKey();
+    const temporary = `${key}.${TEMPORARY}.tmp`;
+    await link(key, temporary);
+
+    // The other process's recovery lands between this check's lstat and its own lookup.
+    const recovered = async (file: string, info: Stats) => {
+      await rm(temporary, { force: true });
+
+      return (await keyTemporary(file, info)) !== undefined;
+    };
+
+    await checkStorePaths({ directories: [], files: [key], allowLink: recovered });
+    expect((await lstat(key)).nlink).toBe(1);
+
+    // A second name that stays is still refused, also when the hook does not recognise it.
+    const stray = join(root, 'stray.key');
+    await link(key, stray);
+    await assert.rejects(
+      checkStorePaths({ directories: [], files: [key], allowLink: recovered }),
+      refused(HARD_LINKS, key),
+    );
   });
 });

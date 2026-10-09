@@ -1,6 +1,6 @@
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import { SessionStoreError } from './errors.js';
 import { LocalKeyFileProvider, type KeyProvider } from './keys.js';
@@ -109,7 +109,9 @@ export function defaultKeyProvider(options: DefaultKeyProviderOptions): KeyProvi
 /**
  * Where an earlier, unreleased build kept this store on macOS (`~/.config/<server>/session.enc`
  * and its marker and lock, `~/.local/share/family-mcp/keys/<server>.<profile>.key`, or their
- * absolute-XDG equivalents). Paths only; nothing here touches the files. Empty off macOS.
+ * absolute-XDG equivalents), without the current store's own record, marker, lock and key, which
+ * XDG variables pointing into Application Support would otherwise name. Paths only; nothing here
+ * touches the files. Empty off macOS.
  */
 export function retiredStorePaths(
   server: string,
@@ -127,15 +129,20 @@ export function retiredStorePaths(
     xdgBase('XDG_DATA_HOME', join('.local', 'share')),
   ]);
 
+  const root = macStoreRoot();
+
+  const current = new Set([
+    ...RECORD_FILES.map((name) => join(root, server, name)),
+    join(root, 'keys', `${server}.${profile}.key`),
+  ]);
+
   return [
-    ...[...configs].flatMap((config) =>
-      ['session.enc', 'session.enc.marker', 'session.enc.lock'].map((name) =>
-        join(config, server, name),
-      ),
-    ),
+    ...[...configs].flatMap((config) => RECORD_FILES.map((name) => join(config, server, name))),
     ...[...data].map((base) => join(base, 'family-mcp', 'keys', `${server}.${profile}.key`)),
-  ];
+  ].filter((path) => !current.has(resolve(path)));
 }
+
+const RECORD_FILES = ['session.enc', 'session.enc.marker', 'session.enc.lock'];
 
 function plainName(appName: string): string {
   if (!APP_NAME.test(appName)) throw new RangeError('appName must be a plain directory name.');

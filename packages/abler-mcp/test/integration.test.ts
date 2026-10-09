@@ -1849,9 +1849,16 @@ test('store failures have fixed messages, change no file and never fall back; on
     const before = await files();
 
     for (const [code, message] of [
-      ['STORE_LOCKED', /Unlock your login keychain and try again\./],
-      ['STORE_TIMEOUT', /did not answer in time/],
-      ['STORE_ACCESS_DENIED', /Allow abler-mcp to use the login keychain/],
+      [
+        'UNSAFE_FILE',
+        /Run abler-mcp auth status in a terminal; it shows what is wrong and where\. Do not delete the store first\.$/,
+      ],
+      // A code no key file produces gets the general text.
+      ['STORE_LOCKED', /damaged, unsafe, or not readable/],
+      [
+        'STORE_BACKEND_RETIRED',
+        /leftover of an earlier test build .* run abler-mcp auth login again\.$/,
+      ],
       ['STORE_UNAVAILABLE', /store key is missing\. Run abler-mcp auth login/],
       ['STORE_ERROR', /damaged, unsafe, or not readable/],
     ] as const) {
@@ -1894,6 +1901,40 @@ test('store failures have fixed messages, change no file and never fall back; on
     expect(await Bun.file(path).exists()).toBe(false);
     expect((await new AblerClient(path, request, lost).status()).authenticated).toBe(true);
     await assert.rejects(new AblerClient(path, request, keys).status(), /damaged|not readable/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a store left by a Keychain test build is refused before sign-in resets it', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-retired-'));
+  const path = join(directory, 'session.json');
+  const marker = `${store.record}.marker`;
+  const { fake, request } = rotatingUpstream();
+
+  try {
+    await mkdir(dirname(store.record), { recursive: true, mode: 0o700 });
+    await writeFile(
+      marker,
+      '{"backend":"encrypted-file","keySource":"keychain-accessor","keyId":"keychain","profile":"default","migrated":true,"generation":1}\n',
+      { mode: 0o600 },
+    );
+    await writeFile(store.record, 'old record', { mode: 0o600 });
+    const before = [await readFile(store.record, 'utf8'), await readFile(marker, 'utf8')];
+    const retired = /leftover of an earlier test build .* run abler-mcp auth login again\.$/;
+
+    // No key, as that build leaves it: the explicit new sign-in and the import both refuse.
+    const lost = new FakeKeyProvider();
+    const imported = await importCookies([cookie]);
+    await assert.rejects(
+      saveVerifiedSession(imported, async () => assert.fail(), path, lost),
+      retired,
+    );
+    await saveSession(path, imported);
+    await assert.rejects(migrateSession(path, lost), retired);
+    await assert.rejects(new AblerClient(path, request, lost).status(), retired);
+    expect([await readFile(store.record, 'utf8'), await readFile(marker, 'utf8')]).toEqual(before);
+    expect(fake.seen).toEqual([]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

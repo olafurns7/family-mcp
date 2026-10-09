@@ -1,13 +1,13 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { lstat, rm } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { lstat, readlink, realpath, rm, stat } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { excludeFromBackups } from './backup.js';
 import { SessionStoreError, systemErrorCode, throwIfAborted } from './errors.js';
 import { readPrivateFile, sweepTemp, writePrivateFile } from './files.js';
 import { LocalKeyFileProvider, checkedKey, keyTemporary, type KeyProvider } from './keys.js';
 import { withFileLock } from './lock.js';
-import { checkStorePaths, storeDirectories } from './storage.js';
+import { MAX_LINKS, checkStorePaths, storeDirectories } from './storage.js';
 
 export type SecretRecordOptions = {
   /** Canonical record path. Its lock is `<path>.lock` and its non-secret marker `<path>.marker`. */
@@ -27,8 +27,9 @@ export type SecretRecordOptions = {
   waitMs?: number | undefined;
   /**
    * Files of an earlier layout of this store (`retiredStorePaths`). While one exists the store
-   * decides (`exists()` is true), so an older plaintext credential is never imported over it.
-   * They are only checked for existence, never read.
+   * decides (`exists()` is true), so an older plaintext credential is never imported over it; that
+   * includes a link or entry that cannot be followed. Only one shown to be the current store under
+   * another name is ignored. They are only checked by metadata, never read.
    */
   retired?: readonly string[] | undefined;
 };
@@ -53,6 +54,12 @@ export type SecretStore = {
   createKey(): Promise<void>;
   /** `resetSecretStore`'s recovery. */
   reset(): Promise<void>;
+  /**
+   * Confirm the key is there without reading the record: STORE_BACKEND_RETIRED first for a store
+   * set up through the retired Keychain accessor, then whatever `getKey` throws (STORE_UNAVAILABLE
+   * while the key is missing).
+   */
+  checkKey(): Promise<void>;
 };
 
 type Marker = {
@@ -132,7 +139,7 @@ export async function withSecretStore<T>(
       const open = async () => {
         usable();
         await sweepTemp(options.path);
-        const key = state?.key ?? checkedKey(await options.keys.getKey(options.signal));
+        const key = state?.key ?? (await currentKey(options));
         const { current, marker } = await load(options, key);
         state = { key, marker };
 
@@ -167,7 +174,7 @@ export async function withSecretStore<T>(
 
             return (
               (await secretStoreExists(options.path)) ||
-              (await existingPaths(options.retired ?? [])).length > 0
+              (await leftovers(options)).deciding.length > 0
             );
           },
           read: async () => (await open()).current,
@@ -185,6 +192,10 @@ export async function withSecretStore<T>(
           },
           createKey: () => changing(() => createKey(options)),
           reset: () => changing(() => reset(options)),
+          checkKey: async () => {
+            usable();
+            await currentKey(options);
+          },
         });
       } finally {
         ended = new SessionStoreError('STORE_ERROR', 'This secret store hold has ended.');
@@ -237,7 +248,11 @@ export function resetSecretStore(options: SecretRecordOptions): Promise<void> {
 export type StoreCheck = {
   /** A marker exists at the store's path. */
   exists: boolean;
-  /** The `retired` files that exist: an earlier layout to clean up after a new sign-in. */
+  /**
+   * The `retired` files that exist and are shown to be separate from the current store: an
+   * earlier layout to clean up after a new sign-in. An old entry that cannot be followed is left
+   * out here, although it still makes the store decide.
+   */
   retired: string[];
 };
 
@@ -270,10 +285,99 @@ export async function checkSecretStore(
     recheck: true,
   });
 
-  return {
-    exists: await secretStoreExists(path),
-    retired: await existingPaths(options.retired ?? []),
-  };
+  return { exists: await secretStoreExists(path), retired: (await leftovers(options)).named };
+}
+
+/**
+ * The `retired` files that exist, split by use. `deciding` holds every one not shown to be the
+ * current store's record, marker, lock or key under another name: an old entry whose link or
+ * metadata cannot be followed still decides, so a broken old store never lets an older plaintext
+ * credential back in. `named` holds only those shown to be separate files, safe to name in a
+ * cleanup command. The current files are protected by canonical directory entry (the resolved
+ * directory plus the file name), which an atomic save leaves unchanged, and by device and inode
+ * for any other alias. A name followed through its links to a current entry is that entry. When
+ * the current files cannot be read, nothing is named and every old entry decides.
+ */
+async function leftovers(
+  options: Pick<SecretRecordOptions, 'path' | 'keys' | 'retired'>,
+): Promise<{ named: string[]; deciding: string[] }> {
+  const found = await existingPaths(options.retired ?? []);
+
+  if (found.length === 0) return { named: [], deciding: [] };
+  const { path, keys } = options;
+
+  const current = [path, markerPath(path), `${path}.lock`].concat(
+    keys instanceof LocalKeyFileProvider ? [keys.path] : [],
+  );
+
+  const entries = new Set<string>();
+  const identities = new Set<string>();
+
+  try {
+    for (const file of current) {
+      const entry = await directoryEntry(file);
+      const id = await identity(file);
+
+      if (entry !== undefined) entries.add(entry);
+
+      if (id !== undefined) identities.add(id);
+    }
+  } catch {
+    return { named: [], deciding: found };
+  }
+
+  const named: string[] = [];
+  const deciding: string[] = [];
+
+  for (const file of found) {
+    // Undefined when the name cannot be followed: gone, dangling, unreadable or looping.
+    const entry = await linkedEntry(file).catch(() => undefined);
+    const id = await identity(file).catch(() => undefined);
+
+    if ((entry !== undefined && entries.has(entry)) || (id !== undefined && identities.has(id)))
+      continue;
+    deciding.push(file);
+
+    if (entry !== undefined && id !== undefined) named.push(file);
+  }
+
+  return { named, deciding };
+}
+
+/** The resolved directory plus the file name; undefined when the directory does not exist. */
+async function directoryEntry(path: string): Promise<string | undefined> {
+  try {
+    return join(await realpath(dirname(path)), basename(path));
+  } catch (error) {
+    if (systemErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+/** The directory entry `path` reaches after its links, by `lstat` and `readlink`: never opened. */
+async function linkedEntry(path: string): Promise<string> {
+  let entry = path;
+
+  for (let hops = 0; hops <= MAX_LINKS; hops++) {
+    entry = join(await realpath(dirname(entry)), basename(entry));
+
+    if (!(await lstat(entry)).isSymbolicLink()) return entry;
+    entry = resolve(dirname(entry), await readlink(entry));
+  }
+
+  throw new SessionStoreError('IO', 'Too many links.');
+}
+
+/** Device and inode of what `path` names, following links; undefined when nothing is there. */
+async function identity(path: string): Promise<string | undefined> {
+  try {
+    const info = await stat(path);
+
+    return `${info.dev}:${info.ino}`;
+  } catch (error) {
+    if (systemErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
+  }
 }
 
 /** A marker exists, so the store decides even while it holds no record. */
@@ -339,6 +443,9 @@ async function createKey(options: SecretRecordOptions): Promise<void> {
 }
 
 async function reset(options: SecretRecordOptions): Promise<void> {
+  // A missing key is what that build leaves; its record may still open with the Keychain key.
+  await refuseRetired(options);
+
   if (!(await keyMissing(options)))
     throw new SessionStoreError(
       'STORE_ERROR',
@@ -368,6 +475,32 @@ async function reset(options: SecretRecordOptions): Promise<void> {
   }
 
   await sweepTemp(options.path);
+}
+
+/** The key, after a store of the retired Keychain accessor is refused. */
+async function currentKey(options: SecretRecordOptions): Promise<Uint8Array> {
+  await refuseRetired(options);
+
+  return checkedKey(await options.keys.getKey(options.signal));
+}
+
+/**
+ * STORE_BACKEND_RETIRED when the marker names the retired Keychain accessor, before any key is
+ * asked for. Only the marker's key source is read here; every other marker problem is left to
+ * `readMarker`.
+ */
+async function refuseRetired(options: SecretRecordOptions): Promise<void> {
+  if (options.keys.keySource === RETIRED_KEY_SOURCE) return;
+  let text: string;
+
+  try {
+    text = await readPrivateFile(markerPath(options.path), { maxBytes: MARKER_MAX_BYTES });
+  } catch (error) {
+    if (error instanceof SessionStoreError && error.code === 'NOT_FOUND') return;
+    throw error;
+  }
+
+  if (MARKER_PATTERN.exec(text)?.[2] === RETIRED_KEY_SOURCE) throw retiredBackend();
 }
 
 /** True only for STORE_UNAVAILABLE; a readable key is false and every other failure propagates. */
@@ -606,10 +739,7 @@ async function readMarker(options: SecretRecordOptions): Promise<Marker | null> 
 
   // Set up by an earlier build through security(1), which no server runs any more.
   if (keySource === RETIRED_KEY_SOURCE && keys.keySource !== RETIRED_KEY_SOURCE)
-    throw new SessionStoreError(
-      'STORE_BACKEND_RETIRED',
-      'The secret store was set up with the macOS Keychain, which is no longer used. Remove the store files and sign in again.',
-    );
+    throw retiredBackend();
 
   if (
     backend !== keys.backend ||
@@ -657,6 +787,13 @@ async function exists(path: string): Promise<boolean> {
       cause: error,
     });
   }
+}
+
+function retiredBackend(): SessionStoreError {
+  return new SessionStoreError(
+    'STORE_BACKEND_RETIRED',
+    "This store is a leftover of an earlier test build that kept its key in the macOS Keychain, which is no longer used. Remove session.enc and session.enc.marker from the server's folder in ~/Library/Application Support/family-mcp, then sign in again.",
+  );
 }
 
 function unauthenticated(cause?: unknown): SessionStoreError {

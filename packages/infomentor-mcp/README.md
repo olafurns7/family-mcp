@@ -423,27 +423,56 @@ infomentor-mcp [auth] [serve|login|status|migrate|logout] [options]
 
 ### Where secrets live
 
-The session and the stored sign-in are one encrypted record,
-`$XDG_CONFIG_HOME/infomentor-mcp/session.enc` (normally
-`~/.config/infomentor-mcp/session.enc`), with a non-secret `session.enc.marker`
-beside it. It is encrypted with AES-256-GCM under a random key created at the
-first login: on macOS a Keychain item (service `family-mcp.infomentor-mcp`)
-read through Apple's `security` tool, on Linux the file
-`~/.local/share/family-mcp/keys/infomentor-mcp.default.key` (or under
-`$XDG_DATA_HOME`). On a headless Mac whose login keychain is locked (for
-example over SSH), set `FAMILY_MCP_KEY_BACKEND=file` for login and the MCP host
-to keep the key in that file as on Linux; status then says the session is saved
-in an encrypted file. Keep that key: without it the session and sign-in cannot be
-read, and only an explicit `login` or `login --import` replaces the store. The
-key is never regenerated in any other way, and no command falls back to a
-plaintext file once the marker exists. `infomentor-mcp status` names where the
-session is saved and whether a sign-in is stored, never their values.
+The session and the stored sign-in are one encrypted record, `session.enc`, with a
+non-secret `session.enc.marker` beside it. It is encrypted with AES-256-GCM under a
+random key created at the first login, a `0600` file in its own `0700` directory,
+apart from the record:
 
-Threat model: this keeps the session and password out of plaintext files, grep,
-commits, dotfile sync, and ciphertext-only backups. It does not protect against
-root, a compromised service, or a same-user process or agent that can read the
-key (any same-user process while the macOS login keychain is unlocked); a backup
-holding both the key and the record is about as exposed as a `0600` file.
+| Platform | Record and marker                                                     | Key                                                                        |
+| -------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| macOS    | `~/Library/Application Support/family-mcp/infomentor-mcp/session.enc` | `~/Library/Application Support/family-mcp/keys/infomentor-mcp.default.key` |
+| Linux    | `~/.config/infomentor-mcp/session.enc`                                | `~/.local/share/family-mcp/keys/infomentor-mcp.default.key`                |
+
+On Linux, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` replace `~/.config` and
+`~/.local/share`; set the same values for login and the MCP host. On macOS they do
+not move the store. Keep that key: without it the session and sign-in cannot be
+read, and only an explicit `login` or `login --import` replaces the store. The key
+is never regenerated in any other way, and no command falls back to a plaintext file
+once the marker exists. `infomentor-mcp status` says how the session is saved and
+whether a sign-in is stored, never their values.
+
+On macOS both store directories are excluded from Time Machine before any secret is
+written in them, and every start confirms it. Linux has no standard for this: leave
+`~/.local/share/family-mcp/keys` out of your backups. A power cut during a save can
+lose that change or leave the store unreadable; the server then says so, and you
+sign in again. It never uses a damaged session.
+
+Every start except `--help` and `--version` checks the store before anything else.
+If a store file or directory could be read or replaced by another user (permissions
+that let others in, another owner, a link instead of a real file or folder, a folder
+above it that others can write to, or extra sharing permissions on macOS), or Time
+Machine did not confirm that it skips the store, `infomentor-mcp` prints
+`infomentor-mcp: cannot start.` with what is wrong, the path, and, for most
+problems, the command that fixes it, and exits; it never changes permissions for
+you. A store left by an earlier test build that kept its key in the macOS Keychain
+is refused at the first command: remove `session.enc` and `session.enc.marker` from
+the store folder in the table above, then run `infomentor-mcp login` again.
+
+An earlier test build kept this store under `~/.config` on macOS, with the key in
+the macOS Keychain or under `~/.local/share`. That store is not used. At start the
+server lists the old files with the exact commands to remove them; run
+`infomentor-mcp login` first, then remove them.
+
+What this protects against: other users of this computer who are not root; a copy of
+the record without its key, such as in a commit or dotfile sync (the file reads as
+gibberish in `cat` or `grep`); Time Machine backups, which skip the store; tampering
+with the record (not a rollback to an older record with its marker). What it does
+not: anything running as your user, such as other programs, malware or an AI agent
+with a shell or a prompt injection, which can read both files or call the MCP tools;
+root; a stolen laptop that is unlocked; other backup, sync or clone tools, and Time
+Machine backups made before the exclusion; indexers such as Spotlight; the key in
+crash dumps, swap or hibernation images. Disk encryption (FileVault on macOS, LUKS
+on Linux) protects a stolen computer that is switched off.
 
 Versions 0.8.0 and earlier kept the session in the plaintext file at
 `INFOMENTOR_SESSION_PATH`, by default `~/.config/infomentor-mcp/session.json`

@@ -1,20 +1,28 @@
 import type { Stats } from 'node:fs';
-import { lstat, mkdir, readdir, realpath } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readlink, realpath, stat } from 'node:fs/promises';
 import { userInfo } from 'node:os';
-import { basename, dirname, join, parse, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
 
 import { SessionStoreError, systemErrorCode } from './errors.js';
+import { FOREIGN_FILE, LINKED_FILE, OPEN_FILE } from './files.js';
+import { TEST_LS, testSeam } from './seam.js';
 import { runBounded } from './spawn.js';
 
-/** A refused store path. The message stays path-free; `path` is for the owner's terminal only. */
+/**
+ * A refused store path. The message stays path-free; `path` is for the owner's terminal only, and
+ * `fix`, when there is one, is the command that fixes it once the path is added.
+ */
 export class StoreRefusal extends SessionStoreError {
+  readonly fix: string | undefined;
+
   constructor(
     message: string,
     readonly path: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { fix?: string | undefined },
   ) {
     super('UNSAFE_FILE', message, options);
     this.name = 'StoreRefusal';
+    this.fix = options?.fix;
   }
 }
 
@@ -24,20 +32,49 @@ export type StoreStat = Pick<Stats, 'mode' | 'uid' | 'nlink'> & {
   isSymbolicLink(): boolean;
 };
 
-const NOT_A_DIRECTORY = 'The directory path is not a directory.';
+const NOT_A_DIRECTORY =
+  'Something other than a folder is at this store path. Move it away and start again.';
+
+const FOREIGN_DIRECTORY = 'This store folder belongs to another user, often root after a sudo run.';
+
+const OPEN_DIRECTORY = 'Other users can open this store folder.';
+
+const WRITABLE_ANCESTOR = 'Other users can write to a folder above the store.';
+
+const OWNED_ACL =
+  'Extra sharing permissions (an access control list, set in Finder’s Get Info) let other users in.';
+
+// `chmod -N` would also drop the stock `everyone deny delete` entry, so this one has no command.
+const ANCESTOR_ACL =
+  'Extra sharing permissions (an access control list) on a folder above the store let other users change it. List them with ls -led and remove the entry that allows another user to write.';
+
+// The command for each refusal that has one; the startup line adds the quoted path.
+const FIXES = new Map([
+  [FOREIGN_DIRECTORY, 'sudo chown -R "$(id -un)"'],
+  [OPEN_DIRECTORY, 'chmod 700'],
+  [WRITABLE_ANCESTOR, 'chmod go-w'],
+  [OPEN_FILE, 'chmod 600'],
+  [FOREIGN_FILE, 'sudo chown "$(id -un)"'],
+  [OWNED_ACL, 'chmod -N'],
+]);
+
+/** A refusal with its fixed command, if it has one. */
+function refusal(problem: string, path: string): StoreRefusal {
+  return new StoreRefusal(problem, path, { fix: FIXES.get(problem) });
+}
 
 const STICKY = 0o1000;
 
 /** A directory the store owns (keys/, a server's directory, family-mcp/): 0700, ours, real. */
 export function ownedDirectoryProblem(info: StoreStat, uid: number): string | undefined {
-  if (info.isSymbolicLink()) return 'The store directory is a symbolic link; use a real directory.';
+  if (info.isSymbolicLink())
+    return 'This store folder is a link to another place. Replace it with a real folder and start again.';
 
   if (!info.isDirectory()) return NOT_A_DIRECTORY;
 
-  if (info.uid !== uid) return 'The store directory is owned by another user.';
+  if (info.uid !== uid) return FOREIGN_DIRECTORY;
 
-  if ((info.mode & 0o077) !== 0)
-    return 'The store directory is accessible to other users; use owner-only permissions (chmod 700).';
+  if ((info.mode & 0o077) !== 0) return OPEN_DIRECTORY;
 
   return undefined;
 }
@@ -55,38 +92,38 @@ export function ancestorProblem(
   if (!info.isDirectory()) return NOT_A_DIRECTORY;
 
   if (info.uid !== uid && info.uid !== 0)
-    return 'A directory above the store is owned by another user.';
+    return 'A folder above the store belongs to another user.';
 
   const sticky =
     (info.mode & STICKY) !== 0 && childUid !== undefined && (childUid === uid || childUid === 0);
 
-  if ((info.mode & 0o022) !== 0 && !sticky)
-    return 'A directory above the store is writable by other users; remove their write permission (chmod go-w).';
+  if ((info.mode & 0o022) !== 0 && !sticky) return WRITABLE_ANCESTOR;
 
   return undefined;
 }
 
 /**
- * A key, record or marker file: the same rules and texts as `readPrivateBytes`. `links` is the
- * number of names it may have, more than one only for a recognised interrupted key publication.
+ * A key, record or marker file: the same rules and texts as `readPrivateBytes`, less the command
+ * that the refusal's `fix` carries. `links` is the number of names it may have, more than one
+ * only for a recognised interrupted key publication.
  */
 export function privateFileProblem(
   info: StoreStat,
   uid: number | undefined,
   links = 1,
 ): string | undefined {
-  if (info.isSymbolicLink()) return 'The path is a symbolic link; use a regular file.';
+  if (info.isSymbolicLink())
+    return 'This file is a link to another file. Put the real file here and start again.';
 
-  if (!info.isFile()) return 'The path is not a regular file.';
+  if (!info.isFile()) return 'Something other than a plain file is at this path.';
 
-  if (info.nlink > links) return 'Files with hard links are not supported.';
+  if (info.nlink > links) return LINKED_FILE;
 
   if (process.platform === 'win32') return undefined;
 
-  if ((info.mode & 0o077) !== 0)
-    return 'The file is accessible to other users; use owner-only permissions (chmod 600).';
+  if ((info.mode & 0o077) !== 0) return OPEN_FILE;
 
-  if (uid !== undefined && info.uid !== uid) return 'The file is owned by another user.';
+  if (uid !== undefined && info.uid !== uid) return FOREIGN_FILE;
 
   return undefined;
 }
@@ -117,7 +154,8 @@ export async function lstatOrMissing(path: string): Promise<Stats | undefined> {
 
 type AclRole = 'owned' | 'ancestor';
 
-type Checked = { path: string; info: Stats; role: AclRole };
+/** `from` is the written store directory an ancestor was reached from, for its refusal's path. */
+type Checked = { path: string; info: Stats; role: AclRole; from?: string };
 
 /**
  * Check the store directories and every directory above them, on both the written path and the
@@ -144,7 +182,7 @@ export async function checkStorePaths(options: {
         await mkdir(directory, { recursive: true, mode: 0o700 });
       } catch (error) {
         throw new StoreRefusal(
-          'Cannot create the store directory. Check its permissions.',
+          'Cannot create the store folder. Check the permissions of the folder above it.',
           directory,
           {
             cause: error,
@@ -158,79 +196,136 @@ export async function checkStorePaths(options: {
     if (info === undefined) continue;
     const problem = ownedDirectoryProblem(info, uid);
 
-    if (problem !== undefined) throw new StoreRefusal(problem, directory);
+    if (problem !== undefined) throw refusal(problem, directory);
     checked.push({ path: directory, info, role: 'owned' });
   }
 
   for (const file of options.files ?? []) {
-    const info = await lstatOrMissing(file);
+    let info = await lstatOrMissing(file);
 
     if (info === undefined) continue;
-    const linked = info.isFile() && info.nlink === 2 && (await options.allowLink?.(file, info));
-    const problem = privateFileProblem(info, uid, linked ? 2 : 1);
+    let links = 1;
 
-    if (problem !== undefined) throw new StoreRefusal(problem, file);
+    if (info.isFile() && info.nlink === 2 && options.allowLink !== undefined)
+      if (await options.allowLink(file, info)) links = 2;
+      else {
+        // Another process may have removed the recognised second name after the lstat above:
+        // look once more, and take the file only if it is the same one, now with one name.
+        const fresh = await lstatOrMissing(file);
+
+        if (fresh === undefined) continue;
+
+        if (fresh.isFile() && fresh.dev === info.dev && fresh.ino === info.ino && fresh.nlink === 1)
+          info = fresh;
+      }
+
+    const problem = privateFileProblem(info, uid, links);
+
+    if (problem !== undefined) throw refusal(problem, file);
     checked.push({ path: file, info, role: 'owned' });
   }
 
   if (process.platform === 'darwin') await checkAcls(checked);
 }
 
+// More expansions than this above one store directory are a loop or an attack; macOS stops at 32.
+export const MAX_LINKS = 40;
+
 /**
- * The existing directories above `directory`, each checked: first along the path as written,
- * where a symbolic link must be this user's or root's, then along the resolved path.
+ * The existing directories above `directory`, each checked, along the route the kernel takes:
+ * one name at a time from the root, and through every symbolic link on the way, including links
+ * inside a link's target and the directories above that target. A link must be this user's or
+ * root's. The walk stops at the first missing name; a dangling link or more than `MAX_LINKS`
+ * expansions is refused. Paths in the result have no links.
  */
 async function ancestorsOf(directory: string, uid: number): Promise<Checked[]> {
-  const found: Checked[] = [];
-  const written = prefixes(dirname(directory));
-  let deepest: string | undefined;
+  const found = new Map<string, Checked>();
+  const absolute = resolve(directory);
+  const { root } = parse(absolute);
+  const leaf = basename(absolute);
+  const names = components(dirname(absolute));
+  let current = root;
+  let info = await lstat(root);
+  let links = 0;
 
-  for (const [index, path] of written.entries()) {
-    const info = await lstatOrMissing(path);
+  for (;;) {
+    const next = names.shift();
+    const name = next ?? leaf;
 
-    if (info === undefined) break;
-    deepest = path;
+    if (name === '.') continue;
 
-    if (info.isSymbolicLink()) {
-      if (info.uid !== uid && info.uid !== 0)
-        throw new StoreRefusal('A directory above the store is owned by another user.', path);
+    if (name === '..') {
+      // Its parent was checked on the way down, with this directory as its child.
+      current = dirname(current);
+      info = await lstat(current);
       continue;
     }
 
-    const child = written[index + 1] ?? directory;
-    const problem = ancestorProblem(info, uid, (await lstatOrMissing(child))?.uid);
+    const entry = join(current, name);
+    const child = await lstatOrMissing(entry);
+    const problem = ancestorProblem(info, uid, child?.uid);
 
-    if (problem !== undefined) throw new StoreRefusal(problem, path);
-    found.push({ path, info, role: 'ancestor' });
+    if (problem !== undefined) throw refusal(problem, await shown(current, absolute));
+    found.set(current, { path: current, info, role: 'ancestor', from: absolute });
+
+    if (next === undefined || child === undefined) break;
+
+    if (child.isSymbolicLink()) {
+      if (child.uid !== uid && child.uid !== 0)
+        throw new StoreRefusal(
+          'A folder above the store belongs to another user.',
+          await shown(entry, absolute),
+        );
+
+      if (++links > MAX_LINKS || !(await resolves(entry)))
+        throw new StoreRefusal(
+          'A link in a folder above the store is broken, loops back on itself, or leads into a folder you cannot open.',
+          await shown(entry, absolute),
+        );
+      const target = await readlink(entry);
+
+      // A relative target continues from the link's directory, an absolute one from the root.
+      if (isAbsolute(target)) {
+        current = parse(target).root;
+        info = await lstat(current);
+      }
+
+      names.unshift(...components(target));
+      continue;
+    }
+
+    current = entry;
+    info = child;
   }
 
-  if (deepest === undefined) return found;
-  let resolved: string;
+  return [...found.values()];
+}
 
+/** The names of `path` below its root, `.` and `..` kept for the walk to apply. */
+function components(path: string): string[] {
+  return path.slice(parse(path).root.length).split(sep).filter(Boolean);
+}
+
+/** False for a dangling link or a loop. */
+async function resolves(path: string): Promise<boolean> {
   try {
-    resolved = await realpath(deepest);
-  } catch (error) {
-    throw new StoreRefusal('Cannot resolve a directory above the store.', deepest, {
-      cause: error,
-    });
+    await stat(path);
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The route as the owner wrote it when it names the same entry, else the resolved one. */
+async function shown(path: string, written: string): Promise<string> {
+  for (const prefix of prefixes(written)) {
+    const parent = await realpath(dirname(prefix)).catch(() => undefined);
+
+    if (parent !== undefined && join(parent, basename(prefix)) === path) return prefix;
   }
 
-  const route = prefixes(resolved);
-
-  for (const [index, path] of route.entries()) {
-    if (found.some((entry) => entry.path === path)) continue;
-    const info = await lstatOrMissing(path);
-
-    // The resolved route has no links; a component that vanished is a race, refused next time.
-    if (info === undefined) break;
-    const child = route[index + 1] ?? directory;
-    const problem = ancestorProblem(info, uid, (await lstatOrMissing(child))?.uid);
-
-    if (problem !== undefined) throw new StoreRefusal(problem, path);
-    found.push({ path, info, role: 'ancestor' });
-  }
-
-  return found;
+  return path;
 }
 
 /** `/a/b` gives `/`, `/a`, `/a/b`. */
@@ -257,6 +352,17 @@ const CHANGING = new Set([
 
 const ACL_ENTRY = /^ \d+: (\S+)(?: inherited)? (allow|deny) (\S+)$/;
 
+// `ls` answers in milliseconds, but a loaded Mac can stall it: a working one took over 5 s on a
+// busy CI runner. The bound only ends a hung child; a listing that runs out still fails closed.
+const ACL_TIMEOUT_MS = 20_000;
+
+/** The ls to run: Apple's, or a test's fake under the test seam. */
+function ls(): string {
+  const fake = process.env[TEST_LS];
+
+  return testSeam() && fake !== undefined && isAbsolute(fake) ? fake : '/bin/ls';
+}
+
 // An ACL listing changes the inode's ctime, so an unchanged inode keeps its last answer.
 const aclCache = new Map<string, true>();
 
@@ -276,8 +382,8 @@ async function checkAcls(checked: readonly Checked[]): Promise<void> {
   if (unknown.some(({ path }) => path.includes('\n')))
     throw new StoreRefusal('The store path contains a line break.', unknown[0]?.path ?? '');
 
-  const listing = await runBounded('/bin/ls', ['-ldef', '--', ...unknown.map(({ path }) => path)], {
-    timeoutMs: 5000,
+  const listing = await runBounded(ls(), ['-ldef', '--', ...unknown.map(({ path }) => path)], {
+    timeoutMs: ACL_TIMEOUT_MS,
     maxBytes: 1_048_576,
   });
 
@@ -300,7 +406,11 @@ async function checkAcls(checked: readonly Checked[]): Promise<void> {
   for (const [index, entry] of unknown.entries()) {
     const problem = aclProblem(entries[index] ?? [], entry.role, self);
 
-    if (problem !== undefined) throw new StoreRefusal(problem, entry.path);
+    if (problem !== undefined)
+      throw refusal(
+        problem,
+        entry.from === undefined ? entry.path : await shown(entry.path, entry.from),
+      );
   }
 
   for (const entry of unknown) aclCache.set(stamp(entry), true);
@@ -350,9 +460,7 @@ export function aclProblem(
 }
 
 function aclMessage(role: AclRole): string {
-  return role === 'owned'
-    ? 'The store path grants access to other users through an access control list; remove it (chmod -N).'
-    : 'A directory above the store lets other users change it through an access control list; remove that entry (chmod -a).';
+  return role === 'owned' ? OWNED_ACL : ANCESTOR_ACL;
 }
 
 /** The store's recognised temporaries of `path`: `<name>.<uuid>.tmp` beside it. */
