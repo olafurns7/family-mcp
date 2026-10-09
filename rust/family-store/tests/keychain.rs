@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::*;
 use family_store::{
@@ -115,7 +115,7 @@ fn setup_writes_one_add_command_on_stdin_and_never_puts_the_key_in_argv() {
     let inherited = std::env::vars().find(|(name, _)| name != "PATH" && name != "HOME");
 
     keys.create_key(&none).unwrap();
-    let key = hex(&keys.get_key(&none).unwrap());
+    let key = hex(keys.get_key(&none).unwrap().bytes());
     assert_eq!(key.len(), 64);
     assert_eq!(
         fake.read("stdin"),
@@ -194,7 +194,7 @@ fn reads_accept_exactly_64_lowercase_hex_characters_and_a_newline() {
         let read = fake.keys().get_key(&Cancel::default());
 
         match expected {
-            None => assert_eq!(hex(&read.unwrap()), key),
+            None => assert_eq!(hex(read.unwrap().bytes()), key),
             Some(_) => assert_eq!(code(read), expected, "{output}"),
         }
     }
@@ -267,6 +267,32 @@ fn a_hung_read_is_killed_at_its_deadline_or_on_cancel() {
     );
     fake.assert_killed();
     assert_eq!(code(keys.get_key(&cancelled())), Some(Code::Cancelled));
+}
+
+#[test]
+fn a_read_that_closes_its_output_and_hangs_is_killed_at_its_deadline_or_on_cancel() {
+    let fake = Fake::new(r#"echo $$ > "$d/pid"; exec 1>&-; exec sleep 30"#, ADD);
+    let brief = Duration::from_millis(200);
+    let keys = fake.keys_with(KeychainAccessorOptions {
+        read_timeout: brief,
+        ..fake.options.clone()
+    });
+    let started = Instant::now();
+
+    assert_eq!(
+        code(keys.get_key(&Cancel::default())),
+        Some(Code::StoreTimeout)
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    fake.assert_killed();
+
+    let started = Instant::now();
+    assert_eq!(
+        code(fake.keys().get_key(&cancel_after(brief))),
+        Some(Code::Cancelled)
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    fake.assert_killed();
 }
 
 #[test]

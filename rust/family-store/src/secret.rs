@@ -101,17 +101,29 @@ impl SecretStore<'_> {
         }
     }
 
-    fn open(&mut self) -> Result<(Option<String>, Key, Option<Marker>)> {
+    // The key is wiped as it is dropped, here and when the hold ends.
+    fn forget(&mut self) {
+        self.state = None;
+    }
+
+    /// The committed plaintext and marker. The key stays in the hold, which lends it out.
+    fn open(&mut self) -> Result<(Option<String>, Option<Marker>)> {
         self.usable()?;
         sweep_temp(&self.options.path, DEFAULT_SWEEP_AGE)?;
+        let mut fetched = None;
         let key = match &self.state {
-            Some((key, _)) => *key,
-            None => self.options.keys.get_key(&self.options.cancel)?,
+            Some((key, _)) => key,
+            None => &*fetched.insert(self.options.keys.get_key(&self.options.cancel)?),
         };
-        let (current, marker) = load(self.options, &key)?;
-        self.state = Some((key, marker.clone()));
+        let (current, marker) = load(self.options, key)?;
+
+        match (&mut self.state, fetched) {
+            (Some((_, held)), _) => *held = marker.clone(),
+            (state, Some(key)) => *state = Some((key, marker.clone())),
+            (None, None) => {}
+        }
         let current = current.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-        Ok((current, key, marker))
+        Ok((current, marker))
     }
 
     /// True once a marker exists: the store then decides, also while it holds no record.
@@ -131,16 +143,15 @@ impl SecretStore<'_> {
     pub fn write(&mut self, next: &str) -> Result<()> {
         self.usable()?;
         let written: Result<()> = (|| {
-            let (key, marker) = match self.state.clone() {
-                Some(state) => state,
-                None => {
-                    let (_, key, marker) = self.open()?;
-                    (key, marker)
-                }
-            };
-            check_generation_left(marker.as_ref())?;
-            let committed = store(self.options, &key, marker.as_ref(), next)?;
-            self.state = Some((key, Some(committed)));
+            if self.state.is_none() {
+                self.open()?;
+            }
+            let options = self.options;
+
+            if let Some((key, marker)) = &mut self.state {
+                check_generation_left(marker.as_ref())?;
+                *marker = Some(store(options, key, marker.as_ref(), next)?);
+            }
             Ok(())
         })();
 
@@ -156,7 +167,7 @@ impl SecretStore<'_> {
         &mut self,
         update: impl FnOnce(Option<&str>) -> std::result::Result<Option<String>, E>,
     ) -> std::result::Result<Option<String>, E> {
-        let (current, _, marker) = self.open()?;
+        let (current, marker) = self.open()?;
         check_generation_left(marker.as_ref())?;
         self.options.cancel.check()?;
 
@@ -174,7 +185,7 @@ impl SecretStore<'_> {
     pub fn create_key(&mut self) -> Result<()> {
         self.usable()?;
         // Setup changes the key, so the next read or write loads again.
-        self.state = None;
+        self.forget();
         let options = self.options;
         let marker = read_marker(options)?;
         let set_up = exists(&options.path)?
@@ -192,6 +203,45 @@ impl SecretStore<'_> {
             ));
         }
         options.keys.create_key(&options.cancel)
+    }
+
+    /// Explicit re-setup after a lost key: only while the key is conclusively missing, commit a
+    /// fresh generation-0 marker first and then remove the record, which nothing can decrypt
+    /// anymore. The caller then runs `create_key` and writes. Any other key outcome leaves both
+    /// files untouched.
+    pub fn reset(&mut self) -> Result<()> {
+        self.usable()?;
+        self.forget();
+        let options = self.options;
+
+        if !key_missing(options)? {
+            return Err(Error::new(
+                Code::StoreError,
+                "The store key is available; a readable secret store is never reset.",
+            ));
+        }
+        // The fresh marker commits before the record goes, so no crash leaves a store without one.
+        write_marker(
+            options,
+            &Marker {
+                migrated: false,
+                generation: 0,
+                pending: None,
+            },
+        )?;
+
+        match fs::remove_file(&options.path) {
+            Ok(()) => {}
+            Err(error) if errno(&error) == Some(Errno::NOENT) => {}
+            Err(error) => {
+                return Err(Error::io(
+                    error,
+                    "Cannot remove the secret record. Check its permissions.",
+                ));
+            }
+        }
+        sweep_temp(&options.path, DEFAULT_SWEEP_AGE)?;
+        Ok(())
     }
 }
 
@@ -301,6 +351,7 @@ fn check_generation_left(marker: Option<&Marker>) -> Result<()> {
 /// True only for STORE_UNAVAILABLE; a readable key is false and every other failure propagates.
 fn key_missing(options: &SecretRecordOptions) -> Result<bool> {
     match options.keys.get_key(&options.cancel) {
+        // The probed key is wiped as it is dropped.
         Ok(_) => Ok(false),
         Err(error) if error.code == Code::StoreUnavailable => Ok(true),
         Err(error) => Err(error),
@@ -451,7 +502,7 @@ fn seal(
     let nonce_text = URL_SAFE_NO_PAD.encode(nonce);
     let header = header(options, generation, &nonce_text);
     // Ciphertext followed by the 16-byte tag, as the TypeScript package concatenates them.
-    let body = Aes256Gcm::new(key.into())
+    let body = Aes256Gcm::new(key.bytes().into())
         .encrypt(
             &Nonce::from(nonce),
             Payload {
@@ -500,11 +551,11 @@ fn open_record(options: &SecretRecordOptions, key: &Key, text: &[u8]) -> Option<
     // The decoder refuses padding, other alphabets and non-canonical trailing bits.
     let sealed = URL_SAFE_NO_PAD.decode(body).ok()?;
 
-    if sealed.len() < TAG_BYTES || sealed.len() > options.max_bytes + TAG_BYTES {
+    if sealed.len() < TAG_BYTES || sealed.len() > options.max_bytes.saturating_add(TAG_BYTES) {
         return None;
     }
     let nonce_bytes: [u8; NONCE_BYTES] = URL_SAFE_NO_PAD.decode(nonce).ok()?.try_into().ok()?;
-    let plaintext = Aes256Gcm::new(key.into())
+    let plaintext = Aes256Gcm::new(key.bytes().into())
         .decrypt(
             &Nonce::from(nonce_bytes),
             Payload {
@@ -522,8 +573,12 @@ fn open_record(options: &SecretRecordOptions, key: &Key, text: &[u8]) -> Option<
 }
 
 fn read_record(options: &SecretRecordOptions, key: &Key) -> Result<Option<OpenedRecord>> {
-    // Header, separator, unpadded base64url of ciphertext and tag, final newline.
-    let max_bytes = HEADER_MAX_BYTES + ((options.max_bytes + TAG_BYTES) * 4).div_ceil(3) + 2;
+    // Header, separator, unpadded base64url of ciphertext and tag, final newline. Saturating: a
+    // limit too large to count in bytes is no limit, as in TypeScript's floating point.
+    let max_bytes = (options.max_bytes.saturating_add(TAG_BYTES))
+        .saturating_mul(4)
+        .div_ceil(3)
+        .saturating_add(HEADER_MAX_BYTES + 2);
 
     match read_private_bytes(&options.path, max_bytes) {
         Ok(text) => open_record(options, key, &text).map(Some).ok_or_else(|| {

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["family-store"]
+members = ["family-store", "abler-mcp"]
 
 [workspace.package]
 edition = "2024"
@@ -10,3 +10,9 @@ publish = false
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# Smallest shipping binary; measured in the pilot report.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

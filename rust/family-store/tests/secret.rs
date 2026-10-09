@@ -177,6 +177,17 @@ fn one_mib_payloads_round_trip_and_size_bounds_are_enforced() {
         ..store.clone()
     };
     assert_eq!(code(read_secret_record(&small)), Some(Code::TooLarge));
+
+    // A limit too large to count in bytes is no limit; the size arithmetic never wraps or panics.
+    for max_bytes in [usize::MAX, usize::MAX / 4 + 1] {
+        let unbounded = SecretRecordOptions {
+            max_bytes,
+            ..store.clone()
+        };
+        assert_eq!(read_secret_record(&unbounded).unwrap().len(), payload.len());
+        put(&unbounded, &payload).unwrap();
+    }
+    assert_eq!(read_secret_record(&store).unwrap(), payload);
 }
 
 #[test]
@@ -257,6 +268,44 @@ fn a_missing_key_is_store_unavailable_and_is_never_regenerated() {
     write(&key_path, KEY);
     assert_eq!(code(create_secret_key(&fresh)), Some(Code::StoreError));
     assert_eq!(fs::read(&key_path).unwrap(), KEY);
+}
+
+#[test]
+fn reset_removes_an_undecryptable_store_only_while_its_key_is_missing() {
+    let scratch = Scratch::new();
+    let key_path = scratch.join("keys/test-mcp.key");
+    let store = local(&scratch.0, &key_path);
+    let reset = |store: &SecretRecordOptions| with_secret_store(store, |held| held.reset());
+    create_secret_key(&store).unwrap();
+    put(&store, "secret").unwrap();
+
+    // A readable store, or a key failure other than a missing key, is never reset.
+    assert_eq!(code(reset(&store)), Some(Code::StoreError));
+    assert_eq!(
+        code(reset(&with_keys(&store, Locked))),
+        Some(Code::StoreLocked)
+    );
+    assert_eq!(read_secret_record(&store).unwrap(), "secret");
+
+    assert!(secret_store_exists(&store.path).unwrap());
+    fs::remove_file(&key_path).unwrap();
+    reset(&store).unwrap();
+    assert!(!store.path.exists());
+
+    // The marker is rewritten, never removed: the store still decides after a crash here.
+    assert_eq!(text(&marker_path(&store)), EMPTY_LOCAL);
+    assert!(secret_store_exists(&store.path).unwrap());
+    assert_eq!(
+        code(read_secret_record(&store)),
+        Some(Code::StoreUnavailable)
+    );
+    reset(&store).unwrap();
+
+    create_secret_key(&store).unwrap();
+    assert_eq!(code(read_secret_record(&store)), Some(Code::SecretNotFound));
+    assert_eq!(code(create_secret_key(&store)), Some(Code::StoreError));
+    assert_eq!(put(&store, "next").unwrap().as_deref(), Some("next"));
+    assert_eq!(read_secret_record(&store).unwrap(), "next");
 }
 
 #[test]
@@ -365,7 +414,7 @@ impl KeyProvider for Flaky {
         if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
             return Err(Error::new(Code::StoreLocked, "synthetic refusal"));
         }
-        Ok(KEY)
+        Ok(Key::new(KEY))
     }
 
     fn create_key(&self, _cancel: &Cancel) -> Result<(), Error> {

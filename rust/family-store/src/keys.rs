@@ -1,9 +1,10 @@
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rustix::io::Errno;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::errors::{Cancel, Code, Error, Result, errno};
 use crate::files::{
@@ -12,8 +13,26 @@ use crate::files::{
 
 pub const KEY_BYTES: usize = 32;
 
-/// A record's 256-bit data key.
-pub type Key = [u8; KEY_BYTES];
+/// A record's 256-bit data key. It is wiped when dropped and is never copied implicitly: the
+/// store keeps one for a hold and lends it out.
+pub struct Key(pub(crate) Zeroizing<[u8; KEY_BYTES]>);
+
+impl Key {
+    pub fn new(bytes: [u8; KEY_BYTES]) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+
+    pub fn bytes(&self) -> &[u8; KEY_BYTES] {
+        &self.0
+    }
+}
+
+/// Never the key itself.
+impl std::fmt::Debug for Key {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Key(..)")
+    }
+}
 
 /// Where a record's data key lives. Runtime code only calls `get_key`.
 pub trait KeyProvider: Send + Sync {
@@ -25,6 +44,10 @@ pub trait KeyProvider: Send + Sync {
     fn get_key(&self, cancel: &Cancel) -> Result<Key>;
     /// Explicit setup only; refuses to replace an existing key. Use `create_secret_key`.
     fn create_key(&self, cancel: &Cancel) -> Result<()>;
+    /// The key file, for providers that keep the key in one; callers keep other paths apart from it.
+    fn key_file(&self) -> Option<&Path> {
+        None
+    }
 }
 
 pub(crate) fn key_unavailable() -> Error {
@@ -50,16 +73,16 @@ pub(crate) fn malformed_key() -> Error {
 
 /// In-memory key for tests.
 pub struct FakeKeyProvider {
-    key: Mutex<Option<Key>>,
+    key: Mutex<Option<[u8; KEY_BYTES]>>,
     key_id: String,
 }
 
 impl FakeKeyProvider {
-    pub fn new(key: Option<Key>) -> Self {
+    pub fn new(key: Option<[u8; KEY_BYTES]>) -> Self {
         Self::with_key_id(key, "test")
     }
 
-    pub fn with_key_id(key: Option<Key>, key_id: &str) -> Self {
+    pub fn with_key_id(key: Option<[u8; KEY_BYTES]>, key_id: &str) -> Self {
         Self {
             key: Mutex::new(key),
             key_id: key_id.to_owned(),
@@ -84,6 +107,7 @@ impl KeyProvider for FakeKeyProvider {
         self.key
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .map(Key::new)
             .ok_or_else(key_unavailable)
     }
 
@@ -139,7 +163,13 @@ impl KeyProvider for LocalKeyFileProvider {
 
     fn get_key(&self, _cancel: &Cancel) -> Result<Key> {
         match read_private_bytes(&self.path, KEY_BYTES) {
-            Ok(bytes) => Key::try_from(bytes).map_err(|_| malformed_key()),
+            Ok(mut bytes) => {
+                let key = <[u8; KEY_BYTES]>::try_from(bytes.as_slice())
+                    .map(Key::new)
+                    .map_err(|_| malformed_key());
+                bytes.zeroize();
+                key
+            }
             Err(error) if error.code == Code::NotFound => Err(key_unavailable()),
             Err(error) if error.code == Code::TooLarge => Err(malformed_key()),
             Err(error) => Err(error),
@@ -159,10 +189,10 @@ impl KeyProvider for LocalKeyFileProvider {
                 )
             }
         })?;
-        let written = random::<KEY_BYTES>().and_then(|key| {
-            file.write_all(&key)
-                .and_then(|()| file.sync_all())
-                .map_err(|error| Error::io(error, "Cannot write the store key. Check the disk."))
+        let written = random::<KEY_BYTES>().and_then(|mut key| {
+            let written = file.write_all(&key).and_then(|()| file.sync_all());
+            key.zeroize();
+            written.map_err(|error| Error::io(error, "Cannot write the store key. Check the disk."))
         });
 
         if written.is_err() {
@@ -172,5 +202,9 @@ impl KeyProvider for LocalKeyFileProvider {
         written?;
         sync_directory(directory);
         Ok(())
+    }
+
+    fn key_file(&self) -> Option<&Path> {
+        Some(&self.path)
     }
 }

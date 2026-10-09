@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use family_store::{
-    Cancel, Code, Error, FakeKeyProvider, Key, KeyProvider, SecretRecordOptions,
-    with_secret_record, write_private_file,
+    Cancel, Code, Error, FakeKeyProvider, KeyProvider, SecretRecordOptions, with_secret_record,
+    write_private_file,
 };
 
-pub const KEY: Key = [7; 32];
+pub const KEY: [u8; 32] = [7; 32];
 
 pub const SECRET: &str = "refresh-token-c2VjcmV0";
 

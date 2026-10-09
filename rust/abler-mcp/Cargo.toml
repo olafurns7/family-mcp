@@ -1,0 +1,30 @@
+[package]
+name = "abler-mcp"
+# Kept equal to packages/abler-mcp/package.json; a test compares them.
+version = "0.6.0"
+description = "Unofficial, read-only Abler schedules and messages MCP server"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Test seam only: ABLER_TEST_ORIGIN redirects requests (never cookies) to a local fake upstream.
+# Off by default, so a release build always talks to https://www.abler.io.
+test-origin = []
+
+[dependencies]
+family-store = { path = "../family-store" }
+getrandom = "=0.4.3"
+# Only to recognise a response head too large to read (`Error::is_parse_too_large`).
+hyper = { version = "=1.12.0", default-features = false }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"] }
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs", "process"] }
+rmcp = { version = "=3.5.1", default-features = false, features = ["server", "transport-io"] }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+tokio = { version = "=1.53.2", features = ["rt", "io-std", "macros", "signal", "sync", "time"] }
+# The debugging socket of `auth capture`; plain ws:// to loopback only, so no TLS feature.
+tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }

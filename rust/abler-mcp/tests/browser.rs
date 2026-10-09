@@ -1,0 +1,53 @@
+//! `auth login` and `auth capture` against the TypeScript package's own fakes: tests/ts holds a
+//! copy of packages/abler-mcp/test/browser-login.test.ts and the capture and loopback cases of its
+//! other suites, changed only to start this binary, and a copy of integration.test.ts whose
+//! in-process clients and CLI spawns are this binary (tests/ts/rust-abler.ts). `FAMILY_MCP_BUN` must name a Bun 1.4.2
+//! executable: these tests fail without it and are never skipped. They need the `test-origin`
+//! feature, without which verification would talk to Abler itself.
+#![cfg(feature = "test-origin")]
+
+use std::path::Path;
+use std::process::Command;
+
+fn bun_test(file: &str, passed: usize) {
+    let bun = std::env::var_os("FAMILY_MCP_BUN")
+        .expect("FAMILY_MCP_BUN must name a Bun 1.4.2 executable; parity tests never skip");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new(bun)
+        .args(["test", "--timeout", "30000"])
+        .arg(manifest.join("tests/ts").join(file))
+        // The fakes and README are found relative to the TypeScript package.
+        .current_dir(manifest.join("../../packages/abler-mcp"))
+        .env("ABLER_RUST_BINARY", env!("CARGO_BIN_EXE_abler-mcp"))
+        .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0")
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "{}\n{report}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    // Not vacuous: every case ran and none was skipped or filtered out.
+    assert!(
+        report.contains(&format!("\n {passed} pass\n")) && report.contains("\n 0 fail\n"),
+        "{report}"
+    );
+    assert!(!report.contains(" skip\n"), "{report}");
+}
+
+#[test]
+fn the_fake_browser_cases_pass_against_this_binary() {
+    bun_test("browser-login.test.ts", 14);
+}
+
+#[test]
+fn the_capture_and_loopback_cases_pass_against_this_binary() {
+    bun_test("capture.test.ts", 4);
+}
+
+#[test]
+fn the_integration_cases_pass_against_this_binary() {
+    bun_test("integration.test.ts", 23);
+}

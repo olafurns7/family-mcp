@@ -8,6 +8,7 @@ use crate::errors::{Cancel, Code, Error, Result};
 use crate::files::random;
 use crate::keys::{KEY_BYTES, Key, KeyProvider, key_exists, key_unavailable, malformed_key};
 use crate::secret::check_names;
+use zeroize::{Zeroize, Zeroizing};
 
 const SECURITY: &str = "/usr/bin/security";
 
@@ -154,13 +155,30 @@ impl KeychainAccessorKeyProvider {
             }
         };
 
-        if failure.is_some() {
-            let _ = child.kill();
+        // A child that closed its output can still run on; the same deadline and cancel bound it.
+        let mut status = None;
+
+        while failure.is_none() {
+            match child.try_wait() {
+                Ok(Some(exited)) => {
+                    status = exited.code();
+                    break;
+                }
+                Ok(None) if cancel.is_cancelled() => failure = Some(Failure::Aborted),
+                Ok(None) if Instant::now() >= deadline => failure = Some(Failure::Timeout),
+                Ok(None) => std::thread::sleep(POLL),
+                Err(_) => failure = Some(Failure::Failed),
+            }
         }
 
-        // The wait follows both a normal exit and a kill, so no child outlives the call.
+        if failure.is_some() {
+            let _ = child.kill();
+            // The wait follows the kill, so no child outlives the call.
+            let _ = child.wait();
+        }
+
         Run {
-            status: child.wait().ok().and_then(|status| status.code()),
+            status,
             stdout,
             failure,
         }
@@ -200,7 +218,7 @@ impl KeyProvider for KeychainAccessorKeyProvider {
         } else {
             parse_key(&run)
         };
-        run.stdout.fill(0);
+        run.stdout.zeroize();
         key
     }
 
@@ -211,7 +229,7 @@ impl KeyProvider for KeychainAccessorKeyProvider {
             Err(error) => return Err(error),
         }
         cancel.check()?;
-        let key = random::<KEY_BYTES>()?;
+        let mut key = random::<KEY_BYTES>()?;
         // No -U (never update an item) and no -A (no allow-all ACL); only the Apple tool is trusted.
         let mut command = format!(
             "add-generic-password -s {} -a {} -w {} -T {SECURITY}\n",
@@ -221,23 +239,28 @@ impl KeyProvider for KeychainAccessorKeyProvider {
         );
         // `-i` reads the command from stdin, so the key never appears in any process's argv.
         let run = self.run(&["-i"], Some(&command), self.options.create_timeout, cancel);
-        command.clear();
+        command.zeroize();
 
-        if run.failure.is_some() || run.status != Some(0) {
-            return Err(uncertain_key());
-        }
-        // `-i` exits with the last command's status; a zero status still needs the stored key to
-        // equal the generated one.
-        let written = self.get_key(cancel).map_err(|_| uncertain_key())?;
-        let different = written
-            .iter()
-            .zip(&key)
-            .fold(0, |sum, (left, right)| sum | (left ^ right));
+        let confirmed = (|| {
+            if run.failure.is_some() || run.status != Some(0) {
+                return Err(uncertain_key());
+            }
+            // `-i` exits with the last command's status; a zero status still needs the stored key
+            // to equal the generated one.
+            let written = self.get_key(cancel).map_err(|_| uncertain_key())?;
+            let different = written
+                .bytes()
+                .iter()
+                .zip(&key)
+                .fold(0, |sum, (left, right)| sum | (left ^ right));
 
-        if different != 0 {
-            return Err(uncertain_key());
-        }
-        Ok(())
+            if different != 0 {
+                return Err(uncertain_key());
+            }
+            Ok(())
+        })();
+        key.zeroize();
+        confirmed
     }
 }
 
@@ -278,12 +301,12 @@ fn parse_key(run: &Run) -> Result<Key> {
             .strip_suffix(b"\n")
             .filter(|digits| digits.len() == KEY_BYTES * 2)
             .and_then(|digits| {
-                let mut key = [0; KEY_BYTES];
+                let mut key = Zeroizing::new([0; KEY_BYTES]);
 
                 for (byte, pair) in key.iter_mut().zip(digits.chunks(2)) {
                     *byte = lower_hex(pair[0])? << 4 | lower_hex(pair[1])?;
                 }
-                Some(key)
+                Some(Key(key))
             })
             .ok_or_else(malformed_key),
         (None, Some(44)) => Err(key_unavailable()), // errSecItemNotFound -25300
