@@ -437,37 +437,41 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` replace `~/.config` and
 `~/.local/share`; set the same values for login and the MCP host. On macOS they do
 not move the store. Keep that key: without it the session and sign-in cannot be
 read, and only an explicit `login` or `login --import` replaces the store. The key
-is never regenerated in any other way, and no command falls back to a plaintext
-file once the marker exists. `infomentor-mcp status` names where the session is
-saved and whether a sign-in is stored, never their values.
+is never regenerated in any other way, and no command falls back to a plaintext file
+once the marker exists. `infomentor-mcp status` says how the session is saved and
+whether a sign-in is stored, never their values.
 
 On macOS both store directories are excluded from Time Machine before any secret is
 written in them, and every start confirms it. Linux has no standard for this: leave
-`~/.local/share/family-mcp/keys` out of your backups. Writes are atomic, not
-power-loss durable: a power cut can lose the last change.
+`~/.local/share/family-mcp/keys` out of your backups. A power cut during a save can
+lose that last change, but never leaves a half-written file.
 
 Every start except `--help` and `--version` checks the store before anything else.
-If a store file or directory could be read or replaced by another user (group or
-other permissions, another owner, a symbolic or hard link, a writable directory
-above it, or a macOS access control list), `infomentor-mcp` prints one line,
-`infomentor-mcp: cannot start: <what to fix> (<path>)`, and exits; it never changes
-permissions for you. A store set up by an earlier test build with the macOS
-Keychain is refused: remove the store files and run `infomentor-mcp login` again.
+If a store file or directory could be read or replaced by another user (permissions
+that let others in, another owner, a link instead of a real file or folder, a folder
+above it that others can write to, or extra sharing permissions on macOS), or Time
+Machine did not confirm that it skips the store, `infomentor-mcp` prints
+`infomentor-mcp: cannot start.` with what is wrong, the path, and the command that
+fixes it, and exits; it never changes permissions for you. A store left by an
+earlier test build that kept its key in the macOS Keychain is refused: remove
+`session.enc` and `session.enc.marker` from the store folder in the table above,
+then run `infomentor-mcp login` again.
 
 An earlier test build kept this store under `~/.config` on macOS, with the key in
 the macOS Keychain or under `~/.local/share`. That store is not used. At start the
 server lists the old files with the exact commands to remove them; run
 `infomentor-mcp login` first, then remove them.
 
-What this protects against: other users of this computer who are not root; the
-session and password showing up in `cat`, `grep`, commits or dotfile sync without
-the key; Time Machine backups, which skip the store; tampering with the record.
-What it does not: anything running as your user, such as other programs, malware or
-an AI agent with a shell or a prompt injection, which can read both files or call
-the MCP tools; root; a stolen laptop that is unlocked; other backup, sync or clone
-tools, and Time Machine backups made before the exclusion; indexers such as
-Spotlight; the key in crash dumps, swap or hibernation images. FileVault protects a
-stolen disk that is switched off.
+What this protects against: other users of this computer who are not root; a copy of
+the record without its key, such as in a commit or dotfile sync (the file reads as
+gibberish in `cat` or `grep`); Time Machine backups, which skip the store; tampering
+with the record (not a rollback to an older record with its marker). What it does
+not: anything running as your user, such as other programs, malware or an AI agent
+with a shell or a prompt injection, which can read both files or call the MCP tools;
+root; a stolen laptop that is unlocked; other backup, sync or clone tools, and Time
+Machine backups made before the exclusion; indexers such as Spotlight; the key in
+crash dumps, swap or hibernation images. Disk encryption (FileVault on macOS, LUKS
+on Linux) protects a stolen computer that is switched off.
 
 Versions 0.8.0 and earlier kept the session in the plaintext file at
 `INFOMENTOR_SESSION_PATH`, by default `~/.config/infomentor-mcp/session.json`

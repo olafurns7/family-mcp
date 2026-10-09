@@ -69,7 +69,7 @@ attendance state from a failed request or undocumented value.
   fallback for a machine without a desktop, and its values never go in chat.
   Every login path verifies and stores the session with the shared
   session-store helpers. `--google` requires a release after Inna 0.2.2.
-- The session is saved encrypted. `inna_session_status` names where in its
+- The session is saved encrypted. `inna_session_status` says how in its
   `storage` field; when it reports a plaintext file, tell the owner to stop
   running servers and run `inna-mcp auth migrate`. A session-store error is
   fixed by the owner with the CLI command it names; never read, move, or delete

@@ -146,15 +146,17 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` replace `~/.config` and
 `~/.local/share`; set the same values for sign-in and the MCP host. On macOS they do
 not move the store. On macOS both store directories are excluded from Time Machine
 before any secret is written in them, and every start confirms it. Linux has no
-standard for this: leave `~/.local/share/family-mcp/keys` out of your backups.
-Writes are atomic, not power-loss durable: a power cut can lose the last change.
+standard for this: leave `~/.local/share/family-mcp/keys` out of your backups. A
+power cut during a save can lose that last change, but never leaves a half-written
+file.
 
 Every start except `--help` and `--version` checks the store before anything else.
-If a store file or directory could be read or replaced by another user (group or
-other permissions, another owner, a symbolic or hard link, a writable directory
-above it, or a macOS access control list), `inna-mcp` prints one line,
-`inna-mcp: cannot start: <what to fix> (<path>)`, and exits; it never changes
-permissions for you.
+If a store file or directory could be read or replaced by another user (permissions
+that let others in, another owner, a link instead of a real file or folder, a folder
+above it that others can write to, or extra sharing permissions on macOS), or Time
+Machine did not confirm that it skips the store, `inna-mcp` prints
+`inna-mcp: cannot start.` with what is wrong, the path, and the command that fixes
+it, and exits; it never changes permissions for you.
 
 An earlier test build kept this store under `~/.config` on macOS, with the key in
 the macOS Keychain or under `~/.local/share`. That store is not used. At start the
@@ -163,7 +165,7 @@ server lists the old files with the exact commands to remove them; run
 
 Windows is unsupported by the encrypted store.
 
-`inna-mcp auth status` verifies the session and names where it is saved, as does
+`inna-mcp auth status` verifies the session and says how it is saved, as does
 `inna_session_status` (`storage`). `inna-mcp auth logout` forgets the session on
 this computer; the key, the record and the absence record stay.
 
@@ -182,25 +184,26 @@ so the old cookies are never offered again: the next command reports that the
 last write did not complete, and you sign in again. When the cookies did not
 change, the record is kept and the command reports the store error.
 
-What this protects against: other users of this computer who are not root; the
-session showing up in `cat`, `grep`, commits or dotfile sync without the key; Time
-Machine backups, which skip the store; tampering with the record. What it does not:
-anything running as your user, such as other programs, malware or an AI agent with a
-shell or a prompt injection, which can read both files or call the MCP tools; root;
-a stolen laptop that is unlocked; other backup, sync or clone tools, and Time
+What this protects against: other users of this computer who are not root; a copy of
+the record without its key, such as in a commit or dotfile sync (the file reads as
+gibberish in `cat` or `grep`); Time Machine backups, which skip the store; tampering
+with the record (not a rollback to an older record with its marker). What it does
+not: anything running as your user, such as other programs, malware or an AI agent
+with a shell or a prompt injection, which can read both files or call the MCP tools;
+root; a stolen laptop that is unlocked; other backup, sync or clone tools, and Time
 Machine backups made before the exclusion; indexers such as Spotlight; the key in
-crash dumps, swap or hibernation images. FileVault protects a stolen disk that is
-switched off.
+crash dumps, swap or hibernation images. Disk encryption (FileVault on macOS, LUKS
+on Linux) protects a stolen computer that is switched off.
 
-| Message                                | Action                                                                                                                                                            |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Saved in a plaintext file              | Run `inna-mcp auth migrate`.                                                                                                                                      |
-| `inna-mcp: cannot start:`              | The store is unsafe. The line names the path and the fix (for example `chmod 700`, `chmod 600`, `chmod go-w`, `chmod -N`). Nothing is changed for you.            |
-| Set up with the macOS Keychain         | An earlier test build’s store. Remove the store files and run `inna-mcp auth login` again.                                                                        |
-| The Inna store key is missing          | The key was deleted. The record cannot be decrypted; `inna-mcp auth login` or `auth import` replaces it with a new key and record.                                |
-| The last write … did not complete      | `session.enc` and `session.enc.marker` disagree, or the record was removed after a failed write. Remove both files, then sign in again.                           |
-| Cannot use the Inna session store      | The record, marker, or key is damaged, unsafe, or from another key. Nothing is reset automatically; restore the key, or remove the record and marker and sign in. |
-| INNA_SESSION_FILE overlaps the … store | Point `INNA_SESSION_FILE` away from the encrypted record, its marker and lock, and the key file.                                                                  |
+| Message                                | Action                                                                                                                                                                                                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Saved in a plaintext file              | Run `inna-mcp auth migrate`.                                                                                                                                                                                                                                  |
+| `inna-mcp: cannot start.`              | The store is unsafe, or Time Machine did not confirm that it skips it. The next lines name the path and the command that fixes it (for example `chmod 700`, `chmod 600`, or `tmutil addexclusion`). Nothing is changed for you.                               |
+| Leftover of an earlier test build      | That build kept the key in the macOS Keychain. Remove `session.enc` and `session.enc.marker` from `~/Library/Application Support/family-mcp/inna-mcp`, then run `inna-mcp auth login` again.                                                                  |
+| The Inna store key is missing          | The key was deleted. The record cannot be decrypted; `inna-mcp auth login` or `auth import` replaces it with a new key and record.                                                                                                                            |
+| The last write … did not complete      | `session.enc` and `session.enc.marker` disagree, or the record was removed after a failed write. Remove both files, then sign in again.                                                                                                                       |
+| Cannot use the Inna session store      | Run `inna-mcp auth status` in a terminal: an unsafe store gets the path and the fix there. Otherwise the record, marker, or key is damaged or from another key; nothing is reset automatically. Restore the key, or remove the record and marker and sign in. |
+| INNA_SESSION_FILE overlaps the … store | Point `INNA_SESSION_FILE` away from the encrypted record, its marker and lock, and the key file.                                                                                                                                                              |
 
 Never remove the absence record to fix a session-store message.
 
@@ -281,7 +284,8 @@ args = ["serve"]
 ```
 
 An absolute `INNA_SESSION_FILE`, `XDG_CONFIG_HOME` or `XDG_DATA_HOME` may be set
-in the host's private environment; use the same values for sign-in.
+in the host's private environment; use the same values for sign-in. On macOS the
+XDG variables do not move the encrypted store.
 Auth login/import, migrate and logout
 exist only in the CLI; untrusted school text cannot invoke them through MCP.
 
@@ -289,7 +293,7 @@ exist only in the CLI; untrusted school text cannot invoke them through MCP.
 
 | Tool                     | Inputs / behavior                                                                                                               |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `inna_session_status`    | Verify authentication and name where the session is saved (`storage`); returns no credentials.                                  |
+| `inna_session_status`    | Verify authentication and say how the session is saved (`storage`); returns no credentials.                                     |
 | `inna_list_students`     | Students in this session with their `studentKey`, the selected one, and the default. Does not switch.                           |
 | `inna_get_overview`      | Current context, terms, courses/booklists, announcements.                                                                       |
 | `inna_get_timetable`     | Inclusive `dateFrom`, `dateTo` in `YYYY-MM-DD`.                                                                                 |

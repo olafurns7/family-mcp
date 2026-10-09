@@ -159,6 +159,9 @@ await withSecretStore(store, async (held) => {
   call throws that error.
 - `exists()`, `update()`, `createKey()` and `reset()` are the operations of the functions here.
   `withSecretRecord` is `read()`, `update`, then `write()` on one handle.
+- `checkKey()` confirms the key is there without reading the record: `STORE_BACKEND_RETIRED` for
+  a store of the retired Keychain accessor, then whatever `getKey()` throws. Callers use it, not
+  `keys.getKey()`, to tell a lost key from a working one.
 - The handle stops working when `work` settles; later calls throw `STORE_ERROR`. The signal only
   aborts the lock wait and `update`; a started `write` always completes, so a rotated token is
   never lost to cancellation.
@@ -190,8 +193,11 @@ an optional `AbortSignal`; `withSecretRecord` and `createSecretKey` pass theirs.
 The `KeyProvider` interface and the marker's `backend`, `keySource` and `keyId` checks stay, so a
 later provider (a signed macOS Keychain helper, Linux Secret Service) can be added and chosen at
 setup; none falls back to another. No code here runs `/usr/bin/security` or any Keychain API. A
-marker from an earlier build whose key source is `keychain-accessor` is refused with
-`STORE_BACKEND_RETIRED`: remove the store files and sign in again.
+marker from an earlier test build whose key source is `keychain-accessor` is refused with
+`STORE_BACKEND_RETIRED` before any key is asked for, whether or not a key file exists: reads,
+writes, `reset()`, `createKey()` and `checkKey()` all refuse and leave both files as they are. That
+build left no key file, and its record may still open with the Keychain key, so it is never taken
+for a lost key. The owner removes `session.enc` and `session.enc.marker` and signs in again.
 
 ### Where the store lives
 
@@ -207,15 +213,18 @@ move the store, so it cannot be pointed into iCloud Drive, Desktop or Documents 
 Only the test seam `FAMILY_MCP_STORE_TEST_SEAM=1` makes macOS honour absolute XDG directories;
 the tests of every package that uses the store, and `bun test` from the repository root, preload
 `test/store-test-seam.ts`, which sets it with scratch XDG directories, so a test run never touches
-the real store. A home that is unset or not absolute is refused (`STORE_UNAVAILABLE`). Other
+the real store. A home that is unknown or not absolute is refused (`STORE_UNAVAILABLE`). Other
 platforms have no supported key (`STORE_UNAVAILABLE`). `FAMILY_MCP_KEY_BACKEND` is retired: unset,
 empty or `file` change nothing, and any other value is refused.
 
 `retiredStorePaths(server, profile?, { platform? })` lists where an earlier, unreleased macOS build
 kept the store (`~/.config/<server>/session.enc` with its marker and lock, and
-`~/.local/share/family-mcp/keys/<server>.<profile>.key`). Passed as a record's `retired` option,
-those files make `exists()` true, so the server asks for a new sign-in instead of falling back to
-an older credential; nothing reads them.
+`~/.local/share/family-mcp/keys/<server>.<profile>.key`), leaving out the current store's record,
+marker, lock and key, which XDG variables pointing into Application Support would otherwise name.
+Passed as a record's `retired` option, those files make `exists()` true, so the server asks for a
+new sign-in instead of falling back to an older credential; nothing reads them. An old path that is
+the current record, marker, lock or key under another name (a linked directory or file, by device
+and inode) is not counted, and the startup notice never names it for removal.
 
 ### Time Machine
 
@@ -236,29 +245,44 @@ its key holds the secret.
 ### Startup check
 
 `checkSecretStore({ path, keys, retired? })` is the preflight every server runs before it serves or
-touches the store, and `startupCheck({ server, signIn, store })` wraps it for a CLI: one stderr line
-`<server>: cannot start: <message> (<path>)` and `false` on a refusal, or a notice with the exact
-cleanup commands when `retired` files exist. It reads no secret, takes no lock and creates nothing;
-on macOS it only re-applies a lost backup exclusion. It refuses, with `UNSAFE_FILE` and a fixed
-message naming the fix, and never repairs anything:
+touches the store, and `startupCheck({ server, signIn, store })` wraps it for a CLI. On a refusal
+it writes to stderr and returns `false`:
+
+```text
+abler-mcp: cannot start. Other users can open this store directory.
+  Path: '/Users/x/Library/Application Support/family-mcp/keys'
+  Fix:  chmod 700 '/Users/x/Library/Application Support/family-mcp/keys'
+```
+
+The path is quoted for the shell, so both lines paste as they are; `Fix:` is left out when no one
+command fixes it. When `retired` files exist it writes a notice with the exact cleanup commands.
+It reads no secret, takes no lock and creates nothing; on macOS it only re-applies a lost backup
+exclusion. It refuses, with `UNSAFE_FILE` and a fixed message, and never repairs anything:
 
 - a key, record or marker file that is not a regular file, is a symbolic link, has another name
-  (other than the recognised key temporary above), has group or other permission bits, or is
-  owned by another user;
+  (other than the recognised key temporary above; when another process has just removed that
+  temporary, one fresh look accepts the same file with one name), has group or other permission
+  bits (`chmod 600`), or is owned by another user (`sudo chown "$(id -un)"`);
 - a store directory (`keys/`, the server's directory, and `family-mcp/` where it is their parent)
-  that is a
-  symbolic link, is owned by another user, including root, or is not owner-only (`chmod 700`);
-- a directory above the store, on the path as written and on the path it resolves to, that
-  another user could use to replace the store: owned by someone other than this user or root, or
-  writable by group or other (`chmod go-w`). A sticky shared directory such as `/tmp` passes
-  only when the entry below it is this user's or root's. A symbolic link on the way must be this
-  user's or root's;
+  that is a symbolic link, is owned by another user, including root (`sudo chown -R "$(id -un)"`),
+  or is not owner-only (`chmod 700`);
+- a directory above the store that another user could use to replace the store: owned by someone
+  other than this user or root, or writable by group or other (`chmod go-w`). The check follows
+  the route the system takes, one name at a time from `/`: every symbolic link on the way, also
+  one inside another link's target, must be this user's or root's, and every directory it passes
+  through, including those above each target, is checked. More than 40 links, a loop or a link
+  to nothing is refused. Root's own links such as `/tmp -> private/tmp` pass. A sticky shared
+  directory such as `/tmp` passes only when the entry below it is this user's or root's;
 - on macOS, an access control list that grants another user anything on a store directory or file
-  (`chmod -N`), or lets another user change a directory above the store (`chmod -a`). Deny
-  entries, such as a stock home's `group:everyone deny delete`, pass; an entry the check cannot
-  read is refused.
+  (`chmod -N`), or lets another user change a directory above the store (no one-line fix:
+  `chmod -N` would also drop the stock deny entry; the message says to list the entries with
+  `ls -led` and remove the one that lets another user write). Deny entries, such as a stock
+  home's `group:everyone deny delete`, pass; an entry the check cannot read is refused;
+- on macOS, a store directory whose Time Machine exclusion `tmutil isexcluded` does not confirm
+  (`tmutil addexclusion`).
 
-The error message has no path; `StoreRefusal.path` names the path for the owner's terminal.
+The error message has no path; `StoreRefusal.path` names the path and `StoreRefusal.fix` the
+command, for the owner's terminal.
 
 Failures are fixed, never repaired:
 
@@ -272,7 +296,8 @@ Failures are fixed, never repaired:
   pending generation other than the next one, a migrated flag that disagrees with the generation, a
   committed marker ahead of or behind its record, a missing record after a committed write, or a
   record without a marker. Neither file is used or changed; nothing resets the store.
-- `STORE_BACKEND_RETIRED`: the marker names the macOS Keychain key source of an earlier build.
+- `STORE_BACKEND_RETIRED`: the marker names the macOS Keychain key source of an earlier test
+  build, checked before the key.
 - `STORE_LOCKED`, `STORE_ACCESS_DENIED`, `STORE_TIMEOUT`: kept for a later key provider that can
   be locked, refuse access or not answer in time; the key file never reports them. The key is
   never created as a fallback.
@@ -301,7 +326,8 @@ What it does not protect against:
 - rolling back a record together with its matching old marker;
 - plaintext files from older versions and browser profiles outside the store.
 
-FileVault (disk encryption) is what protects a stolen disk that is switched off.
+Disk encryption (FileVault on macOS, LUKS on Linux) is what protects a stolen computer that is
+switched off.
 
 ## Platform notes
 
@@ -321,9 +347,10 @@ read-modify-write cycles while a removal waits for an in-flight holder. The secr
 covers round trips, 1 MiB payloads, header and ciphertext tampering, wrong keys, missing and unsafe
 key files, pending-write reconciliation, stale or rolled-back markers and records, messages without
 paths or secrets, the retired Keychain marker and old layout, and three processes serializing
-encrypted updates. The storage suite covers every startup refusal (modes, owners, links, ancestors,
-sticky parents, macOS ACLs) with nothing read, locked or created, and a process stopped at each
-key publication step, then restarted, also concurrently. The backup suite runs a fake `tmutil`,
+encrypted updates. The storage suite covers every startup refusal (modes, owners, links, ancestors
+including a replaceable directory between two links, link loops, sticky parents, macOS ACLs) with
+nothing read, locked or created, a process stopped at each key publication step, then restarted,
+also concurrently, and a recovery by another process landing inside the check. The backup suite runs a fake `tmutil`,
 never the real one: exclusion before any secret, the `addexclusion` fallback, refusal when
 exclusion fails or is not confirmed, re-application on start and after a directory is made again,
 and a hung `tmutil` abandoned within its bound.
