@@ -6,6 +6,9 @@ import { join } from 'node:path';
 
 import { AblerClient } from '../src/api.js';
 import { importCookies, saveSession } from '../src/auth.js';
+import { useScratchStore } from './scratch.js';
+
+useScratchStore();
 
 test('real loopback HTTP covers cookies, redirects, rate limits, and large bodies', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-loopback-'));

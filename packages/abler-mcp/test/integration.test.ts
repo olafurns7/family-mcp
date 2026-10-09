@@ -10,13 +10,15 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve, join } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { SafeError } from '@family-mcp/mcp-runtime';
+import { FakeKeyProvider, SessionStoreError, type KeyProvider } from '@family-mcp/session-store';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import * as z from 'zod/v4';
@@ -28,9 +30,25 @@ import {
   messagesInput,
   scheduleInput,
 } from '../src/api.js';
-import { captureCookies, importCookies, loadSession, ORIGIN, saveSession } from '../src/auth.js';
+import {
+  captureCookies,
+  importCookies,
+  loadSession,
+  logoutSession,
+  migrateSession,
+  ORIGIN,
+  retryCandidate,
+  saveSession,
+  saveVerifiedSession,
+  sessionStorage,
+  withSession,
+  type Slot,
+} from '../src/auth.js';
 import { createServer } from '../src/server.js';
 import { createCdpMock } from './cdp-mock.js';
+import { filesContaining, useScratchStore } from './scratch.js';
+
+const store = useScratchStore();
 
 const requestBodySchema = z.object({
   operationName: z.string(),
@@ -51,6 +69,10 @@ const eventBase = {
   ageGroup: { id: 'age-group', name: 'Team' },
   currentPlayerAttendance: [],
 };
+
+/** The jar the store (or, before migration, the plaintext file) holds now. */
+const saved = (path: string, slot: Slot = 'current') =>
+  withSession(path, slot, new AbortController().signal, async (jar) => jar);
 
 const cookie = {
   name: 'refreshToken',
@@ -185,10 +207,13 @@ test('auth import accepts private browser exports and stdin at the byte limit', 
       expect(code).toBe(0);
       expect(error).toBe('');
       expect(out).toContain('saved and verified');
-      expect(await (await loadSession(path)).getCookieString(ORIGIN)).toContain(
+      expect(await (await saved(path)).getCookieString(ORIGIN)).toContain(
         'id_token=offline-access',
       );
-      expect(await readFile(path, 'utf8')).not.toContain('_analytics');
+      expect(await Bun.file(path).exists()).toBe(false);
+      expect(
+        await filesContaining(['private-refresh', 'offline-access', '_analytics'], store.home),
+      ).toEqual([]);
     }
 
     expect(await readFile(source, 'utf8')).toBe(atLimit);
@@ -390,8 +415,8 @@ test('private cookie import, renewal, pagination, validation, and safe failures'
 
       queries++;
       expect(headers.get('cookie')).toContain('id_token=private-access');
-      const saved = await loadSession(path);
-      expect((await saved.getCookies(ORIGIN)).find((c) => c.key === 'refreshToken')?.value).toBe(
+      const stored = await loadSession(path);
+      expect((await stored.getCookies(ORIGIN)).find((c) => c.key === 'refreshToken')?.value).toBe(
         `rotated-${renewals}`,
       );
 
@@ -1160,6 +1185,8 @@ test('SIGTERM aborts an in-flight Abler fetch and releases its session lock', as
     path,
     await importCookies([cookie, { ...cookie, name: 'id_token', value: 'private-access' }]),
   );
+  assert.equal(await migrateSession(path), 'migrated');
+  const lock = `${store.record}.lock`;
   await writeFile(
     preload,
     `globalThis.fetch = (_input, init) => new Promise((_resolve, reject) => {
@@ -1198,13 +1225,13 @@ test('SIGTERM aborts an in-flight Abler fetch and releases its session lock', as
     pending = client.callTool({ name: 'auth_status', arguments: {} });
     void pending.catch(() => {});
     await fetchStarted.promise;
-    await stat(`${path}.lock`);
+    await stat(lock);
     process.kill(pid, 'SIGTERM');
     await stopped.promise;
     await pending.catch(() => {});
     assert.equal(transport.pid, null);
-    await assert.rejects(stat(`${path}.lock`), { code: 'ENOENT' });
-    assert.deepEqual((await readdir(directory)).toSorted(), ['never-fetch.js', 'session.json']);
+    await assert.rejects(stat(lock), { code: 'ENOENT' });
+    assert.deepEqual(await readdir(directory), ['never-fetch.js']);
   } finally {
     if (transport.pid !== null) process.kill(transport.pid, 'SIGKILL');
     await pending?.catch(() => {});
@@ -1337,107 +1364,121 @@ test('child schedules separate siblings by ID, retain empty children, and pagina
   }
 });
 
-test('separate processes serialize rotating credentials and logout waits for an in-flight request', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'abler-concurrency-'));
-  const path = join(directory, 'session.json');
-  let current = cookie.value;
-  let rotations = 0;
-  let hold = false;
-  const { promise: refreshing, resolve: started } = Promise.withResolvers<void>();
-  const { promise: proceed, resolve: release } = Promise.withResolvers<void>();
+for (const legacy of [false, true])
+  test(`separate processes serialize rotating credentials and logout waits for an in-flight request (${legacy ? 'plaintext file' : 'store'})`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'abler-concurrency-'));
+    const path = join(directory, 'session.json');
+    let current = cookie.value;
+    let rotations = 0;
+    let hold = false;
+    const { promise: refreshing, resolve: started } = Promise.withResolvers<void>();
+    const { promise: proceed, resolve: release } = Promise.withResolvers<void>();
 
-  const upstream = Bun.serve({
-    hostname: '127.0.0.1',
-    port: 0,
-    async fetch(request) {
-      if (new URL(request.url).pathname === '/oauth/token') {
-        if (!request.headers.get('cookie')?.includes(`refreshToken=${current}`))
-          return new Response(null, { status: 401 });
-        current = `rotated-${++rotations}`;
+    const upstream = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      async fetch(request) {
+        if (new URL(request.url).pathname === '/oauth/token') {
+          if (!request.headers.get('cookie')?.includes(`refreshToken=${current}`))
+            return new Response(null, { status: 401 });
+          current = `rotated-${++rotations}`;
 
-        if (hold) {
-          started();
-          await proceed;
+          if (hold) {
+            started();
+            await proceed;
+          }
+
+          const response = Response.json({ access_token: 'access' });
+          response.headers.append('Set-Cookie', 'id_token=access; Path=/; Max-Age=600; HttpOnly');
+          response.headers.append(
+            'Set-Cookie',
+            `refreshToken=${current}; Path=/; Max-Age=3600; HttpOnly`,
+          );
+
+          return response;
         }
 
-        const response = Response.json({ access_token: 'access' });
-        response.headers.append('Set-Cookie', 'id_token=access; Path=/; Max-Age=600; HttpOnly');
-        response.headers.append(
-          'Set-Cookie',
-          `refreshToken=${current}; Path=/; Max-Age=3600; HttpOnly`,
-        );
+        return Response.json({ data: { me: { id: 'parent', displayName: 'Parent' } } });
+      },
+    });
 
-        return response;
-      }
+    const env = {
+      ...process.env,
+      ABLER_TEST_FILE: path,
+      ABLER_TEST_ORIGIN: `http://127.0.0.1:${upstream.port}`,
+    };
 
-      return Response.json({ data: { me: { id: 'parent', displayName: 'Parent' } } });
-    },
-  });
-
-  const env = {
-    ...process.env,
-    ABLER_TEST_FILE: path,
-    ABLER_TEST_ORIGIN: `http://127.0.0.1:${upstream.port}`,
-  };
-
-  const code = `import { AblerClient } from ${JSON.stringify(pathToFileURL(resolve('src/api.ts')).href)};
+    const code = `import { AblerClient } from ${JSON.stringify(pathToFileURL(resolve('src/api.ts')).href)};
     const request = (url, init) => fetch(new URL(new URL(url).pathname, process.env.ABLER_TEST_ORIGIN), init);
     console.log(JSON.stringify(await new AblerClient(process.env.ABLER_TEST_FILE, request).status(true)));`;
 
-  const run = () =>
-    Bun.spawn([process.execPath, '--eval', code], { env, stdout: 'pipe', stderr: 'pipe' });
+    const run = () =>
+      Bun.spawn([process.execPath, '--eval', code], { env, stdout: 'pipe', stderr: 'pipe' });
 
-  try {
-    await saveSession(path, await importCookies([cookie]));
-    const processes = [run(), run(), run()];
+    try {
+      await saveSession(path, await importCookies([cookie]));
 
-    const results = await Promise.all(
-      processes.map(async (p) => ({
-        exit: await p.exited,
-        out: await new Response(p.stdout).text(),
-        err: await new Response(p.stderr).text(),
-      })),
-    );
+      if (!legacy) assert.equal(await migrateSession(path), 'migrated');
+      const processes = [run(), run(), run()];
 
-    expect(results.map((r) => r.exit)).toEqual([0, 0, 0]);
-    expect(
-      results.every(
-        (r) => z.object({ authenticated: z.boolean() }).parse(JSON.parse(r.out)).authenticated,
-      ),
-    ).toBe(true);
-    expect(results.every((r) => r.err === '')).toBe(true);
-    expect(rotations).toBe(3);
-    hold = true;
-    const active = run();
-    await refreshing;
+      const results = await Promise.all(
+        processes.map(async (p) => ({
+          exit: await p.exited,
+          out: await new Response(p.stdout).text(),
+          err: await new Response(p.stderr).text(),
+        })),
+      );
 
-    const logout = Bun.spawn(
-      [
-        process.execPath,
-        '--eval',
-        `
-      import { removeSession } from ${JSON.stringify(pathToFileURL(resolve('src/auth.ts')).href)};
-      const removal = removeSession(process.env.ABLER_TEST_FILE);
+      expect(results.map((r) => r.exit)).toEqual([0, 0, 0]);
+      expect(
+        results.every(
+          (r) => z.object({ authenticated: z.boolean() }).parse(JSON.parse(r.out)).authenticated,
+        ),
+      ).toBe(true);
+      expect(results.every((r) => r.err === '')).toBe(true);
+      expect(rotations).toBe(3);
+      expect(await (await saved(path)).getCookieString(ORIGIN)).toContain('refreshToken=rotated-3');
+
+      if (legacy) expect(await sessionStorage(path)).toContain('plaintext file');
+      else {
+        expect(await sessionStorage(path)).toBe('Saved in an encrypted file.');
+        expect(
+          await filesContaining(['rotated-', 'private-refresh'], directory, store.home),
+        ).toEqual([]);
+      }
+
+      hold = true;
+      const active = run();
+      await refreshing;
+
+      const logout = Bun.spawn(
+        [
+          process.execPath,
+          '--eval',
+          `
+      import { logoutSession } from ${JSON.stringify(pathToFileURL(resolve('src/auth.ts')).href)};
+      const removal = logoutSession(process.env.ABLER_TEST_FILE);
       console.log("started");
       await removal;`,
-      ],
-      { env, stdout: 'pipe', stderr: 'pipe' },
-    );
+        ],
+        { env, stdout: 'pipe', stderr: 'pipe' },
+      );
 
-    const reader = logout.stdout.getReader();
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain('started');
-    expect(await Bun.file(path).exists()).toBe(true);
-    release();
-    expect(await active.exited).toBe(0);
-    expect(await logout.exited).toBe(0);
-    expect(await Bun.file(path).exists()).toBe(false);
-    expect((await readdir(directory)).length).toBe(0);
-  } finally {
-    release();
-    await upstream.stop(true);
-    await rm(directory, { recursive: true, force: true });
-  }
-}, 15000);
+      const reader = logout.stdout.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('started');
+      expect(await Bun.file(path).exists()).toBe(legacy);
+      release();
+      expect(await active.exited).toBe(0);
+      expect(await logout.exited).toBe(0);
+      expect(await Bun.file(path).exists()).toBe(false);
+      expect((await readdir(directory)).length).toBe(0);
+      await assert.rejects(saved(path), /No saved Abler session/);
+    } finally {
+      release();
+      await upstream.stop(true);
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15000);
 
 test('unsafe session files, malformed pages, stalled cursors, and wrong events fail explicitly', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-validation-'));
@@ -1490,114 +1531,410 @@ test('unsafe session files, malformed pages, stalled cursors, and wrong events f
   }
 });
 
-test('failed import retains a rotated candidate without overwriting the existing session, and a later verified import removes it', async () => {
+/** A fake Abler whose refresh rotates to `token`, and whose reads fail unless `ok`. */
+const upstream = (token: string, ok: boolean) => `globalThis.fetch = async url => {
+  if (url.endsWith('/oauth/token')) {
+    const response = Response.json({ access_token: 'access' });
+    response.headers.append('Set-Cookie', 'id_token=access; Path=/; Max-Age=600');
+    response.headers.append('Set-Cookie', 'refreshToken=${token}; Path=/; Max-Age=3600');
+    return response;
+  }
+  return Response.json(${ok} ? { data: { me: { id: 'parent', displayName: 'Parent' } } } : { errors: [{ message: '${token} secret' }] });
+};`;
+
+test('failed import keeps the current session and retains the rotated candidate encrypted until retry-candidate or a verified import', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'abler-import-'));
   const sessions = join(directory, 'sessions');
   await mkdir(sessions);
   const path = join(sessions, 'session.json');
+  const source = join(directory, 'cookies.json');
+  const preload = join(directory, 'upstream.ts');
 
-  try {
-    await saveSession(path, await importCookies([cookie]));
-    const original = await readFile(path, 'utf8');
-    const source = join(directory, 'cookies.json');
-    await writeFile(source, JSON.stringify([cookie]), { mode: 0o600 });
-    const preload = join(directory, 'upstream.ts');
-    await writeFile(
-      preload,
-      `globalThis.fetch = async url => {
-      if (url.endsWith('/oauth/token')) {
-        const response = Response.json({ access_token: 'access' });
-        response.headers.append('Set-Cookie', 'id_token=access; Path=/; Max-Age=600');
-        response.headers.append('Set-Cookie', 'refreshToken=recovery-token; Path=/; Max-Age=3600');
-        return response;
-      }
-      return Response.json({ errors: [{ message: 'recovery-token secret' }] });
-    };`,
-    );
-
-    const child = Bun.spawn(
-      [process.execPath, '--preload', preload, 'src/cli.ts', 'auth', 'import', source],
-      {
-        env: { ...process.env, ABLER_SESSION_FILE: path },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      },
-    );
-
-    expect(await child.exited).toBe(1);
-    const error = await new Response(child.stderr).text();
-    expect(error).toContain('candidate is retained');
-    expect(error).not.toContain('recovery-token');
-    expect(await readFile(path, 'utf8')).toBe(original);
-    const candidates = (await readdir(sessions)).filter((name) => name.endsWith('.pending'));
-    expect(candidates).toHaveLength(1);
-    const [candidateName] = candidates;
-    assert(candidateName);
-    const candidate = join(sessions, candidateName);
-    expect((await stat(candidate)).mode & 0o777).toBe(0o600);
-    expect(await (await loadSession(candidate)).getCookieString(ORIGIN)).toContain(
-      'refreshToken=recovery-token',
-    );
-    // A later verified import supersedes the retained candidate.
-    await writeFile(
-      preload,
-      `globalThis.fetch = async url => {
-      if (url.endsWith('/oauth/token')) {
-        const response = Response.json({ access_token: 'access' });
-        response.headers.append('Set-Cookie', 'id_token=access; Path=/; Max-Age=600');
-        response.headers.append('Set-Cookie', 'refreshToken=verified-token; Path=/; Max-Age=3600');
-        return response;
-      }
-      return Response.json({ data: { me: { id: 'parent', displayName: 'Parent' } } });
-    };`,
-    );
-
-    const verified = Bun.spawn(
-      [process.execPath, '--preload', preload, 'src/cli.ts', 'auth', 'import', source],
-      {
-        env: { ...process.env, ABLER_SESSION_FILE: path },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      },
-    );
-
-    expect(await verified.exited).toBe(0);
-    expect(await new Response(verified.stdout).text()).toContain('saved and verified');
-    expect((await readdir(sessions)).filter((name) => name.endsWith('.pending'))).toHaveLength(0);
-    expect(await (await loadSession(path)).getCookieString(ORIGIN)).toContain(
-      'refreshToken=verified-token',
-    );
-
-    await writeFile(
-      preload,
-      `globalThis.fetch = async url => {
-      if (url.endsWith('/oauth/token')) {
-        const response = Response.json({ access_token: 'access' });
-        response.headers.append('Set-Cookie', 'id_token=access; Path=/; Max-Age=600');
-        response.headers.append('Set-Cookie', 'refreshToken=recovery-token; Path=/; Max-Age=3600');
-        return response;
-      }
-      return Response.json({ errors: [{ message: 'recovery-token secret' }] });
-    };`,
-    );
-
-    const failedAgain = Bun.spawn(
-      [process.execPath, '--preload', preload, 'src/cli.ts', 'auth', 'import', source],
-      { env: { ...process.env, ABLER_SESSION_FILE: path }, stdout: 'pipe', stderr: 'pipe' },
-    );
-
-    expect(await failedAgain.exited).toBe(1);
-    expect((await readdir(sessions)).some((name) => name.endsWith('.pending'))).toBe(true);
-
-    const logout = Bun.spawn([process.execPath, 'src/cli.ts', 'auth', 'logout'], {
+  const cli = async (...args: string[]) => {
+    const child = Bun.spawn([process.execPath, '--preload', preload, 'src/cli.ts', ...args], {
       env: { ...process.env, ABLER_SESSION_FILE: path },
       stdout: 'pipe',
       stderr: 'pipe',
     });
 
-    expect(await logout.exited).toBe(0);
-    expect(await new Response(logout.stdout).text()).toContain('failed-import candidates removed');
+    const [exit, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+
+    return { exit, stdout, stderr };
+  };
+
+  const tokens = ['private-refresh', 'recovery-token', 'verified-token', 'later-token'];
+
+  try {
+    // An older version's plaintext session and one of its failed-import candidates.
+    await saveSession(path, await importCookies([cookie]));
+    await saveSession(`${path}.old.pending`, await importCookies([cookie]));
+    await writeFile(source, JSON.stringify([{ ...cookie, value: 'imported-token' }]), {
+      mode: 0o600,
+    });
+    await writeFile(preload, upstream('recovery-token', false));
+
+    const failed = await cli('auth', 'import', source);
+    expect(failed.exit).toBe(1);
+    expect(failed.stderr.trim()).toBe(
+      'Session verification failed. The previous session was kept; the new one is retained in the encrypted store. Run abler-mcp auth retry-candidate, or capture a fresh session.',
+    );
+    expect(failed.stderr).not.toContain('recovery-token');
+    // The plaintext session moved into the store and still works; no .pending file is written.
+    expect(await (await saved(path)).getCookieString(ORIGIN)).toContain(
+      'refreshToken=private-refresh',
+    );
+    expect(await (await saved(path, 'candidate')).getCookieString(ORIGIN)).toContain(
+      'refreshToken=recovery-token',
+    );
     assert.deepEqual(await readdir(sessions), []);
+    expect(await filesContaining(tokens, sessions, store.home)).toEqual([]);
+
+    await writeFile(preload, upstream('verified-token', true));
+    const retried = await cli('auth', 'retry-candidate');
+    expect(retried).toEqual({
+      exit: 0,
+      stdout: 'Abler session verified and saved in the encrypted store.\n',
+      stderr: '',
+    });
+    expect(await (await saved(path)).getCookieString(ORIGIN)).toContain(
+      'refreshToken=verified-token',
+    );
+    await assert.rejects(saved(path, 'candidate'), /No retained Abler session candidate/);
+    expect((await cli('auth', 'retry-candidate')).stderr).toContain(
+      'No retained Abler session candidate',
+    );
+
+    // A later failed import replaces only the candidate; a verified one promotes its own.
+    await writeFile(preload, upstream('recovery-token', false));
+    expect((await cli('auth', 'import', source)).exit).toBe(1);
+    expect(await (await saved(path)).getCookieString(ORIGIN)).toContain(
+      'refreshToken=verified-token',
+    );
+    await writeFile(preload, upstream('later-token', true));
+    const verified = await cli('auth', 'import', source);
+    expect(verified.exit).toBe(0);
+    expect(verified.stdout).toContain('saved and verified');
+    expect(await (await saved(path)).getCookieString(ORIGIN)).toContain('refreshToken=later-token');
+    await assert.rejects(saved(path, 'candidate'), /No retained Abler session candidate/);
+    expect(await filesContaining(tokens, sessions, store.home)).toEqual([]);
+
+    const status = await cli('auth', 'status');
+    expect(status.exit).toBe(0);
+    expect(JSON.parse(status.stdout)).toEqual({
+      authenticated: true,
+      account: { id: 'parent', displayName: 'Parent' },
+      storage: 'Saved in an encrypted file.',
+    });
+
+    const logout = await cli('auth', 'logout');
+    expect(logout.exit).toBe(0);
+    expect(logout.stdout).toContain('failed-import candidates removed');
+    await assert.rejects(saved(path), /No saved Abler session/);
+    assert.deepEqual(await readdir(sessions), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+type FakeUpstream = { rotations: number; failRefresh: boolean; seen: string[]; cookies: string[] };
+
+/** A fake Abler that rotates both cookies on every refresh and records what each request sent. */
+function rotatingUpstream(before?: () => Promise<number>) {
+  const fake: FakeUpstream = {
+    rotations: 0,
+    failRefresh: false,
+    seen: [],
+    cookies: [],
+  };
+
+  const request = async (url: string, init: RequestInit) => {
+    const { pathname } = new URL(url);
+    fake.seen.push(before ? `${pathname}@${await before()}` : pathname);
+    fake.cookies.push(new Headers(init.headers).get('cookie') ?? '');
+
+    if (pathname === '/oauth/token') {
+      const n = ++fake.rotations;
+
+      const response = Response.json(
+        { access_token: 'access' },
+        { status: fake.failRefresh ? 500 : 200 },
+      );
+
+      response.headers.append('Set-Cookie', `id_token=rotated-access-${n}; Path=/; Max-Age=600`);
+
+      response.headers.append(
+        'Set-Cookie',
+        `refreshToken=rotated-refresh-${n}; Path=/; Max-Age=3600`,
+      );
+
+      return response;
+    }
+
+    return Response.json({ data: { me: { id: 'parent', displayName: 'Parent' } } });
+  };
+
+  return { fake, request };
+}
+
+const refreshOf = async (path: string, slot: Slot = 'current') =>
+  (await (await saved(path, slot)).getCookies(`${ORIGIN}/`)).find((c) => c.key === 'refreshToken')
+    ?.value;
+
+test('capture saves only encrypted cookies; rotations persist before the next request and on error responses', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-rotation-'));
+  const path = join(directory, 'session.json');
+  const mockChrome = createCdpMock();
+  const marker = `${store.record}.marker`;
+
+  const generation = async () =>
+    Number(/"generation":(\d+)/.exec(await readFile(marker, 'utf8'))?.[1] ?? Number.NaN);
+
+  const { fake, request } = rotatingUpstream(generation);
+  const secrets = ['private-refresh', 'rotated-access', 'rotated-refresh'];
+
+  try {
+    const jar = await captureCookies(`http://127.0.0.1:${mockChrome.server.port}`);
+
+    expect(
+      await saveVerifiedSession(
+        jar,
+        () => new AblerClient(path, request, undefined, 'candidate').status(true),
+        path,
+      ),
+    ).toBe(false);
+    // Generation 1 holds the candidate; its rotation is generation 2 before the read is sent.
+    expect(fake.seen).toEqual(['/oauth/token@1', '/graphql@2']);
+    expect(fake.cookies[0]).toBe('refreshToken=private-refresh');
+    expect(await generation()).toBe(3);
+    expect(await refreshOf(path)).toBe('rotated-refresh-1');
+    await assert.rejects(saved(path, 'candidate'), /No retained Abler session candidate/);
+    expect(await filesContaining(secrets, directory, store.home)).toEqual([]);
+
+    // A refresh that fails upstream still keeps the cookies Abler rotated in its response.
+    fake.failRefresh = true;
+    const client = new AblerClient(path, request);
+    await assert.rejects(client.status(true), /Abler session refresh failed/);
+    expect(fake.seen.at(-1)).toBe('/oauth/token@3');
+    expect(await generation()).toBe(4);
+    expect(await refreshOf(path)).toBe('rotated-refresh-2');
+    fake.failRefresh = false;
+    expect((await client.status(true)).authenticated).toBe(true);
+    expect(fake.cookies.at(-2)).toContain('refreshToken=rotated-refresh-2');
+    expect(await filesContaining(secrets, directory, store.home)).toEqual([]);
+  } finally {
+    await mockChrome.server.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('migrate moves the plaintext session once, prunes candidates, and the store then decides', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-migrate-'));
+  const path = join(directory, 'session.json');
+  const { fake, request } = rotatingUpstream();
+  const client = new AblerClient(path, request);
+  const planted = await importCookies([{ ...cookie, value: 'planted-refresh' }]);
+
+  try {
+    await assert.rejects(migrateSession(path), /No saved Abler session/);
+    await saveSession(path, await importCookies([cookie]));
+    await saveSession(
+      `${path}.a.pending`,
+      await importCookies([{ ...cookie, value: 'pending-refresh' }]),
+    );
+    expect(await sessionStorage(path)).toBe(
+      'Saved in a plaintext file. Run abler-mcp auth migrate.',
+    );
+
+    expect(await migrateSession(path)).toBe('migrated');
+    expect(await readdir(directory)).toEqual([]);
+    expect(await sessionStorage(path)).toBe('Saved in an encrypted file.');
+    expect(await refreshOf(path)).toBe('private-refresh');
+    await assert.rejects(saved(path, 'candidate'), /No retained Abler session candidate/);
+    expect(await filesContaining(['private-refresh', 'pending-refresh'], store.home)).toEqual([]);
+    expect(await migrateSession(path)).toBe('already');
+
+    // Plaintext files planted after migration are never read, and migrate removes them.
+    await saveSession(path, planted);
+    await saveSession(`${path}.b.pending`, planted);
+    expect((await client.status()).authenticated).toBe(true);
+    expect(fake.cookies[0]).toBe('refreshToken=private-refresh');
+    expect(await migrateSession(path)).toBe('already-removed-legacy');
+    expect(await readdir(directory)).toEqual([]);
+
+    // Logout keeps the store deciding: a planted file is still ignored.
+    await logoutSession(path);
+    await saveSession(path, planted);
+    await assert.rejects(client.status(), /No saved Abler session/);
+    await assert.rejects(sessionStorage(path), /No saved Abler session/);
+    expect(await migrateSession(path)).toBe('already-removed-legacy');
+    expect(fake.cookies.join()).not.toContain('planted');
+  } finally {
+    await client.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('migrate with only failed-import candidates retains the newest readable one for retry-candidate', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-migrate-pending-'));
+  const path = join(directory, 'session.json');
+  const { fake, request } = rotatingUpstream();
+  const verify = () => new AblerClient(path, request, undefined, 'candidate').status(true);
+
+  try {
+    await assert.rejects(retryCandidate(verify, path), /No retained Abler session candidate/);
+    const old = `${path}.old.pending`;
+    await saveSession(old, await importCookies([{ ...cookie, value: 'old-refresh' }]));
+    await utimes(old, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    await saveSession(
+      `${path}.new.pending`,
+      await importCookies([{ ...cookie, value: 'new-refresh' }]),
+    );
+    await writeFile(`${path}.broken.pending`, 'not a session', { mode: 0o600 });
+
+    expect(await migrateSession(path)).toBe('candidate');
+    expect(await readdir(directory)).toEqual([]);
+    await assert.rejects(saved(path), /No saved Abler session/);
+    expect(await refreshOf(path, 'candidate')).toBe('new-refresh');
+    expect(await migrateSession(path)).toBe('already');
+    expect(await filesContaining(['old-refresh', 'new-refresh'], store.home)).toEqual([]);
+
+    await retryCandidate(verify, path);
+    expect(fake.cookies[0]).toBe('refreshToken=new-refresh');
+    expect(await refreshOf(path)).toBe('rotated-refresh-1');
+    await assert.rejects(saved(path, 'candidate'), /No retained Abler session candidate/);
+    await assert.rejects(retryCandidate(verify, path), /No retained Abler session candidate/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+const failing = (code: SessionStoreError['code']): KeyProvider => ({
+  backend: 'test',
+  keySource: 'memory',
+  keyId: 'test',
+  getKey: async () => {
+    throw new SessionStoreError(code, 'synthetic key failure');
+  },
+  createKey: async () => undefined,
+});
+
+test('store failures have fixed messages, change no file and never fall back; only a new import resets a lost key', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-store-errors-'));
+  const path = join(directory, 'session.json');
+  const keys = new FakeKeyProvider(new Uint8Array(32).fill(7));
+  const marker = `${store.record}.marker`;
+  const { fake, request } = rotatingUpstream();
+
+  try {
+    await saveSession(path, await importCookies([cookie]));
+    expect(await migrateSession(path, keys)).toBe('migrated');
+    await saveSession(path, await importCookies([{ ...cookie, value: 'planted-refresh' }]));
+
+    const files = async () => [
+      await readFile(store.record, 'utf8'),
+      await readFile(marker, 'utf8'),
+      await readFile(path, 'utf8'),
+    ];
+
+    const before = await files();
+
+    for (const [code, message] of [
+      ['STORE_LOCKED', /Unlock your login keychain and try again\./],
+      ['STORE_TIMEOUT', /did not answer in time/],
+      ['STORE_ACCESS_DENIED', /Allow abler-mcp to use the login keychain/],
+      ['STORE_UNAVAILABLE', /store key is missing\. Run abler-mcp auth login/],
+      ['STORE_ERROR', /damaged, unsafe, or not readable/],
+    ] as const) {
+      const client = new AblerClient(path, request, failing(code));
+      await assert.rejects(client.status(), (error: Error) => {
+        expect(error).toBeInstanceOf(SafeError);
+        expect(error.message).toMatch(message);
+
+        return true;
+      });
+      await assert.rejects(sessionStorage(path, failing(code)), message);
+      await assert.rejects(migrateSession(path, failing(code)), message);
+      await assert.rejects(
+        retryCandidate(async () => ({}), path, failing(code)),
+        message,
+      );
+      await assert.rejects(logoutSession(path, failing(code)), message);
+      expect(await files()).toEqual(before);
+    }
+
+    expect(fake.seen).toEqual([]);
+
+    // A lost key: reads, migrate and logout refuse; an explicit new import replaces the store.
+    const lost = new FakeKeyProvider();
+    await assert.rejects(new AblerClient(path, request, lost).status(), /store key is missing/);
+    await assert.rejects(logoutSession(path, lost), /store key is missing/);
+    expect(await files()).toEqual(before);
+
+    const imported = await importCookies([{ ...cookie, value: 'fresh-refresh' }]);
+
+    expect(
+      await saveVerifiedSession(
+        imported,
+        () => new AblerClient(path, request, lost, 'candidate').status(true),
+        path,
+        lost,
+      ),
+    ).toBe(true);
+    expect(fake.cookies[0]).toBe('refreshToken=fresh-refresh');
+    expect(await Bun.file(path).exists()).toBe(false);
+    expect((await new AblerClient(path, request, lost).status()).authenticated).toBe(true);
+    await assert.rejects(new AblerClient(path, request, keys).status(), /damaged|not readable/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('ABLER_SESSION_FILE may not overlap the encrypted store or its key', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-collisions-'));
+  const path = join(directory, 'session.json');
+
+  try {
+    await saveSession(path, await importCookies([cookie]));
+    expect(await migrateSession(path)).toBe('migrated');
+
+    const snapshot = async () =>
+      Promise.all(
+        [store.record, `${store.record}.marker`, store.key].map((file) => readFile(file)),
+      );
+
+    const before = await snapshot();
+    const jar = await importCookies([cookie]);
+    const alias = join(directory, 'alias');
+    await symlink(dirname(store.record), alias);
+
+    for (const legacy of [
+      store.record,
+      `${store.record}.marker`,
+      `${store.record}.lock`,
+      join(alias, 'session.enc'),
+      join(alias, 'session.enc.x.tmp'),
+      dirname(store.record),
+      store.key,
+      `${store.key}.old`,
+    ]) {
+      for (const run of [
+        () => migrateSession(legacy),
+        () => logoutSession(legacy),
+        () => retryCandidate(async () => ({}), legacy),
+        () => saveVerifiedSession(jar, async () => ({}), legacy),
+      ])
+        await assert.rejects(
+          run(),
+          /ABLER_SESSION_FILE overlaps the encrypted Abler session store/,
+        );
+      expect(await snapshot()).toEqual(before);
+    }
+
+    expect(await refreshOf(path)).toBe('private-refresh');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
