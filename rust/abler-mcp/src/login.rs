@@ -1100,15 +1100,18 @@ mod tests {
     #[test]
     fn a_descriptor_this_process_inherited_does_not_reach_the_browser() {
         let directory = scratch("descriptors");
-        // /dev/fd lists the descriptors of `ls`: the browser's, and one for the listing itself.
+        // `ls /dev/fd` would add its own descriptors (one on Linux, two on macOS), and the shell
+        // reading this script holds it on one more until exec. So a fresh `sh -c` tests each
+        // number up to 255 with `[ -e ]`, which opens nothing, and only then writes the open ones.
         let browser = script(
             &directory,
-            "ls /dev/fd > \"$(dirname \"$0\")/tmp\"\nmv \"$(dirname \"$0\")/tmp\" \"$(dirname \"$0\")/fds\"",
+            r#"exec /bin/sh -c 'fd=0 open=; while [ "$fd" -le 255 ]; do [ -e "/dev/fd/$fd" ] && open="$open $fd"; fd=$((fd + 1)); done; echo $open > "$1/tmp"; mv "$1/tmp" "$1/fds"' sh "$(dirname "$0")""#,
         );
         // As a descriptor from the parent shell is: open and not close-on-exec.
         let inherited =
             rustix::io::fcntl_dupfd_cloexec(fs::File::open(&browser).unwrap(), 100).unwrap();
         rustix::io::fcntl_setfd(&inherited, rustix::io::FdFlags::empty()).unwrap();
+        assert!(inherited.as_raw_fd() <= 255);
         let (mut running, mut pipe) = spawn_browser(&browser, &directory.join("profile")).unwrap();
         let listed = (0..100)
             .find_map(|_| {
@@ -1116,14 +1119,11 @@ mod tests {
                 fs::read_to_string(directory.join("fds")).ok()
             })
             .unwrap();
-        let listed: Vec<&str> = listed.lines().collect();
 
-        assert!(listed.contains(&"3") && listed.contains(&"4"), "{listed:?}");
-        assert!(
-            !listed.contains(&inherited.as_raw_fd().to_string().as_str()),
-            "{listed:?}"
+        assert_eq!(
+            listed.split_whitespace().collect::<Vec<_>>(),
+            ["0", "1", "2", "3", "4"]
         );
-        assert!(listed.len() <= 6, "{listed:?}");
         assert!(close_browser(&mut running, &mut pipe, false));
         fs::remove_dir_all(&directory).unwrap();
     }
