@@ -4,12 +4,14 @@ import { basename, dirname, join, resolve } from 'node:path';
 
 import { SafeError } from '@family-mcp/mcp-runtime';
 import {
-  LocalKeyFileProvider,
-  SessionStoreError,
   defaultKeyProvider,
   defaultSecretRecordPath,
   defaultSessionPath,
+  LocalKeyFileProvider,
   readPrivateFile,
+  retiredStorePaths,
+  SessionStoreError,
+  startupCheck,
   sweepTemp,
   withFileLock,
   withSecretStore,
@@ -248,21 +250,17 @@ export class ExpiredSession extends SafeError {}
 /** Fixed messages: a store failure never shows a path, key or cookie, and never falls back. */
 function storeError(error: SessionStoreError): StoreFailure {
   switch (error.code) {
-    case 'STORE_LOCKED':
-      return new StoreFailure('Unlock your login keychain and try again.');
-    case 'STORE_ACCESS_DENIED':
-      return new StoreFailure(
-        'Access to the Abler store key was denied. Allow abler-mcp to use the login keychain and try again.',
-      );
-    case 'STORE_TIMEOUT':
-      return new StoreFailure('The login keychain did not answer in time. Try again.');
     case 'STORE_UNAVAILABLE':
       return new StoreFailure(
         'The Abler store key is missing. Run abler-mcp auth login, capture or import to sign in again.',
       );
+    case 'STORE_BACKEND_RETIRED':
+      return new StoreFailure(
+        'The Abler session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from ~/Library/Application Support/family-mcp/abler-mcp, then run abler-mcp auth login again.',
+      );
     case 'STORE_WRITE_UNCERTAIN':
       return new StoreFailure(
-        'The last write to the Abler session store did not complete, so its session is not used. Remove the Abler secret store files and run abler-mcp auth login again.',
+        'The last write to the Abler session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Abler store folder (~/Library/Application Support/family-mcp/abler-mcp on macOS, ~/.config/abler-mcp on Linux by default), then run abler-mcp auth login again.',
       );
     case 'SECRET_NOT_FOUND':
       return new StoreFailure(noSession().message);
@@ -279,6 +277,10 @@ function storeError(error: SessionStoreError): StoreFailure {
     case 'TOO_LARGE':
       return new StoreFailure(
         'The Abler session is larger than the store allows. Capture or import a fresh session.',
+      );
+    case 'UNSAFE_FILE':
+      return new StoreFailure(
+        'Cannot use the Abler session store. Run abler-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.',
       );
     default:
       return new StoreFailure(
@@ -297,7 +299,7 @@ async function guarded<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-/** `keys` is a test seam; the default is the macOS Keychain or a Linux key file. */
+/** `keys` is a test seam; the default is the store's key file. */
 function sessionRecord(keys?: KeyProvider, signal?: AbortSignal): SecretRecordOptions {
   return {
     path: defaultSecretRecordPath('abler-mcp'),
@@ -307,6 +309,7 @@ function sessionRecord(keys?: KeyProvider, signal?: AbortSignal): SecretRecordOp
     schema: 1,
     maxBytes: SESSION_MAX_BYTES * 2 + 4096,
     keys: keys ?? defaultKeyProvider({ server: 'abler-mcp', profile: 'default' }),
+    retired: retiredStorePaths('abler-mcp'),
     signal,
   };
 }
@@ -352,11 +355,7 @@ async function storeDecides(store: SecretStore, record: SecretRecordOptions): Pr
   return (await store.exists()) || (await exists(record.path));
 }
 
-function storageName(keys: KeyProvider): string {
-  return keys.keySource === 'keychain-accessor'
-    ? 'an encrypted file whose key is in the macOS Keychain'
-    : 'an encrypted file';
-}
+const STORAGE = 'an encrypted file';
 
 /** Create the key when it is missing; only an explicit new login may reset a lost key's store. */
 async function prepareKey(
@@ -365,7 +364,7 @@ async function prepareKey(
   reset: boolean,
 ): Promise<boolean> {
   try {
-    await record.keys.getKey(record.signal);
+    await store.checkKey();
 
     return false;
   } catch (error) {
@@ -569,7 +568,7 @@ export async function withSession<T>(
         }
       };
 
-      return work(jar, save, `Saved in ${storageName(record.keys)}.`);
+      return work(jar, save, `Saved in ${STORAGE}.`);
     });
   } catch (error) {
     // Errors from `work` pass through; store setup and taking the lock are mapped here.
@@ -862,4 +861,16 @@ export async function captureCookies(endpoint: string, signal?: AbortSignal): Pr
   });
 
   return importCookies(cookieInputSchema.parse(result));
+}
+
+/**
+ * The CLI's store preflight before it serves or runs an auth command: false, after one stderr
+ * line, when the store is unsafe; a notice when an earlier build's store is still on disk.
+ */
+export function checkStoreAtStartup(): Promise<boolean> {
+  return startupCheck({
+    server: 'abler-mcp',
+    signIn: 'abler-mcp auth login',
+    store: () => sessionRecord(),
+  });
 }

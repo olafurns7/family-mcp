@@ -5,16 +5,18 @@ import { Cookie, CookieJar } from 'tough-cookie';
 import { z } from 'zod';
 import { SafeError, readBody } from '@family-mcp/mcp-runtime';
 import {
-  LocalKeyFileProvider,
   defaultKeyProvider,
   defaultSecretRecordPath,
   defaultSessionPath,
+  LocalKeyFileProvider,
   readPrivateFile,
-  writePrivateFile,
+  retiredStorePaths,
+  SessionStoreError,
+  startupCheck,
+  sweepTemp,
   withFileLock,
   withSecretStore,
-  SessionStoreError,
-  sweepTemp,
+  writePrivateFile,
   type KeyProvider,
   type SecretRecordOptions,
   type SecretStore,
@@ -114,27 +116,27 @@ const encode = (saved: Saved | null) => JSON.stringify(saved && bounded(savedSch
 
 function uncertain(): SafeError {
   return new SafeError(
-    'The last write to the Inna session store did not complete, so its session is not used. Remove the Inna secret store files and run inna-mcp auth login again.',
+    'The last write to the Inna session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Inna store folder (~/Library/Application Support/family-mcp/inna-mcp on macOS, ~/.config/inna-mcp on Linux by default), then run inna-mcp auth login again.',
   );
 }
 
 /** Fixed messages: a store failure never shows a path, key or cookie, and never falls back. */
 function storeError(error: SessionStoreError): SafeError {
   switch (error.code) {
-    case 'STORE_LOCKED':
-      return new SafeError('Unlock your login keychain and try again.');
-    case 'STORE_ACCESS_DENIED':
-      return new SafeError(
-        'Access to the Inna store key was denied. Allow inna-mcp to use the login keychain and try again.',
-      );
-    case 'STORE_TIMEOUT':
-      return new SafeError('The login keychain did not answer in time. Try again.');
     case 'STORE_UNAVAILABLE':
       return new SafeError(
         'The Inna store key is missing. Run inna-mcp auth login or auth import to sign in again.',
       );
+    case 'STORE_BACKEND_RETIRED':
+      return new SafeError(
+        'The Inna session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from ~/Library/Application Support/family-mcp/inna-mcp, then run inna-mcp auth login again.',
+      );
     case 'STORE_WRITE_UNCERTAIN':
       return uncertain();
+    case 'UNSAFE_FILE':
+      return new SafeError(
+        'Cannot use the Inna session store. Run inna-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.',
+      );
     case 'STORE_ERROR':
       return new SafeError(
         'Cannot use the Inna session store. Its files or key are damaged, unsafe, or not readable.',
@@ -157,16 +159,12 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-function storageName(keys: KeyProvider): string {
-  return keys.keySource === 'keychain-accessor'
-    ? 'Saved in an encrypted file whose key is in the macOS Keychain.'
-    : 'Saved in an encrypted file.';
-}
+const STORAGE = 'Saved in an encrypted file.';
 
-/** True when the key is missing; any other key failure is thrown. */
-async function keyLost(record: SecretRecordOptions): Promise<boolean> {
+/** True when the key is missing; any other key failure, a retired store first, is thrown. */
+async function keyLost(store: SecretStore): Promise<boolean> {
   try {
-    await record.keys.getKey(record.signal);
+    await store.checkKey();
 
     return false;
   } catch (error) {
@@ -730,7 +728,7 @@ async function select(
 export type ClientOptions = {
   /** The pre-store plaintext session file; the absence record keeps its path beside it. */
   sessionFile?: string;
-  /** Test seam: the default is the platform record path and the macOS Keychain or a Linux key file. */
+  /** Test seam: the default is the platform record path and its key file. */
   store?: { path: string; keys: KeyProvider };
   fetch?: Fetch;
   now?: () => number;
@@ -777,6 +775,7 @@ export class InnaClient {
         schema: 1,
         maxBytes: RECORD_MAX_BYTES,
         keys: this.store?.keys ?? defaultKeyProvider({ server: 'inna-mcp', profile: 'default' }),
+        retired: retiredStorePaths('inna-mcp'),
         signal,
       };
 
@@ -793,9 +792,7 @@ export class InnaClient {
             store,
             record,
             decides,
-            storage: decides
-              ? storageName(record.keys)
-              : 'Saved in a plaintext file. Run inna-mcp auth migrate.',
+            storage: decides ? STORAGE : 'Saved in a plaintext file. Run inna-mcp auth migrate.',
             read: async () =>
               decides ? ((await stored(store)) ?? undefined) : readSaved(this.path),
             write: (saved) =>
@@ -956,16 +953,14 @@ export class InnaClient {
    */
   async checkStore(): Promise<void> {
     await this.locked(async (held) => {
-      if (held.decides && !(await keyLost(held.record))) await stored(held.store);
+      if (held.decides && !(await keyLost(held.store))) await stored(held.store);
     });
   }
 
   /** The saved default student's user id, read locally; a fresh login prefers it. */
   async defaultUserId(): Promise<number | undefined> {
     return this.locked(async (held) =>
-      held.decides && (await keyLost(held.record))
-        ? undefined
-        : (await held.read())?.account.userId,
+      held.decides && (await keyLost(held.store)) ? undefined : (await held.read())?.account.userId,
     );
   }
 
@@ -976,7 +971,7 @@ export class InnaClient {
   ): Promise<SavedSession> {
     return this.locked(async (held) => {
       // Only this explicit login or import may replace a store whose key is lost.
-      const lost = await keyLost(held.record);
+      const lost = await keyLost(held.store);
       const prior = lost && held.decides ? undefined : await held.read();
       const throttle = { pauseUntil: prior?.pauseUntil ?? 0 };
       const connection = new Connection(jar, throttle, this.fetcher, this.now, signal);
@@ -1036,7 +1031,7 @@ export class InnaClient {
       // The store decides from here on, so a plaintext file would never be read again.
       await removeLegacy(this.path);
 
-      return { storage: storageName(held.record.keys), replaced: lost && held.decides };
+      return { storage: STORAGE, replaced: lost && held.decides };
     }, signal);
   }
 
@@ -1058,7 +1053,7 @@ export class InnaClient {
       const text = encode(legacy);
 
       // A store that decides was just read, so a missing key here belongs to a store never used.
-      if (await keyLost(held.record)) await held.store.createKey();
+      if (await keyLost(held.store)) await held.store.createKey();
 
       await held.store.write(text);
       await removeLegacy(this.path);
@@ -1666,4 +1661,20 @@ export class InnaClient {
       };
     }, signal);
   }
+}
+
+/**
+ * The CLI's store preflight before it serves or runs an auth command: false, after one stderr
+ * line, when the store is unsafe; a notice when an earlier build's store is still on disk.
+ */
+export function checkStoreAtStartup(): Promise<boolean> {
+  return startupCheck({
+    server: 'inna-mcp',
+    signIn: 'inna-mcp auth login',
+    store: () => ({
+      path: defaultSecretRecordPath('inna-mcp'),
+      keys: defaultKeyProvider({ server: 'inna-mcp', profile: 'default' }),
+      retired: retiredStorePaths('inna-mcp'),
+    }),
+  });
 }

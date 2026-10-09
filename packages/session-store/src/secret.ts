@@ -1,10 +1,13 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { lstat, rm } from 'node:fs/promises';
+import { lstat, readlink, realpath, rm, stat } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 
+import { excludeFromBackups } from './backup.js';
 import { SessionStoreError, systemErrorCode, throwIfAborted } from './errors.js';
 import { readPrivateFile, sweepTemp, writePrivateFile } from './files.js';
-import { checkedKey, type KeyProvider } from './keys.js';
+import { LocalKeyFileProvider, checkedKey, keyTemporary, type KeyProvider } from './keys.js';
 import { withFileLock } from './lock.js';
+import { MAX_LINKS, checkStorePaths, storeDirectories } from './storage.js';
 
 export type SecretRecordOptions = {
   /** Canonical record path. Its lock is `<path>.lock` and its non-secret marker `<path>.marker`. */
@@ -22,6 +25,13 @@ export type SecretRecordOptions = {
   signal?: AbortSignal | undefined;
   /** Longest wait for a busy lock. Default 30 s. */
   waitMs?: number | undefined;
+  /**
+   * Files of an earlier layout of this store (`retiredStorePaths`). While one exists the store
+   * decides (`exists()` is true), so an older plaintext credential is never imported over it; that
+   * includes a link or entry that cannot be followed. Only one shown to be the current store under
+   * another name is ignored. They are only checked by metadata, never read.
+   */
+  retired?: readonly string[] | undefined;
 };
 
 /** Returns the next plaintext to store, or undefined to leave the record unchanged. */
@@ -44,6 +54,12 @@ export type SecretStore = {
   createKey(): Promise<void>;
   /** `resetSecretStore`'s recovery. */
   reset(): Promise<void>;
+  /**
+   * Confirm the key is there without reading the record: STORE_BACKEND_RETIRED first for a store
+   * set up through the retired Keychain accessor, then whatever `getKey` throws (STORE_UNAVAILABLE
+   * while the key is missing).
+   */
+  checkKey(): Promise<void>;
 };
 
 type Marker = {
@@ -90,6 +106,8 @@ const MARKER_PATTERN = new RegExp(
 
 const BASE64URL_PATTERN = /^[\w-]+$/;
 
+const RETIRED_KEY_SOURCE = 'keychain-accessor';
+
 /**
  * Hold the record's lock for all of `work`, so a caller can decide, read, set up and write in one
  * critical section. A caller that also holds another lock always takes that one first. The handle
@@ -100,6 +118,11 @@ export async function withSecretStore<T>(
   work: (store: SecretStore) => Promise<T>,
 ): Promise<T> {
   checkOptions(options);
+  // Before the lock: a refused store gets no lock directory. The record's directory is made and
+  // excluded from backups here, before any record or marker is written in it.
+  const directories = storeDirectories(options.path);
+  await checkStorePaths({ directories, create: directories });
+  await excludeFromBackups([dirname(options.path)]);
 
   return withFileLock(
     options.path,
@@ -116,7 +139,7 @@ export async function withSecretStore<T>(
       const open = async () => {
         usable();
         await sweepTemp(options.path);
-        const key = state?.key ?? checkedKey(await options.keys.getKey(options.signal));
+        const key = state?.key ?? (await currentKey(options));
         const { current, marker } = await load(options, key);
         state = { key, marker };
 
@@ -149,7 +172,10 @@ export async function withSecretStore<T>(
           exists: async () => {
             usable();
 
-            return secretStoreExists(options.path);
+            return (
+              (await secretStoreExists(options.path)) ||
+              (await leftovers(options)).deciding.length > 0
+            );
           },
           read: async () => (await open()).current,
           write,
@@ -166,6 +192,10 @@ export async function withSecretStore<T>(
           },
           createKey: () => changing(() => createKey(options)),
           reset: () => changing(() => reset(options)),
+          checkKey: async () => {
+            usable();
+            await currentKey(options);
+          },
         });
       } finally {
         ended = new SessionStoreError('STORE_ERROR', 'This secret store hold has ended.');
@@ -215,9 +245,153 @@ export function resetSecretStore(options: SecretRecordOptions): Promise<void> {
   return withSecretStore(options, (held) => held.reset());
 }
 
+export type StoreCheck = {
+  /** A marker exists at the store's path. */
+  exists: boolean;
+  /**
+   * The `retired` files that exist and are shown to be separate from the current store: an
+   * earlier layout to clean up after a new sign-in. An old entry that cannot be followed is left
+   * out here, although it still makes the store decide.
+   */
+  retired: string[];
+};
+
+/**
+ * Startup preflight: refuse unsafe store directories and files before serving, with a
+ * `StoreRefusal` whose `path` names what to fix. It checks the store directories, the directories
+ * above them, and the key, record and marker files (macOS ACLs included), and passes when nothing
+ * exists yet. On macOS it then confirms the Time Machine exclusion of the existing store
+ * directories, applying it again when it was lost. It reads no secret, takes no lock and creates
+ * nothing. A key with the recognised
+ * second name of an interrupted publication passes; its next `getKey` removes that name.
+ */
+export async function checkSecretStore(
+  options: Pick<SecretRecordOptions, 'path' | 'keys' | 'retired'>,
+): Promise<StoreCheck> {
+  const { path, keys } = options;
+  const key = keys instanceof LocalKeyFileProvider ? keys.path : undefined;
+
+  const directories = [
+    ...new Set([...storeDirectories(path), ...(key === undefined ? [] : storeDirectories(key))]),
+  ];
+
+  await checkStorePaths({
+    directories,
+    files: [...(key === undefined ? [] : [key]), path, markerPath(path)],
+    allowLink: async (file, info) => file === key && (await keyTemporary(file, info)) !== undefined,
+  });
+  // An existing store's exclusion is applied again if it was lost; missing directories wait.
+  await excludeFromBackups([dirname(path), ...(key === undefined ? [] : [dirname(key)])], {
+    recheck: true,
+  });
+
+  return { exists: await secretStoreExists(path), retired: (await leftovers(options)).named };
+}
+
+/**
+ * The `retired` files that exist, split by use. `deciding` holds every one not shown to be the
+ * current store's record, marker, lock or key under another name: an old entry whose link or
+ * metadata cannot be followed still decides, so a broken old store never lets an older plaintext
+ * credential back in. `named` holds only those shown to be separate files, safe to name in a
+ * cleanup command. The current files are protected by canonical directory entry (the resolved
+ * directory plus the file name), which an atomic save leaves unchanged, and by device and inode
+ * for any other alias. A name followed through its links to a current entry is that entry. When
+ * the current files cannot be read, nothing is named and every old entry decides.
+ */
+async function leftovers(
+  options: Pick<SecretRecordOptions, 'path' | 'keys' | 'retired'>,
+): Promise<{ named: string[]; deciding: string[] }> {
+  const found = await existingPaths(options.retired ?? []);
+
+  if (found.length === 0) return { named: [], deciding: [] };
+  const { path, keys } = options;
+
+  const current = [path, markerPath(path), `${path}.lock`].concat(
+    keys instanceof LocalKeyFileProvider ? [keys.path] : [],
+  );
+
+  const entries = new Set<string>();
+  const identities = new Set<string>();
+
+  try {
+    for (const file of current) {
+      const entry = await directoryEntry(file);
+      const id = await identity(file);
+
+      if (entry !== undefined) entries.add(entry);
+
+      if (id !== undefined) identities.add(id);
+    }
+  } catch {
+    return { named: [], deciding: found };
+  }
+
+  const named: string[] = [];
+  const deciding: string[] = [];
+
+  for (const file of found) {
+    // Undefined when the name cannot be followed: gone, dangling, unreadable or looping.
+    const entry = await linkedEntry(file).catch(() => undefined);
+    const id = await identity(file).catch(() => undefined);
+
+    if ((entry !== undefined && entries.has(entry)) || (id !== undefined && identities.has(id)))
+      continue;
+    deciding.push(file);
+
+    if (entry !== undefined && id !== undefined) named.push(file);
+  }
+
+  return { named, deciding };
+}
+
+/** The resolved directory plus the file name; undefined when the directory does not exist. */
+async function directoryEntry(path: string): Promise<string | undefined> {
+  try {
+    return join(await realpath(dirname(path)), basename(path));
+  } catch (error) {
+    if (systemErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+/** The directory entry `path` reaches after its links, by `lstat` and `readlink`: never opened. */
+async function linkedEntry(path: string): Promise<string> {
+  let entry = path;
+
+  for (let hops = 0; hops <= MAX_LINKS; hops++) {
+    entry = join(await realpath(dirname(entry)), basename(entry));
+
+    if (!(await lstat(entry)).isSymbolicLink()) return entry;
+    entry = resolve(dirname(entry), await readlink(entry));
+  }
+
+  throw new SessionStoreError('IO', 'Too many links.');
+}
+
+/** Device and inode of what `path` names, following links; undefined when nothing is there. */
+async function identity(path: string): Promise<string | undefined> {
+  try {
+    const info = await stat(path);
+
+    return `${info.dev}:${info.ino}`;
+  } catch (error) {
+    if (systemErrorCode(error) === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
 /** A marker exists, so the store decides even while it holds no record. */
 export function secretStoreExists(path: string): Promise<boolean> {
   return exists(markerPath(path));
+}
+
+/** The paths that exist, by `lstat` only: nothing is followed, opened or read. */
+export async function existingPaths(paths: readonly string[]): Promise<string[]> {
+  const found: string[] = [];
+
+  for (const path of paths) if (await exists(path)) found.push(path);
+
+  return found;
 }
 
 /** Server, profile and key names: 1-64 letters, digits, dots, dashes or underscores. */
@@ -269,6 +443,9 @@ async function createKey(options: SecretRecordOptions): Promise<void> {
 }
 
 async function reset(options: SecretRecordOptions): Promise<void> {
+  // A missing key is what that build leaves; its record may still open with the Keychain key.
+  await refuseRetired(options);
+
   if (!(await keyMissing(options)))
     throw new SessionStoreError(
       'STORE_ERROR',
@@ -298,6 +475,32 @@ async function reset(options: SecretRecordOptions): Promise<void> {
   }
 
   await sweepTemp(options.path);
+}
+
+/** The key, after a store of the retired Keychain accessor is refused. */
+async function currentKey(options: SecretRecordOptions): Promise<Uint8Array> {
+  await refuseRetired(options);
+
+  return checkedKey(await options.keys.getKey(options.signal));
+}
+
+/**
+ * STORE_BACKEND_RETIRED when the marker names the retired Keychain accessor, before any key is
+ * asked for. Only the marker's key source is read here; every other marker problem is left to
+ * `readMarker`.
+ */
+async function refuseRetired(options: SecretRecordOptions): Promise<void> {
+  if (options.keys.keySource === RETIRED_KEY_SOURCE) return;
+  let text: string;
+
+  try {
+    text = await readPrivateFile(markerPath(options.path), { maxBytes: MARKER_MAX_BYTES });
+  } catch (error) {
+    if (error instanceof SessionStoreError && error.code === 'NOT_FOUND') return;
+    throw error;
+  }
+
+  if (MARKER_PATTERN.exec(text)?.[2] === RETIRED_KEY_SOURCE) throw retiredBackend();
 }
 
 /** True only for STORE_UNAVAILABLE; a readable key is false and every other failure propagates. */
@@ -534,6 +737,10 @@ async function readMarker(options: SecretRecordOptions): Promise<Marker | null> 
   const [, backend, keySource, keyId, profile, migrated, generation, pending, nonce] = match;
   const { keys } = options;
 
+  // Set up by an earlier build through security(1), which no server runs any more.
+  if (keySource === RETIRED_KEY_SOURCE && keys.keySource !== RETIRED_KEY_SOURCE)
+    throw retiredBackend();
+
   if (
     backend !== keys.backend ||
     keySource !== keys.keySource ||
@@ -580,6 +787,13 @@ async function exists(path: string): Promise<boolean> {
       cause: error,
     });
   }
+}
+
+function retiredBackend(): SessionStoreError {
+  return new SessionStoreError(
+    'STORE_BACKEND_RETIRED',
+    "This store is a leftover of an earlier test build that kept its key in the macOS Keychain, which is no longer used. Remove session.enc and session.enc.marker from the server's folder in ~/Library/Application Support/family-mcp, then sign in again.",
+  );
 }
 
 function unauthenticated(cause?: unknown): SessionStoreError {

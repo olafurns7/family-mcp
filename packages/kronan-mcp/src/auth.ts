@@ -3,12 +3,14 @@ import { basename, dirname, join, resolve } from 'node:path';
 
 import { SafeError } from '@family-mcp/mcp-runtime';
 import {
-  LocalKeyFileProvider,
-  SessionStoreError,
   defaultKeyProvider,
   defaultSecretRecordPath,
   defaultSessionPath,
+  LocalKeyFileProvider,
   readPrivateFile,
+  retiredStorePaths,
+  SessionStoreError,
+  startupCheck,
   sweepTemp,
   withFileLock,
   withSecretStore,
@@ -45,21 +47,17 @@ export const tokenPath = () =>
 /** Fixed messages: a store failure never shows a path, key or token, and never falls back. */
 function storeError(error: SessionStoreError): SafeError {
   switch (error.code) {
-    case 'STORE_LOCKED':
-      return new SafeError('Unlock your login keychain and try again.');
-    case 'STORE_ACCESS_DENIED':
-      return new SafeError(
-        'Access to the Krónan store key was denied. Allow kronan-mcp to use the login keychain and try again.',
-      );
-    case 'STORE_TIMEOUT':
-      return new SafeError('The login keychain did not answer in time. Try again.');
     case 'STORE_UNAVAILABLE':
       return new SafeError(
         'The Krónan store key is missing. Run kronan-mcp auth set to save the token again.',
       );
+    case 'STORE_BACKEND_RETIRED':
+      return new SafeError(
+        'The Krónan token store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from ~/Library/Application Support/family-mcp/kronan-mcp, then run kronan-mcp auth set again.',
+      );
     case 'STORE_WRITE_UNCERTAIN':
       return new SafeError(
-        'The last write to the Krónan token store did not complete, so its token is not used. Remove the Krónan secret store files and run kronan-mcp auth set again.',
+        'The last write to the Krónan token store did not complete, so its token is not used. Remove session.enc and session.enc.marker from the Krónan store folder (~/Library/Application Support/family-mcp/kronan-mcp on macOS, ~/.config/kronan-mcp on Linux by default), then run kronan-mcp auth set again.',
       );
     case 'SECRET_NOT_FOUND':
       return new SafeError('No saved Krónan access token. Run kronan-mcp auth set first.');
@@ -72,6 +70,10 @@ function storeError(error: SessionStoreError): SafeError {
     case 'TOO_LARGE':
       return new SafeError(
         'The Krónan token store holds more than one access token. Run kronan-mcp auth set again.',
+      );
+    case 'UNSAFE_FILE':
+      return new SafeError(
+        'Cannot use the Krónan token store. Run kronan-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.',
       );
     default:
       return new SafeError(
@@ -90,7 +92,7 @@ async function guarded<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-/** `keys` is a test seam; the default is the macOS Keychain or a Linux key file. */
+/** `keys` is a test seam; the default is the store's key file. */
 function tokenRecord(keys?: KeyProvider): SecretRecordOptions {
   return {
     path: defaultSecretRecordPath('kronan-mcp'),
@@ -100,6 +102,7 @@ function tokenRecord(keys?: KeyProvider): SecretRecordOptions {
     schema: 1,
     maxBytes: TOKEN_MAX_BYTES,
     keys: keys ?? defaultKeyProvider({ server: 'kronan-mcp', profile: 'default' }),
+    retired: retiredStorePaths('kronan-mcp'),
   };
 }
 
@@ -136,11 +139,7 @@ async function storedToken(store: SecretStore): Promise<string | null | undefine
   return text === null ? undefined : decodeRecord(text);
 }
 
-function storageName(keys: KeyProvider): string {
-  return keys.keySource === 'keychain-accessor'
-    ? 'an encrypted file whose key is in the macOS Keychain'
-    : 'an encrypted file';
-}
+const STORAGE = 'an encrypted file';
 
 /** Create the key when it is missing; only an explicit new login may reset a lost key's store. */
 async function prepareKey(
@@ -149,7 +148,7 @@ async function prepareKey(
   reset: boolean,
 ): Promise<boolean> {
   try {
-    await record.keys.getKey(record.signal);
+    await store.checkKey();
 
     return false;
   } catch (error) {
@@ -274,7 +273,7 @@ export function loadSavedToken(keys?: KeyProvider): Promise<SavedToken> {
       if (token === null || token === undefined)
         throw new SafeError('No saved Krónan access token. Run kronan-mcp auth set first.');
 
-      return { token, storage: `Saved in ${storageName(record.keys)}.` };
+      return { token, storage: `Saved in ${STORAGE}.` };
     });
   });
 }
@@ -379,4 +378,16 @@ async function loadLegacyToken(path: string): Promise<string> {
   } catch {
     throw new SafeError('Invalid Krónan token file. Run kronan-mcp auth set again.');
   }
+}
+
+/**
+ * The CLI's store preflight before it serves or runs an auth command: false, after one stderr
+ * line, when the store is unsafe; a notice when an earlier build's store is still on disk.
+ */
+export function checkStoreAtStartup(): Promise<boolean> {
+  return startupCheck({
+    server: 'kronan-mcp',
+    signIn: 'kronan-mcp auth set',
+    store: () => tokenRecord(),
+  });
 }

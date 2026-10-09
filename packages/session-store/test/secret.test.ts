@@ -23,6 +23,7 @@ import {
   LocalKeyFileProvider,
   SessionStoreError,
   createSecretKey,
+  existingPaths,
   readSecretRecord,
   resetSecretStore,
   secretStoreExists,
@@ -787,5 +788,61 @@ test('a custom key provider with a malformed key is STORE_ERROR before any read 
     await refuses(store, 'STORE_ERROR');
     await assert.rejects(stat(store.path));
     await assert.rejects(stat(`${store.path}.marker`));
+  });
+});
+
+const RETIRED =
+  "This store is a leftover of an earlier test build that kept its key in the macOS Keychain, which is no longer used. Remove session.enc and session.enc.marker from the server's folder in ~/Library/Application Support/family-mcp, then sign in again.";
+
+test('a store set up with the retired Keychain accessor is refused before any key or reset', async () => {
+  await scratch(async (directory) => {
+    const keys = new LocalKeyFileProvider({ path: join(directory, 'keys', 'test-mcp.key') });
+    const store = options(directory, keys);
+    const marker = `${store.path}.marker`;
+
+    const retired = (cause: unknown) =>
+      hasCode('STORE_BACKEND_RETIRED')(cause) &&
+      cause instanceof Error &&
+      cause.message === RETIRED;
+
+    await mkdir(join(directory, 'records'), { mode: 0o700 });
+
+    await writeFile(
+      marker,
+      '{"backend":"encrypted-file","keySource":"keychain-accessor","keyId":"keychain","profile":"default","migrated":true,"generation":1}\n',
+      { mode: 0o600 },
+    );
+
+    await writeFile(store.path, forge(store, 1, SECRET), { mode: 0o600 });
+    const before = [await readFile(store.path), await readFile(marker)];
+
+    // Without a key file, as that build leaves it, and with one: the marker decides first.
+    for (const withKey of [false, true]) {
+      if (withKey) await keys.createKey();
+      await assert.rejects(readSecretRecord(store), retired);
+      await refuses(store, 'STORE_BACKEND_RETIRED');
+      await assert.rejects(resetSecretStore(store), retired);
+      await assert.rejects(createSecretKey(store), retired);
+      await assert.rejects(
+        withSecretStore(store, (held) => held.checkKey()),
+        retired,
+      );
+      expect([await readFile(store.path), await readFile(marker)]).toEqual(before);
+    }
+  });
+});
+
+test('files of a retired layout make the store decide without being read', async () => {
+  await scratch(async (directory) => {
+    const old = join(directory, 'old', 'session.enc.marker');
+    const store = { ...options(directory), retired: [join(directory, 'missing'), old] };
+
+    expect(await withSecretStore(store, (held) => held.exists())).toBe(false);
+    await mkdir(join(directory, 'old'));
+    // Unreadable and malformed: existence is all that is checked.
+    await writeFile(old, 'not a marker', { mode: 0o000 });
+    expect(await withSecretStore(store, (held) => held.exists())).toBe(true);
+    expect(await withSecretStore(store, (held) => held.read())).toBeNull();
+    expect(await existingPaths(store.retired)).toEqual([old]);
   });
 });

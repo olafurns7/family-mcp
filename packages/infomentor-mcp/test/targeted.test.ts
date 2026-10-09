@@ -85,7 +85,7 @@ globalThis.fetch = () => process.exit(92);
           // Never created: the listing below would show a store or key written here.
           XDG_CONFIG_HOME: join(directory, 'config'),
           XDG_DATA_HOME: join(directory, 'data'),
-          FAMILY_MCP_KEY_BACKEND: 'file',
+          FAMILY_MCP_STORE_TEST_SEAM: '1',
         },
         timeout: 5_000,
         stdout: 'pipe',

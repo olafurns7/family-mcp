@@ -84,7 +84,7 @@ test('private files are written atomically with owner-only permissions and read 
         (cause: unknown) => {
           assert.ok(cause instanceof SessionStoreError);
           assert.equal(cause.code, 'UNSAFE_FILE');
-          assert.match(cause.message, /symbolic link/);
+          assert.match(cause.message, /link to another file/);
 
           return true;
         },

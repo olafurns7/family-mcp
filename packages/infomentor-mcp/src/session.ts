@@ -127,7 +127,7 @@ export type SessionOptions = {
   sessionFile?: string;
   credentialsFile?: string;
   fetch?: HttpFetch;
-  /** Test seam for the store key; the default is the macOS Keychain or a Linux key file. */
+  /** Test seam for the store key; the default is the store's key file. */
   keys?: KeyProvider;
 };
 

@@ -7,13 +7,14 @@ import { startStdio } from '@family-mcp/mcp-runtime';
 import { KronanClient } from './api.js';
 import { attemptsPath, clearAttempts, listAttempts } from './attempts.js';
 import {
-  TOKEN_MAX_BYTES,
+  checkStoreAtStartup,
   loadSavedToken,
   logoutToken,
   migrateToken,
   normalizeToken,
   readTokenSource,
   saveToken,
+  TOKEN_MAX_BYTES,
 } from './auth.js';
 import { createServer, VERSION } from './server.js';
 
@@ -22,14 +23,15 @@ const help = `kronan-mcp — unofficial Krónan MCP server (products, shopping n
   kronan-mcp [serve]                Start the stdio MCP server
   kronan-mcp auth set [FILE]        Save an access token read from FILE, or from stdin (hidden prompt on a terminal)
   kronan-mcp auth migrate           Move a token saved by an older version out of its plaintext file
-  kronan-mcp auth status            Show where the token is saved and verify it against Krónan
+  kronan-mcp auth status            Show how the token is saved and verify it against Krónan
   kronan-mcp auth logout            Forget the saved token on this computer
   kronan-mcp orders clear-attempts  Show recorded order attempts; clear them after a y/N confirmation
   kronan-mcp --version              Print the installed version
 
 Create the access token in Krónan's settings (User or Customer group page; Auðkenni login required).
-Never pass the token as a command-line argument. The token is saved encrypted; its key is in the macOS
-Keychain, or in a private key file on Linux.
+Never pass the token as a command-line argument. The token is saved encrypted, with the key in a
+separate private file: ~/Library/Application Support/family-mcp on macOS; ~/.config/kronan-mcp with
+the key in ~/.local/share/family-mcp/keys on Linux.
 Order calls are recorded beside KRONAN_TOKEN_FILE (the plaintext token file of older versions); an
 unresolved record blocks further order calls for that checkout.
 Clear records only after checking your Krónan orders, never to get around an unknown outcome.
@@ -179,6 +181,13 @@ async function main() {
 
   if (values.version) {
     console.log(VERSION);
+
+    return;
+  }
+
+  // The store is checked before anything serves or touches it; help and version never do.
+  if (!(await checkStoreAtStartup())) {
+    process.exitCode = 1;
 
     return;
   }
