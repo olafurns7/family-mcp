@@ -2,8 +2,15 @@ import { SessionStoreError, readPrivateFile } from '@family-mcp/session-store';
 import { z } from 'zod';
 import { InfoMentorError, throwIfAborted } from './session.js';
 
+export const USERNAME_MAX = 512;
+
+export const PASSWORD_MAX = 4096;
+
 export const credentialsSchema = z
-  .object({ username: z.string().min(1).max(512), password: z.string().min(1).max(4096) })
+  .object({
+    username: z.string().min(1).max(USERNAME_MAX),
+    password: z.string().min(1).max(PASSWORD_MAX),
+  })
   .strict();
 
 export type Credentials = z.infer<typeof credentialsSchema>;

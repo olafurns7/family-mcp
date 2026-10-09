@@ -1,14 +1,16 @@
 import { readBody, SafeError } from '@family-mcp/mcp-runtime';
+import type { KeyProvider } from '@family-mcp/session-store';
 import { Cookie, type CookieJar } from 'tough-cookie';
 import * as z from 'zod/v4';
 
 import {
   AUTH_COOKIES,
+  ExpiredSession,
   ORIGIN,
-  loadSession,
-  saveSession,
   sessionPath,
-  withSessionLock,
+  withSession,
+  type SaveJar,
+  type Slot,
 } from './auth.js';
 
 const id = z.string().min(1).max(256);
@@ -311,6 +313,9 @@ function toConversation(conversation: z.infer<typeof upstreamConversationSchema>
   };
 }
 
+/** The jar of one held operation, and how to persist its rotation. */
+type Session = { jar: CookieJar; save: SaveJar };
+
 export class AblerClient {
   private readonly lifecycle = new AbortController();
   private readonly active = new Set<Promise<unknown>>();
@@ -318,13 +323,18 @@ export class AblerClient {
   constructor(
     private readonly path = sessionPath(),
     private readonly request: (url: string, options: RequestInit) => Promise<Response> = fetch,
+    private readonly keys?: KeyProvider,
+    /** `candidate` verifies a new session before it is promoted; its rotations stay there. */
+    private readonly slot: Slot = 'current',
   ) {}
 
-  private session<T>(work: (jar: CookieJar) => Promise<T>): Promise<T> {
-    const operation = withSessionLock(
+  private session<T>(work: (session: Session) => Promise<T>): Promise<T> {
+    const operation = withSession(
       this.path,
-      async () => work(await loadSession(this.path)),
+      this.slot,
       this.lifecycle.signal,
+      (jar, save) => work({ jar, save }),
+      this.keys,
     );
 
     this.active.add(operation);
@@ -338,7 +348,7 @@ export class AblerClient {
   }
 
   private async post(
-    jar: CookieJar,
+    { jar, save }: Session,
     path: '/oauth/token' | '/graphql',
     body?: GraphqlBody,
   ): Promise<Response> {
@@ -380,7 +390,7 @@ export class AblerClient {
     }
 
     // Persist rotation before another request, including when Abler returns an error.
-    if (changed) await saveSession(this.path, jar);
+    if (changed) await save();
 
     return response;
   }
@@ -397,11 +407,11 @@ export class AblerClient {
     }
   }
 
-  private async refresh(jar: CookieJar): Promise<void> {
-    const response = await this.post(jar, '/oauth/token');
+  private async refresh(session: Session): Promise<void> {
+    const response = await this.post(session, '/oauth/token');
 
     if ([401, 403].includes(response.status))
-      throw new SafeError(
+      throw new ExpiredSession(
         'Abler session expired or was revoked. Sign in again and capture/import it.',
       );
 
@@ -415,23 +425,25 @@ export class AblerClient {
     if (!result.success || result.data.error)
       throw new SafeError('Abler returned an invalid session refresh response.');
 
-    if (!(await jar.getCookies(`${ORIGIN}/graphql`)).some((c) => c.key === 'id_token')) {
+    if (!(await session.jar.getCookies(`${ORIGIN}/graphql`)).some((c) => c.key === 'id_token')) {
       throw new SafeError('Abler did not issue an access cookie. Capture a fresh session.');
     }
   }
 
   private async query(
-    jar: CookieJar,
+    session: Session,
     operationName: string,
     query: string,
     variables: GraphqlVariables = {},
     forceRefresh = false,
   ): Promise<Record<string, JsonValue>> {
-    const access = (await jar.getCookies(`${ORIGIN}/graphql`)).find((c) => c.key === 'id_token');
+    const access = (await session.jar.getCookies(`${ORIGIN}/graphql`)).find(
+      (c) => c.key === 'id_token',
+    );
 
-    if (forceRefresh || !access || access.TTL() < 60000) await this.refresh(jar);
+    if (forceRefresh || !access || access.TTL() < 60000) await this.refresh(session);
     const body = { operationName, query, variables };
-    let response = await this.post(jar, '/graphql', body);
+    let response = await this.post(session, '/graphql', body);
     let result = graphqlResponseSchema.safeParse(await this.readJson(response));
 
     if (
@@ -439,8 +451,8 @@ export class AblerClient {
       (result.success &&
         result.data.errors?.some((error) => error?.extensions?.code === 'UNAUTHENTICATED'))
     ) {
-      await this.refresh(jar);
-      response = await this.post(jar, '/graphql', body);
+      await this.refresh(session);
+      response = await this.post(session, '/graphql', body);
       result = graphqlResponseSchema.safeParse(await this.readJson(response));
     }
 
@@ -462,9 +474,9 @@ export class AblerClient {
 
   async status(forceRefresh = false) {
     // Use an authenticated read so 'authenticated' never means only 'file exists'.
-    return this.session(async (jar) => {
+    return this.session(async (session) => {
       const data = await this.query(
-        jar,
+        session,
         'SessionStatus',
         'query SessionStatus { me { id displayName } }',
         {},
@@ -476,12 +488,12 @@ export class AblerClient {
   }
 
   async profile() {
-    return this.session((jar) => this.profileWithSession(jar));
+    return this.session((session) => this.profileWithSession(session));
   }
 
-  private async profileWithSession(jar: CookieJar) {
+  private async profileWithSession(session: Session) {
     const data = await this.query(
-      jar,
+      session,
       'Profile',
       `query Profile { me { id displayName children { id displayName } } }`,
     );
@@ -498,9 +510,9 @@ export class AblerClient {
   }
 
   async groups() {
-    return this.session(async (jar) => {
+    return this.session(async (session) => {
       const data = await this.query(
-        jar,
+        session,
         'Groups',
         `query Groups { me { userAgeGroups {
         id name isActive groups { id name label } sport { id name }
@@ -516,10 +528,10 @@ export class AblerClient {
   async schedule(input: z.input<typeof scheduleInput> = {}) {
     const filters = scheduleInput.parse(input);
 
-    return this.session((jar) => this.scheduleWithSession(jar, filters));
+    return this.session((session) => this.scheduleWithSession(session, filters));
   }
 
-  private async scheduleWithSession(jar: CookieJar, input: z.input<typeof scheduleInput>) {
+  private async scheduleWithSession(session: Session, input: z.input<typeof scheduleInput>) {
     const { from, to, types, groupIds, participantIds, first, after } = scheduleInput.parse(input);
 
     const filter: Record<string, string | string[]> = {};
@@ -542,7 +554,7 @@ export class AblerClient {
     if (Object.keys(filter).length) Object.assign(variables, { filter });
 
     const data = await this.query(
-      jar,
+      session,
       'Schedule',
       `query Schedule($first: Int, $cursor: String, $filter: eventFilter) {
       schedule(first: $first, after: $cursor, filter: $filter) { edges { node { ${eventFields} } } ${pageFields} }
@@ -567,8 +579,8 @@ export class AblerClient {
   async childSchedules(input: z.input<typeof childSchedulesInput> = {}) {
     const { childIds, afterByChild = {}, ...filters } = childSchedulesInput.parse(input);
 
-    return this.session(async (jar) => {
-      const profile = await this.profileWithSession(jar);
+    return this.session(async (session) => {
+      const profile = await this.profileWithSession(session);
 
       if (childIds?.some((childId) => !Object.hasOwn(profile.childNamesById, childId))) {
         throw new SafeError('Unknown child ID. Use get_profile to choose linked children.');
@@ -594,7 +606,7 @@ export class AblerClient {
           after: afterByChild[child.id],
         };
 
-        const page = await this.scheduleWithSession(jar, childFilters);
+        const page = await this.scheduleWithSession(session, childFilters);
 
         const events = page.events.map(({ currentPlayerAttendance, ...event }) => ({
           ...event,
@@ -614,9 +626,9 @@ export class AblerClient {
   async event(input: z.input<typeof eventInput>) {
     const { eventId, ageGroupId } = eventInput.parse(input);
 
-    return this.session(async (jar) => {
+    return this.session(async (session) => {
       const data = await this.query(
-        jar,
+        session,
         'Event',
         `query Event($id: String!, $ageGroupId: String!) {
         event(id: $id, ageGroupId: $ageGroupId, first: 1) { edges { node { ${eventFields} } } ${pageFields} }
@@ -640,9 +652,9 @@ export class AblerClient {
   async conversations(input: z.input<typeof conversationsInput> = {}) {
     const { first, after } = conversationsInput.parse(input);
 
-    return this.session(async (jar) => {
+    return this.session(async (session) => {
       const data = await this.query(
-        jar,
+        session,
         'Conversations',
         `query Conversations($first: Int, $cursor: String) {
         getMessageUnreadCount
@@ -679,9 +691,9 @@ export class AblerClient {
   async messages(input: z.input<typeof messagesInput>) {
     const { conversationId, first, after } = messagesInput.parse(input);
 
-    return this.session(async (jar) => {
+    return this.session(async (session) => {
       const data = await this.query(
-        jar,
+        session,
         'ConversationMessages',
         `query ConversationMessages($pagination: PaginationType!, $conversationIds: [ID!]) {
         conversationMessages(pagination: $pagination, conversationIds: $conversationIds) {

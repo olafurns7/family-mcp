@@ -41,6 +41,13 @@ export const DEFAULT_SWEEP_AGE_MS = 300_000;
 
 const TEMPORARY_SUFFIX = '.tmp';
 
+// writePrivateFile's temporaries are regular files named `<name>.<uuid>.tmp`; sweeps match nothing else.
+const UUID = '[\\da-f]{8}-[\\da-f]{4}-[\\da-f]{4}-[\\da-f]{4}-[\\da-f]{12}';
+
+const OWN_TEMPORARY = new RegExp(`^${UUID}\\.tmp$`);
+
+const ANY_TEMPORARY = new RegExp(`.\\.${UUID}\\.tmp$`);
+
 // O_NOFOLLOW refuses symbolic links and O_NONBLOCK keeps a FIFO from blocking the open.
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0);
 
@@ -60,6 +67,11 @@ export function fileChanged(before: FileState, after: FileState): boolean {
  * Symbolic links, group or world access bits, foreign owners, and oversized or changing files are rejected.
  */
 export async function readPrivateFile(path: string, options: ReadOptions): Promise<string> {
+  return (await readPrivateBytes(path, options)).toString('utf8');
+}
+
+/** {@link readPrivateFile} without text decoding, for binary files such as keys. */
+export async function readPrivateBytes(path: string, options: ReadOptions): Promise<Buffer> {
   const { maxBytes } = options;
 
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
@@ -130,7 +142,7 @@ export async function readPrivateFile(path: string, options: ReadOptions): Promi
     if (fileChanged(info, after))
       throw new SessionStoreError('IO', 'The file changed while it was being read.');
 
-    return buffer.toString('utf8', 0, length);
+    return buffer.subarray(0, length);
   } catch (error) {
     throw ioError(error, 'Cannot read the file. Check its permissions.');
   } finally {
@@ -205,23 +217,23 @@ export async function ensurePrivateDir(
   }
 }
 
-/** Remove orphaned `<name>.<token>.tmp` files and directories beside `path`. Returns the count. */
+/** Remove orphaned `<name>.<uuid>.tmp` regular files beside `path`. Returns the count. */
 export function sweepTemp(path: string, options: SweepOptions = {}): Promise<number> {
   const prefix = `${basename(path)}.`;
 
   return sweep(
     dirname(path),
-    (name) => name.startsWith(prefix) && name.endsWith(TEMPORARY_SUFFIX),
+    (name) => name.startsWith(prefix) && OWN_TEMPORARY.test(name.slice(prefix.length)),
     options,
   );
 }
 
-/** Remove every orphaned `*.tmp` entry directly inside `directory`. Returns the count. */
+/** Remove every orphaned `*.<uuid>.tmp` regular file directly inside `directory`. Returns the count. */
 export function sweepTempInDirectory(
   directory: string,
   options: SweepOptions = {},
 ): Promise<number> {
-  return sweep(directory, (name) => name.endsWith(TEMPORARY_SUFFIX), options);
+  return sweep(directory, (name) => ANY_TEMPORARY.test(name), options);
 }
 
 async function sweep(
@@ -257,10 +269,11 @@ async function sweep(
       throw ioError(error, 'Cannot inspect a temporary file. Check the directory permissions.');
     }
 
-    if (info.mtimeMs > cutoff) continue;
+    // A directory or link under a temporary's name was never one; it is left alone.
+    if (!info.isFile() || info.mtimeMs > cutoff) continue;
 
     try {
-      await rm(entry, { recursive: true, force: true });
+      await rm(entry, { force: true });
     } catch (error) {
       throw ioError(error, 'Cannot remove a temporary file. Check the directory permissions.');
     }
@@ -273,7 +286,7 @@ async function sweep(
 
 // Directory flushes are best effort: the data file is already durable and renamed, and some
 // filesystems refuse to open or sync a directory handle.
-async function syncDirectory(directory: string): Promise<void> {
+export async function syncDirectory(directory: string): Promise<void> {
   if (process.platform === 'win32') return;
   let handle: FileHandle;
 

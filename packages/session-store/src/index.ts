@@ -5,6 +5,7 @@ export type { SessionStoreErrorCode } from './errors.js';
 export {
   DEFAULT_SWEEP_AGE_MS,
   ensurePrivateDir,
+  readPrivateBytes,
   readPrivateFile,
   sweepTemp,
   sweepTempInDirectory,
@@ -17,6 +18,25 @@ export { DEFAULT_WAIT_MS, withFileLock } from './lock.js';
 
 export type { LockOptions } from './lock.js';
 
-export { defaultSessionPath } from './paths.js';
+export { defaultKeyProvider, defaultSecretRecordPath, defaultSessionPath } from './paths.js';
 
-export type { SessionPathOptions } from './paths.js';
+export type { DefaultKeyProviderOptions, SessionPathOptions } from './paths.js';
+
+export { KeychainAccessorKeyProvider } from './keychain.js';
+
+export type { KeychainAccessorOptions } from './keychain.js';
+
+export { FakeKeyProvider, KEY_BYTES, LocalKeyFileProvider } from './keys.js';
+
+export type { KeyProvider, LocalKeyFileOptions } from './keys.js';
+
+export {
+  createSecretKey,
+  readSecretRecord,
+  resetSecretStore,
+  secretStoreExists,
+  withSecretRecord,
+  withSecretStore,
+} from './secret.js';
+
+export type { SecretRecordOptions, SecretStore, SecretUpdate } from './secret.js';

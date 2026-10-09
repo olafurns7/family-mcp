@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-import { randomUUID } from 'node:crypto';
-import { rename } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 
 import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
@@ -12,11 +10,11 @@ import {
   captureCookies,
   cookieInputSchema,
   importCookies,
-  prunePendingCandidates,
-  removeSession,
-  saveSession,
-  sessionPath,
-  withSessionLock,
+  logoutSession,
+  migrateSession,
+  retryCandidate,
+  saveVerifiedSession,
+  sessionStorage,
 } from './auth.js';
 import { loginInBrowser } from './browser-login.js';
 import { createServer, VERSION } from './server.js';
@@ -30,35 +28,26 @@ const help = `abler-mcp — unofficial read-only Abler MCP server
   abler-mcp auth login              Open a temporary browser for Abler sign-in
   abler-mcp auth capture [URL]      Capture a signed-in Chrome tab (default http://127.0.0.1:9222)
   abler-mcp auth import FILE        Import browser cookie JSON; use - for stdin
-  abler-mcp auth status             Verify the saved session against Abler
+  abler-mcp auth retry-candidate    Verify and use a session whose verification failed earlier
+  abler-mcp auth migrate            Move a session saved by an older version out of its plaintext file
+  abler-mcp auth status             Show where the session is saved and verify it against Abler
   abler-mcp auth logout             Remove the saved session and failed-import candidates
   abler-mcp --version               Print the installed version
 
 Login options: --timeout <seconds> (default 300), --browser <path>, --keep-browser
 The temporary profile is deleted after login; --keep-browser leaves live credentials in it without a debugging endpoint.
-Set ABLER_SESSION_FILE to choose the private session file.
-Transfer the saved session file securely to use it on a headless machine.
+The session is saved encrypted. ABLER_SESSION_FILE names an older version's plaintext session file.
+On a headless machine, run auth import there with a browser cookie export.
 `;
 
-async function saveVerifiedSession(path: string, jar: CookieJar): Promise<void> {
-  await withSessionLock(path, async () => {
-    const pending = `${path}.${randomUUID()}.pending`;
-    await saveSession(pending, jar);
+/** Rotations during verification land in the candidate, which is promoted only if it works. */
+const verifyCandidate = () =>
+  new AblerClient(undefined, fetch, undefined, 'candidate').status(true);
 
-    try {
-      await new AblerClient(pending).status(true);
-      await rename(pending, path);
-    } catch {
-      // A successful refresh may already have invalidated the imported credential.
-      throw new SafeError(
-        'Session verification failed. The previous file was kept; a possibly rotated candidate is retained beside it as <session-file>.<uuid>.pending. Retry with ABLER_SESSION_FILE pointing to that candidate and auth status, or capture a fresh session. Treat both files as credentials.',
-      );
-    }
-
-    // The verified session supersedes candidates retained by earlier failed imports.
-    await prunePendingCandidates(path);
-  });
-  console.log(`Abler session saved and verified: ${path}`);
+async function saveVerified(jar: CookieJar): Promise<void> {
+  if (await saveVerifiedSession(jar, verifyCandidate))
+    console.log('The old Abler session store could not be read without its key and was replaced.');
+  console.log('Abler session saved and verified in the encrypted store.');
 }
 
 function parseTimeout(value: string | undefined): number {
@@ -124,8 +113,6 @@ async function main() {
       'The browser, timeout, and keep-browser options are only valid with auth login.',
     );
 
-  const path = sessionPath();
-
   let jar: CookieJar;
 
   if (action === 'login') {
@@ -174,11 +161,31 @@ async function main() {
       );
     }
   } else if (action === 'status' && !argument) {
-    console.log(JSON.stringify(await new AblerClient(path).status()));
+    const storage = await sessionStorage();
+    console.log(JSON.stringify({ ...(await new AblerClient().status()), storage }));
+
+    return;
+  } else if (action === 'retry-candidate' && !argument) {
+    await retryCandidate(verifyCandidate);
+    console.log('Abler session verified and saved in the encrypted store.');
+
+    return;
+  } else if (action === 'migrate' && !argument) {
+    const outcome = await migrateSession();
+
+    console.log(
+      {
+        migrated: 'Abler session moved to the encrypted store; the plaintext files were removed.',
+        candidate:
+          'A failed-import candidate moved to the encrypted store; the plaintext files were removed. Run abler-mcp auth retry-candidate to verify and use it.',
+        already: 'Already migrated.',
+        'already-removed-legacy': 'Already migrated. Removed leftover plaintext session files.',
+      }[outcome],
+    );
 
     return;
   } else if (action === 'logout' && !argument) {
-    await removeSession(path);
+    await logoutSession();
     console.log(
       'Local Abler session and failed-import candidates removed. This does not sign out other devices.',
     );
@@ -186,7 +193,7 @@ async function main() {
     return;
   } else throw new SafeError('Invalid command. Run abler-mcp --help for usage.');
 
-  await saveVerifiedSession(path, jar);
+  await saveVerified(jar);
 }
 
 main().catch((error) => {

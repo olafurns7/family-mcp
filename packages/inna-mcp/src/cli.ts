@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
 import { loginInBrowser } from './browser-login.js';
-import { InnaClient } from './client.js';
+import { InnaClient, type SavedSession } from './client.js';
 import { createServer } from './server.js';
 import { startKeepAlive } from './keep-alive.js';
 import { loginWithElectronicId } from './login.js';
@@ -18,7 +18,8 @@ const help = `inna-mcp — unofficial Inna school MCP (preview)
   inna-mcp auth login                 Electronic ID: hidden phone prompt; approve on your phone
   inna-mcp auth login --google        Google: sign in in the browser window that opens
   inna-mcp auth import FILE           Fallback without a desktop: save a private cookie export
-  inna-mcp auth status                Verify the saved session (no credentials printed)
+  inna-mcp auth status                Verify the saved session and say where it is saved
+  inna-mcp auth migrate               Move an older version's plaintext session into the encrypted store
   inna-mcp auth logout                Remove the local session; retain absence evidence
   inna-mcp --version                  Print the executable version
 
@@ -28,9 +29,18 @@ It needs a desktop; nothing is copied or pasted. Options: --timeout <seconds> (d
 --browser <path> or INNA_BROWSER to choose the browser.
 auth import is for a machine without a desktop: export only nam.inna.is cookies to an
 owner-only local JSON file. Never paste cookies or passwords in chat.
-INNA_SESSION_FILE sets an absolute private session path.
+The session is saved encrypted. INNA_SESSION_FILE names an older version's absolute plaintext
+session path; the private absence record stays in a plaintext file beside that path.
 Login/import refuse a changed account/student/school unless --allow-account-change is given.
 `;
+
+function reportSaved(saved: SavedSession): void {
+  if (saved.replaced)
+    process.stdout.write(
+      'The old Inna session store could not be read without its key and was replaced.\n',
+    );
+  process.stdout.write(`Signed in. ${saved.storage}\n`);
+}
 
 async function signIn(client: InnaClient, allowAccountChange: boolean): Promise<void> {
   const controller = new AbortController();
@@ -75,8 +85,7 @@ async function signIn(client: InnaClient, allowAccountChange: boolean): Promise<
       { signal: controller.signal, preferredUserId },
     );
 
-    await client.saveVerifiedSession(jar, allowAccountChange, controller.signal);
-    process.stdout.write(`Signed in. Session saved to ${client.path}\n`);
+    reportSaved(await client.saveVerifiedSession(jar, allowAccountChange, controller.signal));
   } catch (error) {
     if (controller.signal.aborted) throw new SafeError('Inna login cancelled.');
     throw error;
@@ -111,8 +120,7 @@ async function signInWithGoogle(
   process.on('SIGTERM', cancel);
 
   try {
-    await client.saveVerifiedSession(jar, allowAccountChange, controller.signal);
-    process.stdout.write(`Signed in. Session saved to ${client.path}\n`);
+    reportSaved(await client.saveVerifiedSession(jar, allowAccountChange, controller.signal));
   } catch (error) {
     if (controller.signal.aborted) throw new SafeError('Inna login cancelled.');
     throw error;
@@ -174,6 +182,8 @@ async function main(): Promise<void> {
   const client = new InnaClient();
 
   if (action === 'login' && positionals.length === 2) {
+    await client.checkStore();
+
     if (values.google)
       await signInWithGoogle(client, values['allow-account-change'] ?? false, {
         browser: values.browser,
@@ -185,8 +195,7 @@ async function main(): Promise<void> {
   }
 
   if (action === 'import' && source && positionals.length === 3) {
-    await client.importSession(source, values['allow-account-change'] ?? false);
-    process.stdout.write(`Signed in. Session saved to ${client.path}\n`);
+    reportSaved(await client.importSession(source, values['allow-account-change'] ?? false));
 
     return;
   }
@@ -197,7 +206,24 @@ async function main(): Promise<void> {
   if (action === 'status') {
     const result = await client.status();
     process.stdout.write(
-      result.authenticated ? 'Inna session is authenticated.\n' : 'No saved Inna session.\n',
+      'storage' in result
+        ? `Inna session is authenticated. ${result.storage}\n`
+        : 'No saved Inna session.\n',
+    );
+
+    return;
+  }
+
+  if (action === 'migrate') {
+    const outcome = await client.migrate();
+
+    process.stdout.write(
+      {
+        migrated: 'Inna session moved to the encrypted store; the plaintext file was removed.\n',
+        already: 'Already migrated.\n',
+        'already-removed-legacy':
+          'Already migrated. Removed the leftover plaintext session file.\n',
+      }[outcome],
     );
 
     return;

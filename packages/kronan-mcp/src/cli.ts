@@ -8,12 +8,12 @@ import { KronanClient } from './api.js';
 import { attemptsPath, clearAttempts, listAttempts } from './attempts.js';
 import {
   TOKEN_MAX_BYTES,
-  loadToken,
+  loadSavedToken,
+  logoutToken,
+  migrateToken,
   normalizeToken,
   readTokenSource,
-  removeToken,
   saveToken,
-  tokenPath,
 } from './auth.js';
 import { createServer, VERSION } from './server.js';
 
@@ -21,14 +21,17 @@ const help = `kronan-mcp — unofficial Krónan MCP server (products, shopping n
 
   kronan-mcp [serve]                Start the stdio MCP server
   kronan-mcp auth set [FILE]        Save an access token read from FILE, or from stdin (hidden prompt on a terminal)
-  kronan-mcp auth status            Verify the saved token against Krónan
-  kronan-mcp auth logout            Remove the saved token file
+  kronan-mcp auth migrate           Move a token saved by an older version out of its plaintext file
+  kronan-mcp auth status            Show where the token is saved and verify it against Krónan
+  kronan-mcp auth logout            Forget the saved token on this computer
   kronan-mcp orders clear-attempts  Show recorded order attempts; clear them after a y/N confirmation
   kronan-mcp --version              Print the installed version
 
 Create the access token in Krónan's settings (User or Customer group page; Auðkenni login required).
-Never pass the token as a command-line argument. Set KRONAN_TOKEN_FILE to choose the private token file.
-Order calls are recorded beside it; an unresolved record blocks further order calls for that checkout.
+Never pass the token as a command-line argument. The token is saved encrypted; its key is in the macOS
+Keychain, or in a private key file on Linux.
+Order calls are recorded beside KRONAN_TOKEN_FILE (the plaintext token file of older versions); an
+unresolved record blocks further order calls for that checkout.
 Clear records only after checking your Krónan orders, never to get around an unknown outcome.
 `;
 
@@ -196,7 +199,6 @@ async function main() {
   }
 
   if (command !== 'auth' || positionals.length > 3) throw new Error(help);
-  const path = tokenPath();
 
   if (action === 'set') {
     const token = normalizeToken(await readTokenInput(argument));
@@ -209,13 +211,26 @@ async function main() {
       await client.close();
     }
 
-    await saveToken(path, token);
-    console.log(`Krónan access token verified and saved: ${path}`);
+    if (await saveToken(token))
+      console.log('The old Krónan token store could not be read without its key and was replaced.');
+    console.log('Krónan access token verified and saved encrypted.');
 
     if (argument !== undefined && argument !== '-')
       console.log('Remove the source file now; it holds the same credential.');
+  } else if (action === 'migrate' && argument === undefined) {
+    const outcome = await migrateToken();
+
+    console.log(
+      outcome === 'migrated'
+        ? 'Krónan access token moved to the encrypted store; the plaintext file was removed.'
+        : outcome === 'already'
+          ? 'Already migrated.'
+          : 'Already migrated. Removed a leftover plaintext token file.',
+    );
   } else if (action === 'status' && argument === undefined) {
-    const client = new KronanClient(() => loadToken(path));
+    const saved = await loadSavedToken();
+    console.log(saved.storage);
+    const client = new KronanClient(() => Promise.resolve(saved.token));
 
     try {
       console.log(JSON.stringify(await client.status()));
@@ -223,9 +238,9 @@ async function main() {
       await client.close();
     }
   } else if (action === 'logout' && argument === undefined) {
-    await removeToken(path);
+    await logoutToken();
     console.log(
-      'Local Krónan token file removed. The token itself stays valid until revoked in Krónan settings.',
+      'Saved Krónan access token removed from this computer. The token itself stays valid until revoked in Krónan settings.',
     );
   } else throw new Error(help);
 }

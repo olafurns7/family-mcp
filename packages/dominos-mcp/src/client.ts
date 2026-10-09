@@ -1,15 +1,15 @@
 import { join } from 'node:path';
 
 import { SafeError } from '@family-mcp/mcp-runtime';
-import { readPrivateFile, writePrivateFile } from '@family-mcp/session-store';
+import { readPrivateFile, writePrivateFile, type KeyProvider } from '@family-mcp/session-store';
 import * as z from 'zod/v4';
 
 import {
   exchangeToken,
-  loadSession,
   locked,
-  saveSession,
   sessionPath,
+  withSession,
+  type SaveSession,
   type Session,
 } from './auth.js';
 import { orderItems, parseMenu } from './catalog.js';
@@ -47,6 +47,7 @@ export class DominosClient {
   constructor(
     private readonly path = sessionPath(),
     private readonly request: Request = fetch,
+    private readonly keys?: KeyProvider,
   ) {}
 
   async close(): Promise<void> {
@@ -86,7 +87,7 @@ export class DominosClient {
     );
   }
 
-  private async refresh(previous: Session): Promise<Session> {
+  private async refresh(previous: Session, save: SaveSession): Promise<Session> {
     const next = await exchangeToken(
       this.request,
       new URLSearchParams({ grant_type: 'refresh_token', refresh_token: previous.refreshToken }),
@@ -97,27 +98,32 @@ export class DominosClient {
       throw new SafeError(
         'The refreshed Domino’s account differs from the saved account. Sign in again.',
       );
-    await saveSession(this.path, next);
+    await save(next);
 
     return next;
   }
 
   private auth<T>(work: (session: Session) => Promise<T>, retryRead = false): Promise<T> {
-    return locked(this.path, this.lifecycle.signal, async () => {
-      let session = await loadSession(this.path);
+    return withSession(
+      this.path,
+      this.lifecycle.signal,
+      async (current, save) => {
+        let session = current;
 
-      if (session.expiresAt <= Date.now() + 60_000) session = await this.refresh(session);
+        if (session.expiresAt <= Date.now() + 60_000) session = await this.refresh(session, save);
 
-      try {
-        return await work(session);
-      } catch (error) {
-        // Only reads can be replayed after 401. Orders and payments are never retried here.
-        if (retryRead && error instanceof HttpError && error.status === 401)
-          return work(await this.refresh(session));
+        try {
+          return await work(session);
+        } catch (error) {
+          // Only reads can be replayed after 401. Orders and payments are never retried here.
+          if (retryRead && error instanceof HttpError && error.status === 401)
+            return work(await this.refresh(session, save));
 
-        throw error;
-      }
-    });
+          throw error;
+        }
+      },
+      this.keys,
+    );
   }
 
   private file(id: string): string {

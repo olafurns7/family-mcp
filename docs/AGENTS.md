@@ -21,8 +21,8 @@ attendance state from a failed request or undocumented value.
 - Initial login belongs in Abler's browser. Never invent credentials, bypass
   CAPTCHA/OTP, or ask for cookie values in chat.
 - Import an existing browser export only from a private host-local path. Verify
-  it before removing the temporary export; a failed rotated import retains a
-  `.pending` candidate and is not a successful sign-in.
+  it before removing the temporary export; a failed import retains its
+  candidate in the encrypted store and is not a successful sign-in.
 - Use `get_profile` to discover child IDs. IDs, not names or positions, select
   children. Continue each child's cursor independently.
 - The server has no mutation tools. Raw attendance codes stay raw; an empty list
@@ -69,6 +69,11 @@ attendance state from a failed request or undocumented value.
   fallback for a machine without a desktop, and its values never go in chat.
   Every login path verifies and stores the session with the shared
   session-store helpers. `--google` requires a release after Inna 0.2.2.
+- The session is saved encrypted. `inna_session_status` names where in its
+  `storage` field; when it reports a plaintext file, tell the owner to stop
+  running servers and run `inna-mcp auth migrate`. A session-store error is
+  fixed by the owner with the CLI command it names; never read, move, or delete
+  the store, its key, or the private absence record.
 - Identify the returned account, student, and school before describing records.
   Do not enable `--allow-account-change` to work around a binding mismatch.
   Missing marks, percentages, or optional text are unavailable, not zero.

@@ -40,6 +40,9 @@ export async function smoke(bin, expectedTools, version, standalone, packageName
       PATH: directory,
       HOME: directory,
       XDG_CONFIG_HOME: directory,
+      XDG_DATA_HOME: directory,
+      // The default store key on macOS is the login Keychain, which a test never reads.
+      FAMILY_MCP_KEY_BACKEND: 'file',
       ABLER_SESSION_FILE: join(directory, 'missing.json'),
       INFOMENTOR_SESSION_PATH: join(directory, 'missing.json'),
       INNA_SESSION_FILE: join(directory, 'missing.json'),

@@ -18,12 +18,29 @@ import { pathToFileURL } from 'node:url';
 
 import * as z from 'zod/v4';
 
-import { importCookies, loadSession, saveSession } from '../src/auth.js';
+import { importCookies, ORIGIN, saveSession, withSession, type Slot } from '../src/auth.js';
 import { findBrowser } from '../src/browser-login.js';
+import { filesContaining, useScratchStore } from './scratch.js';
 
-const savedSessionSchema = z.object({
-  cookies: z.array(z.object({ name: z.string(), value: z.string() })),
-});
+const store = useScratchStore();
+
+/** The saved cookies by name, from the store (or, before migration, the plaintext file). */
+const savedCookies = (path: string, slot: Slot = 'current') =>
+  withSession(
+    path,
+    slot,
+    new AbortController().signal,
+    async (jar) =>
+      new Map((await jar.getCookies(`${ORIGIN}/`)).map(({ key, value }) => [key, value])),
+  );
+
+const SECRETS = [
+  'previous-refresh',
+  'private-refresh',
+  'private-access',
+  'verified-refresh',
+  'verified-access',
+];
 
 const browserStateSchema = z.object({
   pid: z.number(),
@@ -191,6 +208,9 @@ function createUpstream(options: {
     port: 0,
     async fetch(request) {
       const path = new URL(request.url).pathname;
+
+      // Local port scanners probe new listeners at `/`; the client never requests it.
+      if (path === '/') return new Response(null, { status: 404 });
       requests.push(path);
 
       if (path === '/oauth/token') {
@@ -342,30 +362,24 @@ test('auth login uses its private CDP pipe', async () => {
     );
     const state = await waitForBrowserState(stateFile);
     const { exit, stdout, stderr } = await collectProcess(child);
-    const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
-    const savedCookies = new Map(saved.cookies.map(({ name, value }) => [name, value]));
-    const savedMode = (await stat(sessionPath)).mode & 0o777;
-    const jar = await loadSession(sessionPath);
+    const saved = await savedCookies(sessionPath);
 
     expect(stderr).toBe('');
     expect(exit).toBe(0);
     expect(stdout).toContain('Sign in to Abler in the browser window that opened.');
-    expect(stdout).toContain(`Abler session saved and verified: ${sessionPath}`);
+    expect(stdout).toContain('Abler session saved and verified in the encrypted store.');
     expect(stdout).not.toMatch(/private-refresh|private-access|verified-refresh|verified-access/);
-    expect(saved.cookies.map(({ name }) => name).toSorted()).toEqual(['id_token', 'refreshToken']);
-    expect(savedMode).toBe(0o600);
-    expect(savedCookies.get('refreshToken')).toBe('verified-refresh');
-    expect(savedCookies.get('id_token')).toBe('verified-access');
-    expect(await jar.getCookieString('https://www.abler.io')).toContain(
-      'refreshToken=verified-refresh',
-    );
+    expect([...saved.keys()].toSorted()).toEqual(['id_token', 'refreshToken']);
+    expect(saved.get('refreshToken')).toBe('verified-refresh');
+    expect(saved.get('id_token')).toBe('verified-access');
+    expect(await filesContaining(SECRETS, sessions, temporaryDirectory, store.home)).toEqual([]);
     expect(upstream.requests).toEqual(['/oauth/token', '/graphql']);
     expect(state.profileMode).toBe(0o700);
     expect(state.transport).toBe('pipe');
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(await readFile(exitFile, 'utf8')).toBe('closed');
     expect(pidIsRunning(state.pid)).toBe(false);
-    expect(await readdir(sessions)).toEqual(['session.json']);
+    expect(await readdir(sessions)).toEqual([]);
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) {
       child.kill('SIGKILL');
@@ -489,7 +503,7 @@ test('auth login --keep-browser exits while the browser and profile remain open'
       true,
     );
     state = await waitForBrowserState(stateFile);
-    await waitForFile(sessionPath);
+    await waitForFile(store.record);
     const exit = await Promise.race([child.exited, Bun.sleep(2000).then(() => undefined)]);
 
     expect(exit).toBe(0);
@@ -497,7 +511,7 @@ test('auth login --keep-browser exits while the browser and profile remain open'
     expect(pidIsRunning(state.pid)).toBe(true);
     expect((await stat(state.profile)).isDirectory()).toBe(true);
     const [stdout, stderr] = await Promise.all([readPipe(child.stdout), readPipe(child.stderr)]);
-    expect(stdout).toContain('Abler session saved and verified:');
+    expect(stdout).toContain('Abler session saved and verified in the encrypted store.');
     expect(stderr).toContain(
       'Keeping the browser open; its temporary profile contains live Abler credentials and no debugging endpoint is left open.',
     );
@@ -610,7 +624,7 @@ test('auth login retains the captured candidate when verification fails', async 
   const sessions = join(directory, 'sessions');
   await mkdir(sessions);
   const sessionPath = join(sessions, 'session.json');
-  const originalFile = await savePreviousSession(sessionPath);
+  await savePreviousSession(sessionPath);
   const browser = await makeFakeBrowser(directory);
   const stateFile = join(directory, 'browser.json');
   const exitFile = join(directory, 'browser.closed');
@@ -638,27 +652,21 @@ test('auth login retains the captured candidate when verification fails', async 
     );
     state = await waitForBrowserState(stateFile);
     const { exit, stderr } = await collectProcess(child);
-    const files = await readdir(sessions);
-    const pending = files.find((name) => name.endsWith('.pending'));
 
     expect(exit).toBe(1);
-    expect(stderr).toContain('Session verification failed.');
-    expect(await readFile(sessionPath, 'utf8')).toBe(originalFile);
-
-    if (!pending) throw new Error('The failed verification candidate was not retained.');
-
-    const candidate = savedSessionSchema.parse(
-      JSON.parse(await readFile(join(sessions, pending), 'utf8')),
+    // Abler refused the refresh, so retry-candidate would not help and is not suggested.
+    expect(stderr.trim()).toBe(
+      'Abler session expired or was revoked. Sign in again and capture/import it.',
     );
-
-    expect(candidate.cookies.map(({ name, value }) => [name, value])).toContainEqual([
-      'refreshToken',
-      'private-refresh',
-    ]);
-    expect(candidate.cookies.map(({ name, value }) => [name, value])).toContainEqual([
-      'id_token',
-      'private-access',
-    ]);
+    // The previous plaintext session moved into the store as the current one, and is kept.
+    expect(await savedCookies(sessionPath)).toEqual(
+      new Map([['refreshToken', 'previous-refresh']]),
+    );
+    const candidate = await savedCookies(sessionPath, 'candidate');
+    expect(candidate.get('refreshToken')).toBe('private-refresh');
+    expect(candidate.get('id_token')).toBe('private-access');
+    expect(await readdir(sessions)).toEqual([]);
+    expect(await filesContaining(SECRETS, sessions, temporaryDirectory, store.home)).toEqual([]);
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(await readFile(exitFile, 'utf8')).toBe('closed');
   } finally {
@@ -862,11 +870,11 @@ test('auth login rediscovers an Abler tab after its pipe session detaches', asyn
     );
     state = await waitForBrowserState(stateFile);
     const { exit, stderr } = await collectProcess(child);
-    const saved = savedSessionSchema.parse(JSON.parse(await readFile(sessionPath, 'utf8')));
+    const saved = await savedCookies(sessionPath);
 
     expect(exit).toBe(0);
     expect(stderr).toBe('');
-    expect(saved.cookies.map(({ name }) => name).toSorted()).toEqual(['id_token', 'refreshToken']);
+    expect([...saved.keys()].toSorted()).toEqual(['id_token', 'refreshToken']);
     expect(upstream.requests).toEqual(['/oauth/token', '/graphql']);
     await assert.rejects(stat(state.profile), { code: 'ENOENT' });
     expect(pidIsRunning(state.pid)).toBe(false);

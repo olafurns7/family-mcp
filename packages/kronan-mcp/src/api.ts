@@ -2,7 +2,7 @@ import { readBody, ResponseBodyTooLargeError, SafeError } from '@family-mcp/mcp-
 import * as z from 'zod/v4';
 
 import { attemptsPath, claimAttempt, fingerprint, type MoneyTool } from './attempts.js';
-import { ORIGIN, loadToken, tokenPath } from './auth.js';
+import { ORIGIN, loadToken } from './auth.js';
 import {
   activeOrderSchema,
   addCheckoutToOrderInput,
@@ -218,7 +218,7 @@ export class KronanClient {
   private readonly active = new Set<Promise<unknown>>();
 
   constructor(
-    private readonly token: TokenSource = () => loadToken(tokenPath()),
+    private readonly token: TokenSource = () => loadToken(),
     private readonly request: RequestFunction = fetch,
     private readonly attempts: string = attemptsPath(),
   ) {}

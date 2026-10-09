@@ -35,10 +35,12 @@ Expected output:
 0.5.0
 ```
 
-Run the Quick start installer again to upgrade; the session file stays in place.
+Run the Quick start installer again to upgrade; the saved session stays in place.
+After upgrading from 0.6.0 or earlier, run `abler-mcp auth migrate` once (see
+[Upgrading from 0.6.0](#upgrading-from-060)).
 Upgrading replaces the command but not a running server; restart the MCP host, or
 rerun with `--stop-running`.
-To uninstall the command and release directories while retaining the session:
+To uninstall the command and release directories while retaining the saved session:
 
 ```sh
 rm -f /absolute/path/to/.local/bin/abler-mcp
@@ -57,10 +59,7 @@ configuration files do not reliably expand `~` or `$HOME`.
   "mcpServers": {
     "abler": {
       "command": "/absolute/path/to/.local/bin/abler-mcp",
-      "args": ["serve"],
-      "env": {
-        "ABLER_SESSION_FILE": "/absolute/path/abler-session.json"
-      }
+      "args": ["serve"]
     }
   }
 }
@@ -69,7 +68,7 @@ configuration files do not reliably expand `~` or `$HOME`.
 **Claude Code** — run this in the project where Claude Code should use Abler.
 
 ```sh
-claude mcp add abler -e ABLER_SESSION_FILE=/absolute/path/abler-session.json -- /absolute/path/to/.local/bin/abler-mcp serve
+claude mcp add abler -- /absolute/path/to/.local/bin/abler-mcp serve
 ```
 
 **Codex** — add only this Abler entry to `/absolute/path/to/.codex/config.toml`.
@@ -78,10 +77,10 @@ claude mcp add abler -e ABLER_SESSION_FILE=/absolute/path/abler-session.json -- 
 [mcp_servers.abler]
 command = "/absolute/path/to/.local/bin/abler-mcp"
 args = ["serve"]
-
-[mcp_servers.abler.env]
-ABLER_SESSION_FILE = "/absolute/path/abler-session.json"
 ```
+
+If you set `XDG_CONFIG_HOME`, `XDG_DATA_HOME` or `ABLER_SESSION_FILE`, set the same
+values for the MCP host as for `abler-mcp auth` commands.
 
 ## Authenticate once, then run headlessly
 
@@ -109,7 +108,10 @@ open. Login uses only a private `--remote-debugging-pipe` over inherited file
 descriptors; no debugging port is opened. If that pipe cannot be established,
 login closes the browser, removes the profile, and suggests `abler-mcp auth
 capture` or `abler-mcp auth import` instead. The retained browser's pipe closes
-when the CLI exits, so it has no debugging endpoint afterwards.
+when the CLI exits, so it has no debugging endpoint afterwards. With
+`--keep-browser` the profile still holds the live Abler cookies in the browser's
+own storage, outside the encrypted store: close the browser and delete its
+`abler-login-*` profile when done (the next login removes it after an hour).
 
 ### Capture from Chrome
 
@@ -163,13 +165,88 @@ With a browser that only provides developer tools, open **Application → Cookie
 }
 ```
 
-These cookies are HttpOnly, so `document.cookie` cannot export them. Treat the JSON as a credential; keep it out of source control and chat, and remove the temporary export after a successful, verified import. A failed verification leaves the previous file intact and retains a private `.pending` candidate, because Abler may already have rotated the imported credential. The earlier credential may no longer work upstream; follow the recovery instructions below. A later successful import removes retained candidates.
+These cookies are HttpOnly, so `document.cookie` cannot export them. Treat the JSON as a credential; keep it out of source control and chat, and remove the temporary export after a successful, verified import. A failed verification keeps the previous session and retains the new one as an encrypted candidate, because Abler may already have rotated the imported credential: `Session verification failed. The previous session was kept; the new one is retained in the encrypted store. Run abler-mcp auth retry-candidate, or capture a fresh session.` `abler-mcp auth retry-candidate` verifies the retained candidate again and uses it if it works. If Abler reports the new session expired or revoked, that message is shown instead; retrying cannot help, so sign in again. A store failure shows its own message. A later successful login, capture or import replaces it; no plaintext `.pending` file is written.
 
 ### Move to a server without a browser
 
-Securely copy the saved `session.json` to the headless machine, give it owner-only permissions, and set `ABLER_SESSION_FILE` to its absolute path. Install the package there and launch it over stdio from your MCP host. The package creates new session files with mode `0600` and new configuration directories with `0700` on Unix, and it refuses to read a session file that is a symlink, has hard links, is accessible to other users, or is owned by another user.
+Sign in on the headless machine itself: install the package there, copy a fresh
+browser cookie export to it privately, and run `abler-mcp auth import` there. The
+saved session cannot be copied between machines (its key stays on the machine that
+created it). Do not reuse one session on two machines: Abler rotates the refresh
+cookie, so the copies would invalidate each other. Sign in separately for each
+host. `auth logout` forgets only this package's local session, without signing out
+other devices.
 
-Processes using the same local session path coordinate refresh, reads, imports, and logout with a file lock, the `session.json.lock` directory beside the session file. A request waits up to 30 seconds for a busy lock and then fails with a busy error; retry later. After a hard process crash, the lock is released as soon as its PID no longer exists. A live process is never expired based on the lock's age, including while suspended. If the OS reuses a crashed owner's process ID for another live program, the lock can remain busy; remove it with `rm -r <file>.lock` only when no process is using that session file. Hard-linked session files are unsupported. Do not remove an active lock: a request whose lock is taken away fails and must be retried. Temporary files left behind by a crash are removed after five minutes. Copied files on other machines and browser sessions are not coordinated: use one active copy of a rotating session, or sign in separately for each independent host. Network filesystems and multi-host lock behavior are not supported or verified. Browser sessions can expire or be revoked: capture/import again when Abler rejects renewal. `auth logout` deletes only this package's local session, without signing out other devices.
+Processes on one machine coordinate refresh, reads, imports, and logout with file
+locks: `session.enc.lock` beside the encrypted record, and, for login, import,
+retry-candidate, migrate and logout, `session.json.lock` beside the plaintext
+session path. A request waits up to 30 seconds for a busy lock and then fails with
+a busy error; retry later.
+After a hard process crash, the lock is released as soon as its PID no
+longer exists. A live process is never expired based on the lock's age, including
+while suspended. If the OS reuses a crashed owner's process ID for another live
+program, the lock can remain busy; remove it with `rm -r <file>.lock` only when no
+process is using the session. Do not remove an active lock: a request whose lock is
+taken away fails and must be retried. Temporary files left behind by a crash are
+removed after five minutes. Network filesystems and multi-host lock behavior are not
+supported or verified. Browser sessions can expire or be revoked: capture/import
+again when Abler rejects renewal.
+
+### Where the session is saved
+
+The session (the `refreshToken` and `id_token` cookies, rewritten after every
+rotation) and any candidate awaiting verification are saved only as one encrypted
+record (AES-256-GCM), `~/.config/abler-mcp/session.enc`, with a non-secret
+`session.enc.marker` beside it. The record's 256-bit key is created on the first
+login, capture, import or migrate. It is never regenerated, except when the key is
+gone and you sign in again with `auth login`, `auth capture` or `auth import`:
+
+- **macOS:** a login-keychain item (service `family-mcp.abler-mcp`, account
+  `default.data-key`), read through Apple's `/usr/bin/security`.
+- **Linux:** a `0600` file in its own `0700` directory,
+  `~/.local/share/family-mcp/keys/abler-mcp.default.key`.
+
+On a headless Mac whose login keychain is locked (for example over SSH), set
+`FAMILY_MCP_KEY_BACKEND=file` for sign-in and the MCP host: the key is then kept in
+`~/.local/share/family-mcp/keys/` as on Linux, and status says the session is saved
+in an encrypted file.
+
+When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is set, it replaces `~/.config` or
+`~/.local/share`; set the same values for sign-in and the MCP host. Rotated cookies
+are written to the record under its lock before any further request, also when
+Abler answers with an error.
+
+`abler-mcp auth status` verifies the session and names where it is saved
+(`storage`). `abler-mcp auth logout` forgets the session and any candidate on this
+computer; the key and the record stay.
+
+What this protects against: cookies showing up in `cat`, `grep`, agent file reads,
+commits, dotfile sync, or backups of `~/.config`. What it does not: anything that
+can read both the record and its key, such as another process of your user, an
+agent with a shell, root, or a full-home backup. On macOS any process of your user
+can read the key with `security` while the login keychain is unlocked. Against
+those it is the same as a `0600` file.
+
+### Upgrading from 0.6.0
+
+Versions up to 0.6.0 saved the session in a plaintext file,
+`~/.config/abler-mcp/session.json` or `ABLER_SESSION_FILE`, and kept failed-import
+candidates beside it as `<file>.<uuid>.pending`. That file keeps working,
+rotations included, until you migrate, and `auth status` says `Saved in a plaintext
+file. Run abler-mcp auth migrate.` Stop running `abler-mcp` servers, then run:
+
+```sh
+abler-mcp auth migrate
+```
+
+It saves the session in the encrypted record, reads it back, and removes the
+plaintext file and its `.pending` candidates. Without a plaintext session it moves
+the newest readable `.pending` candidate into the record instead and asks you to
+run `abler-mcp auth retry-candidate`. Running it again says `Already migrated.` and
+removes leftover plaintext files. After migration the plaintext files are never
+read again; a login, capture or import also removes them. `ABLER_SESSION_FILE`
+must not point into the encrypted store or at its key. Going back to 0.6.0 means
+signing in again in that version.
 
 The credential has the account's normal Abler permissions; the package itself exposes only read tools. It sends credentials exclusively to `https://www.abler.io`, refuses redirects, and never returns tokens through MCP tools.
 
@@ -273,19 +350,24 @@ The Chrome capture transport is covered by a local protocol test; live session c
 
 ## Troubleshooting
 
-| Symptom                                          | Action                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `abler-mcp` not found                            | Use the absolute installed executable path printed by the installer.                                                                                                                                                                                                                                     |
-| Server appears to wait in the terminal           | Server mode waits for MCP input on stdio. Use an MCP host, or run `--help` / `auth status` for a CLI response.                                                                                                                                                                                           |
-| No saved session                                 | Capture/import into the same `ABLER_SESSION_FILE` used by the MCP host.                                                                                                                                                                                                                                  |
-| Cannot read session / unsafe permissions         | Use a regular file owned by your user, not a symlink or hard link; run `chmod 600 /absolute/path/session.json` on Unix. Its parent must be writable for atomic rotation and locking. Windows users must restrict access with OS ACLs; the Windows branches are unverified.                               |
-| Expired or revoked session                       | Sign in again and capture/import. A refresh token is not permanent.                                                                                                                                                                                                                                      |
-| Session busy                                     | Requests already wait up to 30 seconds; retry when the active request ends. A crashed process releases its lock when its PID no longer exists. A reused PID can keep a lock busy; remove it with `rm -r <file>.lock` only when no process is using the session file.                                     |
-| Capture cannot list tabs                         | Launch a separate Chrome profile with the documented flags, keep it open, and use the exact loopback port.                                                                                                                                                                                               |
-| No Abler tab found                               | Open and sign in at `https://www.abler.io` in that debugging profile.                                                                                                                                                                                                                                    |
-| Failed import with a retained candidate          | Run `ABLER_SESSION_FILE=/absolute/path/to/candidate.pending abler-mcp auth status`. If it succeeds, use that path in the MCP host or stop users of the old session and move the candidate into place. A later successful import removes retained candidates. If it fails again, capture a fresh session. |
-| Abler rejects a query or returns unexpected data | Check inputs and account access. Retry transient connection errors; an upstream API change may require a package update. Failures are not empty schedules.                                                                                                                                               |
-| HTTP 429 / service error                         | Back off and retry later. No automatic retry loop is implemented for service errors.                                                                                                                                                                                                                     |
+| Symptom                                          | Action                                                                                                                                                                                                                                                               |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `abler-mcp` not found                            | Use the absolute installed executable path printed by the installer.                                                                                                                                                                                                 |
+| Server appears to wait in the terminal           | Server mode waits for MCP input on stdio. Use an MCP host, or run `--help` / `auth status` for a CLI response.                                                                                                                                                       |
+| No saved session                                 | Sign in with the same `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `ABLER_SESSION_FILE` the MCP host uses.                                                                                                                                                                 |
+| Saved in a plaintext file                        | Run `abler-mcp auth migrate`.                                                                                                                                                                                                                                        |
+| Cannot read session / unsafe permissions         | Before migration: use a regular file owned by your user, not a symlink or hard link; run `chmod 600 /absolute/path/session.json` on Unix. Its parent must be writable for atomic rotation and locking. Windows is unsupported by the encrypted store.                |
+| Unlock your login keychain                       | macOS: unlock the login keychain, then retry.                                                                                                                                                                                                                        |
+| The Abler store key is missing                   | The key was deleted. The record cannot be decrypted; `abler-mcp auth login` (or capture/import) replaces it with a new key and record.                                                                                                                               |
+| The last write … did not complete                | An interrupted write left `session.enc` and `session.enc.marker` inconsistent. Remove both files, then sign in again.                                                                                                                                                |
+| Cannot use the Abler session store               | The record, marker, or key is damaged, unsafe, or from another key. Nothing is reset automatically; restore the key, or remove the record and marker and sign in.                                                                                                    |
+| Expired or revoked session                       | Sign in again and capture/import. A refresh token is not permanent.                                                                                                                                                                                                  |
+| Session busy                                     | Requests already wait up to 30 seconds; retry when the active request ends. A crashed process releases its lock when its PID no longer exists. A reused PID can keep a lock busy; remove it with `rm -r <file>.lock` only when no process is using the session file. |
+| Capture cannot list tabs                         | Launch a separate Chrome profile with the documented flags, keep it open, and use the exact loopback port.                                                                                                                                                           |
+| No Abler tab found                               | Open and sign in at `https://www.abler.io` in that debugging profile.                                                                                                                                                                                                |
+| Failed import with a retained candidate          | Run `abler-mcp auth retry-candidate`. If it fails again, capture a fresh session.                                                                                                                                                                                    |
+| Abler rejects a query or returns unexpected data | Check inputs and account access. Retry transient connection errors; an upstream API change may require a package update. Failures are not empty schedules.                                                                                                           |
+| HTTP 429 / service error                         | Back off and retry later. No automatic retry loop is implemented for service errors.                                                                                                                                                                                 |
 
 ## Development and packaging
 
@@ -293,7 +375,7 @@ Maintainers use the pinned Bun 1.4.2 toolchain. Oxlint, Oxfmt, the type-aware
 lint engine, and TypeScript are pinned in the repository root. Consumers run the
 standalone Bun executable.
 
-The server uses the [official MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/v2/get-started/first-server), native `fetch`, `tough-cookie` for cookie handling, and the private `@family-mcp/session-store` workspace package for session locking and owner-only file storage (its README states the security contract). No browser dependency or download is required.
+The server uses the [official MCP TypeScript SDK](https://ts.sdk.modelcontextprotocol.io/v2/get-started/first-server), native `fetch`, `tough-cookie` for cookie handling, and the private `@family-mcp/session-store` workspace package for locking, owner-only files and the encrypted session record (its README states the security contract). No browser dependency or download is required.
 
 From the monorepo root:
 
@@ -327,7 +409,7 @@ live in [`.oxlintrc.json`](../../.oxlintrc.json) and [`.oxfmtrc.json`](../../.ox
 See the official [Oxlint type-aware guide](https://oxc.rs/docs/guide/usage/linter/type-aware)
 and [Oxfmt configuration reference](https://oxc.rs/docs/guide/usage/formatter/config-file-reference).
 
-Every tool declares a strict output schema and returns validated `structuredContent`; upstream fields outside those schemas are discarded. Offline tests use synthetic credentials and include real MCP stdio, local Chrome protocol capture, concurrent processes, logout during refresh, failed-import recovery, private file permissions, invalid filters, malformed pagination, sibling ID/name collisions, shared events, and a loopback HTTP fixture. See the [review record](docs/REVIEW.md) for verified scope and remaining limitations.
+Every tool declares a strict output schema and returns validated `structuredContent`; upstream fields outside those schemas are discarded. Offline tests use synthetic credentials and include real MCP stdio, local Chrome protocol capture, concurrent processes, logout during refresh, failed-import recovery, migration, encrypted-store errors, private file permissions, invalid filters, malformed pagination, sibling ID/name collisions, shared events, and a loopback HTTP fixture. See the [review record](docs/REVIEW.md) for verified scope and remaining limitations.
 
 This project is not affiliated with or endorsed by Abler.
 

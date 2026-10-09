@@ -5,6 +5,7 @@ import {
   defaultSessionPath,
   readPrivateFile,
   writePrivateFile,
+  type KeyProvider,
 } from '@family-mcp/session-store';
 import { SafeError } from '@family-mcp/mcp-runtime';
 import { CookieJar } from 'tough-cookie';
@@ -53,12 +54,6 @@ export function loginRequiredError(): InfoMentorError {
 }
 
 export type HttpFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-
-export type WriteSession = (
-  session: SavedSession,
-  path?: string,
-  signal?: AbortSignal,
-) => Promise<void>;
 
 const isInfoMentorHost = (host: string): boolean =>
   host === 'infomentor.is' || host.endsWith('.infomentor.is');
@@ -128,10 +123,12 @@ export const savedSessionSchema = z.object({
 export type SavedSession = z.infer<typeof savedSessionSchema>;
 
 export type SessionOptions = {
+  /** The older plaintext session file, read until `auth migrate`; collection cursors stay beside it. */
   sessionFile?: string;
   credentialsFile?: string;
   fetch?: HttpFetch;
-  writeSession?: WriteSession;
+  /** Test seam for the store key; the default is the macOS Keychain or a Linux key file. */
+  keys?: KeyProvider;
 };
 
 /** Epoch milliseconds until which every process sharing this session must pause; 0 when none. */
@@ -312,6 +309,10 @@ export type Notifications = z.infer<typeof notificationsSchema>;
 export const sessionStatusSchema = z.object({
   authenticated: z.boolean(),
   nextStep: z.string().optional(),
+  storage: z
+    .string()
+    .optional()
+    .describe('Where the session is saved and whether a sign-in is stored; never their values.'),
 });
 
 export type SessionStatus = z.infer<typeof sessionStatusSchema>;

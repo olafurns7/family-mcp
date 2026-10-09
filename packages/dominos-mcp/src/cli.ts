@@ -6,17 +6,19 @@ import { parseArgs } from 'node:util';
 import { SafeError, startStdio } from '@family-mcp/mcp-runtime';
 
 import manifest from '../package.json' with { type: 'json' };
-import { login, logout, requestCode, sessionPath } from './auth.js';
+import { login, logout, migrate, requestCode, sessionStorage } from './auth.js';
 
 const help = `dominos-mcp — unofficial Domino’s Iceland MCP
 
   dominos-mcp [serve]       Start the stdio MCP server
   dominos-mcp auth login    Sign in with a phone number and SMS code (hidden input)
-  dominos-mcp auth status   Verify the saved session
+  dominos-mcp auth migrate  Move a session saved by an older version out of its plaintext file
+  dominos-mcp auth status   Show where the session is saved and verify it
   dominos-mcp auth logout   Remove the local login
   dominos-mcp --version     Print the installed version
 
-Set DOMINOS_SESSION_FILE to choose the private session file.
+The session is saved encrypted. DOMINOS_SESSION_FILE names an older version's plaintext
+session file; quotes and checkouts stay beside it.
 Payments require an explicit pay_saved_card confirmation for the quoted amount.
 `;
 
@@ -46,9 +48,14 @@ async function signIn(): Promise<void> {
     const pin = await lines.next();
 
     if (pin.done) throw new SafeError('Sign-in cancelled.');
-    await login(phone.value, pin.value.trim());
+    const replaced = await login(phone.value, pin.value.trim());
     process.stderr.write('\n');
-    process.stdout.write(`Signed in. Session saved to ${sessionPath()}\n`);
+
+    if (replaced)
+      process.stdout.write(
+        'The old Domino’s session store could not be read without its key and was replaced.\n',
+      );
+    process.stdout.write('Signed in. Session saved encrypted.\n');
   } finally {
     input.close();
     sink.end();
@@ -79,7 +86,22 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (action === 'migrate') {
+      const outcome = await migrate();
+
+      process.stdout.write(
+        outcome === 'migrated'
+          ? 'Domino’s session moved to the encrypted store; the plaintext file was removed.\n'
+          : outcome === 'already'
+            ? 'Already migrated.\n'
+            : 'Already migrated. Removed a leftover plaintext session file.\n',
+      );
+
+      return;
+    }
+
     if (action === 'status') {
+      process.stdout.write(`${await sessionStorage()}\n`);
       const { DominosClient } = await import('./client.js');
       const client = new DominosClient();
 

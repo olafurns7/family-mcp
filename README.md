@@ -40,10 +40,7 @@ Expected output: `Sign in to Abler in the browser window that opened.`
   "mcpServers": {
     "abler": {
       "command": "/absolute/path/to/.local/bin/abler-mcp",
-      "args": ["serve"],
-      "env": {
-        "ABLER_SESSION_FILE": "/absolute/path/abler-session.json"
-      }
+      "args": ["serve"]
     }
   }
 }
@@ -52,7 +49,7 @@ Expected output: `Sign in to Abler in the browser window that opened.`
 **Claude Code**
 
 ```sh
-claude mcp add abler -e ABLER_SESSION_FILE=/absolute/path/abler-session.json -- /absolute/path/to/.local/bin/abler-mcp serve
+claude mcp add abler -- /absolute/path/to/.local/bin/abler-mcp serve
 ```
 
 **Codex**
@@ -61,7 +58,6 @@ claude mcp add abler -e ABLER_SESSION_FILE=/absolute/path/abler-session.json -- 
 [mcp_servers.abler]
 command = "/absolute/path/to/.local/bin/abler-mcp"
 args = ["serve"]
-env = { ABLER_SESSION_FILE = "/absolute/path/abler-session.json" }
 ```
 
 </details>
@@ -83,7 +79,9 @@ rerun with `--stop-running`.
 infomentor-mcp login --credentials /absolute/path/credentials.json
 ```
 
-Expected output starts with `Signed in. Session saved to`.
+Expected output starts with `Signed in. Session saved in the encrypted store.` The
+sign-in is stored there too, for automatic renewal, so you can then delete the
+credentials file. Upgrading from 0.8.0 or earlier? Run `infomentor-mcp auth migrate` once.
 <details>
 <summary>Connect to Claude Desktop, Claude Code, or Codex</summary>
 
@@ -161,6 +159,9 @@ claude mcp add inna -- /absolute/path/to/.local/bin/inna-mcp serve
 Read tools are enabled by default; whole-day illness and leave requests
 require `--allow-absence-writes`, a prepared preview, and explicit approval.
 Live absence submission remains unverified.
+
+Upgrading from Inna 0.3.0 or earlier? Stop running `inna-mcp` servers and run
+`inna-mcp auth migrate` once to move the saved session into the encrypted store.
 
 See [setup, tools, and cookie import for a machine without a desktop](packages/inna-mcp/README.md).
 

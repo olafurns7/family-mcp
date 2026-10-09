@@ -26,8 +26,8 @@ The installer verifies the checksum and places the command in `~/.local/bin`.
 Upgrading replaces the command; restart the MCP host, or rerun with `--stop-running`.
 
 Enter a seven-digit Icelandic phone number (or `+354` prefix), then the six-digit
-SMS code in the terminal. Both inputs are hidden. Expected success starts with
-`Signed in. Session saved to`. No API key, iPhone proxy, or trusted certificate is
+SMS code in the terminal. Both inputs are hidden. Expected success is
+`Signed in. Session saved encrypted.` No API key, iPhone proxy, or trusted certificate is
 needed. Foreign phone numbers and Auðkenni login are not supported.
 
 The compiled executable runs without Bun or Node. Use its absolute path in the
@@ -107,14 +107,79 @@ not provided. Saved cards are available through checkout, not a standalone walle
 
 ## Private files
 
-The default session is `~/.config/dominos-mcp/session.json` (`XDG_CONFIG_HOME` is
-honored). Set `DOMINOS_SESSION_FILE` consistently for login and the MCP host to
-override it. Quotes and checkout records live beside it in `session.json.checkouts/`.
-Files are private (0600), with owner-controlled directories and shared locking.
+### Where the session is saved
 
-`auth logout` removes the local login. Checkout records remain to prevent an
-ambiguous payment from being replayed after signing in again. Local logout does
-not revoke an upstream token. Keep this directory out of cloud shares and repos.
+The session (access and rotating refresh tokens) is saved only as an encrypted
+record (AES-256-GCM), `~/.config/dominos-mcp/session.enc`, with a non-secret
+`session.enc.marker` beside it. The record's 256-bit key is created on the first
+`auth login` or `auth migrate`. It is never regenerated, except when the key is
+gone and you run `dominos-mcp auth login` again:
+
+- **macOS:** a login-keychain item (service `family-mcp.dominos-mcp`, account
+  `default.data-key`), read through Apple's `/usr/bin/security`.
+- **Linux:** a `0600` file in its own `0700` directory,
+  `~/.local/share/family-mcp/keys/dominos-mcp.default.key`.
+
+On a headless Mac whose login keychain is locked (for example over SSH), set
+`FAMILY_MCP_KEY_BACKEND=file` for login and the MCP host: the key is then kept in
+`~/.local/share/family-mcp/keys/` as on Linux, and status says the session is saved
+in an encrypted file.
+
+When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is set, it replaces `~/.config` or
+`~/.local/share`; set the same values for login and the MCP host. Token refreshes
+rewrite the record under a lock, so two MCP hosts never use one refresh token twice.
+If a refreshed session cannot be saved, the old record is discarded, since Domino’s
+has already spent its refresh token; the next command reports that the last write
+did not complete.
+
+`dominos-mcp auth status` names where the session is saved and verifies it.
+`dominos-mcp auth logout` forgets the session on this computer; the key and the
+record stay. Local logout does not revoke an upstream token.
+
+What this protects against: tokens showing up in `cat`, `grep`, agent file reads,
+commits, dotfile sync, or backups of `~/.config`. What it does not: anything that
+can read both the record and its key, such as another process of your user, an
+agent with a shell, root, or a full-home backup. On macOS any process of your user
+can read the key with `security` while the login keychain is unlocked. Against
+those it is the same as a `0600` file.
+
+### Upgrading from 0.1.0
+
+Version 0.1.0 saved the session in a plaintext file,
+`~/.config/dominos-mcp/session.json` or `DOMINOS_SESSION_FILE`. That file keeps
+working, refreshes included, until you migrate, and `auth status` says so. Stop
+running `dominos-mcp` servers, then run:
+
+```sh
+dominos-mcp auth migrate
+```
+
+It reads the file, saves the encrypted record, reads it back, and removes the
+plaintext file. Running it again says `Already migrated.` and removes a leftover
+plaintext file. After migration the plaintext file is never read again; `auth
+login` also removes it. Going back to 0.1.0 means signing in again in that version.
+
+### Quotes and checkouts
+
+Quotes and checkout records stay in `session.json.checkouts/` beside the
+plaintext session path (`DOMINOS_SESSION_FILE` or its default), whether or not the
+session was migrated; keep that variable consistent for login and the MCP host.
+They hold order IDs and Adyen session data, not tokens, as private (0600) files
+with locking. Login, migrate and logout never touch them, so an ambiguous payment
+cannot be replayed after signing in again. Neither `DOMINOS_SESSION_FILE` nor its
+`.checkouts` directory may lie inside, around, or beside the encrypted store or its
+key under a shared name; login, migrate and logout refuse such a path. Keep these
+directories out of cloud shares and repos.
+
+### Store errors
+
+| Message                               | Action                                                                                                                                                                                |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Saved in a plaintext file             | Run `dominos-mcp auth migrate`.                                                                                                                                                       |
+| Unlock your login keychain            | macOS: unlock the login keychain, then retry.                                                                                                                                         |
+| The Domino’s store key is missing     | The key was deleted. The record cannot be decrypted; `dominos-mcp auth login` replaces it with a new key and record.                                                                  |
+| The last write … did not complete     | An interrupted write, or a refreshed session that could not be saved, left `session.enc` and `session.enc.marker` inconsistent. Remove both files, then run `dominos-mcp auth login`. |
+| Cannot use the Domino’s session store | The record, marker, or key is damaged, unsafe, or from another key. Nothing is reset automatically; restore the key, or remove the record and marker and sign in.                     |
 
 MCP results omit access/refresh tokens, payment-session data, and saved-card vault
 tokens. Profile details, addresses, receipts, and masked cards **are** shared with

@@ -1,4 +1,3 @@
-import { rm } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import {
@@ -7,9 +6,10 @@ import {
   createAuthenticatedHttp,
   hasConfiguredCredentials,
   httpFromSession,
+  resolveCredentials,
   sessionFromHttp,
 } from './login.js';
-import { withSessionLock } from './lock.js';
+import { deleteCredentialsAdvice, logout, withSession, type HeldSession } from './store.js';
 import {
   collectUpdates,
   collectRequestSchema,
@@ -27,10 +27,8 @@ import {
   messageDetailSchema,
   notificationsResponseSchema,
   timetableResponseSchema,
-  readSession,
   sessionPath,
   throwIfAborted,
-  writeSession,
   type Overview,
   type SelectChildRequest,
   type SessionOptions,
@@ -90,14 +88,14 @@ export class InfoMentorClient {
   }
 
   private read<T>(
-    read: (http: InfoMentorHttp, signal: AbortSignal) => Promise<T>,
+    read: (http: InfoMentorHttp, signal: AbortSignal, held: HeldSession) => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
     const combined = signal
       ? AbortSignal.any([signal, this.lifetime.signal])
       : this.lifetime.signal;
 
-    // A local queue preserves call order; the file lock also excludes other MCP processes.
+    // A local queue preserves call order; the store lock also excludes other MCP processes.
     const result = this.pending.then(async () => {
       throwIfAborted(combined);
 
@@ -111,8 +109,8 @@ export class InfoMentorClient {
         );
       const file = sessionPath(this.options.sessionFile);
 
-      return withSessionLock(file, combined, async () => {
-        let saved = await readSession(file);
+      return withSession(file, combined, this.options.keys, async (held) => {
+        let saved = held.session;
 
         if (this.active?.serializedSession !== JSON.stringify(saved))
           this.active = {
@@ -131,8 +129,8 @@ export class InfoMentorClient {
               'INVALID_SESSION',
               'The saved session no longer matches its verified account. Sign in explicitly before continuing.',
             );
-          saved = await this.saveActive(http, saved, combined);
-          const output = await read(http, combined);
+          saved = await this.saveActive(http, saved, held);
+          const output = await read(http, combined, held);
           throwIfAborted(combined);
 
           return output;
@@ -140,7 +138,7 @@ export class InfoMentorClient {
           if (!(cause instanceof InfoMentorError) || cause.code !== 'LOGIN_REQUIRED') throw cause;
           preserveSession = true;
 
-          if (!hasConfiguredCredentials(this.options)) throw cause;
+          if (!held.credentials && !hasConfiguredCredentials(this.options)) throw cause;
           const accountId = saved.accountId ?? http.parent?.account.currentUser.id;
 
           if (!accountId)
@@ -150,29 +148,35 @@ export class InfoMentorClient {
             );
           const selectedChildId = saved.selectedChildId;
 
-          const candidate = await createAuthenticatedHttp({
-            ...this.options,
-            signal: combined,
-            timeoutMs: 60_000,
-          });
+          // The stored sign-in comes first; one submission, never a second source after a rejection.
+          const { credentials } = await resolveCredentials(
+            this.options,
+            combined,
+            held.credentials,
+          );
+
+          const candidate = await createAuthenticatedHttp(
+            { ...this.options, signal: combined, timeoutMs: 60_000 },
+            credentials,
+          );
 
           if (candidate.parent?.account.currentUser.id !== accountId)
             throw new InfoMentorError(
               'LOGIN_REQUIRED',
-              'The configured credentials belong to a different InfoMentor account. The previous session was kept. Correct the private credentials or explicitly sign in to change accounts.',
+              'The stored or configured credentials belong to a different InfoMentor account. The previous session was kept. Correct the private credentials or explicitly sign in to change accounts.',
             );
 
           if (selectedChildId) await candidate.readParent(combined, selectedChildId);
-          saved = await this.saveActive(candidate, saved, combined);
+          saved = await this.saveActive(candidate, saved, held);
           http = candidate;
           preserveSession = false;
           // Only confirmed authentication expiry replays a read, once. Other failures propagate.
-          const output = await read(http, combined);
+          const output = await read(http, combined, held);
           throwIfAborted(combined);
 
           return output;
         } finally {
-          if (!preserveSession && !combined.aborted) await this.saveActive(http, saved, combined);
+          if (!preserveSession && !combined.aborted) await this.saveActive(http, saved, held);
         }
       });
     });
@@ -188,7 +192,7 @@ export class InfoMentorClient {
   private async saveActive(
     http: InfoMentorHttp,
     previous: SavedSession,
-    signal: AbortSignal,
+    held: HeldSession,
   ): Promise<SavedSession> {
     const current = sessionFromHttp(http);
 
@@ -209,11 +213,7 @@ export class InfoMentorClient {
       return previous;
     }
 
-    await (this.options.writeSession ?? writeSession)(
-      current,
-      sessionPath(this.options.sessionFile),
-      signal,
-    );
+    await held.save(current);
     this.active = { http, serializedSession: JSON.stringify(current) };
 
     return current;
@@ -426,7 +426,10 @@ export class InfoMentorClient {
 
   async getSessionStatus(signal?: AbortSignal): Promise<SessionStatus> {
     try {
-      return await this.read(async () => ({ authenticated: true }), signal);
+      return await this.read(
+        async (_http, _signal, held) => ({ authenticated: true, storage: held.storage }),
+        signal,
+      );
     } catch (error) {
       if (error instanceof InfoMentorError && error.code === 'LOGIN_REQUIRED')
         return { authenticated: false, nextStep: error.message };
@@ -464,6 +467,8 @@ export class InfoMentorClient {
       throwIfAborted(controller.signal);
       this.active = undefined;
 
+      let credentialsFile: string | undefined;
+
       if (parsed.importFile)
         await importSession(
           parsed.importFile,
@@ -478,17 +483,19 @@ export class InfoMentorClient {
           timeoutMs: parsed.timeoutSeconds * 1000,
         };
 
-        await login(
-          parsed.credentialsFile
-            ? { ...options, credentialsFile: parsed.credentialsFile }
-            : options,
-        );
+        // Advise deleting only the file this call named, never the server's configured path.
+        if (parsed.credentialsFile)
+          credentialsFile = await login({ ...options, credentialsFile: parsed.credentialsFile });
+        else await login(options);
       }
 
       this.setupStatus = {
         operation,
         state: 'succeeded',
-        message: 'Session saved. Call infomentor_session_status to verify access.',
+        message: [
+          'Session saved in the encrypted store. Call infomentor_session_status to verify access.',
+          ...(credentialsFile ? [deleteCredentialsAdvice(credentialsFile)] : []),
+        ].join(' '),
       };
     })()
       .catch((cause: unknown) => {
@@ -529,15 +536,11 @@ export class InfoMentorClient {
       await this.cancelSetup();
       await this.pending;
       this.active = undefined;
-      const file = sessionPath(this.options.sessionFile);
-      await withSessionLock(file, undefined, async () => {
-        await rm(file, { force: true });
-        // Snapshots hold fingerprints and identifiers of the account; they leave with the session.
-        await rm(file + '.collections', { recursive: true, force: true });
-      });
+      await logout(sessionPath(this.options.sessionFile), this.options.keys);
       this.setupStatus = {
         state: 'idle',
-        message: 'Local session removed. Call infomentor_login to sign in again.',
+        message:
+          'Local session and stored sign-in removed. Call infomentor_login to sign in again.',
       };
     } finally {
       this.loggingOut = false;
