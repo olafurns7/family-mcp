@@ -52,7 +52,7 @@ fn the_startup_cases_pass_against_this_binary() {
 
 #[test]
 fn the_integration_cases_pass_against_this_binary() {
-    bun_test("integration.test.ts", 17);
+    bun_test("integration.test.ts", 30);
 }
 
 #[test]
@@ -62,5 +62,5 @@ fn the_loopback_case_passes_against_this_binary() {
 
 #[test]
 fn the_typescript_package_and_this_binary_share_the_token_store_and_attempts() {
-    bun_test("interop.test.ts", 3);
+    bun_test("interop.test.ts", 4);
 }

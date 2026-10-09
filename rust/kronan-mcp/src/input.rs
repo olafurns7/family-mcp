@@ -73,6 +73,14 @@ trait Fields {
     fn skus(&mut self, value: Option<&Value>, max: usize) -> Option<Vec<String>>;
 
     fn tag_ids(&mut self, value: Option<&Value>) -> Vec<i64>;
+
+    fn boolean(&mut self, value: Option<&Value>) -> Option<bool>;
+
+    fn confirm(&mut self, value: Option<&Value>);
+
+    fn guid(&mut self, value: Option<&Value>) -> Option<String>;
+
+    fn line_ids(&mut self, value: Option<&Value>) -> Vec<i64>;
 }
 
 impl Fields for Parse<'_> {
@@ -207,6 +215,49 @@ impl Fields for Parse<'_> {
             return Vec::new();
         }
         self.array(value, (0, 20), |parse, item| {
+            parse.int(Some(item), Some(0), None)
+        })
+        .unwrap_or_default()
+    }
+
+    /// `z.boolean()`.
+    fn boolean(&mut self, value: Option<&Value>) -> Option<bool> {
+        let flag = value.and_then(Value::as_bool);
+
+        if flag.is_none() {
+            self.wrong_type("boolean", value);
+        }
+        flag
+    }
+
+    /// `z.literal(true)`: the approval flag.
+    fn confirm(&mut self, value: Option<&Value>) {
+        if value != Some(&Value::Bool(true)) {
+            self.issue("Invalid input: expected true".to_owned(), false);
+        }
+    }
+
+    /// `z.guid()`: a shopping note line token.
+    fn guid(&mut self, value: Option<&Value>) -> Option<String> {
+        let text = self.string(value, (0, usize::MAX));
+        let groups = [8, 4, 4, 4, 12];
+        let valid = text.as_deref().is_some_and(|text| {
+            let parts: Vec<&str> = text.split('-').collect();
+            parts.len() == groups.len()
+                && parts.iter().zip(groups).all(|(part, length)| {
+                    part.len() == length && part.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+        });
+
+        if text.is_some() && !valid {
+            self.issue("Invalid GUID".to_owned(), true);
+        }
+        text
+    }
+
+    /// `z.array(z.number().int().min(0)).min(1).max(100)`: order line ids.
+    fn line_ids(&mut self, value: Option<&Value>) -> Vec<i64> {
+        self.array(value, (1, 100), |parse, item| {
             parse.int(Some(item), Some(0), None)
         })
         .unwrap_or_default()
@@ -623,6 +674,291 @@ fn unknown_keys(parse: &mut Parse, line: &Map<String, Value>, shape: &[&str]) {
             true,
         );
     }
+}
+
+// Write inputs. Gate fields such as confirm and the expected values never leave this server.
+
+/// What the user approved for a money tool, checked against the live checkout before sending.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Approval {
+    pub total: i64,
+    pub checkout_token: String,
+}
+
+/// Whether a property is present with a value of the wrong type, which aborts an object's
+/// refinement.
+fn mistyped(line: &Map<String, Value>, key: &str, expected: fn(&Value) -> bool) -> bool {
+    line.get(key).is_some_and(|value| !expected(value))
+}
+
+/// One shopping note line inside an array: exactly one of `text` or `sku` (at most 32
+/// characters), and an optional quantity.
+fn note_line(parse: &mut Parse, line: &Map<String, Value>) -> Value {
+    let text = optional(parse, line, "text", |p, v| p.string(v, (1, 255)));
+    let sku = optional(parse, line, "sku", |p, v| {
+        let sku = p.sku(v);
+        p.length(v, (0, 32));
+        sku
+    });
+    let quantity = optional(parse, line, "quantity", |p, v| {
+        p.int(v, Some(0), Some(10_000))
+    });
+    unknown_keys(parse, line, &["text", "sku", "quantity"]);
+    let aborted = mistyped(line, "text", Value::is_string)
+        || mistyped(line, "sku", Value::is_string)
+        || mistyped(line, "quantity", |value| {
+            value.as_f64().is_some_and(|number| number.fract() == 0.0)
+        });
+
+    if !aborted && args_present(line, "text") == args_present(line, "sku") {
+        parse.issue(
+            "Provide exactly one of text or sku per line".to_owned(),
+            true,
+        );
+    }
+    let mut body = Map::new();
+    body.extend(text.map(|text| ("text".to_owned(), json!(text))));
+    body.extend(sku.map(|sku| ("sku".to_owned(), json!(sku))));
+    body.extend(quantity.map(|quantity| ("quantity".to_owned(), json!(quantity))));
+    Value::Object(body)
+}
+
+pub fn add_shopping_note_lines(arguments: &Map<String, Value>) -> Result<Value, String> {
+    object(
+        arguments,
+        &["lines"],
+        |parse, args| {
+            let lines = parse
+                .at("lines")
+                .array(args.get("lines"), (1, 30), |parse, item| {
+                    let Some(line) = item.as_object() else {
+                        parse.wrong_type("object", Some(item));
+                        return None;
+                    };
+                    Some(note_line(parse, line))
+                });
+            json!({ "lines": lines.unwrap_or_default() })
+        },
+        |_| None,
+    )
+}
+
+pub fn change_shopping_note_line(arguments: &Map<String, Value>) -> Result<Value, String> {
+    object(
+        arguments,
+        &["token", "text", "quantity"],
+        |parse, args| {
+            let mut body = Map::new();
+            body.insert(
+                "token".to_owned(),
+                json!(required(parse, args, "token", |p, v| p.guid(v))),
+            );
+
+            if let Some(text) = optional(parse, args, "text", |p, v| p.string(v, (1, 255))) {
+                body.insert("text".to_owned(), json!(text));
+            }
+
+            if let Some(quantity) = optional(parse, args, "quantity", |p, v| {
+                p.int(v, Some(0), Some(10_000))
+            }) {
+                body.insert("quantity".to_owned(), json!(quantity));
+            }
+            Value::Object(body)
+        },
+        // Krónan deletes the line when both are absent; deletion has its own tool.
+        |_| {
+            (!args_present(arguments, "text") && !args_present(arguments, "quantity"))
+                .then_some("Provide text, quantity, or both")
+        },
+    )
+}
+
+/// A shopping note line token: `toggle_shopping_note_line_complete` and
+/// `delete_shopping_note_line`.
+pub fn line_token(arguments: &Map<String, Value>) -> Result<String, String> {
+    object(
+        arguments,
+        &["token"],
+        |parse, args| required(parse, args, "token", |p, v| p.guid(v)),
+        |_| None,
+    )
+}
+
+pub fn clear_shopping_note(arguments: &Map<String, Value>) -> Result<(), String> {
+    object(
+        arguments,
+        &["confirm"],
+        |parse, args| parse.at("confirm").confirm(args.get("confirm")),
+        |_| None,
+    )
+}
+
+/// One checkout line to set: `sku`, `quantity` (0 to 500, default 1) and optional
+/// `substitution`.
+fn checkout_line(parse: &mut Parse, line: &Map<String, Value>) -> Value {
+    let sku = required(parse, line, "sku", |p, v| p.sku(v));
+    let quantity = parse
+        .at("quantity")
+        .int_or(line.get("quantity"), (0, 500), 1);
+    let substitution = optional(parse, line, "substitution", |p, v| p.boolean(v));
+    unknown_keys(parse, line, &["sku", "quantity", "substitution"]);
+    let mut body = Map::new();
+    body.insert("sku".to_owned(), json!(sku));
+    body.insert("quantity".to_owned(), json!(quantity));
+    body.extend(substitution.map(|flag| ("substitution".to_owned(), json!(flag))));
+    Value::Object(body)
+}
+
+pub fn set_checkout_lines(arguments: &Map<String, Value>) -> Result<Value, String> {
+    object(
+        arguments,
+        &["lines", "replace"],
+        |parse, args| {
+            let lines = parse
+                .at("lines")
+                .array(args.get("lines"), (1, 100), |parse, item| {
+                    let Some(line) = item.as_object() else {
+                        parse.wrong_type("object", Some(item));
+                        return None;
+                    };
+                    Some(checkout_line(parse, line))
+                });
+            let replace = parse.at("replace").boolean(args.get("replace"));
+            json!({ "lines": lines.unwrap_or_default(), "replace": replace })
+        },
+        |_| None,
+    )
+}
+
+/// `confirm`, `expectedTotal` and `expectedCheckoutToken`, in that order after a body's fields.
+fn approval(parse: &mut Parse, args: &Map<String, Value>) -> Approval {
+    parse.at("confirm").confirm(args.get("confirm"));
+    let total = parse
+        .at("expectedTotal")
+        .int(args.get("expectedTotal"), Some(0), None);
+    let checkout_token = required(parse, args, "expectedCheckoutToken", |p, v| p.token(v));
+    Approval {
+        total: total.unwrap_or_default(),
+        checkout_token,
+    }
+}
+
+const GATE: [&str; 3] = ["confirm", "expectedTotal", "expectedCheckoutToken"];
+
+/// A slot reservation or checkout completion: the body sent to Krónan and the approval.
+fn placement(
+    arguments: &Map<String, Value>,
+    address: Option<bool>,
+) -> Result<(Approval, Value), String> {
+    let mut shape = vec!["slotId"];
+    shape.extend(address.map(|_| "addressId"));
+    shape.push("returnBags");
+    shape.extend(GATE);
+    object(
+        arguments,
+        &shape,
+        |parse, args| {
+            let mut body = Map::new();
+            let slot = parse.at("slotId").int(args.get("slotId"), Some(0), None);
+            body.insert("slotId".to_owned(), json!(slot));
+            let address = match address {
+                Some(true) => Some(
+                    parse
+                        .at("addressId")
+                        .int(args.get("addressId"), Some(0), None),
+                ),
+                Some(false) => {
+                    optional(parse, args, "addressId", |p, v| p.int(v, Some(0), None)).map(Some)
+                }
+                None => None,
+            };
+            body.extend(address.map(|id| ("addressId".to_owned(), json!(id))));
+            let bags = parse.at("returnBags").boolean(args.get("returnBags"));
+            body.insert("returnBags".to_owned(), json!(bags));
+            (approval(parse, args), Value::Object(body))
+        },
+        |_| None,
+    )
+}
+
+pub fn reserve_delivery_slot(arguments: &Map<String, Value>) -> Result<(Approval, Value), String> {
+    placement(arguments, Some(true))
+}
+
+pub fn reserve_pickup_slot(arguments: &Map<String, Value>) -> Result<(Approval, Value), String> {
+    placement(arguments, None)
+}
+
+pub fn complete_checkout(arguments: &Map<String, Value>) -> Result<(Approval, Value), String> {
+    placement(arguments, Some(false))
+}
+
+/// The approval and the approved active order token.
+pub fn add_checkout_to_order(arguments: &Map<String, Value>) -> Result<(Approval, String), String> {
+    let mut shape = GATE.to_vec();
+    shape.push("expectedOrderToken");
+    object(
+        arguments,
+        &shape,
+        |parse, args| {
+            let approval = approval(parse, args);
+            let order = required(parse, args, "expectedOrderToken", |p, v| p.token(v));
+            (approval, order)
+        },
+        |_| None,
+    )
+}
+
+/// A placed-order change: the order token and the body. `quantity` adds the new quantity for
+/// `lower_order_line_quantities`; `confirm` is required for the destructive changes.
+fn order_change(
+    arguments: &Map<String, Value>,
+    quantity: bool,
+    confirm: bool,
+) -> Result<(String, Value), String> {
+    let mut shape = vec!["lineIds"];
+    shape.extend(quantity.then_some("quantity"));
+    shape.push("orderToken");
+    shape.extend(confirm.then_some("confirm"));
+    object(
+        arguments,
+        &shape,
+        |parse, args| {
+            let mut body = Map::new();
+            let ids = parse.at("lineIds").line_ids(args.get("lineIds"));
+            body.insert("lineIds".to_owned(), json!(ids));
+
+            if quantity {
+                let count = parse
+                    .at("quantity")
+                    .int(args.get("quantity"), Some(0), Some(10_000));
+                body.insert("quantity".to_owned(), json!(count));
+            }
+            let token = required(parse, args, "orderToken", |p, v| p.token(v));
+
+            if confirm {
+                parse.at("confirm").confirm(args.get("confirm"));
+            }
+            (token, Value::Object(body))
+        },
+        |_| None,
+    )
+}
+
+pub fn delete_order_lines(arguments: &Map<String, Value>) -> Result<(String, Value), String> {
+    order_change(arguments, false, true)
+}
+
+pub fn lower_order_line_quantities(
+    arguments: &Map<String, Value>,
+) -> Result<(String, Value), String> {
+    order_change(arguments, true, true)
+}
+
+pub fn toggle_order_line_substitution(
+    arguments: &Map<String, Value>,
+) -> Result<(String, Value), String> {
+    order_change(arguments, false, false)
 }
 
 #[cfg(test)]

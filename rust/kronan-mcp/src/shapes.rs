@@ -18,7 +18,7 @@ pub enum S {
     /// `z.number().int()`: a safe integer.
     Int,
     Bool,
-    /// `z.literal(true)`.
+    /// `z.enum(options)`.
     Enum(&'static [&'static str]),
     Opt(&'static S),
     Null(&'static S),
@@ -551,6 +551,21 @@ pub const PREVIEW: S = S::Obj(&[&[
     ("okCount", INT),
     ("issueCount", INT),
 ]]);
+
+const ORDER_TOKEN_FIELDS: Fields = &[("orderToken", STR), ("authorizedAmount", INT)];
+
+pub const ORDER_TOKEN_RESPONSE: S = S::Obj(&[ORDER_TOKEN_FIELDS]);
+
+pub const RESERVE_RESPONSE: S = S::Obj(&[
+    ORDER_TOKEN_FIELDS,
+    &[
+        ("slotId", INT),
+        ("deliveryDate", STR),
+        ("timeStart", STR),
+        ("timeStop", STR),
+        ("fees", S::Record(&INT)),
+    ],
+]);
 
 /// The limit/offset pages Krónan returns; only the presence of `next` is kept.
 macro_rules! offset_page {

@@ -174,7 +174,83 @@ impl Server for Kronan {
                     .run(move |client| client.preview_checkout_lines(&body))
                     .await
             }
-            // The write and order tools arrive with their confirmation gates.
+            "add_shopping_note_lines" => {
+                let body = input::add_shopping_note_lines(arguments)?;
+                client
+                    .run(move |client| client.add_shopping_note_lines(&body))
+                    .await
+            }
+            "change_shopping_note_line" => {
+                let body = input::change_shopping_note_line(arguments)?;
+                client
+                    .run(move |client| client.change_shopping_note_line(&body))
+                    .await
+            }
+            "toggle_shopping_note_line_complete" => {
+                let token = input::line_token(arguments)?;
+                client
+                    .run(move |client| client.toggle_shopping_note_line_complete(&token))
+                    .await
+            }
+            "delete_shopping_note_line" => {
+                let token = input::line_token(arguments)?;
+                client
+                    .run(move |client| client.delete_shopping_note_line(&token))
+                    .await
+            }
+            "clear_shopping_note" => {
+                input::clear_shopping_note(arguments)?;
+                client.run(Client::clear_shopping_note).await
+            }
+            "set_checkout_lines" => {
+                let body = input::set_checkout_lines(arguments)?;
+                client
+                    .run(move |client| client.set_checkout_lines(&body))
+                    .await
+            }
+            "reserve_delivery_slot" => {
+                let (approval, body) = input::reserve_delivery_slot(arguments)?;
+                client
+                    .run(move |client| client.reserve_delivery_slot(&approval, &body))
+                    .await
+            }
+            "reserve_pickup_slot" => {
+                let (approval, body) = input::reserve_pickup_slot(arguments)?;
+                client
+                    .run(move |client| client.reserve_pickup_slot(&approval, &body))
+                    .await
+            }
+            "complete_checkout" => {
+                let (approval, body) = input::complete_checkout(arguments)?;
+                client
+                    .run(move |client| client.complete_checkout(&approval, &body))
+                    .await
+            }
+            "add_checkout_to_order" => {
+                let (approval, order) = input::add_checkout_to_order(arguments)?;
+                client
+                    .run(move |client| client.add_checkout_to_order(&approval, &order))
+                    .await
+            }
+            "delete_order_lines" => {
+                let (token, body) = input::delete_order_lines(arguments)?;
+                client
+                    .run(move |client| client.delete_order_lines(&token, &body))
+                    .await
+            }
+            "lower_order_line_quantities" => {
+                let (token, body) = input::lower_order_line_quantities(arguments)?;
+                client
+                    .run(move |client| client.lower_order_line_quantities(&token, &body))
+                    .await
+            }
+            "toggle_order_line_substitution" => {
+                let (token, body) = input::toggle_order_line_substitution(arguments)?;
+                client
+                    .run(move |client| client.toggle_order_line_substitution(&token, &body))
+                    .await
+            }
+            // tools/list names no other tool; the runtime refuses unknown names first.
             _ => Err(Fail::Unknown),
         })
     }

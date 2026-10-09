@@ -31,7 +31,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
 import manifest from '../../../../packages/kronan-mcp/package.json' with { type: 'json' };
 // Rust: the TypeScript record and migration, for the cases that check interop with them.
-import { claimAttempt, readAttempts } from '../../../../packages/kronan-mcp/src/attempts.ts';
+import { readAttempts } from '../../../../packages/kronan-mcp/src/attempts.ts';
 import { migrateToken as typescriptMigrateToken } from '../../../../packages/kronan-mcp/src/auth.ts';
 
 // Rust: the fixtures are shared with parity.ts.
@@ -39,25 +39,38 @@ import {
   CHECKOUT_TOKEN,
   CHECKOUT_TOTAL,
   LIST_TOKEN,
+  NOTE_LINE_TOKEN,
   ORDER_TOKEN,
   UPSTREAM_EXTRA,
+  activeOrder,
+  approval,
+  checkout,
   fixtureResponse,
+  order,
   product,
   recipe,
 } from './fixtures.ts';
 // Rust: the client, the auth functions, the schemas and the executable are the binary.
 import {
-  KeyFile,
-  KronanClient,
+  addCheckoutToOrderInput,
+  addShoppingNoteLinesInput,
   attemptsPath,
   categoryProductsInput,
+  changeShoppingNoteLineInput,
+  clearShoppingNoteInput,
+  completeCheckoutInput,
+  deleteOrderLinesInput,
   emptyInput,
+  failing,
   getProductInput,
+  KeyFile,
+  KronanClient,
   listOrdersInput,
   loadSavedToken,
   loadToken,
   logoutToken,
   lookupProductsInput,
+  lowerOrderLineQuantitiesInput,
   migrateToken,
   normalizeToken,
   offsetInput,
@@ -70,15 +83,19 @@ import {
   productsByTagInput,
   purchaseStatsInput,
   recipeInput,
+  reserveDeliverySlotInput,
+  reservePickupSlotInput,
   saveToken,
   searchProductsInput,
   searchRecipesInput,
   serveCommand,
+  setCheckoutLinesInput,
+  shoppingNoteLineTokenInput,
   spawnCli,
-  failing,
   summarizeOrderLinesInput,
+  toggleOrderLineSubstitutionInput,
+  upstream,
 } from './rust-kronan.ts';
-
 // Rust: `VERSION` from src/server.ts is the package version.
 const VERSION = manifest.version;
 
@@ -124,7 +141,8 @@ const writeLegacyToken = (path: string, token: string) =>
 
 afterAll(() => rm(SCRATCH, { recursive: true, force: true }));
 
-const scratchFile = () => join(SCRATCH, randomUUID() + '.json');
+// Rust: the binary keeps its record beside its token file, named for it.
+const scratchFile = () => join(SCRATCH, randomUUID() + '.json.order-attempts.json');
 
 type CapturedRequest = {
   url: string;
@@ -144,6 +162,8 @@ type ContractCase = {
   gate?: string[];
   call: () => Promise<object>;
 };
+
+const CHECKOUT_GATE = ['GET /checkout/'];
 
 async function captureFailure(
   messages: string[],
@@ -880,6 +900,41 @@ test('all public client methods use the exact published paths, parameters, bodie
       call: () => client.checkout(),
     },
     {
+      name: 'addShoppingNoteLines',
+      method: 'POST',
+      path: '/shopping-notes/add-lines/',
+      body: JSON.stringify({ lines: [{ text: 'Eggs', quantity: 12 }, { sku: 'SKU-1' }] }),
+      call: () =>
+        client.addShoppingNoteLines({ lines: [{ text: 'Eggs', quantity: 12 }, { sku: 'SKU-1' }] }),
+    },
+    {
+      name: 'changeShoppingNoteLine',
+      method: 'PATCH',
+      path: '/shopping-notes/change-line/',
+      body: JSON.stringify({ token: NOTE_LINE_TOKEN, quantity: 3 }),
+      call: () => client.changeShoppingNoteLine({ token: NOTE_LINE_TOKEN, quantity: 3 }),
+    },
+    {
+      name: 'toggleShoppingNoteLineComplete',
+      method: 'PATCH',
+      path: '/shopping-notes/toggle-complete-on-line/',
+      body: JSON.stringify({ token: NOTE_LINE_TOKEN }),
+      call: () => client.toggleShoppingNoteLineComplete({ token: NOTE_LINE_TOKEN }),
+    },
+    {
+      name: 'deleteShoppingNoteLine',
+      method: 'DELETE',
+      path: '/shopping-notes/delete-line/',
+      query: 'token=' + NOTE_LINE_TOKEN,
+      call: () => client.deleteShoppingNoteLine({ token: NOTE_LINE_TOKEN }),
+    },
+    {
+      name: 'clearShoppingNote',
+      method: 'DELETE',
+      path: '/shopping-notes/delete-shopping-note/',
+      call: () => client.clearShoppingNote({ confirm: true }),
+    },
+    {
       name: 'previewCheckoutLines',
       method: 'POST',
       path: '/checkout/preview-lines/',
@@ -892,7 +947,96 @@ test('all public client methods use the exact published paths, parameters, bodie
       call: () =>
         client.previewCheckoutLines({ lines: [{ sku: 'SKU-1', quantity: 2 }, { sku: 'SKU-2' }] }),
     },
-    // Rust: the write and order cases arrive with their tools.
+    {
+      name: 'setCheckoutLines replace',
+      method: 'POST',
+      path: '/checkout/lines/',
+      body: JSON.stringify({
+        lines: [{ sku: 'SKU-1', quantity: 2, substitution: false }],
+        replace: true,
+      }),
+      call: () =>
+        client.setCheckoutLines({
+          lines: [{ sku: 'SKU-1', quantity: 2, substitution: false }],
+          replace: true,
+        }),
+    },
+    {
+      name: 'setCheckoutLines add',
+      method: 'POST',
+      path: '/checkout/lines/',
+      body: JSON.stringify({ lines: [{ sku: 'SKU-1', quantity: 1 }], replace: false }),
+      call: () => client.setCheckoutLines({ lines: [{ sku: 'SKU-1' }], replace: false }),
+    },
+    {
+      name: 'reserveDeliverySlot',
+      method: 'POST',
+      path: '/slots/delivery/reserve/',
+      gate: CHECKOUT_GATE,
+      body: JSON.stringify({ slotId: 501, addressId: 11, returnBags: true }),
+      call: () =>
+        client.reserveDeliverySlot({ ...approval, slotId: 501, addressId: 11, returnBags: true }),
+    },
+    {
+      name: 'reservePickupSlot',
+      method: 'POST',
+      path: '/slots/pickup/reserve/',
+      gate: CHECKOUT_GATE,
+      body: JSON.stringify({ slotId: 601, returnBags: false }),
+      call: () => client.reservePickupSlot({ ...approval, slotId: 601, returnBags: false }),
+    },
+    {
+      name: 'completeCheckout delivery',
+      method: 'POST',
+      path: '/checkout/complete/',
+      gate: CHECKOUT_GATE,
+      body: JSON.stringify({ slotId: 501, addressId: 11, returnBags: false }),
+      call: () =>
+        client.completeCheckout({ ...approval, slotId: 501, addressId: 11, returnBags: false }),
+    },
+    {
+      name: 'completeCheckout pickup',
+      method: 'POST',
+      path: '/checkout/complete/',
+      gate: CHECKOUT_GATE,
+      body: JSON.stringify({ slotId: 601, returnBags: true }),
+      call: () => client.completeCheckout({ ...approval, slotId: 601, returnBags: true }),
+    },
+    {
+      name: 'addCheckoutToOrder',
+      method: 'POST',
+      path: '/checkout/add-to-order/',
+      gate: [...CHECKOUT_GATE, 'GET /orders/currently-active/'],
+      call: () => client.addCheckoutToOrder({ ...approval, expectedOrderToken: ORDER_TOKEN }),
+    },
+    {
+      name: 'deleteOrderLines',
+      method: 'POST',
+      path: '/orders/' + ORDER_TOKEN + '/delete-lines/',
+      body: JSON.stringify({ lineIds: [1, 2] }),
+      call: () =>
+        client.deleteOrderLines({ orderToken: ORDER_TOKEN, lineIds: [1, 2], confirm: true }),
+    },
+    {
+      name: 'lowerOrderLineQuantities',
+      method: 'POST',
+      path: '/orders/' + ORDER_TOKEN + '/lower-quantity-lines/',
+      body: JSON.stringify({ lineIds: [1], quantity: 0 }),
+      call: () =>
+        client.lowerOrderLineQuantities({
+          orderToken: ORDER_TOKEN,
+          lineIds: [1],
+          quantity: 0,
+          confirm: true,
+        }),
+    },
+    {
+      name: 'toggleOrderLineSubstitution',
+      method: 'POST',
+      path: '/orders/' + ORDER_TOKEN + '/lines-toggle-substitution/',
+      body: JSON.stringify({ lineIds: [1] }),
+      call: () => client.toggleOrderLineSubstitution({ orderToken: ORDER_TOKEN, lineIds: [1] }),
+    },
   ];
 
   try {
@@ -933,7 +1077,608 @@ test('all public client methods use the exact published paths, parameters, bodie
   }
 });
 
+type Scripted = (
+  pathname: string,
+  method: string,
+) => Response | undefined | Promise<Response | undefined>;
+
+/** A client whose requests are recorded; script overrides the fixture for chosen requests. */
+function scriptedClient(script: Scripted, attempts = scratchFile()) {
+  const sent: string[] = [];
+
+  const client = new KronanClient(
+    async () => TOKEN,
+    async (url, options) => {
+      const { pathname } = new URL(url);
+      const method = options.method ?? 'GET';
+      sent.push(method + ' ' + pathname.slice('/api/v1'.length));
+
+      return (await script(pathname, method)) ?? fixtureResponse(pathname);
+    },
+    attempts,
+  );
+
+  return { client, sent, attempts };
+}
+
+const posts = (entries: string[]) => entries.filter((entry) => entry.startsWith('POST'));
+
+const NOTHING_SENT = /Nothing was sent to Krónan/;
+
+const OUTCOME_UNKNOWN = /Outcome unknown.*do not retry or place another order/;
+
+const placements = [
+  {
+    name: 'reserve_delivery_slot',
+    path: '/slots/delivery/reserve/',
+    call: (client: KronanClient, gate: typeof approval) =>
+      client.reserveDeliverySlot({ ...gate, slotId: 501, addressId: 11, returnBags: false }),
+  },
+  {
+    name: 'reserve_pickup_slot',
+    path: '/slots/pickup/reserve/',
+    call: (client: KronanClient, gate: typeof approval) =>
+      client.reservePickupSlot({ ...gate, slotId: 601, returnBags: false }),
+  },
+  {
+    name: 'complete_checkout',
+    path: '/checkout/complete/',
+    call: (client: KronanClient, gate: typeof approval) =>
+      client.completeCheckout({ ...gate, slotId: 501, addressId: 11, returnBags: false }),
+  },
+  {
+    name: 'add_checkout_to_order',
+    path: '/checkout/add-to-order/',
+    call: (client: KronanClient, gate: typeof approval) =>
+      client.addCheckoutToOrder({ ...gate, expectedOrderToken: ORDER_TOKEN }),
+  },
+];
+
+test('the money gate refuses without sending a charge-bearing request', async () => {
+  let current = checkout;
+
+  const { client, sent, attempts } = scriptedClient((pathname) =>
+    pathname === '/api/v1/checkout/' ? Response.json(current) : undefined,
+  );
+
+  const refusals = [
+    {
+      label: 'total mismatch',
+      state: checkout,
+      gate: { ...approval, expectedTotal: CHECKOUT_TOTAL - 1 },
+      pattern: /total differs/,
+    },
+    {
+      label: 'token mismatch',
+      state: checkout,
+      gate: { ...approval, expectedCheckoutToken: LIST_TOKEN },
+      pattern: /checkout token differs/,
+    },
+    {
+      label: 'empty checkout',
+      state: { ...checkout, lines: [], total: 0 },
+      gate: { ...approval, expectedTotal: 0 },
+      pattern: /checkout is empty/,
+    },
+  ];
+
+  try {
+    for (const placement of placements) {
+      for (const { label, state, gate, pattern } of refusals) {
+        current = state;
+        const before = sent.length;
+        const messages: string[] = [];
+        await captureFailure(messages, () => placement.call(client, gate), pattern);
+        expect(messages[0], placement.name + ': ' + label).toMatch(NOTHING_SENT);
+        expect(messages[0]).toMatch(/no order was placed/);
+        expect(sent.slice(before), placement.name + ': ' + label).toEqual(['GET /checkout/']);
+      }
+    }
+
+    expect(sent.some((entry) => entry.startsWith('POST'))).toBe(false);
+    // A refused gate records nothing, so it never blocks a later, corrected approval.
+    await assert.rejects(stat(attempts), { code: 'ENOENT' });
+  } finally {
+    await client.close();
+  }
+});
+
+test('money and destructive tools called without confirm:true send nothing', async () => {
+  const { client: api, sent } = scriptedClient(() => undefined);
+  // Rust: the server is the binary, serving api's token, record and upstream over stdio.
+  const server = await api.serve();
+  const client = new Client({ name: 'kronan-confirm', version: VERSION });
+  const clientTransport = server.transport;
+  const { confirm: _approved, ...unconfirmed } = approval;
+
+  const calls = [
+    ['reserve_delivery_slot', { ...unconfirmed, slotId: 501, addressId: 11, returnBags: false }],
+    ['reserve_pickup_slot', { ...unconfirmed, slotId: 601, returnBags: false }],
+    ['complete_checkout', { ...unconfirmed, slotId: 501, returnBags: false }],
+    ['add_checkout_to_order', { ...unconfirmed, expectedOrderToken: ORDER_TOKEN }],
+    ['clear_shopping_note', {}],
+    ['delete_order_lines', { orderToken: ORDER_TOKEN, lineIds: [1] }],
+    ['lower_order_line_quantities', { orderToken: ORDER_TOKEN, lineIds: [1], quantity: 0 }],
+  ] as const;
+
+  try {
+    await client.connect(clientTransport);
+
+    for (const [name, args] of calls) {
+      for (const confirm of [undefined, false, 'true']) {
+        const outcome = await client.callTool({
+          name,
+          arguments: confirm === undefined ? args : { ...args, confirm },
+        });
+
+        expect(outcome.isError, name + ' ' + String(confirm)).toBe(true);
+      }
+    }
+
+    expect(sent).toEqual([]);
+  } finally {
+    await client.close();
+    await server.close();
+    await api.close();
+  }
+});
+
+test('add_checkout_to_order refuses when the active order is absent or differs', async () => {
+  let active: Response | undefined;
+
+  const { client, sent } = scriptedClient((pathname) =>
+    pathname === '/api/v1/orders/currently-active/' ? active : undefined,
+  );
+
+  try {
+    for (const [response, pattern] of [
+      [new Response(null, { status: 404 }), /no active order/],
+      [Response.json({ ...activeOrder, orderToken: LIST_TOKEN }), /active order differs/],
+    ] as const) {
+      active = response;
+      const before = sent.length;
+      const messages: string[] = [];
+      await captureFailure(
+        messages,
+        () => client.addCheckoutToOrder({ ...approval, expectedOrderToken: ORDER_TOKEN }),
+        pattern,
+      );
+      expect(messages[0]).toMatch(NOTHING_SENT);
+      expect(sent.slice(before)).toEqual(['GET /checkout/', 'GET /orders/currently-active/']);
+    }
+  } finally {
+    await client.close();
+  }
+});
+
+test('ambiguous money outcomes are reported as unknown after exactly one request', async () => {
+  let failure: () => Response | Promise<Response>;
+
+  const { client, sent, attempts } = scriptedClient((_pathname, method) =>
+    method === 'POST' ? failure() : undefined,
+  );
+
+  // The upstream may have accepted the request before any of these; none proves a refusal.
+  const ambiguous: [string, () => Response | Promise<Response>][] = [
+    ['network error', () => Promise.reject(new TypeError('socket hang up'))],
+    ['timeout', () => Promise.reject(new DOMException('Timed out', 'TimeoutError'))],
+    ['server error', () => new Response(TOKEN, { status: 502 })],
+    ['unparsable body', () => new Response('{not json', { status: 201 })],
+    ['undocumented body', () => Response.json({ orderToken: ORDER_TOKEN }, { status: 201 })],
+    ['accepted then 400', () => new Response(TOKEN, { status: 400 })],
+    ['accepted then 408', () => new Response(TOKEN, { status: 408 })],
+    ['accepted then 409', () => new Response(TOKEN, { status: 409 })],
+    ['accepted then 422', () => new Response(TOKEN, { status: 422 })],
+    ['accepted then 429', () => new Response(TOKEN, { status: 429 })],
+    ['accepted then 401', () => new Response(TOKEN, { status: 401 })],
+  ];
+
+  try {
+    for (const placement of placements) {
+      for (const [label, respond] of ambiguous) {
+        // Each case is a fresh approval; the record rules are tested separately.
+        await rm(attempts, { force: true });
+        failure = respond;
+        const before = sent.length;
+        const outcome = await placement.call(client, approval);
+
+        expect(outcome.outcome, placement.name + ': ' + label).toBe('unknown');
+        expect(outcome.message).toMatch(OUTCOME_UNKNOWN);
+        expect(JSON.stringify(outcome)).not.toContain(TOKEN);
+        expect(posts(sent.slice(before))).toEqual(['POST ' + placement.path]);
+        expect(outcome.message).not.toMatch(/Nothing was sent|no order was placed/);
+      }
+    }
+  } finally {
+    await client.close();
+  }
+});
+
+test('an unknown money outcome reaches the MCP host as a validated result, not an error', async () => {
+  const {
+    client: api,
+    sent,
+    attempts,
+  } = scriptedClient((_pathname, method) =>
+    method === 'POST' ? new Response(TOKEN, { status: 502 }) : undefined,
+  );
+
+  // Rust: the server is the binary, serving api's token, record and upstream over stdio.
+  const server = await api.serve();
+  const client = new Client({ name: 'kronan-unknown', version: VERSION });
+  const clientTransport = server.transport;
+
+  const calls = [
+    ['reserve_delivery_slot', { ...approval, slotId: 501, addressId: 11, returnBags: false }],
+    ['reserve_pickup_slot', { ...approval, slotId: 601, returnBags: false }],
+    ['complete_checkout', { ...approval, slotId: 501, returnBags: false }],
+    ['add_checkout_to_order', { ...approval, expectedOrderToken: ORDER_TOKEN }],
+  ] as const;
+
+  try {
+    await client.connect(clientTransport);
+
+    for (const [name, args] of calls) {
+      await rm(attempts, { force: true });
+      const before = sent.length;
+      const outcome = await client.callTool({ name, arguments: args });
+
+      expect(outcome.isError, name).not.toBe(true);
+      expect(outcome.structuredContent, name).toMatchObject({ outcome: 'unknown' });
+      expect(JSON.stringify(outcome.structuredContent)).toMatch(OUTCOME_UNKNOWN);
+      expect(JSON.stringify(outcome)).not.toContain(TOKEN);
+      expect(sent.slice(before).filter((entry) => entry.startsWith('POST'))).toHaveLength(1);
+    }
+  } finally {
+    await client.close();
+    await server.close();
+    await api.close();
+  }
+});
+
+test('a failed gate read refuses the money call without sending it', async () => {
+  const { client, sent } = scriptedClient((pathname) =>
+    pathname === '/api/v1/checkout/' ? new Response(TOKEN, { status: 503 }) : undefined,
+  );
+
+  try {
+    for (const placement of placements) {
+      const messages: string[] = [];
+      await captureFailure(messages, () => placement.call(client, approval), NOTHING_SENT);
+      expect(messages[0]).toMatch(/Could not read the checkout/);
+    }
+
+    expect(sent.every((entry) => entry === 'GET /checkout/')).toBe(true);
+  } finally {
+    await client.close();
+  }
+});
+
+test('other writes are sent once and report an unconfirmed change instead of inviting a retry', async () => {
+  // 0 stands for a connection failure after the request was handed to fetch.
+  let status = 0;
+
+  const { client, sent } = scriptedClient((_pathname, method) => {
+    if (method === 'GET') return undefined;
+
+    return status === 0
+      ? Promise.reject(new TypeError('socket hang up'))
+      : new Response(status === 404 ? null : TOKEN, { status });
+  });
+
+  const noteAndBasketWrites = [
+    () => client.addShoppingNoteLines({ lines: [{ text: 'Eggs' }] }),
+    () => client.clearShoppingNote({ confirm: true }),
+    () => client.setCheckoutLines({ lines: [{ sku: 'SKU-1' }], replace: false }),
+  ];
+
+  // Placed-order changes move money; after sending, no status proves they were not applied.
+  const orderChanges = [
+    () => client.deleteOrderLines({ orderToken: ORDER_TOKEN, lineIds: [1], confirm: true }),
+    () =>
+      client.lowerOrderLineQuantities({
+        orderToken: ORDER_TOKEN,
+        lineIds: [1],
+        quantity: 0,
+        confirm: true,
+      }),
+    () => client.toggleOrderLineSubstitution({ orderToken: ORDER_TOKEN, lineIds: [1] }),
+  ];
+
+  const expectations = [
+    ...[
+      [0, /did not confirm this change.*may have been applied/],
+      [500, /did not confirm this change/],
+      [400, /refused the request; nothing was changed/],
+    ].map(([code, pattern]) => ({ code, pattern, writes: noteAndBasketWrites })),
+    ...[0, 400, 404, 409, 422, 429, 500].map((code) => ({
+      code,
+      pattern: /did not confirm this order change; it may have been applied\. Read get_order/,
+      writes: orderChanges,
+    })),
+  ];
+
+  try {
+    for (const { code, pattern, writes } of expectations) {
+      status = Number(code);
+
+      for (const write of writes) {
+        const before = sent.length;
+        const messages: string[] = [];
+        assert(pattern instanceof RegExp);
+        await captureFailure(messages, write, pattern);
+        expect(messages[0]).not.toMatch(/Check the connection and try again/);
+        expect(messages[0]).not.toContain(TOKEN);
+        expect(sent.slice(before)).toHaveLength(1);
+      }
+    }
+  } finally {
+    await client.close();
+  }
+});
+
 /** A settled money call as its outcome, or the fixed first clause of its refusal. */
+function describeSettled(result: PromiseSettledResult<{ outcome: string }>): string {
+  if (result.status === 'fulfilled') return result.value.outcome;
+
+  const message = result.reason instanceof Error ? result.reason.message : '';
+
+  return 'rejected: ' + message.split(/[.(]/)[0]?.trim();
+}
+
+test('concurrent calls for one approval send exactly one charge-bearing request', async () => {
+  const release = Promise.withResolvers<void>();
+  const postStarted = Promise.withResolvers<void>();
+
+  const { client, sent } = scriptedClient(async (_pathname, method) => {
+    if (method !== 'POST') return undefined;
+    postStarted.resolve();
+    await release.promise;
+
+    return undefined;
+  });
+
+  const call = { ...approval, slotId: 501, addressId: 11, returnBags: false };
+
+  try {
+    // Same tool: the second call waits for the lock, then finds the accepted attempt.
+    const first = client.completeCheckout(call);
+    const second = client.completeCheckout(call);
+    await postStarted.promise;
+    await Bun.sleep(100);
+    release.resolve();
+    const settled = await Promise.allSettled([first, second]);
+
+    // Either call may win the lock; exactly one is sent and the other finds its accepted record.
+    expect(settled.map(describeSettled).toSorted()).toEqual([
+      'accepted',
+      'rejected: Krónan already accepted this order call for this exact checkout',
+    ]);
+    expect(posts(sent)).toEqual(['POST /checkout/complete/']);
+  } finally {
+    await client.close();
+  }
+
+  // Across tools, with the first outcome unknown: the waiting call is blocked, not sent.
+  const crossRelease = Promise.withResolvers<void>();
+  const crossStarted = Promise.withResolvers<void>();
+
+  const cross = scriptedClient(async (_pathname, method) => {
+    if (method !== 'POST') return undefined;
+    crossStarted.resolve();
+    await crossRelease.promise;
+
+    throw new TypeError('socket hang up');
+  });
+
+  try {
+    const first = cross.client.completeCheckout(call);
+    const second = cross.client.reservePickupSlot({ ...approval, slotId: 601, returnBags: false });
+    await crossStarted.promise;
+    await Bun.sleep(100);
+    crossRelease.resolve();
+    const settled = await Promise.allSettled([first, second]);
+
+    expect(settled.map(describeSettled).toSorted()).toEqual([
+      'rejected: An earlier order call for this checkout is still unresolved',
+      'unknown',
+    ]);
+    expect(posts(cross.sent)).toHaveLength(1);
+  } finally {
+    await cross.client.close();
+  }
+});
+
+test('an unknown or submitting attempt blocks every money tool for that checkout', async () => {
+  const { client, sent, attempts } = scriptedClient((_pathname, method) =>
+    method === 'POST' ? Promise.reject(new TypeError('socket hang up')) : undefined,
+  );
+
+  try {
+    const first = await client.completeCheckout({ ...approval, slotId: 501, returnBags: false });
+    expect(first.outcome).toBe('unknown');
+    expect(posts(sent)).toHaveLength(1);
+
+    const recorded = await readAttempts(attempts);
+    expect(recorded).toMatchObject([
+      { tool: 'complete_checkout', state: 'unknown', checkoutToken: CHECKOUT_TOKEN },
+    ]);
+
+    if (process.platform !== 'win32') expect((await stat(attempts)).mode & 0o777).toBe(0o600);
+
+    for (const placement of placements) {
+      const before = sent.length;
+      const messages: string[] = [];
+      await captureFailure(
+        messages,
+        () => placement.call(client, approval),
+        /still unresolved.*not permission to retry/,
+      );
+      expect(messages[0]).toMatch(NOTHING_SENT);
+      // Blocked before the gate read: nothing at all reaches Krónan.
+      expect(sent.slice(before), placement.name).toEqual([]);
+    }
+
+    // A crash between saving intent and the response leaves `submitting`; it blocks the same way.
+    const [unknown] = recorded;
+    assert(unknown);
+    await writePrivateFile(
+      attempts,
+      JSON.stringify({
+        version: 1,
+        attempts: [{ ...unknown, tool: 'reserve_pickup_slot', state: 'submitting' }],
+      }),
+    );
+    const before = sent.length;
+    await assert.rejects(
+      client.reserveDeliverySlot({ ...approval, slotId: 501, addressId: 11, returnBags: false }),
+      /still unresolved/,
+    );
+    expect(sent.slice(before)).toEqual([]);
+
+    // An unreadable record fails closed.
+    await writePrivateFile(attempts, '{"version":1,"attempts":[{"state":"accepted"}]}');
+    await assert.rejects(
+      client.completeCheckout({ ...approval, slotId: 501, returnBags: false }),
+      /record is unreadable or unsafe\. Nothing was sent/,
+    );
+    expect(sent.slice(before)).toEqual([]);
+  } finally {
+    await client.close();
+  }
+});
+
+test('an accepted attempt blocks a repeat but still allows complete after reserve', async () => {
+  const { client, sent } = scriptedClient(() => undefined);
+  const complete = { ...approval, slotId: 501, addressId: 11, returnBags: false };
+
+  try {
+    const reserved = await client.reserveDeliverySlot(complete);
+    expect(reserved.outcome).toBe('accepted');
+
+    // The live reserve/complete sequence is unverified, so an accepted reserve must not block it.
+    const completed = await client.completeCheckout(complete);
+    expect(completed.outcome).toBe('accepted');
+    expect(posts(sent)).toEqual(['POST /slots/delivery/reserve/', 'POST /checkout/complete/']);
+
+    for (const repeat of [
+      () => client.completeCheckout(complete),
+      () => client.reserveDeliverySlot(complete),
+      () => client.reservePickupSlot({ ...approval, slotId: 601, returnBags: false }),
+      () => client.addCheckoutToOrder({ ...approval, expectedOrderToken: ORDER_TOKEN }),
+    ]) {
+      const before = sent.length;
+      const messages: string[] = [];
+      await captureFailure(messages, repeat, /already accepted this order call/);
+      expect(messages[0]).toMatch(NOTHING_SENT);
+      expect(posts(sent.slice(before))).toEqual([]);
+    }
+  } finally {
+    await client.close();
+  }
+
+  // A changed checkout (different lines and total) is a new approval and may be sent.
+  let current = checkout;
+
+  const changed = scriptedClient((pathname) =>
+    pathname === '/api/v1/checkout/' ? Response.json(current) : undefined,
+  );
+
+  try {
+    expect((await changed.client.completeCheckout(complete)).outcome).toBe('accepted');
+    const [line] = checkout.lines;
+    assert(line);
+    current = { ...checkout, lines: [{ ...line, quantity: 2 }], total: 1988 };
+    expect(
+      (await changed.client.completeCheckout({ ...complete, expectedTotal: 1988 })).outcome,
+    ).toBe('accepted');
+    expect(posts(changed.sent)).toHaveLength(2);
+  } finally {
+    await changed.client.close();
+  }
+});
+
+// Rust: the cases that inject a lock into claimAttempt are unit tests in src/attempts.rs.
+const RACED = /ran at the same time.*Nothing was sent to Krónan\. Read get_active_order/;
+
+test('a record written by another holder during the gate stops the real client before its POST', async () => {
+  let attemptsFile = '';
+
+  // Another holder records an unresolved attempt for a different checkout while this gate reads.
+  const { client, sent, attempts } = scriptedClient(async (pathname) => {
+    if (pathname !== '/api/v1/checkout/') return undefined;
+    await writePrivateFile(
+      attemptsFile,
+      JSON.stringify({
+        version: 1,
+        attempts: [
+          {
+            id: 'other-holder',
+            tool: 'reserve_pickup_slot',
+            checkoutToken: LIST_TOKEN,
+            fingerprint: 'other-lines',
+            total: 1,
+            state: 'unknown',
+            orderToken: null,
+            createdAt: '2026-09-25T00:00:00.000Z',
+            updatedAt: '2026-09-25T00:00:00.000Z',
+          },
+        ],
+      }),
+    );
+
+    return undefined;
+  });
+
+  attemptsFile = attempts;
+
+  try {
+    await assert.rejects(
+      client.completeCheckout({ ...approval, slotId: 501, returnBags: false }),
+      RACED,
+    );
+    expect(sent).toEqual(['GET /checkout/']);
+    expect(await readAttempts(attempts)).toMatchObject([{ id: 'other-holder', state: 'unknown' }]);
+  } finally {
+    await client.close();
+  }
+});
+
+// Rust: the binary validates, so each check is awaited.
+test('write inputs reject ambiguous or implicit requests', async () => {
+  // Krónan replaces the whole checkout when replace is omitted; the caller must choose.
+  expect((await setCheckoutLinesInput.safeParse({ lines: [{ sku: 'SKU-1' }] })).success).toBe(false);
+  // Krónan deletes a note line when a change carries neither text nor quantity.
+  expect((await changeShoppingNoteLineInput.safeParse({ token: NOTE_LINE_TOKEN })).success).toBe(false);
+  expect(
+    (await addShoppingNoteLinesInput.safeParse({ lines: [{ text: 'Eggs', sku: 'SKU-1' }] })).success,
+  ).toBe(false);
+  expect((await addShoppingNoteLinesInput.safeParse({ lines: [{ quantity: 1 }] })).success).toBe(false);
+  expect((await addShoppingNoteLinesInput.safeParse({ lines: [] })).success).toBe(false);
+  expect(
+    (await addShoppingNoteLinesInput.safeParse({
+      lines: Array.from({ length: 31 }, () => ({ text: 'Eggs' })),
+    })).success,
+  ).toBe(false);
+  expect((await shoppingNoteLineTokenInput.safeParse({ token: 'not-a-token' })).success).toBe(false);
+  expect((await clearShoppingNoteInput.safeParse({})).success).toBe(false);
+  expect(
+    (await deleteOrderLinesInput.safeParse({ orderToken: ORDER_TOKEN, lineIds: [1], confirm: false })).success,
+  ).toBe(false);
+  expect(
+    (await lowerOrderLineQuantitiesInput.safeParse({ orderToken: ORDER_TOKEN, lineIds: [1], quantity: 1 })).success,
+  ).toBe(false);
+  expect(
+    (await completeCheckoutInput.safeParse({
+      ...approval,
+      slotId: 1,
+      returnBags: false,
+      expectedTotal: -1,
+    })).success,
+  ).toBe(false);
+  expect((await reservePickupSlotInput.safeParse({ ...approval, slotId: 1 })).success).toBe(false);
+});
+
 test('safe errors, strict inputs, and token non-disclosure', async () => {
   const errors: string[] = [];
   let response = new Response(TOKEN, { status: 401 });
@@ -1026,8 +1771,37 @@ test('safe errors, strict inputs, and token non-disclosure', async () => {
       productListInput.safeParse(withUnexpectedKey({ token: LIST_TOKEN })),
       searchRecipesInput.safeParse(withUnexpectedKey({})),
       recipeInput.safeParse(withUnexpectedKey({ slug: 'oat-cakes' })),
+      addShoppingNoteLinesInput.safeParse(withUnexpectedKey({ lines: [{ text: 'Eggs' }] })),
+      changeShoppingNoteLineInput.safeParse(
+        withUnexpectedKey({ token: NOTE_LINE_TOKEN, text: 'Eggs' }),
+      ),
+      shoppingNoteLineTokenInput.safeParse(withUnexpectedKey({ token: NOTE_LINE_TOKEN })),
+      clearShoppingNoteInput.safeParse(withUnexpectedKey({ confirm: true })),
       previewCheckoutLinesInput.safeParse(withUnexpectedKey({ lines: [{ sku: 'SKU-1' }] })),
-      // Rust: the write and order inputs arrive with their tools.
+      setCheckoutLinesInput.safeParse(
+        withUnexpectedKey({ lines: [{ sku: 'SKU-1' }], replace: false }),
+      ),
+      reserveDeliverySlotInput.safeParse(
+        withUnexpectedKey({ ...approval, slotId: 1, addressId: 1, returnBags: false }),
+      ),
+      reservePickupSlotInput.safeParse(
+        withUnexpectedKey({ ...approval, slotId: 1, returnBags: false }),
+      ),
+      completeCheckoutInput.safeParse(
+        withUnexpectedKey({ ...approval, slotId: 1, returnBags: false }),
+      ),
+      addCheckoutToOrderInput.safeParse(
+        withUnexpectedKey({ ...approval, expectedOrderToken: ORDER_TOKEN }),
+      ),
+      deleteOrderLinesInput.safeParse(
+        withUnexpectedKey({ orderToken: ORDER_TOKEN, lineIds: [1], confirm: true }),
+      ),
+      lowerOrderLineQuantitiesInput.safeParse(
+        withUnexpectedKey({ orderToken: ORDER_TOKEN, lineIds: [1], quantity: 0, confirm: true }),
+      ),
+      toggleOrderLineSubstitutionInput.safeParse(
+        withUnexpectedKey({ orderToken: ORDER_TOKEN, lineIds: [1] }),
+      ),
     ]);
 
     for (const result of strictResults) {
@@ -1049,6 +1823,173 @@ test('safe errors, strict inputs, and token non-disclosure', async () => {
     expect(errors.join('\n')).not.toMatch(new RegExp(TOKEN));
   } finally {
     await client.close();
+  }
+});
+
+type Annotations = { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean };
+
+const READ: Annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true };
+
+/** get_checkout and get_shopping_note: Krónan creates an empty resource on first read. */
+const IDEMPOTENT_WRITE: Annotations = { ...READ, readOnlyHint: false };
+
+const REPEATABLE_WRITE: Annotations = { ...IDEMPOTENT_WRITE, idempotentHint: false };
+
+const DESTRUCTIVE: Annotations = { ...REPEATABLE_WRITE, destructiveHint: true };
+
+/** Tools absent here are READ. */
+const WRITE_ANNOTATIONS = new Map<string, Annotations>([
+  ['get_checkout', IDEMPOTENT_WRITE],
+  ['get_shopping_note', IDEMPOTENT_WRITE],
+  ['add_shopping_note_lines', REPEATABLE_WRITE],
+  ['change_shopping_note_line', IDEMPOTENT_WRITE],
+  ['toggle_shopping_note_line_complete', REPEATABLE_WRITE],
+  ['delete_shopping_note_line', DESTRUCTIVE],
+  ['clear_shopping_note', DESTRUCTIVE],
+  ['set_checkout_lines', DESTRUCTIVE],
+  ['reserve_delivery_slot', DESTRUCTIVE],
+  ['reserve_pickup_slot', DESTRUCTIVE],
+  ['complete_checkout', DESTRUCTIVE],
+  ['add_checkout_to_order', DESTRUCTIVE],
+  ['delete_order_lines', DESTRUCTIVE],
+  ['lower_order_line_quantities', DESTRUCTIVE],
+  ['toggle_order_line_substitution', REPEATABLE_WRITE],
+]);
+
+/** Every call that can create an order or authorize or raise a charge requires the approval gate. */
+const MONEY_TOOLS = [
+  'reserve_delivery_slot',
+  'reserve_pickup_slot',
+  'complete_checkout',
+  'add_checkout_to_order',
+];
+
+const toolArguments = {
+  auth_status: {},
+  search_products: { query: 'milk' },
+  get_product: { sku: 'SKU-1' },
+  lookup_products: { skus: ['SKU-1'] },
+  list_categories: {},
+  list_category_products: { slug: 'dairy' },
+  list_product_tags: {},
+  list_products_by_tag: { slug: 'vegan' },
+  list_products_on_sale: {},
+  list_favorite_products: {},
+  list_orders: {},
+  get_order: { token: ORDER_TOKEN },
+  get_active_order: {},
+  summarize_order_lines: { skus: ['SKU-1'] },
+  list_purchase_stats: {},
+  get_shopping_note: {},
+  list_archived_shopping_note_lines: {},
+  list_product_lists: {},
+  get_product_list: { token: LIST_TOKEN },
+  list_recipes: {},
+  search_recipes: {},
+  get_recipe: { slug: 'oat-cakes' },
+  list_favorite_recipes: {},
+  list_addresses: {},
+  get_delivery_slots: { addressId: 11 },
+  get_pickup_slots: {},
+  get_checkout: {},
+  add_shopping_note_lines: { lines: [{ text: 'Eggs' }] },
+  change_shopping_note_line: { token: NOTE_LINE_TOKEN, text: 'Free-range eggs' },
+  toggle_shopping_note_line_complete: { token: NOTE_LINE_TOKEN },
+  delete_shopping_note_line: { token: NOTE_LINE_TOKEN },
+  clear_shopping_note: { confirm: true },
+  preview_checkout_lines: { lines: [{ sku: 'SKU-1', quantity: 2 }] },
+  set_checkout_lines: { lines: [{ sku: 'SKU-1' }], replace: false },
+  reserve_delivery_slot: { ...approval, slotId: 501, addressId: 11, returnBags: false },
+  reserve_pickup_slot: { ...approval, slotId: 601, returnBags: false },
+  complete_checkout: { ...approval, slotId: 501, addressId: 11, returnBags: false },
+  add_checkout_to_order: { ...approval, expectedOrderToken: ORDER_TOKEN },
+  delete_order_lines: { orderToken: ORDER_TOKEN, lineIds: [1], confirm: true },
+  lower_order_line_quantities: {
+    orderToken: ORDER_TOKEN,
+    lineIds: [1],
+    quantity: 0,
+    confirm: true,
+  },
+  toggle_order_line_substitution: { orderToken: ORDER_TOKEN, lineIds: [1] },
+};
+
+test('all 41 MCP tools declare honest annotations and round-trip strict validated results', async () => {
+  const attempts = scratchFile();
+
+  const api = new KronanClient(
+    async () => TOKEN,
+    async (url) => fixtureResponse(new URL(url).pathname),
+    attempts,
+  );
+
+  // Rust: the server is the binary, serving api's token, record and upstream over stdio.
+  const server = await api.serve();
+  const client = new Client({ name: 'kronan-roundtrip', version: VERSION });
+  const clientTransport = server.transport;
+
+  try {
+    await client.connect(clientTransport);
+    const listed = await client.listTools();
+    const names = listed.tools.map((tool) => tool.name).toSorted();
+
+    expect(names).toEqual(manifest.familyMcp.release.tools.toSorted());
+    expect(names).toEqual(Object.keys(toolArguments).toSorted());
+    expect(listed.tools.every((tool) => tool.outputSchema !== undefined)).toBe(true);
+
+    for (const tool of listed.tools) {
+      const { readOnlyHint, destructiveHint, idempotentHint } = tool.annotations ?? {};
+
+      expect({ readOnlyHint, destructiveHint, idempotentHint }, tool.name).toEqual(
+        WRITE_ANNOTATIONS.get(tool.name) ?? READ,
+      );
+    }
+
+    for (const name of [
+      ...MONEY_TOOLS,
+      'clear_shopping_note',
+      'delete_order_lines',
+      'lower_order_line_quantities',
+    ]) {
+      const tool = listed.tools.find((entry) => entry.name === name);
+      const properties = JSON.stringify(tool?.inputSchema);
+
+      expect(tool?.inputSchema.required, name).toContain('confirm');
+      expect(properties, name).toContain('"const":true');
+    }
+
+    for (const name of MONEY_TOOLS) {
+      const tool = listed.tools.find((entry) => entry.name === name);
+
+      for (const field of ['confirm', 'expectedTotal', 'expectedCheckoutToken'])
+        expect(tool?.inputSchema.required, name).toContain(field);
+    }
+
+    const results = [];
+
+    for (const [name, args] of Object.entries(toolArguments)) {
+      // Every money call here is its own approval of the same fixture checkout.
+      await rm(attempts, { force: true });
+      const outcome = await client.callTool({ name, arguments: args });
+
+      expect(outcome.isError, name).not.toBe(true);
+      expect(outcome.structuredContent, name).toBeDefined();
+      results.push(outcome);
+    }
+
+    const invalid = await client.callTool({
+      name: 'search_products',
+      arguments: { query: 'milk', unexpected: TOKEN },
+    });
+
+    expect(invalid.isError).toBe(true);
+    expect(invalid.structuredContent).toBeUndefined();
+    const transcript = JSON.stringify([listed, results, invalid]);
+    expect(transcript).not.toContain(TOKEN);
+    expect(transcript).not.toContain(UPSTREAM_EXTRA);
+  } finally {
+    await client.close();
+    await server.close();
+    await api.close();
   }
 });
 
@@ -1468,22 +2409,24 @@ test('orders clear-attempts lists the record and clears it only after an explici
   const tokenFile = join(directory, 'session.json');
   const attempts = tokenFile + '.order-attempts.json';
 
+  const api = new KronanClient(
+    async () => TOKEN,
+    async (url, options) => {
+      if (options.method === 'POST') throw new TypeError('socket hang up');
+
+      return fixtureResponse(new URL(url).pathname);
+    },
+    attempts,
+  );
+
   try {
     const empty = await runCli(['orders', 'clear-attempts'], { tokenFile });
     expect(empty.exitCode).toBe(0);
     expect(empty.stdout).toContain('No recorded order attempts');
 
-    // Rust: the TypeScript claim records an unknown outcome, which the binary lists and clears.
     expect(
-      await claimAttempt(attempts, {
-        tool: 'complete_checkout',
-        expectedCheckoutToken: CHECKOUT_TOKEN,
-        signal: new AbortController().signal,
-        gate: async () => ({ token: CHECKOUT_TOKEN, total: CHECKOUT_TOTAL, print: 'approved-lines' }),
-        send: () => Promise.reject(new TypeError('socket hang up')),
-        orderToken: () => ORDER_TOKEN,
-      }),
-    ).toBeNull();
+      (await api.completeCheckout({ ...approval, slotId: 501, returnBags: false })).outcome,
+    ).toBe('unknown');
 
     for (const input of ['n\n', '\n', '', 'yes please\n']) {
       const kept = await runCli(['orders', 'clear-attempts'], { tokenFile, input });
@@ -1506,6 +2449,7 @@ test('orders clear-attempts lists the record and clears it only after an explici
     expect(invalid.stdout).toContain('unreadable or unsafe');
     await assert.rejects(stat(attempts), { code: 'ENOENT' });
   } finally {
+    await api.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

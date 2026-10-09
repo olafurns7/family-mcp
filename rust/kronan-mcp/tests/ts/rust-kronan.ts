@@ -150,6 +150,21 @@ function tokenEnvironment(token: string): Record<string, string> {
   return { KRONAN_TOKEN_FILE: file, XDG_CONFIG_HOME: join(directory, 'config') };
 }
 
+/** The binary keeps its order-attempt record beside its token file, named for it. */
+const JOURNAL = '.order-attempts.json';
+
+/**
+ * A given token with a given record: the token file is the one the record is named for, so every
+ * call of one client shares the record, as the TypeScript client's `attempts` argument does.
+ */
+function journalEnvironment(token: string, attempts: string): Record<string, string> {
+  if (!attempts.endsWith(JOURNAL)) throw new RangeError(`The record must end in ${JOURNAL}.`);
+  const file = attempts.slice(0, -JOURNAL.length);
+  writeFileSync(file, JSON.stringify({ version: 1, token }) + '\n', { mode: 0o600 });
+
+  return { KRONAN_TOKEN_FILE: file, XDG_CONFIG_HOME: `${file}.config` };
+}
+
 const UNKNOWN_ERROR = 'The operation failed. Check the server logs for details.';
 const ZOD_ERROR = 'Invalid input or unexpected upstream data.';
 
@@ -194,9 +209,10 @@ async function callTool(
 }
 
 /**
- * `KronanClient(token, request)`: each method is one tool call to a fresh `serve`, so its input
- * is validated as the server validates it. Without a token source the binary uses the saved
- * token under this process's environment, as `loadToken` would.
+ * `KronanClient(token, request, attempts)`: each method is one tool call to a fresh `serve`, so
+ * its input is validated as the server validates it. Without a token source the binary uses the
+ * saved token under this process's environment, as `loadToken` would; with `attempts` (a path
+ * ending in `.order-attempts.json`) every call shares that order-attempt record.
  */
 export class KronanClient {
   constructor(
@@ -233,12 +249,51 @@ export class KronanClient {
   pickupSlots = (input: object = {}) => this.#call('get_pickup_slots', input);
   checkout = () => this.#call('get_checkout', {});
   previewCheckoutLines = (input: object) => this.#call('preview_checkout_lines', input);
+  addShoppingNoteLines = (input: object) => this.#call('add_shopping_note_lines', input);
+  changeShoppingNoteLine = (input: object) => this.#call('change_shopping_note_line', input);
+  toggleShoppingNoteLineComplete = (input: object) => this.#call('toggle_shopping_note_line_complete', input);
+  deleteShoppingNoteLine = (input: object) => this.#call('delete_shopping_note_line', input);
+  clearShoppingNote = (input: object) => this.#call('clear_shopping_note', input);
+  setCheckoutLines = (input: object) => this.#call('set_checkout_lines', input);
+  reserveDeliverySlot = (input: object) => this.#call('reserve_delivery_slot', input);
+  reservePickupSlot = (input: object) => this.#call('reserve_pickup_slot', input);
+  completeCheckout = (input: object) => this.#call('complete_checkout', input);
+  addCheckoutToOrder = (input: object) => this.#call('add_checkout_to_order', input);
+  deleteOrderLines = (input: object) => this.#call('delete_order_lines', input);
+  lowerOrderLineQuantities = (input: object) => this.#call('lower_order_line_quantities', input);
+  toggleOrderLineSubstitution = (input: object) => this.#call('toggle_order_line_substitution', input);
   close = async () => {};
+
+  /**
+   * `createServer(client)` connected through an in-memory pair: one long-lived `serve` with this
+   * client's token, record and upstream, and the stdio transport an MCP client connects to.
+   */
+  async serve(): Promise<{ transport: StdioClientTransport; close: () => Promise<void> }> {
+    const served = this.request ? await upstream(this.request) : undefined;
+    const transport = new StdioClientTransport({
+      command: rustBinary!,
+      args: ['serve'],
+      env: {
+        ...(process.env as Record<string, string>),
+        ...(await this.#environment()),
+        KRONAN_TEST_ORIGIN: served?.origin ?? NOWHERE,
+      },
+      stderr: 'pipe',
+    });
+
+    return { transport, close: async () => served?.close() };
+  }
+
+  async #environment(): Promise<Record<string, string>> {
+    if (!this.token) return {};
+    const token = await this.token();
+
+    return this.attempts === undefined ? tokenEnvironment(token) : journalEnvironment(token, this.attempts);
+  }
 
   // oxlint-disable-next-line typescript/no-explicit-any -- Each method returns its tool's output.
   async #call(name: string, args: object): Promise<any> {
-    const env = this.token ? tokenEnvironment(await this.token()) : {};
-    const result = await callTool(name, args, env, this.request);
+    const result = await callTool(name, args, await this.#environment(), this.request);
     const [content] = result.content as { text: string }[];
 
     if (result.isError) throw failure(content?.text ?? '');
@@ -286,6 +341,18 @@ export const productListInput = schema('get_product_list');
 export const searchRecipesInput = schema('search_recipes');
 export const recipeInput = schema('get_recipe');
 export const previewCheckoutLinesInput = schema('preview_checkout_lines');
+export const addShoppingNoteLinesInput = schema('add_shopping_note_lines');
+export const changeShoppingNoteLineInput = schema('change_shopping_note_line');
+export const shoppingNoteLineTokenInput = schema('toggle_shopping_note_line_complete');
+export const clearShoppingNoteInput = schema('clear_shopping_note');
+export const setCheckoutLinesInput = schema('set_checkout_lines');
+export const reserveDeliverySlotInput = schema('reserve_delivery_slot');
+export const reservePickupSlotInput = schema('reserve_pickup_slot');
+export const completeCheckoutInput = schema('complete_checkout');
+export const addCheckoutToOrderInput = schema('add_checkout_to_order');
+export const deleteOrderLinesInput = schema('delete_order_lines');
+export const lowerOrderLineQuantitiesInput = schema('lower_order_line_quantities');
+export const toggleOrderLineSubstitutionInput = schema('toggle_order_line_substitution');
 
 /** `kronan-mcp serve` as the stdio executable, in place of `bun src/cli.ts`. */
 export function serveCommand(): { command: string; args: string[] } {

@@ -16,7 +16,19 @@ import {
   withSecretStore,
 } from '../../../../packages/session-store/src/index.ts';
 
-import { ORDER_TOKEN, LIST_TOKEN, UPSTREAM_EXTRA, fixtureResponse, product, recipe } from './fixtures.ts';
+import {
+  CHECKOUT_TOKEN,
+  CHECKOUT_TOTAL,
+  LIST_TOKEN,
+  NOTE_LINE_TOKEN,
+  ORDER_TOKEN,
+  UPSTREAM_EXTRA,
+  approval,
+  checkout,
+  fixtureResponse,
+  product,
+  recipe,
+} from './fixtures.ts';
 
 const [rust, only] = process.argv.slice(2);
 
@@ -146,15 +158,58 @@ function edge(pathname: string): Response | undefined {
   }
 }
 
+/** The charge-bearing endpoints, which the `send*` modes fail after the gate read the checkout. */
+const MONEY_PATHS = ['/api/v1/slots/delivery/reserve/', '/api/v1/slots/pickup/reserve/', '/api/v1/checkout/complete/', '/api/v1/checkout/add-to-order/'];
+
+/** Failures of the money gate's reads and of the request sent after it. */
+function money(pathname: string): Response | undefined {
+  const sending = MONEY_PATHS.includes(pathname);
+
+  switch (fake.mode) {
+    case 'checkout-empty':
+      return pathname === '/api/v1/checkout/' ? Response.json({ ...checkout, lines: [] }) : undefined;
+    case 'checkout-fractional':
+      // 1489.0 is the approved total to JavaScript.
+      return pathname === '/api/v1/checkout/'
+        ? new Response(JSON.stringify(checkout).replace(`"total":${CHECKOUT_TOTAL},`, `"total":${CHECKOUT_TOTAL}.0,`))
+        : undefined;
+    case 'no-active-order':
+      return pathname === '/api/v1/orders/currently-active/' ? new Response(null, { status: 404 }) : undefined;
+    case 'gate500':
+      return pathname === '/api/v1/checkout/' ? Response.json({ detail: 'secret detail' }, { status: 500 }) : undefined;
+    case 'send400':
+      return sending ? Response.json({ detail: 'secret detail' }, { status: 400 }) : undefined;
+    case 'send500':
+      return sending ? Response.json({ detail: 'secret detail' }, { status: 500 }) : undefined;
+    case 'send-mismatch':
+      return sending ? Response.json({ orderToken: 1 }, { status: 201 }) : undefined;
+    case 'send-redirect':
+      return sending ? new Response(null, { status: 307, headers: { location: `${origin}/api/v1/checkout/` } }) : undefined;
+    default:
+      return undefined;
+  }
+}
+
 /** The fake answers every documented path; modes change what it answers. */
 function handle(request: Request, body: string): Response {
   const url = new URL(request.url);
   const status = /^status(\d{3})$/.exec(fake.mode);
 
   if (status) return Response.json({ detail: 'secret detail', path: url.pathname, body }, { status: Number(status[1]) });
+  const charged = money(url.pathname);
+
+  if (charged) return charged;
 
   switch (fake.mode) {
     case 'ok':
+    case 'checkout-empty':
+    case 'checkout-fractional':
+    case 'no-active-order':
+    case 'gate500':
+    case 'send400':
+    case 'send500':
+    case 'send-mismatch':
+    case 'send-redirect':
       return fixtureResponse(url.pathname);
     case 'edge':
       return edge(url.pathname) ?? fixtureResponse(url.pathname);
@@ -312,6 +367,82 @@ const invalid: [string, unknown][] = [
   ['no_such_tool', {}],
 ];
 
+/** Every write tool with documented arguments; the order tools run after their own gate. */
+const writes: [string, unknown][] = [
+  ['add_shopping_note_lines', { lines: [{ text: 'Mjólk "1L"' }, { sku: 'SKU-1', quantity: 0 }, { quantity: 10_000, text: 'x'.repeat(255) }] }],
+  ['change_shopping_note_line', { token: NOTE_LINE_TOKEN, text: 'Oat milk' }],
+  ['change_shopping_note_line', { quantity: 3, token: NOTE_LINE_TOKEN.toUpperCase() }],
+  ['toggle_shopping_note_line_complete', { token: NOTE_LINE_TOKEN }],
+  ['delete_shopping_note_line', { token: NOTE_LINE_TOKEN }],
+  ['clear_shopping_note', { confirm: true }],
+  ['set_checkout_lines', { lines: [{ sku: 'SKU-1' }, { sku: 'SKU-2', quantity: 0, substitution: false }], replace: true }],
+  ['set_checkout_lines', { replace: false, lines: [{ substitution: true, quantity: 500, sku: 'SKU-1' }] }],
+  ['delete_order_lines', { orderToken: ORDER_TOKEN, lineIds: [1, 2], confirm: true }],
+  ['lower_order_line_quantities', { confirm: true, orderToken: ORDER_TOKEN, lineIds: [0], quantity: 0 }],
+  ['toggle_order_line_substitution', { orderToken: ORDER_TOKEN, lineIds: Array(100).fill(9_007_199_254_740_991) }],
+];
+
+/** The money tools in the order a session uses them, with the approval of the checkout fixture. */
+const orders: [string, unknown][] = [
+  ['reserve_delivery_slot', { slotId: 501, addressId: 11, returnBags: false, ...approval }],
+  ['reserve_delivery_slot', { slotId: 501, addressId: 11, returnBags: false, ...approval }],
+  ['reserve_pickup_slot', { ...approval, slotId: 0, returnBags: true }],
+  ['complete_checkout', { slotId: 501, returnBags: true, ...approval }],
+  ['add_checkout_to_order', { ...approval, expectedOrderToken: ORDER_TOKEN }],
+  ['complete_checkout', { slotId: 501, addressId: 11, returnBags: true, ...approval }],
+];
+
+/** Gate refusals: nothing is sent and nothing recorded. */
+const refusals: [string, unknown][] = [
+  ['complete_checkout', { slotId: 1, returnBags: true, ...approval, expectedCheckoutToken: 'other-checkout' }],
+  ['reserve_pickup_slot', { slotId: 1, returnBags: true, ...approval, expectedTotal: CHECKOUT_TOTAL - 1 }],
+  ['add_checkout_to_order', { ...approval, expectedOrderToken: 'other-order' }],
+  ['reserve_delivery_slot', { slotId: 1, addressId: 1, returnBags: true, ...approval, expectedTotal: 0 }],
+];
+
+const writeInvalid: [string, unknown][] = [
+  ['add_shopping_note_lines', {}],
+  ['add_shopping_note_lines', { lines: [] }],
+  ['add_shopping_note_lines', { lines: Array(31).fill({ text: 'a' }) }],
+  ['add_shopping_note_lines', { lines: [{ text: 'a', sku: 'B', x: 1 }, { x: 1 }, {}, 'x', null] }],
+  ['add_shopping_note_lines', { lines: [{ quantity: 1.5 }, { sku: 5 }, { text: null }, { text: '', quantity: -1 }] }],
+  ['add_shopping_note_lines', { lines: [{ sku: 'A'.repeat(41) }, { sku: 'A'.repeat(33) }, { sku: '..' }, { sku: 'a b' }] }],
+  ['add_shopping_note_lines', { lines: [{ text: 'x'.repeat(256), quantity: 10_001 }, { sku: ['a'] }, { sku: Array(33).fill('a') }] }],
+  ['change_shopping_note_line', { token: 'x', y: 1 }],
+  ['change_shopping_note_line', { token: 5 }],
+  ['change_shopping_note_line', {}],
+  ['change_shopping_note_line', { token: NOTE_LINE_TOKEN }],
+  ['change_shopping_note_line', { token: `${NOTE_LINE_TOKEN}\n`, text: '' }],
+  ['change_shopping_note_line', { token: NOTE_LINE_TOKEN.replace('-', ''), quantity: 1.5 }],
+  ['change_shopping_note_line', { token: NOTE_LINE_TOKEN.replace('1', 'g'), text: 1 }],
+  ['toggle_shopping_note_line_complete', { token: '' }],
+  ['delete_shopping_note_line', { token: `{${NOTE_LINE_TOKEN}}`, extra: true }],
+  ['clear_shopping_note', {}],
+  ['clear_shopping_note', { confirm: false }],
+  ['clear_shopping_note', { confirm: 'true', other: 1 }],
+  ['set_checkout_lines', { lines: [{ sku: 'SKU-1' }] }],
+  ['set_checkout_lines', { replace: 'yes' }],
+  ['set_checkout_lines', { lines: [{ sku: 'SKU-1', quantity: 501, substitution: 'no', x: 1 }, { quantity: -1 }, 7], replace: true }],
+  ['set_checkout_lines', { lines: Array(101).fill({ sku: 'A' }), replace: null }],
+  ['reserve_delivery_slot', {}],
+  ['reserve_delivery_slot', { confirm: 'true', expectedTotal: -1 }],
+  ['reserve_delivery_slot', { slotId: 1, addressId: 1, returnBags: true, ...approval, confirm: false }],
+  ['reserve_delivery_slot', { slotId: -1, addressId: 1.5, returnBags: 1, ...approval, expectedCheckoutToken: 'a b', extra: 1 }],
+  ['reserve_pickup_slot', { slotId: 1, returnBags: true, ...approval, addressId: 1 }],
+  ['reserve_pickup_slot', { slotId: 1, returnBags: true, confirm: true, expectedTotal: 1.5, expectedCheckoutToken: '' }],
+  ['complete_checkout', { slotId: 1, returnBags: true, ...approval, addressId: -1 }],
+  ['complete_checkout', { slotId: 1, returnBags: true, ...approval, addressId: null }],
+  ['complete_checkout', { slotId: 9_007_199_254_740_992, returnBags: true, ...approval, expectedTotal: 9_007_199_254_740_992 }],
+  ['add_checkout_to_order', { ...approval }],
+  ['add_checkout_to_order', { ...approval, confirm: 1, expectedOrderToken: 'x'.repeat(65) }],
+  ['delete_order_lines', { orderToken: ORDER_TOKEN, lineIds: [1] }],
+  ['delete_order_lines', { orderToken: 'a/b', lineIds: [], confirm: true }],
+  ['lower_order_line_quantities', { orderToken: ORDER_TOKEN, lineIds: [1, -1, 1.5, 'a'], confirm: true, quantity: 10_001 }],
+  ['lower_order_line_quantities', { orderToken: ORDER_TOKEN, lineIds: Array(101).fill(1), confirm: true }],
+  ['toggle_order_line_substitution', { orderToken: ORDER_TOKEN, lineIds: [1], confirm: true }],
+  ['toggle_order_line_substitution', { lineIds: '1' }],
+];
+
 /** Each upstream product the edge mode answers with, by SKU. */
 const edges = Array.from({ length: 16 }, (_, index): [string, unknown] => ['get_product', { sku: `SKU-${index + 1}` }]);
 
@@ -334,6 +465,59 @@ const scenarios: Scenario[] = [
     ].map((args) => ({ cli: args })),
   },
   { name: 'reads', steps: [LEGACY, { mode: 'ok' }, { serve: reads }] },
+  { name: 'writes', steps: [LEGACY, { mode: 'ok' }, { serve: writes }, { mode: 'mismatch' }, { serve: writes }, { mode: 'array' }, { serve: writes }] },
+  { name: 'write-inputs', steps: [{ serve: writeInvalid }] },
+  {
+    name: 'write-statuses',
+    steps: [LEGACY, ...[299, 302, 304, 400, 401, 403, 404, 409, 429, 500, 502].flatMap((status) => [{ mode: `status${status}` }, { serve: [...writes, ...refusals.slice(0, 1)] }])],
+  },
+  // One approval allows one attempt: accepted and unknown records block, and only the CLI clears.
+  {
+    name: 'orders',
+    steps: [
+      LEGACY,
+      { mode: 'ok' },
+      { serve: orders },
+      { cli: ['orders', 'clear-attempts'], stdin: 'n\n' },
+      { cli: ['orders', 'clear-attempts'], stdin: 'y\n' },
+      { serve: [...refusals, orders[0]!] },
+      { mode: 'checkout-empty' },
+      { serve: [orders[3]!] },
+      { mode: 'checkout-fractional' },
+      { serve: [orders[3]!] },
+    ],
+  },
+  // After `auth set` or `auth migrate` no legacy token file exists; the record still sits where it
+  // would be, and its directory may not exist yet.
+  {
+    name: 'orders-store',
+    steps: [
+      { mode: 'ok' },
+      { cli: ['auth', 'set', '-'], stdin: TOKEN },
+      { serve: [orders[0]!, orders[0]!] },
+      { cli: ['orders', 'clear-attempts'], stdin: 'y\n' },
+    ],
+  },
+  {
+    name: 'orders-migrated',
+    steps: [LEGACY, { mode: 'ok' }, { cli: ['auth', 'migrate'] }, { serve: [orders[3]!, orders[3]!] }, { cli: ['orders', 'clear-attempts'], stdin: 'n\n' }],
+  },
+  {
+    name: 'order-failures',
+    steps: [
+      LEGACY,
+      ...['gate500', 'no-active-order', 'send400', 'send500', 'send-mismatch', 'send-redirect', 'status401'].flatMap((mode) => [
+        { mode },
+        { serve: [orders[4]!, orders[0]!] },
+        { cli: ['orders', 'clear-attempts'], stdin: 'y\n' },
+      ]),
+      { file: ATTEMPTS, text: 'not json' },
+      { mode: 'ok' },
+      { serve: [orders[0]!] },
+      { file: ATTEMPTS, text: attemptsText },
+      { serve: [orders[2]!, orders[3]!] },
+    ],
+  },
   // Invalid input is refused before the token is read, so no token is needed.
   { name: 'inputs', steps: [{ serve: invalid }] },
   { name: 'edge', steps: [LEGACY, { mode: 'edge' }, { serve: [...edges, ['get_active_order', {}], ['list_recipes', { limit: 100, offset: 10 }], ['list_favorite_recipes', { offset: 1 }], ['list_product_lists', {}]] }] },
@@ -497,7 +681,7 @@ async function runCli(side: 'ts' | 'rust', home: string, env: Record<string, str
   // Printed paths name each side's own scratch home.
   const local = (text: string) => text.replaceAll(realpathSync(home), '<home>').replaceAll(home, '<home>');
 
-  return { args, code, stdout: local(stdout), stderr: local(stderr) };
+  return { args, code, stdout: fresh(local(stdout)), stderr: local(stderr) };
 }
 
 async function runServe(side: 'ts' | 'rust', home: string, env: Record<string, string>, calls: [string, unknown][], surface = false) {
@@ -572,6 +756,13 @@ async function save(home: string, token: string | null): Promise<void> {
   );
 }
 
+/** Each side's attempt ids and timestamps are its own; within a minute of now they compare equal. */
+function fresh(text: string): string {
+  return text
+    .replace(/"id":"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"/g, '"id":"<uuid>"')
+    .replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g, (time) => (Math.abs(Date.parse(time) - Date.now()) < 60_000 ? '<now>' : time));
+}
+
 function files(home: string): unknown {
   const directory = join(home, '.config/kronan-mcp');
 
@@ -579,7 +770,7 @@ function files(home: string): unknown {
 
   return readdirSync(directory)
     .sort()
-    .map((name) => (name.endsWith('.json') ? { name, text: readFileSync(join(directory, name), 'utf8') } : name));
+    .map((name) => (name.endsWith('.json') ? { name, text: fresh(readFileSync(join(directory, name), 'utf8')) } : name));
 }
 
 function write(home: string, step: { file: string; text: string; permissions?: number }): void {
@@ -646,7 +837,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-if (!only && (coverage.cli < 85 || coverage.tools < 230 || coverage.succeeded < 55)) failures.push(`coverage too low: ${JSON.stringify(coverage)}`);
+if (!only && (coverage.cli < 95 || coverage.tools < 460 || coverage.succeeded < 80)) failures.push(`coverage too low: ${JSON.stringify(coverage)}`);
 
 if (failures.length) {
   console.log(failures.join('\n'));

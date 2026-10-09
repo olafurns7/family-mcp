@@ -2,8 +2,6 @@
 //! across restarts and several MCP hosts, with packages/kronan-mcp/src/attempts.ts's file, rules
 //! and messages: either implementation reads and honours the other's record. Only the CLI clears
 //! it; no MCP tool can. Everything here blocks.
-// The order tools that claim attempts are not served yet; until then only tests claim.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::cell::Cell;
 use std::fs;

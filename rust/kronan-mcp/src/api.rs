@@ -6,16 +6,18 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use family_store::Cancel;
 use reqwest::Method;
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue};
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
 use tokio::sync::{RwLock, watch};
 use tokio::time::Instant;
 
+use crate::attempts::{self, Checkout, Claim, FileLock};
 use crate::auth;
 use crate::error::{Fail, Result};
-use crate::input::{ProductKey, Query, Window};
+use crate::input::{Approval, ProductKey, Query, Window};
 use crate::js;
 use crate::shapes::{self, S};
 
@@ -55,8 +57,82 @@ const UNEXPECTED_DATA: Fail = Fail::Safe(
 
 const UPSTREAM_ERROR: Fail = Fail::Safe("Krónan returned an error for the requested operation.");
 
+/// A sent mutation without a readable confirmation. It is never retried; the caller must re-read.
+const WRITE_UNCONFIRMED: Fail = Fail::Safe(
+    "Krónan did not confirm this change (connection failure, timeout, server error, or unreadable response); it may have been applied. Read the current state before trying again.",
+);
+
 const ORDER_NOT_FOUND: Fail =
     Fail::Safe("Order not found at Krónan. Use a token from list_orders.");
+
+/// Any failure after an order-change request was sent; a 4xx does not prove nothing changed.
+const ORDER_CHANGE_UNCONFIRMED: Fail = Fail::Safe(
+    "Krónan did not confirm this order change; it may have been applied. Read get_order before anything else, and do not repeat the change until the order shows what happened.",
+);
+
+const WRITE_REFUSED: Fail = Fail::Safe(
+    "Krónan refused the request; nothing was changed. Check the input against the current state.",
+);
+
+// Money-gate refusals. Each is sent before any charge-bearing request, so each says so.
+
+const CHECKOUT_EMPTY: Fail = Fail::Safe(
+    "The checkout is empty. Nothing was sent to Krónan: no slot was reserved and no order was placed or changed.",
+);
+
+const CHECKOUT_REPLACED: Fail = Fail::Safe(
+    "The checkout token differs from the approved checkout; review it with get_checkout. Nothing was sent to Krónan: no slot was reserved and no order was placed or changed.",
+);
+
+const CHECKOUT_TOTAL_CHANGED: Fail = Fail::Safe(
+    "The checkout total differs from the approved total; review it with get_checkout and ask the user again. Nothing was sent to Krónan: no slot was reserved and no order was placed or changed.",
+);
+
+const NO_ACTIVE_ORDER: Fail = Fail::Safe(
+    "Krónan reports no active order. Nothing was sent to Krónan: no order was placed or changed.",
+);
+
+const ORDER_REPLACED: Fail = Fail::Safe(
+    "The active order differs from the approved order; review it with get_active_order. Nothing was sent to Krónan: no order was placed or changed.",
+);
+
+const GATE_UNVERIFIED: Fail = Fail::Safe(
+    "Could not read the checkout or active order to verify the approval; call get_checkout or get_active_order for the reason. Nothing was sent to Krónan: no slot was reserved and no order was placed or changed.",
+);
+
+const GATE_REFUSALS: [Fail; 5] = [
+    CHECKOUT_EMPTY,
+    CHECKOUT_REPLACED,
+    CHECKOUT_TOTAL_CHANGED,
+    NO_ACTIVE_ORDER,
+    ORDER_REPLACED,
+];
+
+const OUTCOME_UNKNOWN: &str = "Outcome unknown: the request reached or may have reached Krónan, and no confirmation was read (an error status does not prove it was refused). Check get_active_order and list_orders and ask the user; do not retry or place another order. Order calls for this checkout stay blocked.";
+
+macro_rules! weight_note {
+    () => {
+        "authorizedAmount is the amount authorized on the saved card; tell the user, because fees and the selected slot can make it higher than the approved checkout total. Separately, weight-charged products mean the final captured amount can differ."
+    };
+}
+
+const ORDER_PLACED: &str = concat!(
+    "Krónan accepted the order. ",
+    weight_note!(),
+    " Check get_active_order for its state."
+);
+
+const SLOT_RESERVED: &str = concat!(
+    "Krónan reserved the slot and returned an order token. ",
+    weight_note!(),
+    " Check get_active_order before any other order call."
+);
+
+const LINES_ADDED: &str = concat!(
+    "Krónan added the checkout lines to the active order. ",
+    weight_note!(),
+    " Check get_active_order for its state."
+);
 
 /// A response together with the deadline that bounds its request, for the body read.
 struct Exchange {
@@ -122,6 +198,11 @@ fn offset_page(page: Value, window: Window) -> Value {
     })
 }
 
+/// The order token of an accepted charge-bearing response, for the attempt record.
+fn order_token_of(value: &Value) -> String {
+    value["orderToken"].as_str().unwrap_or_default().to_owned()
+}
+
 /// Where the client's token comes from: the saved one, read for every request so `auth set`
 /// applies without a restart, or one given to verify or show it.
 pub enum Token {
@@ -135,6 +216,8 @@ pub struct Client {
     origin: String,
     handle: Handle,
     stop: watch::Sender<bool>,
+    /// The same stop for the attempts lock wait.
+    cancel: Cancel,
     active: Arc<RwLock<()>>,
 }
 
@@ -153,6 +236,7 @@ impl Client {
             origin: origin(),
             handle: Handle::current(),
             stop: watch::channel(false).0,
+            cancel: Cancel::default(),
             active: Arc::new(RwLock::new(())),
         })
     }
@@ -160,6 +244,7 @@ impl Client {
     /// Cancel requests in flight, and every later one.
     pub fn abort(&self) {
         self.stop.send_replace(true);
+        self.cancel.cancel();
     }
 
     /// Abort, then wait for every operation to end.
@@ -219,16 +304,22 @@ impl Client {
         let url = format!("{}/api/v1{path}{}", self.origin, query_string(query));
         let authorization =
             HeaderValue::from_str(&format!("AccessToken {token}")).map_err(|_| Fail::Unknown)?;
+        let announces_body = method != Method::GET;
         let mut request = self
             .http
             .request(method, url)
             .header(AUTHORIZATION, authorization)
             .header(ACCEPT, "application/json");
 
-        if let Some(body) = body {
-            request = request
-                .header(CONTENT_TYPE, "application/json")
-                .body(body.to_string());
+        match body {
+            Some(body) => {
+                request = request
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(body.to_string());
+            }
+            // fetch announces an empty body on every method that may carry one.
+            None if announces_body => request = request.header(CONTENT_LENGTH, "0"),
+            None => {}
         }
         let deadline = Instant::now() + TIMEOUT;
         let sent = self.wait(tokio::time::timeout_at(deadline, request.send()));
@@ -285,6 +376,110 @@ impl Client {
         ];
         query.extend(extra);
         Ok(offset_page(self.get(path, &query, page, None)?, window))
+    }
+
+    /// Sends one mutation and never repeats it. A 4xx is a refusal before acceptance; every other
+    /// failure after the request may have left is `WRITE_UNCONFIRMED`, or `unconfirmed` when
+    /// given, which also replaces every error status.
+    fn write(
+        &self,
+        method: Method,
+        path: &str,
+        query: &Query,
+        body: Option<&Value>,
+        unconfirmed: Option<Fail>,
+    ) -> Result<Exchange> {
+        let exchange = match self.send(method, path, query, body) {
+            // Token and identifier checks fail before sending; a failed or cancelled request may
+            // have been sent.
+            Err(cause) if cause == REQUEST_FAILED || cause == CANCELLED => {
+                return Err(unconfirmed.unwrap_or(WRITE_UNCONFIRMED));
+            }
+            sent => sent?,
+        };
+        let status = exchange.response.status().as_u16();
+
+        if (200..=299).contains(&status) {
+            return Ok(exchange);
+        }
+
+        if let Some(unconfirmed) = unconfirmed {
+            return Err(unconfirmed);
+        }
+        Err(match status {
+            401 => TOKEN_REJECTED,
+            403 => ACCESS_DENIED,
+            429 => RATE_LIMITED,
+            400..=499 => WRITE_REFUSED,
+            _ => WRITE_UNCONFIRMED,
+        })
+    }
+
+    fn write_json(
+        &self,
+        method: Method,
+        path: &str,
+        query: &Query,
+        body: Option<&Value>,
+        schema: &S,
+        unconfirmed: Option<Fail>,
+    ) -> Result<Value> {
+        let exchange = self.write(method, path, query, body, unconfirmed)?;
+        let unconfirmed = unconfirmed.unwrap_or(WRITE_UNCONFIRMED);
+        let data = self.json(exchange, None).map_err(|_| unconfirmed)?;
+        shapes::parse(schema, &data).ok_or(unconfirmed)
+    }
+
+    /// Refuses unless the live checkout is the non-empty one, at the total, the user approved. The
+    /// total is a consistency check, not a cap on the amount Krónan authorizes.
+    fn verify_checkout(&self, approval: &Approval) -> Result<Checkout> {
+        let current = self.get("/checkout/", &Query::new(), &shapes::CHECKOUT, None)?;
+
+        if current["lines"].as_array().is_none_or(Vec::is_empty) {
+            return Err(CHECKOUT_EMPTY);
+        }
+
+        if current["token"] != approval.checkout_token.as_str() {
+            return Err(CHECKOUT_REPLACED);
+        }
+
+        if current["total"].as_f64() != Some(approval.total as f64) {
+            return Err(CHECKOUT_TOTAL_CHANGED);
+        }
+        Ok(Checkout {
+            token: approval.checkout_token.clone(),
+            total: approval.total,
+            print: attempts::fingerprint(&current),
+        })
+    }
+
+    /// Claims the one attempt this approval allows, runs the gate, and sends one charge-bearing
+    /// request. Gate and record refusals say nothing was sent; once the request may have left,
+    /// every failure, 4xx included, is an unknown outcome (`None`).
+    fn place(
+        &self,
+        tool: &'static str,
+        approval: &Approval,
+        gate: impl FnOnce() -> Result<Checkout>,
+        request: impl FnOnce() -> Result<Value>,
+    ) -> Result<Option<Value>> {
+        attempts::claim_attempt(
+            &attempts::attempts_path()?,
+            Claim {
+                tool,
+                expected_checkout_token: &approval.checkout_token,
+                cancel: &self.cancel,
+                gate: Box::new(|| {
+                    gate().map_err(|cause| match GATE_REFUSALS.contains(&cause) {
+                        true => cause,
+                        false => GATE_UNVERIFIED,
+                    })
+                }),
+                send: Box::new(request),
+                order_token: order_token_of,
+            },
+            &FileLock,
+        )
     }
 
     fn read_active_order(&self) -> Result<Value> {
@@ -501,9 +696,214 @@ impl Client {
         self.get("/checkout/", &Query::new(), &shapes::CHECKOUT, None)
     }
 
+    pub fn add_shopping_note_lines(&self, body: &Value) -> Result<Value> {
+        self.write_json(
+            Method::POST,
+            "/shopping-notes/add-lines/",
+            &Query::new(),
+            Some(body),
+            &shapes::SHOPPING_NOTE,
+            None,
+        )
+    }
+
+    pub fn change_shopping_note_line(&self, body: &Value) -> Result<Value> {
+        self.write_json(
+            Method::PATCH,
+            "/shopping-notes/change-line/",
+            &Query::new(),
+            Some(body),
+            &shapes::SHOPPING_NOTE,
+            None,
+        )
+    }
+
+    pub fn toggle_shopping_note_line_complete(&self, token: &str) -> Result<Value> {
+        self.write_json(
+            Method::PATCH,
+            "/shopping-notes/toggle-complete-on-line/",
+            &Query::new(),
+            Some(&json!({ "token": token })),
+            &shapes::SHOPPING_NOTE,
+            None,
+        )
+    }
+
+    pub fn delete_shopping_note_line(&self, token: &str) -> Result<Value> {
+        self.write_json(
+            Method::DELETE,
+            "/shopping-notes/delete-line/",
+            &vec![("token", token.to_owned())],
+            None,
+            &shapes::SHOPPING_NOTE,
+            None,
+        )
+    }
+
+    pub fn clear_shopping_note(&self) -> Result<Value> {
+        // Krónan answers 204 with no body; the note itself is kept.
+        self.write(
+            Method::DELETE,
+            "/shopping-notes/delete-shopping-note/",
+            &Query::new(),
+            None,
+            None,
+        )?;
+        Ok(json!({ "cleared": true }))
+    }
+
     /// Krónan documents this POST as validation only; the checkout is not modified.
     pub fn preview_checkout_lines(&self, body: &Value) -> Result<Value> {
         self.post("/checkout/preview-lines/", body, &shapes::PREVIEW)
+    }
+
+    /// `replace` is required input, so Krónan's replace-by-default never applies.
+    pub fn set_checkout_lines(&self, body: &Value) -> Result<Value> {
+        self.write_json(
+            Method::POST,
+            "/checkout/lines/",
+            &Query::new(),
+            Some(body),
+            &shapes::CHECKOUT,
+            None,
+        )
+    }
+
+    fn reserve(
+        &self,
+        tool: &'static str,
+        path: &str,
+        approval: &Approval,
+        body: &Value,
+    ) -> Result<Value> {
+        let reservation = self.place(
+            tool,
+            approval,
+            || self.verify_checkout(approval),
+            || {
+                self.write_json(
+                    Method::POST,
+                    path,
+                    &Query::new(),
+                    Some(body),
+                    &shapes::RESERVE_RESPONSE,
+                    Some(WRITE_UNCONFIRMED),
+                )
+            },
+        )?;
+        Ok(match reservation {
+            None => {
+                json!({ "outcome": "unknown", "reservation": null, "message": OUTCOME_UNKNOWN })
+            }
+            Some(reservation) => {
+                json!({ "outcome": "accepted", "reservation": reservation, "message": SLOT_RESERVED })
+            }
+        })
+    }
+
+    pub fn reserve_delivery_slot(&self, approval: &Approval, body: &Value) -> Result<Value> {
+        self.reserve(
+            "reserve_delivery_slot",
+            "/slots/delivery/reserve/",
+            approval,
+            body,
+        )
+    }
+
+    pub fn reserve_pickup_slot(&self, approval: &Approval, body: &Value) -> Result<Value> {
+        self.reserve(
+            "reserve_pickup_slot",
+            "/slots/pickup/reserve/",
+            approval,
+            body,
+        )
+    }
+
+    /// The placement result of an order tool.
+    fn placed(order: Option<Value>, accepted: &str) -> Value {
+        match order {
+            None => json!({ "outcome": "unknown", "order": null, "message": OUTCOME_UNKNOWN }),
+            Some(order) => json!({ "outcome": "accepted", "order": order, "message": accepted }),
+        }
+    }
+
+    pub fn complete_checkout(&self, approval: &Approval, body: &Value) -> Result<Value> {
+        let order = self.place(
+            "complete_checkout",
+            approval,
+            || self.verify_checkout(approval),
+            || {
+                self.write_json(
+                    Method::POST,
+                    "/checkout/complete/",
+                    &Query::new(),
+                    Some(body),
+                    &shapes::ORDER_TOKEN_RESPONSE,
+                    Some(WRITE_UNCONFIRMED),
+                )
+            },
+        )?;
+        Ok(Self::placed(order, ORDER_PLACED))
+    }
+
+    pub fn add_checkout_to_order(
+        &self,
+        approval: &Approval,
+        expected_order: &str,
+    ) -> Result<Value> {
+        let order = self.place(
+            "add_checkout_to_order",
+            approval,
+            || {
+                let checkout = self.verify_checkout(approval)?;
+                let active = self.read_active_order()?;
+
+                if active["order"].is_null() {
+                    return Err(NO_ACTIVE_ORDER);
+                }
+
+                if active["order"]["orderToken"] != expected_order {
+                    return Err(ORDER_REPLACED);
+                }
+                Ok(checkout)
+            },
+            // The endpoint documents no request body.
+            || {
+                self.write_json(
+                    Method::POST,
+                    "/checkout/add-to-order/",
+                    &Query::new(),
+                    None,
+                    &shapes::ORDER_TOKEN_RESPONSE,
+                    Some(WRITE_UNCONFIRMED),
+                )
+            },
+        )?;
+        Ok(Self::placed(order, LINES_ADDED))
+    }
+
+    /// A placed-order change: never retried, and any failure after sending may have applied it.
+    fn change_order(&self, token: &str, action: &str, body: &Value) -> Result<Value> {
+        self.write_json(
+            Method::POST,
+            &format!("/orders/{}/{action}/", js::encode_component(token)),
+            &Query::new(),
+            Some(body),
+            &shapes::ORDER,
+            Some(ORDER_CHANGE_UNCONFIRMED),
+        )
+    }
+
+    pub fn delete_order_lines(&self, token: &str, body: &Value) -> Result<Value> {
+        self.change_order(token, "delete-lines", body)
+    }
+
+    pub fn lower_order_line_quantities(&self, token: &str, body: &Value) -> Result<Value> {
+        self.change_order(token, "lower-quantity-lines", body)
+    }
+
+    pub fn toggle_order_line_substitution(&self, token: &str, body: &Value) -> Result<Value> {
+        self.change_order(token, "lines-toggle-substitution", body)
     }
 }
 

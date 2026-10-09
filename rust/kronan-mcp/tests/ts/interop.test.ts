@@ -9,9 +9,11 @@ import { join } from 'node:path';
 
 import { writePrivateFile } from '@family-mcp/session-store';
 
-import { claimAttempt, readAttempts } from '../../../../packages/kronan-mcp/src/attempts.ts';
+import { claimAttempt, fingerprint, readAttempts } from '../../../../packages/kronan-mcp/src/attempts.ts';
 import * as typescript from '../../../../packages/kronan-mcp/src/auth.ts';
+import { checkoutSchema } from '../../../../packages/kronan-mcp/src/schemas.ts';
 
+import { CHECKOUT_TOKEN, CHECKOUT_TOTAL, ORDER_TOKEN, approval, checkout, fixtureResponse } from './fixtures.ts';
 import * as rust from './rust-kronan.ts';
 
 const TOKEN = 'synthetic-token-0123456789';
@@ -109,4 +111,48 @@ test('an order attempt the TypeScript client recorded blocks and lists in the bi
     `  ${recorded.createdAt}  reserve_pickup_slot  accepted  checkout checkout-token  total 990 ISK  order order-token\n`,
   );
   expect(await readAttempts(attempts)).toEqual([recorded]);
+});
+
+test("an order attempt either side records blocks the other side's order calls", async () => {
+  await scratchStore();
+  const attempts = rust.attemptsPath();
+  const posts: string[] = [];
+
+  // The binary's own money tool, whose request may have reached Krónan: an unknown outcome.
+  const api = new rust.KronanClient(
+    async () => TOKEN,
+    async (url, options) => {
+      if (options.method !== 'POST') return fixtureResponse(new URL(url).pathname);
+      posts.push(new URL(url).pathname);
+      throw new TypeError('socket hang up');
+    },
+    attempts,
+  );
+  const complete = { ...approval, slotId: 501, returnBags: false };
+  expect((await api.completeCheckout(complete)).outcome).toBe('unknown');
+  const print = fingerprint(checkoutSchema.parse(checkout));
+  const [recorded] = await readAttempts(attempts);
+  expect(recorded).toMatchObject({
+    tool: 'complete_checkout',
+    checkoutToken: CHECKOUT_TOKEN,
+    fingerprint: print,
+    total: CHECKOUT_TOTAL,
+    state: 'unknown',
+    orderToken: null,
+  });
+
+  const claim = {
+    expectedCheckoutToken: CHECKOUT_TOKEN,
+    signal: new AbortController().signal,
+    gate: async () => ({ token: CHECKOUT_TOKEN, total: CHECKOUT_TOTAL, print }),
+    send: async () => ({ orderToken: 'order-token' }),
+    orderToken: (value: { orderToken: string }) => value.orderToken,
+  };
+  await assert.rejects(claimAttempt(attempts, { ...claim, tool: 'reserve_pickup_slot' }), /still unresolved/);
+
+  // An accepted completion the TypeScript client recorded for the same checkout stops the binary.
+  await rm(attempts);
+  expect(await claimAttempt(attempts, { ...claim, tool: 'complete_checkout' })).toEqual({ orderToken: 'order-token' });
+  await assert.rejects(api.addCheckoutToOrder({ ...approval, expectedOrderToken: ORDER_TOKEN }), /already accepted/);
+  expect(posts).toEqual(['/api/v1/checkout/complete/']);
 });
