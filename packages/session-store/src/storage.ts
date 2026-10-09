@@ -34,10 +34,9 @@ export type StoreStat = Pick<Stats, 'mode' | 'uid' | 'nlink'> & {
 const NOT_A_DIRECTORY =
   'Something other than a folder is at this store path. Move it away and start again.';
 
-const FOREIGN_DIRECTORY =
-  'This store directory belongs to another user, often root after a sudo run.';
+const FOREIGN_DIRECTORY = 'This store folder belongs to another user, often root after a sudo run.';
 
-const OPEN_DIRECTORY = 'Other users can open this store directory.';
+const OPEN_DIRECTORY = 'Other users can open this store folder.';
 
 const WRITABLE_ANCESTOR = 'Other users can write to a folder above the store.';
 
@@ -67,7 +66,8 @@ const STICKY = 0o1000;
 
 /** A directory the store owns (keys/, a server's directory, family-mcp/): 0700, ours, real. */
 export function ownedDirectoryProblem(info: StoreStat, uid: number): string | undefined {
-  if (info.isSymbolicLink()) return 'The store directory is a symbolic link; use a real directory.';
+  if (info.isSymbolicLink())
+    return 'This store folder is a link to another place. Replace it with a real folder and start again.';
 
   if (!info.isDirectory()) return NOT_A_DIRECTORY;
 
@@ -91,7 +91,7 @@ export function ancestorProblem(
   if (!info.isDirectory()) return NOT_A_DIRECTORY;
 
   if (info.uid !== uid && info.uid !== 0)
-    return 'A directory above the store is owned by another user.';
+    return 'A folder above the store belongs to another user.';
 
   const sticky =
     (info.mode & STICKY) !== 0 && childUid !== undefined && (childUid === uid || childUid === 0);
@@ -111,9 +111,10 @@ export function privateFileProblem(
   uid: number | undefined,
   links = 1,
 ): string | undefined {
-  if (info.isSymbolicLink()) return 'The path is a symbolic link; use a regular file.';
+  if (info.isSymbolicLink())
+    return 'This file is a link to another file. Put the real file here and start again.';
 
-  if (!info.isFile()) return 'The path is not a regular file.';
+  if (!info.isFile()) return 'Something other than a plain file is at this path.';
 
   if (info.nlink > links) return LINKED_FILE;
 
@@ -180,7 +181,7 @@ export async function checkStorePaths(options: {
         await mkdir(directory, { recursive: true, mode: 0o700 });
       } catch (error) {
         throw new StoreRefusal(
-          'Cannot create the store directory. Check its permissions.',
+          'Cannot create the store folder. Check the permissions of the folder above it.',
           directory,
           {
             cause: error,
@@ -271,13 +272,13 @@ async function ancestorsOf(directory: string, uid: number): Promise<Checked[]> {
     if (child.isSymbolicLink()) {
       if (child.uid !== uid && child.uid !== 0)
         throw new StoreRefusal(
-          'A directory above the store is owned by another user.',
+          'A folder above the store belongs to another user.',
           await shown(entry, absolute),
         );
 
       if (++links > MAX_LINKS || !(await resolves(entry)))
         throw new StoreRefusal(
-          'Cannot resolve a directory above the store.',
+          'A link in a folder above the store is broken or loops back on itself.',
           await shown(entry, absolute),
         );
       const target = await readlink(entry);

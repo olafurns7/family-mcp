@@ -98,14 +98,18 @@ export async function readPrivateBytes(path: string, options: ReadOptions): Prom
     if (code === 'ELOOP' || code === 'EMLINK')
       throw new SessionStoreError(
         'UNSAFE_FILE',
-        'The path is a symbolic link; use a regular file.',
+        'This file is a link to another file. Put the real file here and start again.',
         { cause: error },
       );
 
     if (code === 'EISDIR')
-      throw new SessionStoreError('UNSAFE_FILE', 'The path is not a regular file.', {
-        cause: error,
-      });
+      throw new SessionStoreError(
+        'UNSAFE_FILE',
+        'Something other than a plain file is at this path.',
+        {
+          cause: error,
+        },
+      );
     throw new SessionStoreError('IO', 'Cannot open the file. Check its path and permissions.', {
       cause: error,
     });
@@ -115,7 +119,10 @@ export async function readPrivateBytes(path: string, options: ReadOptions): Prom
     const info = await handle.stat();
 
     if (!info.isFile())
-      throw new SessionStoreError('UNSAFE_FILE', 'The path is not a regular file.');
+      throw new SessionStoreError(
+        'UNSAFE_FILE',
+        'Something other than a plain file is at this path.',
+      );
     assertNoHardLinks(info.nlink);
 
     if (process.platform !== 'win32') {

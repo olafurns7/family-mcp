@@ -9,7 +9,7 @@ import { migrateSession } from '../src/auth.js';
 
 const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 
-const E3 = 'Other users can open this store directory.';
+const E3 = 'Other users can open this store folder.';
 
 /** Run the CLI against a scratch store (through the store test seam); stdin is closed. */
 async function run(home: string, args: string[]) {

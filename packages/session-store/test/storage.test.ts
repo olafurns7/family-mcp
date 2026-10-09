@@ -50,15 +50,16 @@ const UID = process.getuid?.() ?? 0;
 
 const OTHER = UID + 4242;
 
-const E1 = 'The store directory is a symbolic link; use a real directory.';
+const E1 =
+  'This store folder is a link to another place. Replace it with a real folder and start again.';
 
-const E2 = 'This store directory belongs to another user, often root after a sudo run.';
+const E2 = 'This store folder belongs to another user, often root after a sudo run.';
 
-const E3 = 'Other users can open this store directory.';
+const E3 = 'Other users can open this store folder.';
 
 const E4 = 'Other users can write to a folder above the store.';
 
-const E5 = 'A directory above the store is owned by another user.';
+const E5 = 'A folder above the store belongs to another user.';
 
 const HARD_LINKS =
   'This file has a second name (a hard link). Remove the other name and start again.';
@@ -248,7 +249,10 @@ test('the preflight refuses unsafe files without reading the key', async () => {
     await symlink(join(root, 'elsewhere.key'), store.key);
     await assert.rejects(
       checkSecretStore(store),
-      refused('The path is a symbolic link; use a regular file.', store.key),
+      refused(
+        'This file is a link to another file. Put the real file here and start again.',
+        store.key,
+      ),
     );
     expect(store.keys.reads).toBe(reads);
   });
@@ -379,7 +383,7 @@ test('every link above the store is followed, also links inside a link’s targe
       await symlink(join(root, 'loop-a'), join(root, 'loop-b'));
       await assert.rejects(
         checkSecretStore(layout(join(root, 'loop-a'))),
-        refused('Cannot resolve a directory above the store.'),
+        refused('A link in a folder above the store is broken or loops back on itself.'),
       );
       // chmod -R cannot pass a loop on cleanup.
       await rm(join(root, 'loop-a'));

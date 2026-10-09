@@ -249,7 +249,7 @@ touches the store, and `startupCheck({ server, signIn, store })` wraps it for a 
 it writes to stderr and returns `false`:
 
 ```text
-abler-mcp: cannot start. Other users can open this store directory.
+abler-mcp: cannot start. Other users can open this store folder.
   Path: '/Users/x/Library/Application Support/family-mcp/keys'
   Fix:  chmod 700 '/Users/x/Library/Application Support/family-mcp/keys'
 ```

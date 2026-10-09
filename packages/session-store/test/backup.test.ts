@@ -18,7 +18,7 @@ import {
 import { runBounded } from '../src/spawn.js';
 
 const NOT_EXCLUDED =
-  'Time Machine did not confirm that it skips this store folder. After the fix, tmutil isexcluded should show [Excluded].';
+  'Time Machine did not confirm that it skips this store folder. Run the command below; then tmutil isexcluded on the same folder should say [Excluded].';
 
 const ATTRIBUTE = 'com.apple.metadata:com_apple_backup_excludeItem';
 

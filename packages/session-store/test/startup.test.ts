@@ -74,7 +74,7 @@ test('an unsafe store gets the path and the exact command that fixes it', async 
     expect(await check({ store: () => store(base) })).toEqual({
       passed: false,
       text: [
-        'test-mcp: cannot start. Other users can open this store directory.',
+        'test-mcp: cannot start. Other users can open this store folder.',
         `  Path: ${quoted}`,
         `  Fix:  chmod 700 ${quoted}`,
         '',

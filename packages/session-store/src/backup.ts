@@ -25,7 +25,7 @@ const TIMEOUT_MS = 5000;
 const ADD_TIMEOUT_MS = 20_000;
 
 const NOT_EXCLUDED =
-  'Time Machine did not confirm that it skips this store folder. After the fix, tmutil isexcluded should show [Excluded].';
+  'Time Machine did not confirm that it skips this store folder. Run the command below; then tmutil isexcluded on the same folder should say [Excluded].';
 
 /** The refusal for a directory Time Machine does not confirm as excluded. */
 function notExcludedRefusal(path: string): StoreRefusal {
