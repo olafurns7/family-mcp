@@ -117,7 +117,10 @@ async function rustNotices({ packages, resolve: graph }, crate) {
     assert.ok(entry.license || licenses.length > 0, `Missing bundled license: ${title}`);
 
     // A crate published without its license file is listed by its declared SPDX expression.
-    if (licenses.length === 0) notices.push(`\n\n--- ${title} ---\n\nLicense: ${entry.license}\n`);
+    if (licenses.length === 0)
+      notices.push(
+        `\n\n--- ${title} ---\n\nLicense: ${entry.license} (the crate ships no license file; the license text appears under other crates in this file)\n`,
+      );
 
     for (const file of licenses.toSorted())
       notices.push(
