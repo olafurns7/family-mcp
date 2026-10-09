@@ -80,7 +80,13 @@ globalThis.fetch = () => process.exit(92);
     ]) {
       const child = Bun.spawn([process.execPath, '--preload', preload, 'src/cli.ts', ...args], {
         cwd: process.cwd(),
-        env: { INFOMENTOR_SESSION_PATH: join(directory, 'session.json') },
+        env: {
+          INFOMENTOR_SESSION_PATH: join(directory, 'session.json'),
+          // Never created: the listing below would show a store or key written here.
+          XDG_CONFIG_HOME: join(directory, 'config'),
+          XDG_DATA_HOME: join(directory, 'data'),
+          FAMILY_MCP_KEY_BACKEND: 'file',
+        },
         timeout: 5_000,
         stdout: 'pipe',
         stderr: 'pipe',

@@ -13,9 +13,13 @@ import { RECORD_MAX_BYTES } from '../src/client.js';
 
 export type Store = { path: string; keys: KeyProvider };
 
-/** The XDG variables that put the default record and Linux key file below `home`. */
+/** The variables that put the default record and its key file below `home`, on macOS too. */
 export function storeEnvironment(home: string) {
-  return { XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, 'data') };
+  return {
+    XDG_CONFIG_HOME: join(home, 'config'),
+    XDG_DATA_HOME: join(home, 'data'),
+    FAMILY_MCP_KEY_BACKEND: 'file',
+  };
 }
 
 // A client built without the store seam must never reach the real home.

@@ -430,7 +430,10 @@ beside it. It is encrypted with AES-256-GCM under a random key created at the
 first login: on macOS a Keychain item (service `family-mcp.infomentor-mcp`)
 read through Apple's `security` tool, on Linux the file
 `~/.local/share/family-mcp/keys/infomentor-mcp.default.key` (or under
-`$XDG_DATA_HOME`). Keep that key: without it the session and sign-in cannot be
+`$XDG_DATA_HOME`). On a headless Mac whose login keychain is locked (for
+example over SSH), set `FAMILY_MCP_KEY_BACKEND=file` for login and the MCP host
+to keep the key in that file as on Linux; status then says the session is saved
+in an encrypted file. Keep that key: without it the session and sign-in cannot be
 read, and only an explicit `login` or `login --import` replaces the store. The
 key is never regenerated in any other way, and no command falls back to a
 plaintext file once the marker exists. `infomentor-mcp status` names where the

@@ -267,10 +267,13 @@ test('default key providers and record paths follow the platform and XDG', async
   const saved = {
     XDG_CONFIG_HOME: process.env['XDG_CONFIG_HOME'],
     XDG_DATA_HOME: process.env['XDG_DATA_HOME'],
+    FAMILY_MCP_KEY_BACKEND: process.env['FAMILY_MCP_KEY_BACKEND'],
   };
 
   // Paths only: nothing here may create a key under the real home directory.
   try {
+    delete process.env['FAMILY_MCP_KEY_BACKEND'];
+
     const darwin = defaultKeyProvider({
       server: 'test-mcp',
       profile: 'default',
@@ -307,6 +310,44 @@ test('default key providers and record paths follow the platform and XDG', async
       () => defaultKeyProvider({ server: '../x', profile: 'default', platform: 'linux' }),
       RangeError,
     );
+
+    process.env['XDG_DATA_HOME'] = '/data';
+    process.env['FAMILY_MCP_KEY_BACKEND'] = 'file';
+
+    for (const platform of ['darwin', 'linux'] as const) {
+      const file = defaultKeyProvider({ server: 'test-mcp', profile: 'work', platform });
+
+      assert.ok(file instanceof LocalKeyFileProvider);
+      expect(file.keySource).toBe('local-file');
+      expect(file.path).toBe(join('/data', 'family-mcp', 'keys', 'test-mcp.work.key'));
+    }
+
+    assert.throws(
+      () => defaultKeyProvider({ server: 'test-mcp', profile: 'default', platform: 'win32' }),
+      hasCode('STORE_UNAVAILABLE'),
+    );
+
+    for (const value of ['keychain', 'FILE', ' file', '0']) {
+      process.env['FAMILY_MCP_KEY_BACKEND'] = value;
+
+      for (const platform of ['darwin', 'linux'] as const)
+        assert.throws(
+          () => defaultKeyProvider({ server: 'test-mcp', profile: 'default', platform }),
+          (cause: unknown) =>
+            hasCode('STORE_UNAVAILABLE')(cause) &&
+            cause instanceof Error &&
+            cause.message ===
+              'FAMILY_MCP_KEY_BACKEND is not supported. Set it to file or unset it.',
+        );
+    }
+
+    process.env['FAMILY_MCP_KEY_BACKEND'] = '';
+    expect(
+      defaultKeyProvider({ server: 'test-mcp', profile: 'default', platform: 'darwin' }),
+    ).toBeInstanceOf(KeychainAccessorKeyProvider);
+    expect(
+      defaultKeyProvider({ server: 'test-mcp', profile: 'default', platform: 'linux' }),
+    ).toBeInstanceOf(LocalKeyFileProvider);
 
     process.env['XDG_CONFIG_HOME'] = '/config';
     expect(defaultSecretRecordPath('test-mcp')).toBe(join('/config', 'test-mcp', 'session.enc'));

@@ -206,6 +206,11 @@ gone and you sign in again with `auth login`, `auth capture` or `auth import`:
 - **Linux:** a `0600` file in its own `0700` directory,
   `~/.local/share/family-mcp/keys/abler-mcp.default.key`.
 
+On a headless Mac whose login keychain is locked (for example over SSH), set
+`FAMILY_MCP_KEY_BACKEND=file` for sign-in and the MCP host: the key is then kept in
+`~/.local/share/family-mcp/keys/` as on Linux, and status says the session is saved
+in an encrypted file.
+
 When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is set, it replaces `~/.config` or
 `~/.local/share`; set the same values for sign-in and the MCP host. Rotated cookies
 are written to the record under its lock before any further request, also when

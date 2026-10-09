@@ -209,7 +209,11 @@ item, verifies that it reads the key, then removes the `security` tool's access.
 provider on macOS; on Linux a `LocalKeyFileProvider` at
 `$XDG_DATA_HOME/family-mcp/keys/<server>.<profile>.key` when `XDG_DATA_HOME` is absolute, else
 `~/.local/share/family-mcp/keys/…`, apart from the records under `~/.config`. Other platforms throw
-`STORE_UNAVAILABLE`. `defaultSecretRecordPath(server)` returns `$XDG_CONFIG_HOME/<server>/session.enc`
+`STORE_UNAVAILABLE`. On a headless Mac whose login keychain is locked (SSH), `FAMILY_MCP_KEY_BACKEND=file`
+selects that key file on macOS too (key source `local-file`, so a server's status says “Saved in an
+encrypted file.”); any other non-empty value throws `STORE_UNAVAILABLE`. The tests of every package
+that uses the store, and `bun test` from the repository root, preload `test/key-file-only.ts`, which sets the variable and fails a test that would get the
+keychain provider, so a test run never reaches the real Keychain. `defaultSecretRecordPath(server)` returns `$XDG_CONFIG_HOME/<server>/session.enc`
 (default `~/.config/<server>/session.enc`).
 
 Failures are fixed, never repaired:

@@ -52,6 +52,11 @@ migrate`. It is never regenerated, except when the key is gone and you run
 - **Linux:** a `0600` file in its own `0700` directory,
   `~/.local/share/family-mcp/keys/kronan-mcp.default.key`.
 
+On a headless Mac whose login keychain is locked (for example over SSH), set
+`FAMILY_MCP_KEY_BACKEND=file` for `auth set` and the MCP host: the key is then kept in
+`~/.local/share/family-mcp/keys/` as on Linux, and status says the token is saved
+in an encrypted file.
+
 When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is set, it replaces `~/.config` or
 `~/.local/share`.
 

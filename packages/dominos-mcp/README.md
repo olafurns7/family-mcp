@@ -120,6 +120,11 @@ gone and you run `dominos-mcp auth login` again:
 - **Linux:** a `0600` file in its own `0700` directory,
   `~/.local/share/family-mcp/keys/dominos-mcp.default.key`.
 
+On a headless Mac whose login keychain is locked (for example over SSH), set
+`FAMILY_MCP_KEY_BACKEND=file` for login and the MCP host: the key is then kept in
+`~/.local/share/family-mcp/keys/` as on Linux, and status says the session is saved
+in an encrypted file.
+
 When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is set, it replaces `~/.config` or
 `~/.local/share`; set the same values for login and the MCP host. Token refreshes
 rewrite the record under a lock, so two MCP hosts never use one refresh token twice.
