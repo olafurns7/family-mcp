@@ -5,7 +5,8 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 
 use rustix::termios::{
-    InputModes, LocalModes, OptionalActions, OutputModes, SpecialCodeIndex, tcgetattr, tcsetattr,
+    InputModes, LocalModes, OptionalActions, OutputModes, SpecialCodeIndex, Termios, tcgetattr,
+    tcsetattr,
 };
 
 use crate::auth::{self, TOKEN_MAX_BYTES};
@@ -23,7 +24,7 @@ const BACKSPACE: u16 = 8;
 
 /// Restores the terminal mode on every path out of the prompt.
 struct Raw {
-    saved: rustix::termios::Termios,
+    saved: Termios,
 }
 
 impl Raw {
@@ -59,7 +60,8 @@ impl Drop for Raw {
 fn read_hidden_line() -> Result<String> {
     let closed = Fail::Safe("Cancelled: the terminal input closed.");
     eprint!("Paste the Krónan access token (input hidden) and press Enter: ");
-    let raw = Raw::enter();
+    // Like `setRawMode` throwing: nothing is read while the terminal would echo it.
+    let raw = Raw::enter().ok_or(Fail::Unknown)?;
     let mut line: Vec<u16> = Vec::new();
     let mut chunk = [0u8; 4096];
     let mut stdin = std::io::stdin().lock();
@@ -95,6 +97,27 @@ fn read_hidden_line() -> Result<String> {
     drop(raw);
     eprintln!();
     outcome.map(|()| String::from_utf16_lossy(&line))
+}
+
+/// The terminal mode before the hidden prompt, for a signal that ends `auth set` while the prompt's
+/// read blocks and its `Raw` guard can no longer run.
+pub struct Saved(Termios);
+
+impl Saved {
+    /// Give the terminal back its mode and end as the TypeScript CLI's runtime does on SIGTERM or
+    /// SIGINT, with the shell's status for that signal.
+    pub fn restore_and_exit(&self, signal: i32) -> ! {
+        let _ = tcsetattr(std::io::stdin(), OptionalActions::Now, &self.0);
+        std::process::exit(128 + signal)
+    }
+}
+
+/// The current terminal mode when `source` means the hidden prompt.
+pub fn prompt_mode(source: Option<&str>) -> Option<Saved> {
+    let prompt = source.is_none_or(|source| source == "-") && std::io::stdin().is_terminal();
+    prompt
+        .then(|| tcgetattr(std::io::stdin()).ok().map(Saved))
+        .flatten()
 }
 
 /// `-` and no argument both mean standard input; a terminal gets the hidden prompt either way.

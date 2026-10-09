@@ -1,6 +1,7 @@
 //! `auth set` on a terminal: the hidden prompt of this binary and of the TypeScript CLI, typed
 //! the same keystrokes on a pseudo-terminal, read the same token (sent to a local fake `/me/`),
-//! print the same text, exit the same way and leave the terminal mode as they found it.
+//! print the same text, exit the same way and leave the terminal mode as they found it, also when
+//! SIGTERM or SIGINT ends them in the middle of the prompt.
 //! `FAMILY_MCP_BUN` must name a Bun 1.4.2 executable: this test fails without it and is never
 //! skipped. It needs the `test-origin` feature, without which the binary would talk to Krónan.
 #![cfg(feature = "test-origin")]
@@ -11,6 +12,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -72,18 +74,30 @@ fn terminal() -> (OwnedFd, OwnedFd) {
     (controller, terminal.into())
 }
 
+/// How a case ends after its keys are typed.
+#[derive(Debug, Clone, Copy)]
+enum End {
+    /// The keys finish the prompt.
+    Typed,
+    /// The controlling side closes: the terminal hangs up.
+    HangUp,
+    /// Another process sends this signal.
+    Signal(&'static str),
+}
+
 #[derive(Debug, PartialEq)]
 struct Outcome {
     code: Option<i32>,
+    signal: Option<i32>,
     stdout: String,
     stderr: String,
     sent: Vec<String>,
     restored: bool,
 }
 
-/// Run `auth set` on a fresh terminal, type `keys` once it is in raw mode, then close the
-/// terminal if `hang_up`.
-fn typed(command: &mut Command, keys: &[u8], hang_up: bool) -> Outcome {
+/// Run `auth set` on a fresh terminal, type `keys` once it is in raw mode, then end it as `end`
+/// says.
+fn typed(command: &mut Command, keys: &[u8], end: End) -> Outcome {
     let (origin, seen) = upstream();
     let (controller, terminal) = terminal();
     let before = tcgetattr(&terminal).unwrap();
@@ -108,9 +122,22 @@ fn typed(command: &mut Command, keys: &[u8], hang_up: bool) -> Outcome {
     let mut writer = std::fs::File::from(controller.try_clone().unwrap());
     writer.write_all(keys).unwrap();
 
-    if hang_up {
-        drop(writer);
-        drop(controller);
+    match end {
+        End::Typed => {}
+        End::HangUp => {
+            drop(writer);
+            drop(controller);
+        }
+        End::Signal(name) => {
+            // The typed bytes are read before the signal, so the prompt is mid-line.
+            std::thread::sleep(Duration::from_millis(200));
+            let sent = Command::new("kill")
+                .arg(format!("-{name}"))
+                .arg(child.id().to_string())
+                .status()
+                .unwrap();
+            assert!(sent.success());
+        }
     }
     let output = child.wait_with_output().unwrap();
     // The kernel may set PENDIN when a terminal returns to canonical mode (macOS always does,
@@ -121,6 +148,7 @@ fn typed(command: &mut Command, keys: &[u8], hang_up: bool) -> Outcome {
 
     Outcome {
         code: output.status.code(),
+        signal: output.status.signal(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         sent: seen.lock().unwrap().clone(),
@@ -133,18 +161,23 @@ fn the_hidden_prompt_reads_keystrokes_like_the_typescript_cli() {
     let bun = std::env::var_os("FAMILY_MCP_BUN")
         .expect("FAMILY_MCP_BUN must name a Bun 1.4.2 executable; parity tests never skip");
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let cases: [(&[u8], bool); 7] = [
-        (b"  synthetic-token-0123456789x\x7f\r", false),
-        (b"synthetic-token-0123456789\x08\x086789\n", false),
+    let cases: [(&[u8], End); 9] = [
+        (b"  synthetic-token-0123456789x\x7f\r", End::Typed),
+        (b"synthetic-token-0123456789\x08\x086789\n", End::Typed),
         // Backspace removes one UTF-16 unit: one leaves half of the emoji, two remove it.
-        ("synthetic-token-0123456789😀\x7f\r".as_bytes(), false),
-        ("synthetic-token-0123456789😀\x7f\x7f\r".as_bytes(), false),
-        (b"synthetic-tok\x03en-0123456789\r", false),
-        (b"\x04", false),
-        (b"synthetic-token-0123456789", true),
+        ("synthetic-token-0123456789😀\x7f\r".as_bytes(), End::Typed),
+        (
+            "synthetic-token-0123456789😀\x7f\x7f\r".as_bytes(),
+            End::Typed,
+        ),
+        (b"synthetic-tok\x03en-0123456789\r", End::Typed),
+        (b"\x04", End::Typed),
+        (b"synthetic-token-0123456789", End::HangUp),
+        (b"synthetic-tok", End::Signal("TERM")),
+        (b"synthetic-tok", End::Signal("INT")),
     ];
 
-    for (keys, hang_up) in cases {
+    for (keys, end) in cases {
         let run = |side: &str| {
             let scratch = scratch::Scratch::new(&format!("prompt-{side}"));
             let mut command = match side {
@@ -161,10 +194,18 @@ fn the_hidden_prompt_reads_keystrokes_like_the_typescript_cli() {
             };
             command.args(["auth", "set"]);
             scratch.isolate(&mut command);
-            typed(&mut command, keys, hang_up)
+            typed(&mut command, keys, end)
         };
         let ts = run("ts");
         assert!(ts.restored, "{keys:?}: {ts:?}");
-        assert_eq!(run("rust"), ts, "{keys:?}");
+        let mut rust = run("rust");
+
+        // Bun dies of the signal; the binary keeps its handler installed, so it exits with the
+        // status a shell reports for that death (128 + the signal number).
+        if let (End::Signal(_), Some(signal)) = (end, ts.signal) {
+            assert_eq!(rust.code, Some(128 + signal), "{end:?}: {rust:?}");
+            (rust.code, rust.signal) = (None, Some(signal));
+        }
+        assert_eq!(rust, ts, "{keys:?} {end:?}");
     }
 }

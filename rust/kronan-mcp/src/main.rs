@@ -10,6 +10,7 @@ mod server;
 mod shapes;
 mod terminal;
 
+use std::future::Future;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -153,6 +154,27 @@ async fn auth_set(source: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Run `work` unless SIGTERM or SIGINT arrives first; then give the terminal back the mode the
+/// hidden prompt changed and exit. A handled signal never takes its default action again, so
+/// this covers all of `auth set`, not only the prompt.
+async fn until_signalled(
+    work: impl Future<Output = Result<()>>,
+    saved: &terminal::Saved,
+) -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+    let mut terminate = signal(SignalKind::terminate()).map_err(|_| Fail::Unknown)?;
+    let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| Fail::Unknown)?;
+
+    tokio::select! {
+        outcome = work => outcome,
+        _ = terminate.recv() => saved.restore_and_exit(SIGTERM),
+        _ = interrupt.recv() => saved.restore_and_exit(SIGINT),
+    }
+}
+
 async fn auth_status() -> Result<()> {
     let saved = blocking(auth::load_saved_token).await?;
     println!("{}", saved.storage);
@@ -244,7 +266,14 @@ async fn main_async(args: Args) -> Result<ExitCode> {
     }
 
     match (positionals.get(1).copied(), positionals.get(2)) {
-        (Some("set"), source) => auth_set(source.map(|source| (*source).to_owned())).await?,
+        (Some("set"), source) => {
+            let source = source.map(|source| (*source).to_owned());
+
+            match terminal::prompt_mode(source.as_deref()) {
+                Some(saved) => until_signalled(auth_set(source), &saved).await?,
+                None => auth_set(source).await?,
+            }
+        }
         (Some("migrate"), None) => println!(
             "{}",
             match blocking(auth::migrate_token).await? {
