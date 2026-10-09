@@ -324,7 +324,7 @@ async fn serve() -> Result<()> {
     Ok(())
 }
 
-async fn main_async() -> Result<()> {
+async fn main_async() -> Result<ExitCode> {
     let args = parse_args(
         std::env::args_os()
             .skip(1)
@@ -333,17 +333,25 @@ async fn main_async() -> Result<()> {
 
     if args.help {
         println!("{HELP}");
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     if args.version {
         println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // The store is checked before anything serves or touches it; help and version never do.
+    if !tokio::task::spawn_blocking(auth::check_store_at_startup)
+        .await
+        .unwrap_or(Err(Fail::Unknown))?
+    {
+        return Ok(ExitCode::FAILURE);
     }
     let command = args.positionals.first().map_or("serve", String::as_str);
 
     if command == "serve" && args.positionals.len() <= 1 {
-        return serve().await;
+        return serve().await.map(|()| ExitCode::SUCCESS);
     }
 
     if command != "auth" || args.positionals.len() > 3 {
@@ -352,6 +360,7 @@ async fn main_async() -> Result<()> {
     tokio::task::spawn_blocking(move || administer(args))
         .await
         .unwrap_or(Err(Fail::Unknown))
+        .map(|()| ExitCode::SUCCESS)
 }
 
 fn main() -> ExitCode {
@@ -369,7 +378,7 @@ fn main() -> ExitCode {
         });
 
     match outcome {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(fail) => {
             // Only reviewed diagnostics cross the terminal boundary; library messages may hold secrets.
             eprintln!("{}", fail.cli_text());

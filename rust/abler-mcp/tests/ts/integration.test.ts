@@ -1856,8 +1856,9 @@ test('store failures have fixed messages, change no file and never fall back; on
 
     const before = await files();
 
-    // Rust: the Keychain's STORE_LOCKED, STORE_TIMEOUT and STORE_ACCESS_DENIED cannot happen with
-    // the Linux key file; src/auth.rs tests their messages.
+    // Rust: UNSAFE_FILE, STORE_LOCKED and STORE_BACKEND_RETIRED from an injected provider cannot
+    // reach the binary, whose startup check refuses an unsafe store first; src/auth.rs tests
+    // their messages, and the next test the retired store.
     for (const [code, message] of [
       ['STORE_UNAVAILABLE', /store key is missing\. Run abler-mcp auth login/],
       ['STORE_ERROR', /damaged, unsafe, or not readable/],
@@ -1901,6 +1902,38 @@ test('store failures have fixed messages, change no file and never fall back; on
     expect(await Bun.file(path).exists()).toBe(false);
     expect((await new AblerClient(path, request, lost).status()).authenticated).toBe(true);
     await assert.rejects(new AblerClient(path, request, keys).status(), /damaged|not readable/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a store left by a Keychain test build is refused before sign-in resets it', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-retired-'));
+  const path = join(directory, 'session.json');
+  const marker = `${store.record}.marker`;
+  const { fake, request } = rotatingUpstream();
+
+  try {
+    await mkdir(dirname(store.record), { recursive: true, mode: 0o700 });
+    await writeFile(
+      marker,
+      '{"backend":"encrypted-file","keySource":"keychain-accessor","keyId":"keychain","profile":"default","migrated":true,"generation":1}\n',
+      { mode: 0o600 },
+    );
+    await writeFile(store.record, 'old record', { mode: 0o600 });
+    const before = [await readFile(store.record, 'utf8'), await readFile(marker, 'utf8')];
+    const retired = /leftover of an earlier test build .* run abler-mcp auth login again\.$/;
+
+    // No key, as that build leaves it: the explicit new sign-in and the import both refuse.
+    const lost = new FakeKeyProvider();
+    const imported = await importCookies([cookie]);
+    // Rust: a verification the binary would run itself; `fake.seen` shows it never ran.
+    await assert.rejects(saveVerifiedSession(imported, verifier(request), path, lost), retired);
+    await saveSession(path, imported);
+    await assert.rejects(migrateSession(path, lost), retired);
+    await assert.rejects(new AblerClient(path, request, lost).status(), retired);
+    expect([await readFile(store.record, 'utf8'), await readFile(marker, 'utf8')]).toEqual(before);
+    expect(fake.seen).toEqual([]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

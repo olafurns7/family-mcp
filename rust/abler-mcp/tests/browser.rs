@@ -1,7 +1,8 @@
 //! `auth login` and `auth capture` against the TypeScript package's own fakes: tests/ts holds a
 //! copy of packages/abler-mcp/test/browser-login.test.ts and the capture and loopback cases of its
 //! other suites, changed only to start this binary, and a copy of integration.test.ts whose
-//! in-process clients and CLI spawns are this binary (tests/ts/rust-abler.ts). `FAMILY_MCP_BUN` must name a Bun 1.4.2
+//! in-process clients and CLI spawns are this binary (tests/ts/rust-abler.ts), and of
+//! startup.test.ts. `FAMILY_MCP_BUN` must name a Bun 1.4.2
 //! executable: these tests fail without it and are never skipped. They need the `test-origin`
 //! feature, without which verification would talk to Abler itself.
 #![cfg(feature = "test-origin")]
@@ -52,5 +53,13 @@ fn the_capture_and_loopback_cases_pass_against_this_binary() {
 
 #[test]
 fn the_integration_cases_pass_against_this_binary() {
-    bun_test("integration.test.ts", 23);
+    bun_test("integration.test.ts", 24);
+}
+
+#[test]
+fn the_startup_cases_pass_against_this_binary() {
+    bun_test(
+        "startup.test.ts",
+        if cfg!(target_os = "macos") { 2 } else { 1 },
+    );
 }

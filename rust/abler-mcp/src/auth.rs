@@ -13,8 +13,8 @@ use std::time::UNIX_EPOCH;
 use family_store::{
     Cancel, Code, DEFAULT_SWEEP_AGE, Error as StoreError, KeyProvider, LockOptions,
     SecretRecordOptions, SecretStore, default_key_provider, default_secret_record_path,
-    default_session_path, read_private_file, sweep_temp, with_file_lock, with_secret_store,
-    write_private_file,
+    default_session_path, read_private_file, retired_store_paths, startup_check, sweep_temp,
+    with_file_lock, with_secret_store, write_private_file,
 };
 use serde_json::{Value, json};
 
@@ -70,16 +70,14 @@ pub fn session_path() -> Result<PathBuf> {
 /// Fixed messages: a store failure never shows a path, key or cookie, and never falls back.
 pub fn store_error(error: &StoreError) -> Fail {
     Fail::Store(match error.code {
-        Code::StoreLocked => "Unlock your login keychain and try again.",
-        Code::StoreAccessDenied => {
-            "Access to the Abler store key was denied. Allow abler-mcp to use the login keychain and try again."
-        }
-        Code::StoreTimeout => "The login keychain did not answer in time. Try again.",
         Code::StoreUnavailable => {
             "The Abler store key is missing. Run abler-mcp auth login, capture or import to sign in again."
         }
+        Code::StoreBackendRetired => {
+            "The Abler session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from ~/Library/Application Support/family-mcp/abler-mcp, then run abler-mcp auth login again."
+        }
         Code::StoreWriteUncertain => {
-            "The last write to the Abler session store did not complete, so its session is not used. Remove the Abler secret store files and run abler-mcp auth login again."
+            "The last write to the Abler session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Abler store folder (~/Library/Application Support/family-mcp/abler-mcp on macOS, ~/.config/abler-mcp on Linux by default), then run abler-mcp auth login again."
         }
         Code::SecretNotFound => NO_SESSION,
         Code::Busy => "Another abler-mcp process is using the Abler session store. Try again.",
@@ -87,6 +85,9 @@ pub fn store_error(error: &StoreError) -> Fail {
         Code::Cancelled => "Cancelled before the Abler session store changed.",
         Code::TooLarge => {
             "The Abler session is larger than the store allows. Capture or import a fresh session."
+        }
+        Code::UnsafeFile => {
+            "Cannot use the Abler session store. Run abler-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first."
         }
         // TypeScript throws a RangeError here, which is not a store error.
         Code::InvalidArgument => return Fail::Unknown,
@@ -163,6 +164,7 @@ fn session_record(
         SESSION_MAX_BYTES * 2 + 4096,
     );
     record.cancel = cancel;
+    record.retired = retired_store_paths(APP, "default")?;
     Ok(record)
 }
 
@@ -604,9 +606,8 @@ fn newest_pending(path: &Path) -> Result<Option<Vec<Value>>> {
 
 /// Create the key when it is missing; only an explicit new login may reset a lost key's store.
 fn prepare_key(store: &mut SecretStore, record: &SecretRecordOptions, reset: bool) -> Result<bool> {
-    match record.keys.get_key(&record.cancel) {
-        // The key is wiped as it is dropped.
-        Ok(_) => Ok(false),
+    match store.check_key() {
+        Ok(()) => Ok(false),
         Err(error) if error.code != Code::StoreUnavailable => Err(error.into()),
         Err(error) => {
             let used = store_decides(store, &record.path)?;
@@ -776,6 +777,20 @@ pub fn logout_session(legacy: &Path, keys: Option<Arc<dyn KeyProvider>>) -> Resu
     })
 }
 
+/// The CLI's store preflight before it serves or runs an auth command: false, after the refusal
+/// on stderr, when the store is unsafe; a notice there when an earlier build's store is still on
+/// disk.
+pub fn check_store_at_startup() -> Result<bool> {
+    startup_check(
+        APP,
+        "abler-mcp auth login",
+        || session_record(None, Cancel::default()),
+        &mut |text| eprint!("{text}"),
+    )
+    // A bug, not a store refusal: TypeScript rethrows it, and the CLI hides it.
+    .map_err(|_| Fail::Unknown)
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::DirBuilderExt;
@@ -840,23 +855,26 @@ mod tests {
     /// The checks of integration.test.ts that inject a key provider or a verifier, which the
     /// binary cannot be given: tests/ts/integration.test.ts runs the rest through it.
     #[test]
-    fn keychain_failures_have_the_typescript_messages() {
-        for (code, needle) in [
+    fn injected_store_failures_have_the_typescript_messages() {
+        for (code, ending) in [
             (
-                Code::StoreLocked,
-                "Unlock your login keychain and try again.",
+                Code::UnsafeFile,
+                "Run abler-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.",
             ),
-            (Code::StoreTimeout, "did not answer in time"),
-            (
-                Code::StoreAccessDenied,
-                "Allow abler-mcp to use the login keychain",
-            ),
+            // A code no key file produces gets the general text.
+            (Code::StoreLocked, "damaged, unsafe, or not readable."),
+            (Code::StoreBackendRetired, "run abler-mcp auth login again."),
         ] {
             let Fail::Store(message) = store_error(&StoreError::new(code, "")) else {
                 panic!("{code:?} is not a store failure");
             };
-            assert!(message.contains(needle), "{message}");
+            assert!(message.ends_with(ending), "{message}");
         }
+        let Fail::Store(retired) = store_error(&StoreError::new(Code::StoreBackendRetired, ""))
+        else {
+            panic!("STORE_BACKEND_RETIRED is not a store failure");
+        };
+        assert!(retired.contains("leftover of an earlier test build "));
     }
 
     #[test]
