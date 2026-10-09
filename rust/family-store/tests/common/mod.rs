@@ -3,12 +3,13 @@
 use std::fs;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use family_store::{
-    Cancel, Code, Error, FakeKeyProvider, KeyProvider, SecretRecordOptions, with_secret_record,
-    write_private_file,
+    Cancel, Code, Error, FakeKeyProvider, KeyProvider, SecretRecordOptions, TEST_SEAM,
+    enable_test_seam, with_secret_record, write_private_file,
 };
 
 pub const KEY: [u8; 32] = [7; 32];
@@ -17,11 +18,13 @@ pub const SECRET: &str = "refresh-token-c2VjcmV0";
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
-/// A private directory under the system temporary directory, removed on drop.
+/// A private directory under the system temporary directory, removed on drop. Making one turns
+/// the store test seam on in this process first, so no test needs FAMILY_MCP_STORE_TEST_SEAM.
 pub struct Scratch(pub PathBuf);
 
 impl Scratch {
     pub fn new() -> Self {
+        enable_test_seam();
         let name = format!(
             "family-store-{}-{}",
             std::process::id(),
@@ -41,6 +44,20 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// This test binary running only the ignored case `test`, with the store test seam on and its
+/// home, XDG directories and temporary directory in `root`: the child never sees the real store.
+pub fn child_case(test: &str, root: &Path) -> Command {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", test, "--ignored", "--nocapture"])
+        .env(TEST_SEAM, "1")
+        .env("HOME", root)
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("TMPDIR", root);
+    command
 }
 
 pub fn options_with(

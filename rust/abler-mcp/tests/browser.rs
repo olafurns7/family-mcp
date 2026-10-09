@@ -7,6 +7,8 @@
 //! feature, without which verification would talk to Abler itself.
 #![cfg(feature = "test-origin")]
 
+mod scratch;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -14,18 +16,19 @@ fn bun_test(file: &str, passed: usize) {
     let bun = std::env::var_os("FAMILY_MCP_BUN")
         .expect("FAMILY_MCP_BUN must name a Bun 1.4.2 executable; parity tests never skip");
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let output = Command::new(bun)
+    let scratch = scratch::Scratch::new(file);
+    let mut command = Command::new(bun);
+    command
         .args(["test", "--timeout", "30000"])
         .arg(manifest.join("tests/ts").join(file))
         // The fakes and README are found relative to the TypeScript package.
         .current_dir(manifest.join("../../packages/abler-mcp"))
         .env("ABLER_RUST_BINARY", env!("CARGO_BIN_EXE_abler-mcp"))
-        .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0")
-        // The TypeScript package and every binary the cases start keep their store in scratch
-        // directories (the package's bunfig preload sets the same).
-        .env("FAMILY_MCP_STORE_TEST_SEAM", "1")
-        .output()
-        .unwrap();
+        .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0");
+    // The TypeScript package and every binary the cases start keep their store in scratch
+    // directories (the package's bunfig preload sets the same).
+    scratch.isolate(&mut command);
+    let output = command.output().unwrap();
     let report = String::from_utf8_lossy(&output.stderr);
 
     assert!(

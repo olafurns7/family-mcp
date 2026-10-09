@@ -33,3 +33,7 @@ serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tokio = { version = "=1.53.2", features = ["rt", "io-std", "macros", "signal", "sync", "time"] }
 # The debugging socket of `auth capture`; plain ws:// to loopback only, so no TLS feature.
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
+
+[dev-dependencies]
+# Its unit tests open scratch stores in their own process, with the store test seam on.
+family-store = { path = "../family-store", features = ["test-seam"] }

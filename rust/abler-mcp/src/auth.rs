@@ -802,6 +802,8 @@ mod tests {
 
     #[test]
     fn a_failed_rotation_write_removes_the_record_so_the_spent_token_is_never_offered() {
+        // The store's test seam: a scratch store gets no real Time Machine call.
+        family_store::enable_test_seam();
         let directory = std::env::temp_dir().join(format!("abler-auth-{}", std::process::id()));
         fs::DirBuilder::new()
             .mode(0o700)
@@ -890,6 +892,8 @@ mod tests {
         assert!(!replaced.contains("previous session was kept"));
 
         // The candidate replaced between verification and promote is never promoted.
+        // The store's test seam: a scratch store gets no real Time Machine call.
+        family_store::enable_test_seam();
         let directory = std::env::temp_dir().join(format!("abler-promote-{}", std::process::id()));
         fs::DirBuilder::new()
             .mode(0o700)

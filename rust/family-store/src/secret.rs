@@ -474,7 +474,10 @@ fn linked_entry(path: &Path) -> std::io::Result<PathBuf> {
 fn identity(path: &Path) -> std::io::Result<Option<(u64, u64)>> {
     use std::os::unix::fs::MetadataExt;
 
-    match fs::metadata(path) {
+    let read = fs::metadata(path);
+    crate::seam::identity_read(path);
+
+    match read {
         Ok(info) => Ok(Some((info.dev(), info.ino()))),
         Err(error) if errno(&error) == Some(Errno::NOENT) => Ok(None),
         Err(error) => Err(error),

@@ -352,6 +352,7 @@ version = "0.0.0"
 dependencies = [
  "aes-gcm",
  "base64",
+ "family-store",
  "getrandom 0.4.3",
  "rustix",
  "zeroize",

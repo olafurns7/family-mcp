@@ -467,8 +467,8 @@ fn macos_acls_that_grant_other_users_access_are_refused_deny_entries_pass() {
 /// Runs `test` of this file in a child with `variables`, which a test cannot set in its own
 /// process; the child's assertions decide.
 fn in_child(test: &str, variables: &[(&str, &Path)]) {
-    let mut command = Command::new(std::env::current_exe().unwrap());
-    command.args(["--exact", test, "--ignored", "--nocapture"]);
+    let scratch = Scratch::new();
+    let mut command = child_case(test, &scratch.0);
 
     for (name, value) in variables {
         command.env(name, value);
@@ -590,8 +590,8 @@ fn a_crash_at_any_key_publication_step_restarts_cleanly_through_the_preflight() 
         let tree = Tree::new();
         let root = tree.root();
         let layout = Layout::new(root);
-        let status = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "publish_a_key_until_killed", "--ignored"])
+        let scratch = Scratch::new();
+        let status = child_case("publish_a_key_until_killed", &scratch.0)
             .env("FAMILY_STORE_TEST_KEY", &layout.key)
             .env("FAMILY_STORE_TEST_STEP", step)
             .output()

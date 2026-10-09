@@ -58,6 +58,10 @@ impl Shared {
             .args(arguments)
             .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0")
             .env(TEST_SEAM, "1")
+            .env("HOME", &self.scratch.0)
+            .env("XDG_CONFIG_HOME", self.scratch.join("config"))
+            .env("XDG_DATA_HOME", self.scratch.join("data"))
+            .env("TMPDIR", &self.scratch.0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -317,16 +321,9 @@ fn a_lock_left_by_a_killed_holder_is_recovered_by_the_other_language() {
     assert!(!lock.exists());
 
     // A Rust holder dies: the TypeScript package takes the lock over.
-    let mut holder = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "hold_the_lock_until_killed",
-            "--nocapture",
-            "--ignored",
-        ])
+    let mut holder = child_case("hold_the_lock_until_killed", &shared.scratch.0)
         .env(HOLD_RECORD, &store.path)
         .env(HOLD_KEY, &shared.key)
-        .env(TEST_SEAM, "1")
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();

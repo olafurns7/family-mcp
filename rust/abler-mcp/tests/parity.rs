@@ -4,6 +4,8 @@
 //! feature, without which the binary would only talk to Abler itself.
 #![cfg(feature = "test-origin")]
 
+mod scratch;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -11,13 +13,14 @@ use std::process::Command;
 fn every_scenario_matches_the_typescript_package() {
     let bun = std::env::var_os("FAMILY_MCP_BUN")
         .expect("FAMILY_MCP_BUN must name a Bun 1.4.2 executable; parity tests never skip");
-    let output = Command::new(bun)
+    let scratch = scratch::Scratch::new("parity");
+    let mut command = Command::new(bun);
+    command
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ts/parity.ts"))
         .arg(env!("CARGO_BIN_EXE_abler-mcp"))
-        .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0")
-        .env("FAMILY_MCP_STORE_TEST_SEAM", "1")
-        .output()
-        .unwrap();
+        .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0");
+    scratch.isolate(&mut command);
+    let output = command.output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(
