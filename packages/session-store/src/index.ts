@@ -19,13 +19,13 @@ export { DEFAULT_WAIT_MS, withFileLock } from './lock.js';
 export type { LockOptions } from './lock.js';
 
 export {
-  TEST_SEAM,
   defaultKeyProvider,
   defaultSecretRecordPath,
   defaultSessionPath,
   retiredStorePaths,
-  testSeam,
 } from './paths.js';
+
+export { TEST_SEAM, TEST_TMUTIL, testSeam } from './seam.js';
 
 export type { DefaultKeyProviderOptions, SessionPathOptions, StorePathOptions } from './paths.js';
 

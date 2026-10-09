@@ -38,6 +38,9 @@ import {
   type StoreStat,
 } from '../src/storage.js';
 
+const acl = (operation: '+a' | '-a', entry: string, path: string) =>
+  execFileSync('/bin/chmod', [operation, entry, path]);
+
 const worker = fileURLToPath(new URL('./key-worker.ts', import.meta.url));
 
 const UID = process.getuid?.() ?? 0;
@@ -125,7 +128,7 @@ function layout(root: string): SecretRecordOptions & { keys: CountingKeys; key: 
 }
 
 async function listTree(directory: string): Promise<string[]> {
-  return (await readdir(directory, { recursive: true })).sort();
+  return (await readdir(directory, { recursive: true })).toSorted();
 }
 
 test('store directory and ancestor decisions are pure', () => {
@@ -347,9 +350,6 @@ test.skipIf(process.platform !== 'darwin')(
       await withSecretRecord(store, async () => 'secret');
       const records = join(root, 'family-mcp', 'test-mcp');
 
-      const acl = (operation: '+a' | '-a', entry: string, path: string) =>
-        execFileSync('/bin/chmod', [operation, entry, path]);
-
       acl('+a', 'everyone deny delete', records);
       expect((await checkSecretStore(store)).exists).toBe(true);
 
@@ -381,7 +381,7 @@ test('key creation never replaces a key and leaves no temporary or partial key',
     const results = await Promise.allSettled([keys.createKey(), other.createKey()]);
 
     expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
-    const [failure] = results.filter((result) => result.status === 'rejected');
+    const failure = results.find((result) => result.status === 'rejected');
     assert.ok(failure?.status === 'rejected');
     assert.ok(failure.reason instanceof SessionStoreError);
     expect(failure.reason.message).toBe('A store key already exists; it is never replaced.');

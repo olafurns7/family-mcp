@@ -3,6 +3,7 @@ import type { Stats } from 'node:fs';
 import { link, open, rm, unlink, type FileHandle } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+import { excludeFromBackups } from './backup.js';
 import { SessionStoreError, systemErrorCode } from './errors.js';
 import { readPrivateBytes, sweepTemp, syncDirectory } from './files.js';
 import { checkStorePaths, lstatOrMissing, storeDirectories, temporariesOf } from './storage.js';
@@ -122,6 +123,8 @@ export class LocalKeyFileProvider implements KeyProvider {
   async createKey(): Promise<void> {
     const directories = storeDirectories(this.path);
     await checkStorePaths({ directories, create: directories });
+    // Excluded and confirmed before the first key byte exists.
+    await excludeFromBackups([dirname(this.path)]);
     // A temporary that never became the key holds no key anyone uses; only old ones go.
     await sweepTemp(this.path);
     const temporary = `${this.path}.${randomUUID()}.tmp`;

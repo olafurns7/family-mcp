@@ -260,11 +260,12 @@ const ACL_ENTRY = /^ \d+: (\S+)(?: inherited)? (allow|deny) (\S+)$/;
 // An ACL listing changes the inode's ctime, so an unchanged inode keeps its last answer.
 const aclCache = new Map<string, true>();
 
+function stamp({ path, info }: Checked): string {
+  return `${path}\0${info.dev}:${info.ino}:${info.ctimeMs}:${info.mode}`;
+}
+
 /** macOS keeps ACLs apart from the mode bits; `ls -le` is the only reader without a native API. */
 async function checkAcls(checked: readonly Checked[]): Promise<void> {
-  const stamp = ({ path, info }: Checked) =>
-    `${path}\0${info.dev}:${info.ino}:${info.ctimeMs}:${info.mode}`;
-
   const unknown = checked.filter(
     (entry, index) =>
       !aclCache.has(stamp(entry)) && checked.findIndex(({ path }) => path === entry.path) === index,
