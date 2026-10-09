@@ -6,6 +6,7 @@ version = 4
 name = "abler-mcp"
 version = "0.6.0"
 dependencies = [
+ "close_fds",
  "family-store",
  "getrandom 0.4.3",
  "hyper",
@@ -187,6 +188,16 @@ dependencies = [
  "block-buffer",
  "crypto-common",
  "inout",
+]
+
+[[package]]
+name = "close_fds"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bc416f33de9d59e79e57560f450d21ff8393adcf1cdfc3e6d8fb93d5f88a2ed"
+dependencies = [
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]

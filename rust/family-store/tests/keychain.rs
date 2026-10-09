@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -12,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use family_store::{
-    Cancel, Code, KeyProvider, KeychainAccessorKeyProvider, KeychainAccessorOptions,
-    create_secret_key, default_secret_record_path, default_session_path, key_provider_for,
-    read_secret_record,
+    Cancel, Code, KEY_BACKEND, KeyProvider, KeychainAccessorKeyProvider, KeychainAccessorOptions,
+    create_secret_key, default_key_provider, default_secret_record_path, default_session_path,
+    key_provider_for, read_secret_record,
 };
 use rustix::io::Errno;
 use rustix::process::{Pid, test_kill_process};
@@ -357,12 +358,42 @@ fn default_key_providers_and_record_paths_follow_the_platform_and_xdg() {
     let _environment = ENVIRONMENT.lock().unwrap();
     let scratch = Scratch::new();
     let home = PathBuf::from(std::env::var_os("HOME").unwrap());
-    let code_of = |os, server| code(key_provider_for(os, server, "default").map(|_| ()));
+    let code_of = |os, server| code(key_provider_for(os, None, server, "default").map(|_| ()));
 
     // Paths only: nothing here may create a key under the real home directory. A provider's key
     // path shows in where its setup puts the key, so only the scratch-directory case is set up.
-    let darwin = key_provider_for("macos", "test-mcp", "default").unwrap();
+    let darwin = key_provider_for("macos", None, "test-mcp", "default").unwrap();
     assert_eq!(darwin.key_source(), "keychain-accessor");
+
+    // FAMILY_MCP_KEY_BACKEND: `file` is the key file on both platforms, at the same path (the
+    // child below shows where); empty is unset; any other value is refused.
+    for os in ["macos", "linux"] {
+        let file = key_provider_for(os, Some(OsStr::new("file")), "test-mcp", "work").unwrap();
+        assert_eq!(file.key_source(), "local-file");
+        let expected = key_provider_for("linux", None, "test-mcp", "work").unwrap();
+        assert!(file.key_file().is_some() && file.key_file() == expected.key_file());
+
+        for value in ["keychain", "FILE", " file", "0"] {
+            let refused = key_provider_for(os, Some(OsStr::new(value)), "test-mcp", "default")
+                .map(|_| ())
+                .unwrap_err();
+            assert_eq!(refused.code, Code::StoreUnavailable);
+            assert_eq!(
+                refused.to_string(),
+                "FAMILY_MCP_KEY_BACKEND is not supported. Set it to file or unset it."
+            );
+        }
+    }
+    let file = Some(OsStr::new("file"));
+    assert_eq!(
+        code(key_provider_for("windows", file, "test-mcp", "default").map(|_| ())),
+        Some(Code::StoreUnavailable)
+    );
+    let empty = Some(OsStr::new(""));
+    let unset = key_provider_for("macos", empty, "test-mcp", "default").unwrap();
+    assert_eq!(unset.key_source(), "keychain-accessor");
+    let unset = key_provider_for("linux", empty, "test-mcp", "default").unwrap();
+    assert_eq!(unset.key_source(), "local-file");
     assert_eq!(code_of("windows", "test-mcp"), Some(Code::StoreUnavailable));
     assert_eq!(code_of("linux", "../x"), Some(Code::InvalidArgument));
 
@@ -372,6 +403,7 @@ fn default_key_providers_and_record_paths_follow_the_platform_and_xdg() {
             .args(["--exact", "print_default_paths", "--nocapture", "--ignored"])
             .env("XDG_DATA_HOME", data)
             .env("XDG_CONFIG_HOME", config)
+            .env(KEY_BACKEND, "file")
             .output()
             .unwrap();
         String::from_utf8(output.stdout).unwrap()
@@ -422,7 +454,13 @@ fn print_default_paths() {
     );
     // Only an absolute XDG_DATA_HOME, which the parent points at its scratch directory, is set up.
     let scratch_data = std::env::var("XDG_DATA_HOME").is_ok_and(|data| data.starts_with('/'));
-    let keys = key_provider_for("linux", "test-mcp", "work").unwrap();
+    // The child's own environment selects the key file, whatever the platform.
+    let keys = default_key_provider("test-mcp", "work").unwrap();
+    assert_eq!(
+        keys.key_source(),
+        "local-file",
+        "Tests must keep FAMILY_MCP_KEY_BACKEND=file; the Keychain is never used."
+    );
     let created = scratch_data && keys.create_key(&Cancel::default()).is_ok();
     println!("created={created}");
 }

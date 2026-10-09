@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use common::*;
 use family_store::{
-    Code, Error, LocalKeyFileProvider, SecretRecordOptions, create_secret_key, read_secret_record,
-    with_secret_record, with_secret_store,
+    Code, Error, KEY_BACKEND, LocalKeyFileProvider, SecretRecordOptions, create_secret_key,
+    read_secret_record, with_secret_record, with_secret_store,
 };
 
 const HOLD_RECORD: &str = "FAMILY_STORE_TEST_HOLD_RECORD";
@@ -56,6 +56,7 @@ impl Shared {
             .arg(&self.key)
             .args(arguments)
             .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0")
+            .env(KEY_BACKEND, "file")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -319,6 +320,7 @@ fn a_lock_left_by_a_killed_holder_is_recovered_by_the_other_language() {
         ])
         .env(HOLD_RECORD, &store.path)
         .env(HOLD_KEY, &shared.key)
+        .env(KEY_BACKEND, "file")
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();

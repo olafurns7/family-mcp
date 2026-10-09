@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::fs::{self, DirBuilder, Permissions};
 use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -544,7 +544,9 @@ impl Browser {
 
 /// Start the browser in its own process group with the debugging pipe on its descriptors 3 and 4
 /// and nothing else of ours. Safe Rust can hand a child only descriptors 0 to 2, so `sh` moves
-/// them to 3 and 4 and replaces itself with the browser.
+/// them to 3 and 4 and replaces itself with the browser. `Bun.spawn` closes what is not in its
+/// `stdio`; here every other descriptor is marked close-on-exec first, so one this process
+/// inherited (a wrapper's file, lock or socket) does not reach the browser either.
 fn spawn_browser(path: &Path, profile: &Path) -> Result<(Browser, Pipe)> {
     let failed = |_| Fail::Safe("Could not start the selected browser.");
     let (input, browser_input) = UnixStream::pair().map_err(failed)?;
@@ -556,6 +558,10 @@ fn spawn_browser(path: &Path, profile: &Path) -> Result<(Browser, Pipe)> {
         true => path.to_owned(),
         false => Path::new(".").join(path),
     };
+    close_fds::set_fds_cloexec_threadsafe(
+        3,
+        &[browser_input.as_raw_fd(), browser_output.as_raw_fd()],
+    );
 
     let child = Command::new("/bin/sh")
         .arg("-c")
@@ -1089,6 +1095,37 @@ mod tests {
             .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
             .unwrap();
         path
+    }
+
+    #[test]
+    fn a_descriptor_this_process_inherited_does_not_reach_the_browser() {
+        let directory = scratch("descriptors");
+        // /dev/fd lists the descriptors of `ls`: the browser's, and one for the listing itself.
+        let browser = script(
+            &directory,
+            "ls /dev/fd > \"$(dirname \"$0\")/tmp\"\nmv \"$(dirname \"$0\")/tmp\" \"$(dirname \"$0\")/fds\"",
+        );
+        // As a descriptor from the parent shell is: open and not close-on-exec.
+        let inherited =
+            rustix::io::fcntl_dupfd_cloexec(fs::File::open(&browser).unwrap(), 100).unwrap();
+        rustix::io::fcntl_setfd(&inherited, rustix::io::FdFlags::empty()).unwrap();
+        let (mut running, mut pipe) = spawn_browser(&browser, &directory.join("profile")).unwrap();
+        let listed = (0..100)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(50));
+                fs::read_to_string(directory.join("fds")).ok()
+            })
+            .unwrap();
+        let listed: Vec<&str> = listed.lines().collect();
+
+        assert!(listed.contains(&"3") && listed.contains(&"4"), "{listed:?}");
+        assert!(
+            !listed.contains(&inherited.as_raw_fd().to_string().as_str()),
+            "{listed:?}"
+        );
+        assert!(listed.len() <= 6, "{listed:?}");
+        assert!(close_browser(&mut running, &mut pipe, false));
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

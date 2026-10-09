@@ -19,6 +19,10 @@ import {
 const [rust, only] = process.argv.slice(2);
 
 if (!rust) throw new RangeError('Usage: parity.ts RUST_BINARY [SCENARIO]');
+
+// The store key is the key file in every test, never the login Keychain.
+if (process.env.FAMILY_MCP_KEY_BACKEND !== 'file')
+  throw new RangeError('Tests must keep FAMILY_MCP_KEY_BACKEND=file; the Keychain is never used.');
 const repo = resolve(import.meta.dir, '../../../..');
 const cli = join(repo, 'packages/abler-mcp/src/cli.ts');
 const rewrite = join(import.meta.dir, 'rewrite.ts');
@@ -509,6 +513,7 @@ function environment(home: string, extra: Record<string, string> = {}): Record<s
     XDG_STATE_HOME: join(home, '.local/state'),
     XDG_CACHE_HOME: join(home, '.cache'),
     BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0',
+    FAMILY_MCP_KEY_BACKEND: 'file',
     ABLER_TEST_ORIGIN: origin,
     ...extra,
   };

@@ -40,6 +40,10 @@ const rustBinary = process.env.ABLER_RUST_BINARY;
 
 if (!rustBinary) throw new RangeError('ABLER_RUST_BINARY must name the Rust abler-mcp binary.');
 
+// Rust: the store key is the key file in every test, never the login Keychain.
+if (process.env.FAMILY_MCP_KEY_BACKEND !== 'file')
+  throw new RangeError('Tests must keep FAMILY_MCP_KEY_BACKEND=file; the Keychain is never used.');
+
 const store = useScratchStore();
 
 /** The saved cookies by name, from the store (or, before migration, the plaintext file). */
@@ -135,6 +139,23 @@ async function waitForBrowserState(path: string) {
   }
 
   throw new Error('The fake browser did not start in time.');
+}
+
+/**
+ * Rust: when a wait on the fake browser fails, say what the CLI did meanwhile (exit status and
+ * stderr), which tells a CLI that ended early from a browser that was signalled late.
+ */
+async function withCli<T>(child: Bun.Subprocess, wait: Promise<T>): Promise<T> {
+  try {
+    return await wait;
+  } catch (error) {
+    const exited = child.exitCode !== null || child.signalCode !== null;
+    const stderr = exited ? await readPipe(child.stderr) : '(still running)';
+
+    throw new Error(
+      `${String(error)}; CLI exit ${child.exitCode} signal ${child.signalCode} stderr ${JSON.stringify(stderr)}`,
+    );
+  }
 }
 
 async function readPipe(pipe: Bun.Subprocess['stdout']): Promise<string> {
@@ -521,7 +542,7 @@ test('auth login keeps signal handlers through delayed SIGTERM and SIGKILL clean
     state = await waitForBrowserState(join(directory, 'browser.json'));
     assert.ok(child.pid);
     process.kill(child.pid, 'SIGINT');
-    await waitForFile(join(directory, 'browser.signal'));
+    await withCli(child, waitForFile(join(directory, 'browser.signal')));
     process.kill(child.pid, 'SIGINT');
     await Bun.sleep(100);
 
@@ -666,7 +687,7 @@ test('auth login removes the profile when browser readiness fails', async () => 
       undefined,
       true,
     );
-    state = await waitForBrowserState(join(directory, 'browser.json'));
+    state = await withCli(child, waitForBrowserState(join(directory, 'browser.json')));
     const { exit, stderr } = await collectProcess(child);
 
     expect(exit).toBe(1);

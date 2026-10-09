@@ -19,7 +19,8 @@ pub use keychain::{KeychainAccessorKeyProvider, KeychainAccessorOptions};
 pub use keys::{FakeKeyProvider, KEY_BYTES, Key, KeyProvider, LocalKeyFileProvider};
 pub use lock::{DEFAULT_WAIT, LockOptions, with_file_lock};
 pub use paths::{
-    default_key_provider, default_secret_record_path, default_session_path, key_provider_for,
+    KEY_BACKEND, default_key_provider, default_secret_record_path, default_session_path,
+    key_provider_for,
 };
 pub use secret::{
     SecretRecordOptions, SecretStore, create_secret_key, read_secret_record, secret_store_exists,

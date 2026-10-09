@@ -39,7 +39,8 @@ impl Home {
             .env("XDG_CONFIG_HOME", self.0.join(".config"))
             .env("XDG_DATA_HOME", self.0.join(".local/share"))
             .env("ABLER_SESSION_FILE", self.0.join("legacy.json"))
-            .env("ABLER_TEST_ORIGIN", origin);
+            .env("ABLER_TEST_ORIGIN", origin)
+            .env("FAMILY_MCP_KEY_BACKEND", "file");
         command
     }
 
@@ -52,7 +53,12 @@ impl Home {
 
     /// A plaintext session as older versions saved it; the server reads it while no store exists.
     fn legacy(&self) {
-        let session = r#"{"version":1,"cookies":[{"name":"refreshToken","value":"r0","domain":"www.abler.io","path":"/oauth","expires":-1}]}"#;
+        self.legacy_with(
+            r#"{"version":1,"cookies":[{"name":"refreshToken","value":"r0","domain":"www.abler.io","path":"/oauth","expires":-1}]}"#,
+        );
+    }
+
+    fn legacy_with(&self, session: &str) {
         fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -229,4 +235,37 @@ fn sigterm_and_end_of_input_cancel_a_hanging_request_and_release_the_lock() {
         );
         assert!(!home.0.join("legacy.json").exists());
     }
+}
+
+/// fetch under Bun reads up to 256 response headers; hyper's default of 100 would fail the request.
+#[test]
+fn a_response_with_as_many_headers_as_fetch_accepts_is_read() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let body = r#"{"data":{"me":{"id":"1","displayName":"A"}}}"#;
+    // Content-Length and Connection make 256.
+    let extra: String = (0..254).map(|index| format!("X-H{index}: a\r\n")).collect();
+    let reply = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n{body}",
+        body.len()
+    );
+
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(reply.as_bytes());
+        }
+    });
+    let home = Home::new();
+    home.legacy_with(
+        r#"{"version":1,"cookies":[{"name":"refreshToken","value":"r0","domain":"www.abler.io","path":"/oauth","expires":-1},{"name":"id_token","value":"a0","domain":"www.abler.io","path":"/","expires":-1}]}"#,
+    );
+    let output = home.command(&origin, &["auth", "status"]).output().unwrap();
+
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(r#""authenticated":true"#),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

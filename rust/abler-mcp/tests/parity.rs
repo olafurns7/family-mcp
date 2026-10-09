@@ -15,6 +15,7 @@ fn every_scenario_matches_the_typescript_package() {
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ts/parity.ts"))
         .arg(env!("CARGO_BIN_EXE_abler-mcp"))
         .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0")
+        .env("FAMILY_MCP_KEY_BACKEND", "file")
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);

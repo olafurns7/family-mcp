@@ -18,6 +18,10 @@ const [mode, record, key, ...rest] = process.argv.slice(2);
 if (mode === undefined || record === undefined || key === undefined)
   throw new RangeError('Usage: store.ts MODE RECORD KEY [ARGUMENT...]');
 
+// The store key is the key file in every test, never the login Keychain.
+if (process.env.FAMILY_MCP_KEY_BACKEND !== 'file')
+  throw new RangeError('Tests must keep FAMILY_MCP_KEY_BACKEND=file; the Keychain is never used.');
+
 const options = {
   path: record,
   server: 'test-mcp',

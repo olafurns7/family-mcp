@@ -129,7 +129,17 @@ fn session_record(
     let path = default_secret_record_path(APP)?;
     let keys = match keys {
         Some(keys) => keys,
-        None => default_key_provider(APP, "default")?,
+        None => {
+            // A test never reaches the login Keychain: the test build refuses to choose a key
+            // without the variable that selects the key file.
+            #[cfg(feature = "test-origin")]
+            assert!(
+                std::env::var_os(family_store::KEY_BACKEND)
+                    .is_some_and(|backend| backend == "file"),
+                "Tests must keep FAMILY_MCP_KEY_BACKEND=file; the Keychain is never used."
+            );
+            default_key_provider(APP, "default")?
+        }
     };
     let mut record = SecretRecordOptions::new(
         path,

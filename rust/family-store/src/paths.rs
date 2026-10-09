@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -24,18 +25,44 @@ pub fn default_secret_record_path(app_name: &str) -> Result<PathBuf> {
 
 /// macOS: the login keychain through `/usr/bin/security`. Linux: a key file at
 /// `$XDG_DATA_HOME/family-mcp/keys/<server>.<profile>.key` (default `~/.local/share`), apart from
-/// the records under `~/.config`. Other platforms have no provider: STORE_UNAVAILABLE.
+/// the records under `~/.config`. `FAMILY_MCP_KEY_BACKEND=file` selects that key file on macOS
+/// too, for a Mac whose keychain is locked; any other value is refused. Other platforms have no
+/// provider: STORE_UNAVAILABLE.
 pub fn default_key_provider(server: &str, profile: &str) -> Result<Arc<dyn KeyProvider>> {
-    key_provider_for(std::env::consts::OS, server, profile)
+    key_provider_for(
+        std::env::consts::OS,
+        std::env::var_os(KEY_BACKEND).as_deref(),
+        server,
+        profile,
+    )
 }
 
-/// [`default_key_provider`] for a named `std::env::consts::OS` value; a test seam.
-pub fn key_provider_for(os: &str, server: &str, profile: &str) -> Result<Arc<dyn KeyProvider>> {
+/// The variable [`default_key_provider`] reads.
+pub const KEY_BACKEND: &str = "FAMILY_MCP_KEY_BACKEND";
+
+/// [`default_key_provider`] for a named `std::env::consts::OS` value and a `FAMILY_MCP_KEY_BACKEND`
+/// value (unset and empty are the same); a test seam.
+pub fn key_provider_for(
+    os: &str,
+    backend: Option<&OsStr>,
+    server: &str,
+    profile: &str,
+) -> Result<Arc<dyn KeyProvider>> {
     check_names(&[server, profile])?;
+    let backend = backend.unwrap_or_default();
+
+    if !backend.is_empty() && backend != "file" {
+        return Err(Error::new(
+            Code::StoreUnavailable,
+            "FAMILY_MCP_KEY_BACKEND is not supported. Set it to file or unset it.",
+        ));
+    }
 
     match os {
-        "macos" => Ok(Arc::new(KeychainAccessorKeyProvider::new(server, profile)?)),
-        "linux" => Ok(Arc::new(LocalKeyFileProvider::new(
+        "macos" if backend.is_empty() => {
+            Ok(Arc::new(KeychainAccessorKeyProvider::new(server, profile)?))
+        }
+        "macos" | "linux" => Ok(Arc::new(LocalKeyFileProvider::new(
             xdg_base("XDG_DATA_HOME", ".local/share")
                 .join("family-mcp")
                 .join("keys")

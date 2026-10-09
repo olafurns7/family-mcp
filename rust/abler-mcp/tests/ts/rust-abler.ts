@@ -21,6 +21,10 @@ const rustBinary = process.env.ABLER_RUST_BINARY;
 
 if (!rustBinary) throw new RangeError('ABLER_RUST_BINARY must name the Rust abler-mcp binary.');
 
+// Rust: the store key is the key file in every test, never the login Keychain.
+if (process.env.FAMILY_MCP_KEY_BACKEND !== 'file')
+  throw new RangeError('Tests must keep FAMILY_MCP_KEY_BACKEND=file; the Keychain is never used.');
+
 /** A closed loopback port: a case without an upstream can never reach Abler. */
 export const NOWHERE = 'http://127.0.0.1:9';
 
@@ -201,7 +205,11 @@ export async function spawnCli(preload: string | undefined, args: string[], opti
   const child = Bun.spawn([rustBinary!, ...args], {
     ...options,
     stdin: loaded.stdin ? await stdinOf(loaded.stdin) : (options.stdin ?? 'ignore'),
-    env: { ...options.env, ABLER_TEST_ORIGIN: served?.origin ?? NOWHERE },
+    env: {
+      ...options.env,
+      FAMILY_MCP_KEY_BACKEND: 'file',
+      ABLER_TEST_ORIGIN: served?.origin ?? NOWHERE,
+    },
   });
 
   const closed = child.exited.then(() => Promise.all([served?.close(), chrome?.close()]));

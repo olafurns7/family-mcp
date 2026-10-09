@@ -311,6 +311,9 @@ test('CLI hides unreviewed exceptions and preserves safe usage, import, and brow
     );
 
     // Unknown errors (including a forged name) and non-Error throws must not become safe messages.
+    // Rust: the three throws are one behaviour of the binary, a stdin it cannot read, so the forged
+    // name tests nothing more; and a marker that only a throwing mock carries never leaves this
+    // process, so `not.toContain(marker)` is a real check only for the two response mocks above.
     for (const thrown of [
       `new Error('${marker}')`,
       `Object.assign(new Error('${marker}'), { name: 'SafeError' })`,

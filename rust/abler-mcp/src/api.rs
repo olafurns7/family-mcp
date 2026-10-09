@@ -24,6 +24,8 @@ pub const ORIGIN: &str = "https://www.abler.io";
 const MAX_RESPONSE_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
+/// Response headers Bun's fetch accepts (measured on 1.4.2); hyper's default is 100.
+const MAX_HEADERS: usize = 256;
 
 const REQUEST_FAILED: &str =
     "Abler request failed or timed out. Check the connection and try again.";
@@ -325,7 +327,8 @@ pub fn status_forces_refresh() -> bool {
     false
 }
 
-/// The response head outgrew hyper's buffer, so its cookies, perhaps a rotation, are unknown.
+/// hyper could not read the response head (over its buffer of about 408 KiB, or more headers than
+/// `MAX_HEADERS`), so its cookies, perhaps a rotation, are unknown.
 fn head_too_large(error: &reqwest::Error) -> bool {
     let mut source = std::error::Error::source(error);
 
@@ -369,6 +372,7 @@ impl Client {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .no_proxy()
+            .http1_max_headers(MAX_HEADERS)
             .build()
             .map_err(|_| Fail::Unknown)?;
 
@@ -457,7 +461,9 @@ impl Client {
             .body(body);
         let sent = self.wait(request.send());
 
-        // fetch reads a response head of any size; hyper refuses one over about 400 KiB.
+        // Bun's fetch reads a head of 256 headers and more than 1 MiB. reqwest exposes only the
+        // header count, so hyper still refuses a head over about 408 KiB. Any head it refuses,
+        // rotation or not, ends the session here, where fetch would have read on.
         if let Some(Err(error)) = &sent
             && head_too_large(error)
             && let Some(fail) = session.lose()

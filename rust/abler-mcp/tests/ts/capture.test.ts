@@ -17,6 +17,10 @@ const rustBinary = process.env.ABLER_RUST_BINARY;
 
 if (!rustBinary) throw new RangeError('ABLER_RUST_BINARY must name the Rust abler-mcp binary.');
 
+// Rust: the store key is the key file in every test, never the login Keychain.
+if (process.env.FAMILY_MCP_KEY_BACKEND !== 'file')
+  throw new RangeError('Tests must keep FAMILY_MCP_KEY_BACKEND=file; the Keychain is never used.');
+
 const store = useScratchStore();
 
 /** A closed loopback port: no case may reach Abler, whatever the binary does. */

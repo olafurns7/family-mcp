@@ -17,9 +17,13 @@ workspace = true
 test-origin = []
 
 [dependencies]
+# Marks inherited descriptors close-on-exec before the browser starts; safe Rust has no other way
+# to name a descriptor it does not own.
+close_fds = "=0.3.2"
 family-store = { path = "../family-store" }
 getrandom = "=0.4.3"
-# Only to recognise a response head too large to read (`Error::is_parse_too_large`).
+# Only to recognise a response head too large to read: `Error::is_parse` plus that kind's fixed
+# text, because `Error::is_parse_too_large` needs hyper's `server` feature.
 hyper = { version = "=1.12.0", default-features = false }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"] }
 rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs", "process"] }
