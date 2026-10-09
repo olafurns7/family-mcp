@@ -3,8 +3,9 @@ import { lstat, rm } from 'node:fs/promises';
 
 import { SessionStoreError, systemErrorCode, throwIfAborted } from './errors.js';
 import { readPrivateFile, sweepTemp, writePrivateFile } from './files.js';
-import { checkedKey, type KeyProvider } from './keys.js';
+import { LocalKeyFileProvider, checkedKey, keyTemporary, type KeyProvider } from './keys.js';
 import { withFileLock } from './lock.js';
+import { checkStorePaths, storeDirectories } from './storage.js';
 
 export type SecretRecordOptions = {
   /** Canonical record path. Its lock is `<path>.lock` and its non-secret marker `<path>.marker`. */
@@ -108,6 +109,9 @@ export async function withSecretStore<T>(
   work: (store: SecretStore) => Promise<T>,
 ): Promise<T> {
   checkOptions(options);
+  // Before the lock: a refused store gets no lock directory. The record's directory is made here.
+  const directories = storeDirectories(options.path);
+  await checkStorePaths({ directories, create: directories });
 
   return withFileLock(
     options.path,
@@ -224,6 +228,42 @@ export function createSecretKey(options: SecretRecordOptions): Promise<void> {
  */
 export function resetSecretStore(options: SecretRecordOptions): Promise<void> {
   return withSecretStore(options, (held) => held.reset());
+}
+
+export type StoreCheck = {
+  /** A marker exists at the store's path. */
+  exists: boolean;
+  /** The `retired` files that exist: an earlier layout to clean up after a new sign-in. */
+  retired: string[];
+};
+
+/**
+ * Startup preflight: refuse unsafe store directories and files before serving, with a
+ * `StoreRefusal` whose `path` names what to fix. It checks the store directories, the directories
+ * above them, and the key, record and marker files (macOS ACLs included), and passes when nothing
+ * exists yet. It reads no secret, takes no lock and creates nothing. A key with the recognised
+ * second name of an interrupted publication passes; its next `getKey` removes that name.
+ */
+export async function checkSecretStore(
+  options: Pick<SecretRecordOptions, 'path' | 'keys' | 'retired'>,
+): Promise<StoreCheck> {
+  const { path, keys } = options;
+  const key = keys instanceof LocalKeyFileProvider ? keys.path : undefined;
+
+  const directories = [
+    ...new Set([...storeDirectories(path), ...(key === undefined ? [] : storeDirectories(key))]),
+  ];
+
+  await checkStorePaths({
+    directories,
+    files: [...(key === undefined ? [] : [key]), path, markerPath(path)],
+    allowLink: async (file, info) => file === key && (await keyTemporary(file, info)) !== undefined,
+  });
+
+  return {
+    exists: await secretStoreExists(path),
+    retired: await existingPaths(options.retired ?? []),
+  };
 }
 
 /** A marker exists, so the store decides even while it holds no record. */

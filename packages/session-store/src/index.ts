@@ -34,6 +34,7 @@ export { FakeKeyProvider, KEY_BYTES, LocalKeyFileProvider } from './keys.js';
 export type { KeyProvider, LocalKeyFileOptions } from './keys.js';
 
 export {
+  checkSecretStore,
   createSecretKey,
   existingPaths,
   readSecretRecord,
@@ -43,4 +44,6 @@ export {
   withSecretStore,
 } from './secret.js';
 
-export type { SecretRecordOptions, SecretStore, SecretUpdate } from './secret.js';
+export type { SecretRecordOptions, SecretStore, SecretUpdate, StoreCheck } from './secret.js';
+
+export { StoreRefusal } from './storage.js';
