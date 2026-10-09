@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { DOCUMENTATION_FILES, readPackage } from './package.mjs';
 import { renderInstall } from './render-install.mjs';
@@ -47,6 +47,22 @@ for (const file of files) {
     `${pkg.name}-${pkg.version}-$1-$2.tar.gz`,
   );
   outputs.set(file, text);
+}
+
+const crate = pkg.familyMcp.release.rust;
+
+if (crate) {
+  // The Rust executable prints its crate version, and `cargo build --locked` needs the lock to agree.
+  const rust = resolve(pkg.root, '../../rust');
+
+  for (const [file, pattern] of /** @type {const} */ ([
+    [join(rust, crate, 'Cargo.toml'), /^(version = ")[^"]+(")$/m],
+    [join(rust, 'Cargo.lock'), new RegExp(`^(name = "${crate}"\\nversion = ")[^"]+(")$`, 'm')],
+  ])) {
+    const text = await readFile(file, 'utf8');
+    assert.match(text, pattern, `No crate version in ${relative(pkg.root, file)}`);
+    outputs.set(file, text.replace(pattern, `$1${pkg.version}$2`));
+  }
 }
 
 for (const [file, text] of outputs) {

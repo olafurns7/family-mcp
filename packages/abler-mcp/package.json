@@ -54,6 +54,7 @@
   "packageManager": "bun@1.4.2",
   "familyMcp": {
     "release": {
+      "rust": "abler-mcp",
       "tools": [
         "auth_status",
         "get_profile",
