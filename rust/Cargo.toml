@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["family-store"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99.0"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
