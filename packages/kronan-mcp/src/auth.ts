@@ -57,7 +57,7 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new SafeError(
-        'The last write to the Krónan token store did not complete, so its token is not used. Remove session.enc and session.enc.marker from the Krónan store folder (~/Library/Application Support/family-mcp/kronan-mcp on macOS, ~/.config/kronan-mcp on Linux), then run kronan-mcp auth set again.',
+        'The last write to the Krónan token store did not complete, so its token is not used. Remove session.enc and session.enc.marker from the Krónan store folder (~/Library/Application Support/family-mcp/kronan-mcp on macOS, ~/.config/kronan-mcp on Linux by default), then run kronan-mcp auth set again.',
       );
     case 'SECRET_NOT_FOUND':
       return new SafeError('No saved Krónan access token. Run kronan-mcp auth set first.');

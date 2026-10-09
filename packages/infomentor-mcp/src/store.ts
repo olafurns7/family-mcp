@@ -94,7 +94,7 @@ function storeError(error: SessionStoreError): InfoMentorError {
     case 'STORE_WRITE_UNCERTAIN':
       return new InfoMentorError(
         'INVALID_SESSION',
-        'The last write to the InfoMentor session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the InfoMentor store folder (~/Library/Application Support/family-mcp/infomentor-mcp on macOS, ~/.config/infomentor-mcp on Linux), then run infomentor-mcp login again.',
+        'The last write to the InfoMentor session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the InfoMentor store folder (~/Library/Application Support/family-mcp/infomentor-mcp on macOS, ~/.config/infomentor-mcp on Linux by default), then run infomentor-mcp login again.',
       );
     case 'BUSY':
       return new InfoMentorError(

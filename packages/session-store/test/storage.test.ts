@@ -383,7 +383,9 @@ test('every link above the store is followed, also links inside a link’s targe
       await symlink(join(root, 'loop-a'), join(root, 'loop-b'));
       await assert.rejects(
         checkSecretStore(layout(join(root, 'loop-a'))),
-        refused('A link in a folder above the store is broken or loops back on itself.'),
+        refused(
+          'A link in a folder above the store is broken, loops back on itself, or leads into a folder you cannot open.',
+        ),
       );
       // chmod -R cannot pass a loop on cleanup.
       await rm(join(root, 'loop-a'));

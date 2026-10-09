@@ -60,7 +60,8 @@ do not move the store. On macOS both store directories are excluded from Time
 Machine before any secret is written in them, and every start confirms it. Linux has
 no standard for this: leave `~/.local/share/family-mcp/keys` out of your backups. A
 power cut during a save can lose that change or leave the store unreadable; the
-server then says so, and you sign in again. It never uses a damaged session.
+server then says so, and you run `kronan-mcp auth set` again. It never uses a
+damaged token.
 
 Every start except `--help` and `--version` checks the store before anything else.
 If a store file or directory could be read or replaced by another user (permissions

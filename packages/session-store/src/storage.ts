@@ -278,7 +278,7 @@ async function ancestorsOf(directory: string, uid: number): Promise<Checked[]> {
 
       if (++links > MAX_LINKS || !(await resolves(entry)))
         throw new StoreRefusal(
-          'A link in a folder above the store is broken or loops back on itself.',
+          'A link in a folder above the store is broken, loops back on itself, or leads into a folder you cannot open.',
           await shown(entry, absolute),
         );
       const target = await readlink(entry);

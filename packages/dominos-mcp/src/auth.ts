@@ -84,7 +84,7 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new SafeError(
-        'The last write to the Domino’s session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Domino’s store folder (~/Library/Application Support/family-mcp/dominos-mcp on macOS, ~/.config/dominos-mcp on Linux), then run dominos-mcp auth login again.',
+        'The last write to the Domino’s session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Domino’s store folder (~/Library/Application Support/family-mcp/dominos-mcp on macOS, ~/.config/dominos-mcp on Linux by default), then run dominos-mcp auth login again.',
       );
     case 'SECRET_NOT_FOUND':
       return new SafeError('No saved Domino’s session. Run dominos-mcp auth login first.');

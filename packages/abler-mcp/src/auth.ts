@@ -260,7 +260,7 @@ function storeError(error: SessionStoreError): StoreFailure {
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new StoreFailure(
-        'The last write to the Abler session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Abler store folder (~/Library/Application Support/family-mcp/abler-mcp on macOS, ~/.config/abler-mcp on Linux), then run abler-mcp auth login again.',
+        'The last write to the Abler session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Abler store folder (~/Library/Application Support/family-mcp/abler-mcp on macOS, ~/.config/abler-mcp on Linux by default), then run abler-mcp auth login again.',
       );
     case 'SECRET_NOT_FOUND':
       return new StoreFailure(noSession().message);

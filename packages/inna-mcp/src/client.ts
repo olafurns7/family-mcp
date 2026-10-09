@@ -116,7 +116,7 @@ const encode = (saved: Saved | null) => JSON.stringify(saved && bounded(savedSch
 
 function uncertain(): SafeError {
   return new SafeError(
-    'The last write to the Inna session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Inna store folder (~/Library/Application Support/family-mcp/inna-mcp on macOS, ~/.config/inna-mcp on Linux), then run inna-mcp auth login again.',
+    'The last write to the Inna session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Inna store folder (~/Library/Application Support/family-mcp/inna-mcp on macOS, ~/.config/inna-mcp on Linux by default), then run inna-mcp auth login again.',
   );
 }
 
