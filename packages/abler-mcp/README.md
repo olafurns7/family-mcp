@@ -196,36 +196,53 @@ again when Abler rejects renewal.
 
 The session (the `refreshToken` and `id_token` cookies, rewritten after every
 rotation) and any candidate awaiting verification are saved only as one encrypted
-record (AES-256-GCM), `~/.config/abler-mcp/session.enc`, with a non-secret
+record (AES-256-GCM), `session.enc`, with a non-secret
 `session.enc.marker` beside it. The record's 256-bit key is created on the first
 login, capture, import or migrate. It is never regenerated, except when the key is
-gone and you sign in again with `auth login`, `auth capture` or `auth import`:
+gone and you sign in again with `auth login`, `auth capture` or `auth import`.
 
-- **macOS:** a login-keychain item (service `family-mcp.abler-mcp`, account
-  `default.data-key`), read through Apple's `/usr/bin/security`.
-- **Linux:** a `0600` file in its own `0700` directory,
-  `~/.local/share/family-mcp/keys/abler-mcp.default.key`.
+The key is a `0600` file in its own `0700` directory, apart from the record:
 
-On a headless Mac whose login keychain is locked (for example over SSH), set
-`FAMILY_MCP_KEY_BACKEND=file` for sign-in and the MCP host: the key is then kept in
-`~/.local/share/family-mcp/keys/` as on Linux, and status says the session is saved
-in an encrypted file.
+| Platform | Record and marker                                                | Key                                                                   |
+| -------- | ---------------------------------------------------------------- | --------------------------------------------------------------------- |
+| macOS    | `~/Library/Application Support/family-mcp/abler-mcp/session.enc` | `~/Library/Application Support/family-mcp/keys/abler-mcp.default.key` |
+| Linux    | `~/.config/abler-mcp/session.enc`                                | `~/.local/share/family-mcp/keys/abler-mcp.default.key`                |
 
-When `XDG_CONFIG_HOME` or `XDG_DATA_HOME` is set, it replaces `~/.config` or
-`~/.local/share`; set the same values for sign-in and the MCP host. Rotated cookies
-are written to the record under its lock before any further request, also when
-Abler answers with an error.
+On Linux, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` replace `~/.config` and
+`~/.local/share`; set the same values for sign-in and the MCP host. On macOS they do
+not move the store. On macOS both store directories are excluded from Time Machine
+before any secret is written in them, and every start confirms it. Linux has no
+standard for this: leave `~/.local/share/family-mcp/keys` out of your backups.
+Writes are atomic, not power-loss durable: a power cut can lose the last change.
+
+Every start except `--help` and `--version` checks the store before anything else.
+If a store file or directory could be read or replaced by another user (group or
+other permissions, another owner, a symbolic or hard link, a writable directory
+above it, or a macOS access control list), `abler-mcp` prints one line,
+`abler-mcp: cannot start: <what to fix> (<path>)`, and exits; it never changes
+permissions for you.
+
+An earlier test build kept this store under `~/.config` on macOS, with the key in
+the macOS Keychain or under `~/.local/share`. That store is not used. At start the
+server lists the old files with the exact commands to remove them; run
+`abler-mcp auth login` first, then remove them.
+
+Rotated cookies are written to the record under its lock before any further
+request, also when Abler answers with an error.
 
 `abler-mcp auth status` verifies the session and names where it is saved
 (`storage`). `abler-mcp auth logout` forgets the session and any candidate on this
 computer; the key and the record stay.
 
-What this protects against: cookies showing up in `cat`, `grep`, agent file reads,
-commits, dotfile sync, or backups of `~/.config`. What it does not: anything that
-can read both the record and its key, such as another process of your user, an
-agent with a shell, root, or a full-home backup. On macOS any process of your user
-can read the key with `security` while the login keychain is unlocked. Against
-those it is the same as a `0600` file.
+What this protects against: other users of this computer who are not root; the
+session showing up in `cat`, `grep`, commits or dotfile sync without the key; Time
+Machine backups, which skip the store; tampering with the record. What it does not:
+anything running as your user, such as other programs, malware or an AI agent with a
+shell or a prompt injection, which can read both files or call the MCP tools; root;
+a stolen laptop that is unlocked; other backup, sync or clone tools, and Time
+Machine backups made before the exclusion; indexers such as Spotlight; the key in
+crash dumps, swap or hibernation images. FileVault protects a stolen disk that is
+switched off.
 
 ### Upgrading from 0.6.0
 
@@ -357,7 +374,8 @@ The Chrome capture transport is covered by a local protocol test; live session c
 | No saved session                                 | Sign in with the same `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `ABLER_SESSION_FILE` the MCP host uses.                                                                                                                                                                 |
 | Saved in a plaintext file                        | Run `abler-mcp auth migrate`.                                                                                                                                                                                                                                        |
 | Cannot read session / unsafe permissions         | Before migration: use a regular file owned by your user, not a symlink or hard link; run `chmod 600 /absolute/path/session.json` on Unix. Its parent must be writable for atomic rotation and locking. Windows is unsupported by the encrypted store.                |
-| Unlock your login keychain                       | macOS: unlock the login keychain, then retry.                                                                                                                                                                                                                        |
+| `abler-mcp: cannot start:`                       | The store is unsafe. The line names the path and the fix (for example `chmod 700`, `chmod 600`, `chmod go-w`, `chmod -N`). Nothing is changed for you.                                                                                                               |
+| Set up with the macOS Keychain                   | An earlier test build’s store. Remove the store files and run `abler-mcp auth login` again.                                                                                                                                                                          |
 | The Abler store key is missing                   | The key was deleted. The record cannot be decrypted; `abler-mcp auth login` (or capture/import) replaces it with a new key and record.                                                                                                                               |
 | The last write … did not complete                | An interrupted write left `session.enc` and `session.enc.marker` inconsistent. Remove both files, then sign in again.                                                                                                                                                |
 | Cannot use the Abler session store               | The record, marker, or key is damaged, unsafe, or from another key. Nothing is reset automatically; restore the key, or remove the record and marker and sign in.                                                                                                    |

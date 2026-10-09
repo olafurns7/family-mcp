@@ -2,9 +2,9 @@
 
 Private workspace package shared by the family-mcp servers. It owns the two things a server must get
 right for a locally saved credential: coordinating every local process that uses one session, and
-keeping it unreadable to others: encrypted secret records whose key is in the macOS Keychain or a
-Linux key file, and owner-only private files, such as an older version's plaintext session. It has no
-runtime dependencies.
+keeping it unreadable to others: encrypted secret records whose key is an owner-only key file, and
+owner-only private files, such as an older version's plaintext session. It has no runtime
+dependencies.
 
 ```ts
 import {
@@ -34,7 +34,11 @@ await withFileLock(path, { waitMs: 30_000 }, async () => {
 - Ownership is a single `<pid>-<uuid>` file published by renaming a complete temporary directory
   into place; there is no window with a partially written owner.
 - A waiter polls at most every 250 ms for up to `waitMs` (default 30 s; `0` fails immediately)
-  and then throws `BUSY`. The caller's `signal` aborts the wait with `CANCELLED`.
+  and then throws `BUSY`. The deadline uses monotonic time, so a clock change does not move it,
+  and every retry obeys it: once it has passed, a lock caught between owners gets at most three
+  more immediate attempts (so `waitMs: 0` can still finish a recovery), and a live owner none. The caller's `signal` aborts the wait with `CANCELLED`. These
+  bounds cover the waiting, not kernel file I/O: a network, FUSE or failing disk can block a
+  single file call for longer.
 - A crashed owner is recovered as soon as its PID no longer exists. A live PID is never expired by
   age, even if its process is suspended. If the operating system reuses a crashed owner's PID for
   another live process, the lock can remain busy; remove it with `rm -r <file>.lock` only when no
@@ -68,7 +72,10 @@ leaves after a hard crash once they are older than five minutes; a directory or 
 name is never removed. Lock temporaries use `<file>.lock-tmp.<owner>`, which `sweepTemp`
 does not match; sweeps should still run under the lock. `defaultSessionPath(appName, { legacy? })` returns
 `$XDG_CONFIG_HOME/<app>/session.json` (default `~/.config/<app>/session.json`), keeping an existing
-legacy file's path when one is given.
+legacy file's path when one is given; it is the older plaintext location and does not move.
+
+Writes are atomic, not power-loss durable: a reader sees the old file or the new one, never a mix,
+but flushing the directory is best effort, so after a power cut the last change can be missing.
 
 Every error is a `SessionStoreError` with a `code` (`BUSY`, `CANCELLED`, `LOCK_LOST`, `NOT_FOUND`,
 `UNSAFE_FILE`, `TOO_LARGE`, `IO`, and the store codes below) and a literal message that never
@@ -78,19 +85,20 @@ contains a path, key or file contents. `readPrivateBytes` is `readPrivateFile` w
 
 ```ts
 import {
-  LocalKeyFileProvider,
   createSecretKey,
+  defaultKeyProvider,
+  defaultSecretRecordPath,
   readSecretRecord,
   withSecretRecord,
 } from '@family-mcp/session-store';
 
 const store = {
-  path: recordPath, // for example ~/.config/app-mcp/session.enc
+  path: defaultSecretRecordPath('app-mcp'),
   server: 'app-mcp',
   profile: 'default',
   purpose: 'session',
   schema: 1,
-  keys: new LocalKeyFileProvider({ path: keyPath }), // e.g. $XDG_DATA_HOME/family-mcp/keys/app-mcp.key
+  keys: defaultKeyProvider({ server: 'app-mcp', profile: 'default' }), // a LocalKeyFileProvider
   maxBytes: 262_144,
 };
 
@@ -170,51 +178,87 @@ other key failure leaves both files untouched.
 Key providers implement `getKey()`, which never creates a key, and `createKey()`, which refuses to
 replace one. `LocalKeyFileProvider({ path, keyId? })` keeps exactly 32 raw bytes in a file outside
 the record directory. It reads the key with the `readPrivateFile` checks: a regular, single-link
-file owned by the current user with no group or other bits. `createKey()` creates it exclusively
-(`wx`) with mode `0600` in a `0700` directory and flushes the file and the directory.
-`FakeKeyProvider` holds a key in memory for tests. Providers take an optional `AbortSignal`;
-`withSecretRecord` and `createSecretKey` pass theirs.
+file owned by the current user with no group or other bits, in directories that pass the startup
+check below. `createKey()` writes the key to an exclusive (`wx`) `0600` temporary `<key>.<uuid>.tmp`
+in a `0700` directory, flushes it, publishes it with `link`, which never replaces an existing key,
+removes the temporary and flushes the directory. A crash leaves no key or the whole key; at worst
+the temporary is still a second name of the key, and the next `getKey()` removes it, only when it is
+the store's own temporary owned by this user with the key's device and inode. Any other second
+name is a hard link and refused. `FakeKeyProvider` holds a key in memory for tests. Providers take
+an optional `AbortSignal`; `withSecretRecord` and `createSecretKey` pass theirs.
 
-`KeychainAccessorKeyProvider({ server, profile, keyId?, readTimeoutMs?, createTimeoutMs? })`
-(key source `keychain-accessor`) keeps the key in a generic password of the default (login)
-keychain: service `family-mcp.<server>`, account `<profile>.data-key`, value 64 lowercase hex
-characters. It runs Apple's `/usr/bin/security` directly, never through a shell, with only `PATH`
-and `HOME` in its environment and its output never logged:
+The `KeyProvider` interface and the marker's `backend`, `keySource` and `keyId` checks stay, so a
+later provider (a signed macOS Keychain helper, Linux Secret Service) can be added and chosen at
+setup; none falls back to another. No code here runs `/usr/bin/security` or any Keychain API. A
+marker from an earlier build whose key source is `keychain-accessor` is refused with
+`STORE_BACKEND_RETIRED`: remove the store files and sign in again.
 
-- `getKey()` runs `find-generic-password -s … -a … -w` and accepts exactly 64 hex characters and a
-  newline on stdout. The key is never in argv. The child is killed after `readTimeoutMs` (default
-  10 s, `STORE_TIMEOUT`) or on abort (`CANCELLED`).
-- `createKey()` first checks that no item exists, then runs `security -i` and writes one
-  `add-generic-password … -w <hex> -T /usr/bin/security` command to its stdin, without `-U` or
-  `-A`: the item is never updated, and its ACL trusts only the Apple tool. `-i` exits with the
-  last command's status; a zero status is still followed by reading the key back and checking, in
-  constant time, that it equals the generated key. Any
-  failure, abort or timeout (`createTimeoutMs`, default 120 s) after the write starts is
-  `STORE_WRITE_UNCERTAIN` and is never retried; running setup again creates the key only while the
-  item is still absent and otherwise refuses.
-- Exit statuses are the OSStatus truncated to 8 bits (Apple Security-61901.80.25,
-  `SecurityTool/macOS/security.c` and `keychain_find.c`): 44 item not found is `STORE_UNAVAILABLE`;
-  36 interaction not allowed (a locked keychain without UI) and 29 interaction required are
-  `STORE_LOCKED`; 51 authorization failed and 128 user cancelled are `STORE_ACCESS_DENIED`; anything
-  else, malformed output or a missing tool is `STORE_ERROR`.
+### Where the store lives
 
-The binaries ship unsigned, so trusting the Apple tool is what keeps updates free of keychain
-prompts. The cost: **any process of the same user can fetch the key with `security` while the login
-keychain is unlocked**; there is no per-app isolation. Records still hold no plaintext in config or
-backups, and the key is protected while the keychain is locked. A later Developer ID release
-upgrades without rewriting data: an interactive step grants the signed binary access to the same
-item, verifies that it reads the key, then removes the `security` tool's access.
+`defaultSecretRecordPath(server)` and `defaultKeyProvider({ server, profile, platform? })` give:
 
-`defaultKeyProvider({ server, profile, platform? })` picks the key for the platform: the keychain
-provider on macOS; on Linux a `LocalKeyFileProvider` at
-`$XDG_DATA_HOME/family-mcp/keys/<server>.<profile>.key` when `XDG_DATA_HOME` is absolute, else
-`~/.local/share/family-mcp/keys/…`, apart from the records under `~/.config`. Other platforms throw
-`STORE_UNAVAILABLE`. On a headless Mac whose login keychain is locked (SSH), `FAMILY_MCP_KEY_BACKEND=file`
-selects that key file on macOS too (key source `local-file`, so a server's status says “Saved in an
-encrypted file.”); any other non-empty value throws `STORE_UNAVAILABLE`. The tests of every package
-that uses the store, and `bun test` from the repository root, preload `test/key-file-only.ts`, which sets the variable and fails a test that would get the
-keychain provider, so a test run never reaches the real Keychain. `defaultSecretRecordPath(server)` returns `$XDG_CONFIG_HOME/<server>/session.enc`
-(default `~/.config/<server>/session.enc`).
+| Platform | Records, markers and locks                                      | Keys                                                                       |
+| -------- | --------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| macOS    | `~/Library/Application Support/family-mcp/<server>/session.enc` | `~/Library/Application Support/family-mcp/keys/<server>.<profile>.key`     |
+| Linux    | `$XDG_CONFIG_HOME/<server>/session.enc` (`~/.config`)           | `$XDG_DATA_HOME/family-mcp/keys/<server>.<profile>.key` (`~/.local/share`) |
+
+On Linux a relative `XDG_*` value is ignored, as the spec says. On macOS the XDG variables do not
+move the store, so it cannot be pointed into iCloud Drive, Desktop or Documents by accident.
+Only the test seam `FAMILY_MCP_STORE_TEST_SEAM=1` makes macOS honour absolute XDG directories;
+the tests of every package that uses the store, and `bun test` from the repository root, preload
+`test/store-test-seam.ts`, which sets it with scratch XDG directories, so a test run never touches
+the real store. A home that is unset or not absolute is refused (`STORE_UNAVAILABLE`). Other
+platforms have no supported key (`STORE_UNAVAILABLE`). `FAMILY_MCP_KEY_BACKEND` is retired: unset,
+empty or `file` change nothing, and any other value is refused.
+
+`retiredStorePaths(server, profile?, { platform? })` lists where an earlier, unreleased macOS build
+kept the store (`~/.config/<server>/session.enc` with its marker and lock, and
+`~/.local/share/family-mcp/keys/<server>.<profile>.key`). Passed as a record's `retired` option,
+those files make `exists()` true, so the server asks for a new sign-in instead of falling back to
+an older credential; nothing reads them.
+
+### Time Machine
+
+On macOS each store directory (`keys/` and the server's directory) is excluded from Time Machine
+before any key, temporary or record is written in it: setup writes the sticky exclusion attribute
+`com.apple.metadata:com_apple_backup_excludeItem`, the same value `tmutil addexclusion` writes,
+with `xattr`, and confirms it with `tmutil isexcluded`, which decides. Only when that does not
+confirm it does setup run `tmutil addexclusion` (it took 11 s per call on macOS 27.0.1), and if
+the directory is still not excluded, setup refuses. Every `tmutil` and `xattr` run has a time
+bound. A start confirms the exclusion again and re-applies it when it was lost; a directory that
+was removed and made again is excluded again. Excluding the store does not remove copies that
+older Time Machine backups already hold.
+
+Linux has no standard backup exclusion. Leave the key directory
+(`~/.local/share/family-mcp/keys`) out of your backups yourself; a backup holding both a record and
+its key holds the secret.
+
+### Startup check
+
+`checkSecretStore({ path, keys, retired? })` is the preflight every server runs before it serves or
+touches the store, and `startupCheck({ server, signIn, store })` wraps it for a CLI: one stderr line
+`<server>: cannot start: <message> (<path>)` and `false` on a refusal, or a notice with the exact
+cleanup commands when `retired` files exist. It reads no secret, takes no lock and creates nothing;
+on macOS it only re-applies a lost backup exclusion. It refuses, with `UNSAFE_FILE` and a fixed
+message naming the fix, and never repairs anything:
+
+- a key, record or marker file that is not a regular file, is a symbolic link, has another name
+  (other than the recognised key temporary above), has group or other permission bits, or is
+  owned by another user;
+- a store directory (`keys/`, the server's directory, and `family-mcp/` where it is their parent)
+  that is a
+  symbolic link, is owned by another user, including root, or is not owner-only (`chmod 700`);
+- a directory above the store, on the path as written and on the path it resolves to, that
+  another user could use to replace the store: owned by someone other than this user or root, or
+  writable by group or other (`chmod go-w`). A sticky shared directory such as `/tmp` passes
+  only when the entry below it is this user's or root's. A symbolic link on the way must be this
+  user's or root's;
+- on macOS, an access control list that grants another user anything on a store directory or file
+  (`chmod -N`), or lets another user change a directory above the store (`chmod -a`). Deny
+  entries, such as a stock home's `group:everyone deny delete`, pass; an entry the check cannot
+  read is refused.
+
+The error message has no path; `StoreRefusal.path` names the path for the owner's terminal.
 
 Failures are fixed, never repaired:
 
@@ -228,16 +272,36 @@ Failures are fixed, never repaired:
   pending generation other than the next one, a migrated flag that disagrees with the generation, a
   committed marker ahead of or behind its record, a missing record after a committed write, or a
   record without a marker. Neither file is used or changed; nothing resets the store.
-- `STORE_LOCKED`, `STORE_ACCESS_DENIED`, `STORE_TIMEOUT`: the keychain is locked, refused access,
-  or did not answer in time. The key is never created as a fallback.
+- `STORE_BACKEND_RETIRED`: the marker names the macOS Keychain key source of an earlier build.
+- `STORE_LOCKED`, `STORE_ACCESS_DENIED`, `STORE_TIMEOUT`: kept for a later key provider that can
+  be locked, refuse access or not answer in time; the key file never reports them. The key is
+  never created as a fallback.
 - `TOO_LARGE`, plus the existing lock and file codes (`BUSY`, `CANCELLED`, `LOCK_LOST`,
   `UNSAFE_FILE`, `IO`).
 
-Threat model: encryption with a separately held key reduces accidental file, grep and commit
-exposure and ciphertext-only backup leaks. It does not stop root, a compromised service, or a
-same-user shell that can read the key. A key stolen together with the records is roughly a `0600`
-file. The marker detects inconsistent writes, not an attacker who rolls back both the record and
-the marker.
+## Threat model
+
+What the store protects against:
+
+- other local users who are not root: the files are owner-only, and the startup check refuses
+  permissions, ACLs or directories that would let them read or replace the store;
+- a record copied without its key file, such as one in a dotfile repository or a commit;
+- Time Machine backups of the store, which are excluded on macOS;
+- tampering with a record while its key is safe: every record is authenticated.
+
+What it does not protect against:
+
+- anything running as your user: other programs, malware, AI agents with shell access or a
+  prompt injection. They can read both files or call the MCP tools;
+- root, and a stolen laptop that is unlocked;
+- backups, snapshots, clones or sync tools other than Time Machine that capture both files, and
+  Time Machine backups made before the exclusion;
+- Spotlight or other indexers seeing the files;
+- crash dumps, swap and hibernation images holding the key in memory;
+- rolling back a record together with its matching old marker;
+- plaintext files from older versions and browser profiles outside the store.
+
+FileVault (disk encryption) is what protects a stolen disk that is switched off.
 
 ## Platform notes
 
@@ -250,12 +314,16 @@ run there.
 
 `bun test` runs the acceptance suite: live-owner exclusion and dead-owner recovery under twelve
 concurrent attempts, symlinked directories, in-flight ownership replacement, bounded waiting and
-no age expiry for live PIDs, hard-link rejection, inode/size/mtime checks, file owner/mode/symlink/size checks,
-abort at the commit point, sweeping, directory modes, default paths, and three real processes that
-serialize read-modify-write cycles while a removal waits for an in-flight holder. The secret-record
-suite covers round trips, 1 MiB payloads, header and ciphertext tampering, wrong keys, missing and
-unsafe key files, pending-write reconciliation, stale or rolled-back markers and records, messages
-without paths or secrets, and three processes serializing encrypted updates. The keychain suite
-runs a fake `security` script, never the real tool: key read-back, argv without the key, exactly one
-stdin command, a minimal environment, output validation, every mapped exit status, killed hung
-reads and setups, unconfirmed setup writes, and the default key and record paths per platform.
+no age expiry for live PIDs, every lock retry within its deadline, hard-link rejection,
+inode/size/mtime checks, file owner/mode/symlink/size checks, abort at the commit point,
+sweeping, directory modes, default paths per platform, and three real processes that serialize
+read-modify-write cycles while a removal waits for an in-flight holder. The secret-record suite
+covers round trips, 1 MiB payloads, header and ciphertext tampering, wrong keys, missing and unsafe
+key files, pending-write reconciliation, stale or rolled-back markers and records, messages without
+paths or secrets, the retired Keychain marker and old layout, and three processes serializing
+encrypted updates. The storage suite covers every startup refusal (modes, owners, links, ancestors,
+sticky parents, macOS ACLs) with nothing read, locked or created, and a process stopped at each
+key publication step, then restarted, also concurrently. The backup suite runs a fake `tmutil`,
+never the real one: exclusion before any secret, the `addexclusion` fallback, refusal when
+exclusion fails or is not confirmed, re-application on start and after a directory is made again,
+and a hung `tmutil` abandoned within its bound.
