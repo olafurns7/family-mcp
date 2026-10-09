@@ -341,6 +341,56 @@ test('ancestors that another user could replace are refused, also above a missin
   });
 });
 
+test('every link above the store is followed, also links inside a link’s target', async () => {
+  // The written route and the final target are safe; the hop between them is replaceable.
+  const outside = await mkdtemp(join(tmpdir(), 'session-store-hop-'));
+
+  try {
+    await scratch(async (root) => {
+      const open = join(outside, 'open');
+      await mkdir(open, { mode: 0o700 });
+      await chmod(open, 0o777);
+      await mkdir(join(root, 'safe'), { mode: 0o700 });
+      await symlink(join(root, 'safe'), join(open, 'hop'));
+      await symlink(join(open, 'hop'), join(root, 'alias'));
+      const store = layout(join(root, 'alias'));
+
+      await assert.rejects(checkSecretStore(store), refused(E4, await realpath(open)));
+      await assert.rejects(
+        withSecretStore(store, async () => assert.fail()),
+        refused(E4, await realpath(open)),
+      );
+      await assert.rejects(store.keys.createKey(), refused(E4, await realpath(open)));
+      expect(await readdir(join(root, 'safe'))).toEqual([]);
+
+      // The same hop through a relative link.
+      await symlink('safe', join(root, 'relative'));
+      await rm(join(open, 'hop'));
+      await symlink(join(root, 'relative'), join(open, 'hop'));
+      await assert.rejects(checkSecretStore(store), refused(E4, await realpath(open)));
+
+      // Once the hop's directory is safe, the route is.
+      await chmod(open, 0o755);
+      expect(await checkSecretStore(store)).toEqual({ exists: false, retired: [] });
+      await createSecretKey(store);
+      expect(await readdir(join(root, 'safe'))).toEqual(['family-mcp']);
+
+      // A loop of links is refused, not followed forever.
+      await symlink(join(root, 'loop-b'), join(root, 'loop-a'));
+      await symlink(join(root, 'loop-a'), join(root, 'loop-b'));
+      await assert.rejects(
+        checkSecretStore(layout(join(root, 'loop-a'))),
+        refused('Cannot resolve a directory above the store.'),
+      );
+      // chmod -R cannot pass a loop on cleanup.
+      await rm(join(root, 'loop-a'));
+      await rm(join(root, 'loop-b'));
+    });
+  } finally {
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 test.skipIf(process.platform !== 'darwin')(
   'macOS ACLs that grant other users access are refused; deny entries pass',
   async () => {

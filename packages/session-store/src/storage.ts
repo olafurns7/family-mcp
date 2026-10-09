@@ -1,7 +1,7 @@
 import type { Stats } from 'node:fs';
-import { lstat, mkdir, readdir, realpath } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readlink, realpath, stat } from 'node:fs/promises';
 import { userInfo } from 'node:os';
-import { basename, dirname, join, parse, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
 
 import { SessionStoreError, systemErrorCode } from './errors.js';
 import { runBounded } from './spawn.js';
@@ -117,7 +117,8 @@ export async function lstatOrMissing(path: string): Promise<Stats | undefined> {
 
 type AclRole = 'owned' | 'ancestor';
 
-type Checked = { path: string; info: Stats; role: AclRole };
+/** `from` is the written store directory an ancestor was reached from, for its refusal's path. */
+type Checked = { path: string; info: Stats; role: AclRole; from?: string };
 
 /**
  * Check the store directories and every directory above them, on both the written path and the
@@ -176,61 +177,104 @@ export async function checkStorePaths(options: {
   if (process.platform === 'darwin') await checkAcls(checked);
 }
 
+// More expansions than this above one store directory are a loop or an attack; macOS stops at 32.
+const MAX_LINKS = 40;
+
 /**
- * The existing directories above `directory`, each checked: first along the path as written,
- * where a symbolic link must be this user's or root's, then along the resolved path.
+ * The existing directories above `directory`, each checked, along the route the kernel takes:
+ * one name at a time from the root, and through every symbolic link on the way, including links
+ * inside a link's target and the directories above that target. A link must be this user's or
+ * root's. The walk stops at the first missing name; a dangling link or more than `MAX_LINKS`
+ * expansions is refused. Paths in the result have no links.
  */
 async function ancestorsOf(directory: string, uid: number): Promise<Checked[]> {
-  const found: Checked[] = [];
-  const written = prefixes(dirname(directory));
-  let deepest: string | undefined;
+  const found = new Map<string, Checked>();
+  const absolute = resolve(directory);
+  const { root } = parse(absolute);
+  const leaf = basename(absolute);
+  const names = components(dirname(absolute));
+  let current = root;
+  let info = await lstat(root);
+  let links = 0;
 
-  for (const [index, path] of written.entries()) {
-    const info = await lstatOrMissing(path);
+  for (;;) {
+    const next = names.shift();
+    const name = next ?? leaf;
 
-    if (info === undefined) break;
-    deepest = path;
+    if (name === '.') continue;
 
-    if (info.isSymbolicLink()) {
-      if (info.uid !== uid && info.uid !== 0)
-        throw new StoreRefusal('A directory above the store is owned by another user.', path);
+    if (name === '..') {
+      // Its parent was checked on the way down, with this directory as its child.
+      current = dirname(current);
+      info = await lstat(current);
       continue;
     }
 
-    const child = written[index + 1] ?? directory;
-    const problem = ancestorProblem(info, uid, (await lstatOrMissing(child))?.uid);
+    const entry = join(current, name);
+    const child = await lstatOrMissing(entry);
+    const problem = ancestorProblem(info, uid, child?.uid);
 
-    if (problem !== undefined) throw new StoreRefusal(problem, path);
-    found.push({ path, info, role: 'ancestor' });
+    if (problem !== undefined) throw new StoreRefusal(problem, await shown(current, absolute));
+    found.set(current, { path: current, info, role: 'ancestor', from: absolute });
+
+    if (next === undefined || child === undefined) break;
+
+    if (child.isSymbolicLink()) {
+      if (child.uid !== uid && child.uid !== 0)
+        throw new StoreRefusal(
+          'A directory above the store is owned by another user.',
+          await shown(entry, absolute),
+        );
+
+      if (++links > MAX_LINKS || !(await resolves(entry)))
+        throw new StoreRefusal(
+          'Cannot resolve a directory above the store.',
+          await shown(entry, absolute),
+        );
+      const target = await readlink(entry);
+
+      // A relative target continues from the link's directory, an absolute one from the root.
+      if (isAbsolute(target)) {
+        current = parse(target).root;
+        info = await lstat(current);
+      }
+
+      names.unshift(...components(target));
+      continue;
+    }
+
+    current = entry;
+    info = child;
   }
 
-  if (deepest === undefined) return found;
-  let resolved: string;
+  return [...found.values()];
+}
 
+/** The names of `path` below its root, `.` and `..` kept for the walk to apply. */
+function components(path: string): string[] {
+  return path.slice(parse(path).root.length).split(sep).filter(Boolean);
+}
+
+/** False for a dangling link or a loop. */
+async function resolves(path: string): Promise<boolean> {
   try {
-    resolved = await realpath(deepest);
-  } catch (error) {
-    throw new StoreRefusal('Cannot resolve a directory above the store.', deepest, {
-      cause: error,
-    });
+    await stat(path);
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The route as the owner wrote it when it names the same entry, else the resolved one. */
+async function shown(path: string, written: string): Promise<string> {
+  for (const prefix of prefixes(written)) {
+    const parent = await realpath(dirname(prefix)).catch(() => undefined);
+
+    if (parent !== undefined && join(parent, basename(prefix)) === path) return prefix;
   }
 
-  const route = prefixes(resolved);
-
-  for (const [index, path] of route.entries()) {
-    if (found.some((entry) => entry.path === path)) continue;
-    const info = await lstatOrMissing(path);
-
-    // The resolved route has no links; a component that vanished is a race, refused next time.
-    if (info === undefined) break;
-    const child = route[index + 1] ?? directory;
-    const problem = ancestorProblem(info, uid, (await lstatOrMissing(child))?.uid);
-
-    if (problem !== undefined) throw new StoreRefusal(problem, path);
-    found.push({ path, info, role: 'ancestor' });
-  }
-
-  return found;
+  return path;
 }
 
 /** `/a/b` gives `/`, `/a`, `/a/b`. */
@@ -300,7 +344,11 @@ async function checkAcls(checked: readonly Checked[]): Promise<void> {
   for (const [index, entry] of unknown.entries()) {
     const problem = aclProblem(entries[index] ?? [], entry.role, self);
 
-    if (problem !== undefined) throw new StoreRefusal(problem, entry.path);
+    if (problem !== undefined)
+      throw new StoreRefusal(
+        problem,
+        entry.from === undefined ? entry.path : await shown(entry.path, entry.from),
+      );
   }
 
   for (const entry of unknown) aclCache.set(stamp(entry), true);
