@@ -1,8 +1,5 @@
 import { resolve } from 'node:path';
-import { SessionStoreError, readPrivateFile } from '@family-mcp/session-store';
-import { z } from 'zod';
 import { InfoMentorHttp, parseForms } from './http.js';
-import { withSessionLock } from './lock.js';
 import { credentialsSchema, readCredentials, type Credentials } from './credentials.js';
 import {
   captureSession,
@@ -11,15 +8,13 @@ import {
   rateLimitCooldown,
   readSession,
   restoreCookies,
-  savedSessionSchema,
-  SESSION_MAX_BYTES,
   sessionPath,
   throwIfAborted,
   trustedUrl,
-  writeSession,
   type SavedSession,
   type SessionOptions,
 } from './session.js';
+import { changeSession, commitChange, prepareChange, type Previous } from './store.js';
 
 export type ImportOptions = SessionOptions & {
   /** Replace a saved session that belongs to a different verified account. Default false. */
@@ -113,43 +108,58 @@ export function hasConfiguredCredentials(options: SessionOptions): boolean {
   );
 }
 
+/**
+ * The sign-in to submit: `stored` (renewal) first, then the configured sources. `file` is the
+ * credentials file read, as configured.
+ */
+export async function resolveCredentials(
+  options: SessionOptions,
+  signal?: AbortSignal,
+  stored?: Credentials | null,
+): Promise<{ credentials: Credentials; file?: string }> {
+  throwIfAborted(signal);
+
+  if (stored) return { credentials: { ...stored } };
+  const file = options.credentialsFile ?? process.env['INFOMENTOR_CREDENTIALS_FILE'];
+
+  if (file) return { credentials: await readCredentials(resolve(file), signal), file };
+
+  if (
+    process.env['INFOMENTOR_USERNAME'] !== undefined ||
+    process.env['INFOMENTOR_PASSWORD'] !== undefined
+  ) {
+    const configured = credentialsSchema.safeParse({
+      username: process.env['INFOMENTOR_USERNAME'],
+      password: process.env['INFOMENTOR_PASSWORD'],
+    });
+
+    if (!configured.success)
+      throw new InfoMentorError(
+        'INVALID_CONFIGURATION',
+        'Use the app’s private secret input to provide both INFOMENTOR_USERNAME (kennitala or InfoMentor username; no email required) and INFOMENTOR_PASSWORD to the login process. Never put their values in chat or MCP arguments.',
+      );
+
+    return { credentials: configured.data };
+  }
+
+  throw new InfoMentorError(
+    'INVALID_CONFIGURATION',
+    'Credentials required. Use the app’s private secret input for INFOMENTOR_USERNAME (kennitala or InfoMentor username; no email required) and INFOMENTOR_PASSWORD, then run infomentor-mcp login with those secrets injected into its environment. If the MCP process already has them, call infomentor_login. Alternatively supply credentialsFile or importFile. Never put secret values in chat or MCP arguments.',
+  );
+}
+
 /** Build a verified candidate; the caller commits only after checking account/context. */
 export async function createAuthenticatedHttp(
   options: LoginOptions,
+  credentials: Credentials,
   deadline = loginDeadline(options.timeoutMs),
 ): Promise<InfoMentorHttp> {
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
-  let credentials: Credentials | undefined;
 
   try {
     throwIfAborted(signal);
-    const file = options.credentialsFile ?? process.env['INFOMENTOR_CREDENTIALS_FILE'];
-
-    if (file) credentials = await readCredentials(resolve(file), signal);
-    else if (
-      process.env['INFOMENTOR_USERNAME'] !== undefined ||
-      process.env['INFOMENTOR_PASSWORD'] !== undefined
-    ) {
-      const configured = credentialsSchema.safeParse({
-        username: process.env['INFOMENTOR_USERNAME'],
-        password: process.env['INFOMENTOR_PASSWORD'],
-      });
-
-      if (!configured.success)
-        throw new InfoMentorError(
-          'INVALID_CONFIGURATION',
-          'Use the app’s private secret input to provide both INFOMENTOR_USERNAME (kennitala or InfoMentor username; no email required) and INFOMENTOR_PASSWORD to the login process. Never put their values in chat or MCP arguments.',
-        );
-      credentials = configured.data;
-    } else
-      throw new InfoMentorError(
-        'INVALID_CONFIGURATION',
-        'Credentials required. Use the app’s private secret input for INFOMENTOR_USERNAME (kennitala or InfoMentor username; no email required) and INFOMENTOR_PASSWORD, then run infomentor-mcp login with those secrets injected into its environment. If the MCP process already has them, call infomentor_login. Alternatively supply credentialsFile or importFile. Never put secret values in chat or MCP arguments.',
-      );
-
     const http = new InfoMentorHttp(undefined, 0, options.fetch);
     await authenticate(http, credentials, signal);
-    credentials.password = '';
     await http.readParent(signal);
 
     return http;
@@ -158,22 +168,30 @@ export async function createAuthenticatedHttp(
     throwIfAborted(options.signal);
     throw error;
   } finally {
-    if (credentials) credentials.password = '';
+    credentials.password = '';
   }
 }
 
-export async function login(options: LoginOptions = {}): Promise<void> {
-  const file = sessionPath(options.sessionFile);
+/**
+ * Sign in and save the verified session with the sign-in it used in one store write, then remove
+ * the plaintext file. Returns the credentials file read, as configured, if any.
+ */
+export async function login(options: LoginOptions = {}): Promise<string | undefined> {
+  const legacy = sessionPath(options.sessionFile);
   const deadline = loginDeadline(options.timeoutMs);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
 
   try {
-    await withSessionLock(file, signal, async () => {
-      const http = await createAuthenticatedHttp(options, deadline);
+    return await changeSession(legacy, options.keys, signal, async (store, record) => {
+      const { credentials, file } = await resolveCredentials(options, signal);
+      const previous = await prepareChange(store, record, legacy);
+      const http = await createAuthenticatedHttp(options, { ...credentials }, deadline);
       const session = sessionFromHttp(http);
-      await requireSameAccount(file, session, options.allowAccountChange);
+      requireSameAccount(previous.session, session, options.allowAccountChange);
       throwIfAborted(signal);
-      await (options.writeSession ?? writeSession)(session, file, signal);
+      await commitChange(store, legacy, { version: 1, session, credentials });
+
+      return file;
     });
   } catch (error) {
     if (deadline.aborted && !options.signal?.aborted) throw loginTimedOut();
@@ -209,50 +227,21 @@ export function httpFromSession(
 /**
  * An explicit login or import must not silently switch the saved account: a mistaken
  * credentials or session file would otherwise replace the account used by the MCP.
- * Missing and legacy-v1 files protect nothing. An unsafe or unrecognized existing file cannot
+ * Missing and legacy-v1 sessions protect nothing. An unsafe or unrecognized saved session cannot
  * safely establish which account it represents, so replacement requires an explicit override.
  */
-async function requireSameAccount(
-  file: string,
+function requireSameAccount(
+  previous: Previous['session'],
   candidate: SavedSession,
   allowAccountChange: boolean | undefined,
-): Promise<void> {
-  if (allowAccountChange) return;
-  let text: string;
+): void {
+  if (allowAccountChange || previous === null) return;
 
-  try {
-    text = await readPrivateFile(file, { maxBytes: SESSION_MAX_BYTES });
-  } catch (error) {
-    if (error instanceof SessionStoreError && error.code === 'NOT_FOUND') return;
+  if (previous === undefined)
     throw new InfoMentorError(
       'INVALID_CONFIGURATION',
       'The existing InfoMentor session cannot be verified. The previous session was kept. Log out first, or pass allowAccountChange to replace it.',
     );
-  }
-
-  let value: unknown;
-
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new InfoMentorError(
-      'INVALID_CONFIGURATION',
-      'The existing InfoMentor session cannot be verified. The previous session was kept. Log out first, or pass allowAccountChange to replace it.',
-    );
-  }
-
-  const checked = z
-    .union([z.object({ version: z.literal(1) }).passthrough(), savedSessionSchema])
-    .safeParse(value);
-
-  if (!checked.success)
-    throw new InfoMentorError(
-      'INVALID_CONFIGURATION',
-      'The existing InfoMentor session cannot be verified. The previous session was kept. Log out first, or pass allowAccountChange to replace it.',
-    );
-
-  if (checked.data.version === 1) return;
-  const previous = checked.data;
 
   if (
     previous.accountId !== undefined &&
@@ -265,20 +254,32 @@ async function requireSameAccount(
     );
 }
 
+/** Verify and save an exported session; a stored sign-in is kept only for the same account. */
 export async function importSession(
   file: string,
   options: ImportOptions = {},
   signal?: AbortSignal,
 ): Promise<void> {
   throwIfAborted(signal);
-  const destination = sessionPath(options.sessionFile);
-  await withSessionLock(destination, signal, async () => {
+  const legacy = sessionPath(options.sessionFile);
+  await changeSession(legacy, options.keys, signal, async (store, record) => {
     const imported = await readSession(resolve(file));
+    const previous = await prepareChange(store, record, legacy);
     const http = httpFromSession(imported, options.fetch);
     await http.requireAuthentication(signal);
     await http.readParent(signal);
     const session = sessionFromHttp(http);
-    await requireSameAccount(destination, session, options.allowAccountChange);
-    await (options.writeSession ?? writeSession)(session, destination, signal);
+    requireSameAccount(previous.session, session, options.allowAccountChange);
+    throwIfAborted(signal);
+    const kept = previous.record?.session?.accountId;
+
+    await commitChange(store, legacy, {
+      version: 1,
+      session,
+      credentials:
+        kept !== undefined && kept === session.accountId
+          ? (previous.record?.credentials ?? null)
+          : null,
+    });
   });
 }

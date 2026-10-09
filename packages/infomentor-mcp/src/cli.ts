@@ -7,20 +7,27 @@ import { importSession, login } from './login.js';
 import { InfoMentorClient } from './client.js';
 import { createServer, packageInfo, type ServerOptions } from './server.js';
 import { InfoMentorError, sessionPath } from './session.js';
+import { deleteCredentialsAdvice, migrate } from './store.js';
 
 const help = [
-  'Usage: infomentor-mcp [command] [options]',
+  'Usage: infomentor-mcp [auth] [command] [options]',
   '',
   'Commands:',
-  '  login              Sign in over HTTPS using privately injected secrets or a credentials file',
-  '  status             Verify the saved session without opening a window',
-  '  logout             Delete the local session (does not revoke it on InfoMentor)',
+  '  login              Sign in over HTTPS using privately injected secrets or a credentials file;',
+  '                     the session and that sign-in are saved in the encrypted store',
+  '  status             Verify the saved session and show where it is stored',
+  '  migrate            Move a session saved by an older version out of its plaintext file;',
+  '                     with --credentials, also store that sign-in for automatic renewal',
+  '  logout             Delete the local session and stored sign-in (does not revoke it on',
+  '                     InfoMentor)',
   '  serve              Start the stdio MCP server (default)',
   '',
   'Options:',
-  '  --session FILE     Session file (default: ~/.config/infomentor-mcp/session.json, or',
-  '                     ~/.infomentor-mcp/session.json when that legacy file exists)',
-  '  --credentials FILE Private JSON file with username/password (login and automatic renewal)',
+  '  --session FILE     Older plaintext session file, read until auth migrate; collection',
+  '                     cursors stay beside it (default: ~/.config/infomentor-mcp/session.json,',
+  '                     or ~/.infomentor-mcp/session.json when that legacy file exists)',
+  '  --credentials FILE Private JSON file with username/password (login, migrate, and renewal',
+  '                     when no sign-in is stored)',
   '  --import FILE      login: validate and import a session on a headless machine',
   '  --timeout SECONDS  login: maximum wait (default: 300)',
   '  --allow-account-change',
@@ -32,6 +39,9 @@ const help = [
   '',
   'Environment: INFOMENTOR_SESSION_PATH, INFOMENTOR_CREDENTIALS_FILE,',
   '             INFOMENTOR_USERNAME (kennitala or username), INFOMENTOR_PASSWORD',
+  '',
+  'The session and the stored sign-in live in ~/.config/infomentor-mcp/session.enc, encrypted',
+  'with a key kept in the macOS Keychain or in ~/.local/share/family-mcp/keys on Linux.',
 ].join('\n');
 
 const stdout = (message: string): void => {
@@ -88,12 +98,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (positionals.length > 1)
+  // `auth login` and `login` are the same command.
+  const words = positionals[0] === 'auth' ? positionals.slice(1) : positionals;
+
+  if (words.length > 1 || (positionals[0] === 'auth' && words.length === 0))
     throw new InfoMentorError(
       'INVALID_CONFIGURATION',
       'Unexpected arguments. Run infomentor-mcp --help.',
     );
-  const command = positionals[0] ?? 'serve';
+  const command = words[0] ?? 'serve';
 
   if (command !== 'login' && (values.import || values.timeout || values['allow-account-change'])) {
     throw new InfoMentorError('INVALID_CONFIGURATION', 'Login options only apply to login.');
@@ -158,12 +171,40 @@ async function main(): Promise<void> {
           timeoutMs: timeout.data * 1000,
         };
 
-        await login(
+        const file = await login(
           values.credentials
             ? { ...loginOptions, credentialsFile: resolve(values.credentials) }
             : loginOptions,
         );
-        stderr('Signed in. Session saved to ' + sessionPath(options.sessionFile));
+
+        stderr('Signed in. Session saved in the encrypted store.');
+
+        if (file) stderr(deleteCredentialsAdvice(values.credentials ?? file));
+
+        return;
+      }
+
+      case 'migrate': {
+        const result = await migrate(sessionPath(options.sessionFile), options.credentialsFile);
+
+        if (result === 'migrated') {
+          stderr('Moved the InfoMentor session into the encrypted store and removed its file.');
+
+          if (values.credentials) stderr(deleteCredentialsAdvice(values.credentials));
+
+          return;
+        }
+
+        stderr(
+          result === 'already'
+            ? 'The InfoMentor session is already in the encrypted store.'
+            : 'The InfoMentor session is already in the encrypted store; removed the leftover plaintext file.',
+        );
+
+        if (values.credentials)
+          stderr(
+            'Your sign-in was not stored. Run infomentor-mcp login --credentials FILE to store it.',
+          );
 
         return;
       }
@@ -175,7 +216,7 @@ async function main(): Promise<void> {
           const status = await client.getSessionStatus(controller.signal);
           stderr(
             status.authenticated
-              ? 'InfoMentor session is active.'
+              ? `InfoMentor session is active. ${status.storage ?? ''}`.trim()
               : (status.nextStep ?? 'Sign in with infomentor_login.'),
           );
 
@@ -196,7 +237,7 @@ async function main(): Promise<void> {
           await client.close();
         }
 
-        stderr('Local InfoMentor session removed.');
+        stderr('Local InfoMentor session and stored sign-in removed.');
 
         return;
       }
@@ -217,7 +258,7 @@ void main().catch((cause: unknown) => {
   stderr(
     cause instanceof InfoMentorError
       ? cause.message
-      : 'InfoMentor operation failed. Check the network and session-file permissions.',
+      : 'InfoMentor operation failed. Check the network and session-store permissions.',
   );
   process.exitCode = cause instanceof InfoMentorError && cause.code === 'CANCELLED' ? 130 : 1;
 });

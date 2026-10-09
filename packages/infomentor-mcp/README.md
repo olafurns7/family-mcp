@@ -26,7 +26,10 @@ curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp
 infomentor-mcp login --credentials /absolute/path/credentials.json
 ```
 
-Expected output starts with `Signed in. Session saved to`.
+Expected output starts with `Signed in. Session saved in the encrypted store.`
+The sign-in is stored there too, for automatic renewal, so you can then delete
+the credentials file. Upgrading from 0.8.0 or earlier? Run
+`infomentor-mcp auth migrate` once (see [Where secrets live](#where-secrets-live)).
 
 ## Install and connect
 
@@ -45,7 +48,7 @@ Expected output:
 0.8.0
 ```
 
-Run the Quick start installer again to upgrade; the session file stays in place.
+Run the Quick start installer again to upgrade; the saved session stays in place.
 Upgrading replaces the command but not a running server; restart the MCP host, or
 rerun with `--stop-running`.
 To uninstall the command and release directories while retaining the session:
@@ -195,9 +198,11 @@ password-input field. Ordinary MCP form elicitation must not collect passwords
 If your client lacks secure secret input, configure credentials outside the
 conversation using the private-file option below.
 
-The saved session contains cookies, the verified account ID, and the selected
-child ID. It does not contain the password or use an OS keychain; the host
-controls retention of injected secrets.
+A successful login saves the session (cookies, the verified account ID, and the
+selected child ID) together with the username and password it used in the
+encrypted store described in [Where secrets live](#where-secrets-live). They
+stay there for automatic renewal until logout and are never returned through
+MCP.
 
 ### Private credentials file
 
@@ -226,23 +231,26 @@ MCP equivalent: call `infomentor_login` with
 MCP process environment. An explicit or configured credentials file takes
 precedence over username/password environment variables.
 
-Supply **the path only**, never the file contents or password in chat. The
-package leaves the file under your control; remove a temporary credentials file
-after successful login if you no longer need it. This works without a browser,
+Supply **the path only**, never the file contents or password in chat. After a
+successful login from a file, the CLI (and `infomentor_setup_status`) prints
+`Your InfoMentor sign-in is stored in the encrypted store. You can delete <file> now.`
+Delete it then: renewal uses the stored sign-in. This works without a browser,
 loopback server, or keyring daemon.
 
 ### Automatic session renewal
 
-When InfoMentor reports an expired session, the MCP can sign in once with its
-configured credentials, verify the same account, restore the child selection,
-and retry the read. Keep credentials available to the **MCP process** through
-its private environment, `INFOMENTOR_CREDENTIALS_FILE`, or
-`infomentor-mcp serve --credentials /absolute/path/credentials.json`.
-Passing a file to an earlier one-time login does not configure a running server.
+When InfoMentor reports an expired session, the MCP signs in once with the
+sign-in stored by the last successful login (or `auth migrate --credentials`),
+verifies the same account, restores the child selection, and retries the read.
+When no sign-in is stored, it uses credentials configured for the **MCP
+process**: its private environment, `INFOMENTOR_CREDENTIALS_FILE`, or
+`infomentor-mcp serve --credentials /absolute/path/credentials.json`. A stored
+sign-in is tried first and never followed by a second source after a rejection;
+after a password change, run `infomentor-mcp login` again.
 
 Renewal uses ordinary username/password sign-in; the package does not store an
-OAuth refresh token. Without configured credentials, sign in again when the
-session expires. An expired older session with no verified account ID needs one
+OAuth refresh token. Without a stored or configured sign-in, sign in again when
+the session expires. An expired older session with no verified account ID needs one
 explicit login. Failed renewal preserves the prior session; credentials for a
 different account are rejected. Missing sessions, including after logout, never
 trigger automatic sign-in. Rate limits, network failures, and security
@@ -259,7 +267,8 @@ infomentor-mcp login --import /absolute/path/transferred-session.json
 
 MCP equivalent (with `--allow-setup-tools`): call `infomentor_login` with
 `{"importFile":"/absolute/path/transferred-session.json"}`. Import verifies the
-session with InfoMentor before replacing the destination. The transferred file
+session with InfoMentor before saving it in the encrypted store. A stored
+sign-in is kept only when the imported session belongs to the same account. The transferred file
 must be a regular file owned by you with mode `0600`, not a symlink. Session
 cookies grant account access; treat the transferred file as a credential.
 Cross-machine acceptance and session lifetime remain subject to InfoMentor.
@@ -271,19 +280,19 @@ deliberately.
 
 ## MCP tools
 
-| Tool                           | Purpose                                                                                                                                                                                 |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `infomentor_session_status`    | Verify authentication using InfoMentor's session endpoint. Without a session it names the CLI command to run.                                                                           |
-| `infomentor_get_overview`      | Read children and the selected child's timetable.                                                                                                                                       |
-| `infomentor_select_child`      | Select a child using `childId` from the overview, then return the updated overview and timetable. Later reads describe whichever child is selected at that moment.                      |
-| `infomentor_get_messages`      | List messages with `folder` (`inbox` or `sent`), optional `search`, `page` (starting at 1), and `pageSize` (default 20, maximum 100).                                                   |
-| `infomentor_get_message`       | Read a full plain-text message using its numeric `id` from the message list.                                                                                                            |
-| `infomentor_get_notifications` | Read the available notification feed. Optional `selectedChildOnly` and `includeCleared` both default to false.                                                                          |
-| `infomentor_collect_updates`   | Check all children, timetables, full inbox/sent messages, and notifications. Pass the last handled `cursor` for changes only; see scheduled checks below.                               |
-| `infomentor_login`             | Opt-in. Sign in with injected secrets or `credentialsFile`, or import with `importFile`. `allowAccountChange` replaces another account's session. `timeoutSeconds` 1–3600, default 300. |
-| `infomentor_setup_status`      | Opt-in. Read setup progress or the final result.                                                                                                                                        |
-| `infomentor_cancel_setup`      | Opt-in. Cancel setup while preserving the previously saved session.                                                                                                                     |
-| `infomentor_logout`            | Opt-in. Cancel setup and remove the local saved session and its collection snapshots.                                                                                                   |
+| Tool                           | Purpose                                                                                                                                                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `infomentor_session_status`    | Verify authentication using InfoMentor's session endpoint, and report where the session is stored and whether a sign-in is stored. Without a session it names the CLI command to run.                        |
+| `infomentor_get_overview`      | Read children and the selected child's timetable.                                                                                                                                                            |
+| `infomentor_select_child`      | Select a child using `childId` from the overview, then return the updated overview and timetable. Later reads describe whichever child is selected at that moment.                                           |
+| `infomentor_get_messages`      | List messages with `folder` (`inbox` or `sent`), optional `search`, `page` (starting at 1), and `pageSize` (default 20, maximum 100).                                                                        |
+| `infomentor_get_message`       | Read a full plain-text message using its numeric `id` from the message list.                                                                                                                                 |
+| `infomentor_get_notifications` | Read the available notification feed. Optional `selectedChildOnly` and `includeCleared` both default to false.                                                                                               |
+| `infomentor_collect_updates`   | Check all children, timetables, full inbox/sent messages, and notifications. Pass the last handled `cursor` for changes only; see scheduled checks below.                                                    |
+| `infomentor_login`             | Opt-in. Sign in with injected secrets or `credentialsFile` (stored for renewal), or import with `importFile`. `allowAccountChange` replaces another account's session. `timeoutSeconds` 1–3600, default 300. |
+| `infomentor_setup_status`      | Opt-in. Read setup progress or the final result.                                                                                                                                                             |
+| `infomentor_cancel_setup`      | Opt-in. Cancel setup while preserving the previously saved session.                                                                                                                                          |
+| `infomentor_logout`            | Opt-in. Cancel setup and remove the local saved session, the stored sign-in, and collection snapshots.                                                                                                       |
 
 The four opt-in tools exist only when the server runs with `--allow-setup-tools`.
 Login/import return immediately. Check progress after a short wait; do not
@@ -361,12 +370,13 @@ selection, failed restoration, the five-minute collection deadline, or a respons
 over 8 MiB fail without returning a new cursor. Selection checks are best effort
 when another app uses the same InfoMentor session.
 
-Cursors refer to private snapshots beside the session file in
-`<session-file>.collections`. These contain hashes and source/child references,
-not names or message bodies. They expire after 90 days without use; cleanup runs
-on successful collections. A missing, expired, or different-account cursor is
-rejected; omit it explicitly to establish a new baseline. Logout removes the
-session file together with its collection snapshots.
+Cursors refer to private snapshots in `<session-file>.collections`, beside the
+older plaintext session path (`INFOMENTOR_SESSION_PATH` or its default), which
+stays their location after migration. These contain hashes and source/child
+references, not names, message bodies, or credentials. They expire after 90 days
+without use; cleanup runs on successful collections. A missing, expired, or
+different-account cursor is rejected; omit it explicitly to establish a new
+baseline. Logout removes the collection snapshots with the session.
 
 ### Instructions for assistants
 
@@ -392,15 +402,17 @@ session file together with its collection snapshots.
 - Report the selected child and available data; do not imply the overview is a
   complete record of homework, attendance, grades, or every child.
 - On a rate limit or security challenge, stop and report it. Automatic renewal
-  is limited to confirmed authentication expiry with configured credentials.
+  is limited to confirmed authentication expiry with a stored or configured sign-in.
 
 ## CLI and configuration
 
 ```text
-infomentor-mcp [serve|login|status|logout] [options]
+infomentor-mcp [auth] [serve|login|status|migrate|logout] [options]
 
---session FILE          Absolute session path, usable with every command
---credentials FILE      Private username/password JSON file for login and renewal
+--session FILE          Older plaintext session path, read until auth migrate;
+                        collection snapshots stay beside it
+--credentials FILE      Private username/password JSON file for login, migrate, and
+                        renewal when no sign-in is stored
 --import FILE           login: verify and import a version-2 session
 --timeout SECONDS       login: 1–3600 seconds, default 300
 --allow-account-change  login: replace a saved session that belongs to another account
@@ -409,37 +421,68 @@ infomentor-mcp [serve|login|status|logout] [options]
 --version, -v           Show version
 ```
 
-`INFOMENTOR_SESSION_PATH` sets the session location. By default it is
-`$XDG_CONFIG_HOME/infomentor-mcp/session.json`, normally
-`~/.config/infomentor-mcp/session.json`; an existing
-`~/.infomentor-mcp/session.json` from an earlier version keeps being used while
-that file exists. New session directories use permissions `0700` and files
-`0600` on macOS/Linux, written to a temporary file that is flushed to disk and
-renamed into place. The session file is only read when it is a regular, single-link
-file owned by the current user with owner-only permissions and not a symbolic link;
-a copy transferred with wider permissions is refused with instructions. Windows
-access follows the user's directory ACLs and these checks are skipped there;
-Windows is unsupported and unverified. Login/import replace the file atomically after
-authentication succeeds. Failed or cancelled setup preserves the old file.
-Logout removes the local copy and its collection snapshots; it does not revoke
-the session at InfoMentor or stop another running MCP process.
+### Where secrets live
 
-Refreshed cookies and verified account/child context are saved atomically under
-the session lock, a `session.json.lock` directory beside the file. Login, import,
-reads, and logout coordinate through that same lock, so a competing local MCP
-request cannot recreate a logged-out session or overwrite a newer login. A
-request waits up to 30 seconds for another local process, then fails with
-"operation in progress"; retry it afterwards. A crashed process releases its lock
-as soon as its PID no longer exists. A live PID is never expired based on the
-lock's age, including while suspended. If the OS reuses a crashed owner's PID for
-another live process, the lock can remain busy; remove it with `rm -r <file>.lock`
-only when no process is using that session file. Hard-linked session
-files are unsupported. Do not remove an active lock: a request whose lock is
-taken away fails and must be retried. Temporary files left by a crash are removed
-after five minutes. When
-InfoMentor answers with a rate limit, the requested pause is capped at one hour
-and saved with the session, so every local process sharing the file waits
+The session and the stored sign-in are one encrypted record,
+`$XDG_CONFIG_HOME/infomentor-mcp/session.enc` (normally
+`~/.config/infomentor-mcp/session.enc`), with a non-secret `session.enc.marker`
+beside it. It is encrypted with AES-256-GCM under a random key created at the
+first login: on macOS a Keychain item (service `family-mcp.infomentor-mcp`)
+read through Apple's `security` tool, on Linux the file
+`~/.local/share/family-mcp/keys/infomentor-mcp.default.key` (or under
+`$XDG_DATA_HOME`). Keep that key: without it the session and sign-in cannot be
+read, and only an explicit `login` or `login --import` replaces the store. The
+key is never regenerated in any other way, and no command falls back to a
+plaintext file once the marker exists. `infomentor-mcp status` names where the
+session is saved and whether a sign-in is stored, never their values.
+
+Threat model: this keeps the session and password out of plaintext files, grep,
+commits, dotfile sync, and ciphertext-only backups. It does not protect against
+root, a compromised service, or a same-user process or agent that can read the
+key (any same-user process while the macOS login keychain is unlocked); a backup
+holding both the key and the record is about as exposed as a `0600` file.
+
+Versions 0.8.0 and earlier kept the session in the plaintext file at
+`INFOMENTOR_SESSION_PATH`, by default `~/.config/infomentor-mcp/session.json`
+(or `~/.infomentor-mcp/session.json` when that older file exists). Until you
+migrate, that file is still used as before and `status` says
+`Saved in a plaintext file. Run infomentor-mcp auth migrate.` Stop running MCP
+servers of the older version, then run:
+
+```sh
+infomentor-mcp auth migrate --credentials /absolute/path/credentials.json
+```
+
+It moves the session (and, with `--credentials`, the sign-in for renewal) into
+the store, reads it back, and deletes the plaintext file; running it again
+changes nothing. Omit `--credentials` to keep using configured credentials for
+renewal. `login` and `login --import` also move to the store and delete the
+plaintext file. Collection snapshots stay in `<session-file>.collections`. The
+plaintext path must not overlap the store or its key; such a configuration is
+refused before anything is touched.
+
+Reads, renewals, and writes hold the store's lock (`session.enc.lock`) for the
+whole request, so local MCP processes never renew twice or overwrite a newer
+login. Login, import, migrate, and logout also hold the plaintext path's lock
+(`session.json.lock`) first. A request waits up to 30 seconds for another local
+process, then fails with "operation in progress"; retry it afterwards. A crashed
+process releases its lock as soon as its PID no longer exists. A live PID is
+never expired based on the lock's age, including while suspended. If the OS
+reuses a crashed owner's PID for another live process, the lock can remain busy;
+remove the `.lock` directory only when no process is using the session. Do not
+remove an active lock: a request whose lock is taken away fails and must be
+retried. Temporary files left by a crash are removed after five minutes.
+Failed or cancelled setup preserves the saved session. Logout stores an empty
+record, removing the session and sign-in; it does not revoke the session at
+InfoMentor or stop another running MCP process.
+
+Session, import, and credentials files are only read when they are regular,
+single-link files owned by the current user with owner-only permissions and not
+symbolic links; a copy transferred with wider permissions is refused with
+instructions. When InfoMentor answers with a rate limit, the requested pause is
+capped at one hour and saved with the session, so every local process waits
 instead of retrying. See automatic session renewal above for expired sessions.
+Windows is unsupported and unverified.
 
 ### Upgrade notes
 
