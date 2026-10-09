@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0
+
+- The native binary is now built from Rust. Tools, inputs, results, CLI
+  commands and messages are unchanged.
+- The session is kept only in the encrypted file store: on macOS in
+  `~/Library/Application Support/family-mcp`, which is excluded from Time
+  Machine; on Linux in the XDG data and config folders. The macOS Keychain is
+  not used.
+- Every start checks the store's location and permissions. A refusal names the
+  path and, for most problems, the command that fixes it.
+- After upgrading from 0.6.0 or earlier, run `abler-mcp auth migrate` once.
+- Sign-ins made with earlier test builds are not migrated: run
+  `abler-mcp auth login` again. Their leftover files are named with removal
+  commands.
+
 ## 0.6.0
 
 - Add `list_conversations` and `list_messages`, two read-only tools for the
