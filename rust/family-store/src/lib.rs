@@ -27,9 +27,9 @@ pub use paths::{
     default_secret_record_path_in, default_session_path, key_provider_in, retired_store_paths,
     retired_store_paths_in,
 };
-#[cfg(feature = "test-seam")]
-pub use seam::enable_test_seam;
 pub use seam::{TEST_LS, TEST_SEAM, TEST_TMUTIL, test_seam};
+#[cfg(feature = "test-seam")]
+pub use seam::{after_identity, enable_test_seam};
 pub use secret::{
     SecretRecordOptions, SecretStore, StoreCheck, check_secret_store, create_secret_key,
     existing_paths, read_secret_record, secret_store_exists, with_secret_record, with_secret_store,

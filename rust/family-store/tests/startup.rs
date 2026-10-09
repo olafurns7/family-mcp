@@ -1,19 +1,21 @@
 //! packages/session-store/test/startup.test.ts: the server CLI's preflight output, and the
-//! leftovers of an earlier layout. The case where another process saves during the check needs a
-//! `stat` spy and is not ported; the canonical-entry rule it guards is shared with the alias case.
+//! leftovers of an earlier layout. Where the TypeScript case spies on `stat` to save during the
+//! check, this one pauses the check with the `test-seam` feature's `after_identity`.
 
 mod common;
 
+use std::cell::Cell;
 use std::fs;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use common::*;
 use family_store::{
-    Code, Error, LocalKeyFileProvider, SecretRecordOptions, create_secret_key, startup_check,
-    with_secret_store,
+    Code, Error, LocalKeyFileProvider, SecretRecordOptions, after_identity, create_secret_key,
+    read_secret_record, startup_check, with_secret_store,
 };
 
 fn store(root: &Path, retired: &[PathBuf]) -> SecretRecordOptions {
@@ -236,6 +238,45 @@ fn the_current_store_is_never_named_as_old_also_through_a_link() {
     assert!(text.contains(&format!("  rm '{}'\n", separate.display())));
     assert!(!text.contains(&root.join("alias").display().to_string()));
     assert!(!text.contains("test-mcp.default.key"));
+}
+
+#[test]
+fn a_save_during_the_check_never_makes_the_current_store_look_old() {
+    let scratch = Scratch::new();
+    let root = &scratch.0;
+    let current = store(root, &[]);
+    create_secret_key(&current).unwrap();
+    put(&current, "secret").unwrap();
+
+    // The current files under other names: a linked directory, a link to the record, and a link
+    // to the lock, which exists only while a save runs.
+    symlink(root.join("family-mcp"), root.join("alias")).unwrap();
+    mkdir(&root.join("old"));
+    symlink(&current.path, root.join("old/session.enc")).unwrap();
+    symlink(
+        root.join("family-mcp/test-mcp/session.enc.lock"),
+        root.join("old/session.enc.lock"),
+    )
+    .unwrap();
+    let aliases = [
+        root.join("alias/test-mcp/session.enc"),
+        root.join("alias/test-mcp/session.enc.marker"),
+        root.join("old/session.enc"),
+        root.join("old/session.enc.lock"),
+    ];
+
+    // Another process saves right after the check first reads the record's inode: the atomic
+    // rename gives the record and its marker new inodes before the check looks at the old names.
+    let saved = Rc::new(Cell::new(false));
+    let writer = (current.clone(), Rc::clone(&saved));
+    after_identity(&current.path, move || {
+        put(&writer.0, "saved meanwhile").unwrap();
+        writer.1.set(true);
+    });
+
+    assert_eq!(check(|| Ok(store(root, &aliases))), (true, String::new()));
+    assert!(saved.get());
+    assert_eq!(read_secret_record(&current).unwrap(), "saved meanwhile");
 }
 
 #[test]

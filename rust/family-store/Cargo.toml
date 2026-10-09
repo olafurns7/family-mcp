@@ -12,8 +12,9 @@ workspace = true
 
 [features]
 # Test seam only: `enable_test_seam` turns the store test seam on inside a test process, which
-# cannot set its own environment. Off by default, so it does not exist in `cargo build` or
-# `cargo run`; this crate's own tests turn it on below.
+# cannot set its own environment, and `after_identity` pauses the startup check between two
+# metadata reads. Off by default, so neither exists in `cargo build` or `cargo run`; this crate's
+# own tests turn it on below.
 test-seam = []
 
 [dependencies]

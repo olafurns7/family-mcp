@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Test seam only: with `FAMILY_MCP_STORE_TEST_SEAM=1` macOS honours absolute XDG directories like
 /// Linux, so a test run keeps its store in scratch directories, and Time Machine exclusion runs
@@ -32,6 +32,40 @@ pub fn test_seam() -> bool {
 pub fn enable_test_seam() {
     ENABLED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
+
+#[cfg(feature = "test-seam")]
+type Pause = (PathBuf, Box<dyn FnOnce()>);
+
+#[cfg(feature = "test-seam")]
+thread_local! {
+    static AFTER_IDENTITY: std::cell::RefCell<Option<Pause>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Test only (feature `test-seam`): run `then` once, on this thread, right after the store reads
+/// the device and inode of `path`, as another process could act between two metadata reads.
+#[cfg(feature = "test-seam")]
+pub fn after_identity(path: &Path, then: impl FnOnce() + 'static) {
+    AFTER_IDENTITY.with(|pause| *pause.borrow_mut() = Some((path.to_path_buf(), Box::new(then))));
+}
+
+/// Where the store read the identity of `path`: a pause set for that path runs now, once.
+#[cfg(feature = "test-seam")]
+pub(crate) fn identity_read(path: &Path) {
+    let due = AFTER_IDENTITY.with(|pause| {
+        let mut pause = pause.borrow_mut();
+        match pause.as_ref() {
+            Some((wanted, _)) if wanted == path => pause.take(),
+            _ => None,
+        }
+    });
+
+    if let Some((_, then)) = due {
+        then();
+    }
+}
+
+#[cfg(not(feature = "test-seam"))]
+pub(crate) fn identity_read(_: &Path) {}
 
 /// The absolute executable `variable` names, with the seam on; `None` otherwise.
 pub(crate) fn fake_executable(variable: &str) -> Option<PathBuf> {
