@@ -127,8 +127,8 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` replace `~/.config` and
 not move the store. On macOS both store directories are excluded from Time Machine
 before any secret is written in them, and every start confirms it. Linux has no
 standard for this: leave `~/.local/share/family-mcp/keys` out of your backups. A
-power cut during a save can lose that last change, but never leaves a half-written
-file.
+power cut during a save can lose that change or leave the store unreadable; the
+server then says so, and you sign in again. It never uses a damaged session.
 
 Every start except `--help` and `--version` checks the store before anything else.
 If a store file or directory could be read or replaced by another user (permissions

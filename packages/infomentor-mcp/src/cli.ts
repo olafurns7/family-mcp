@@ -15,7 +15,7 @@ const help = [
   'Commands:',
   '  login              Sign in over HTTPS using privately injected secrets or a credentials file;',
   '                     the session and that sign-in are saved in the encrypted store',
-  '  status             Verify the saved session and show where it is stored',
+  '  status             Verify the saved session and show how it is stored',
   '  migrate            Move a session saved by an older version out of its plaintext file;',
   '                     with --credentials, also store that sign-in for automatic renewal',
   '  logout             Delete the local session and stored sign-in (does not revoke it on',

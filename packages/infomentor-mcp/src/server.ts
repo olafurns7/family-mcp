@@ -46,7 +46,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
     'infomentor_session_status',
     {
       description:
-        'Verify whether the saved session is authenticated and report where it is stored and whether a sign-in is stored for renewal. Makes a live request; returns no credentials. During setup, use infomentor_setup_status instead.',
+        'Verify whether the saved session is authenticated and report how it is stored and whether a sign-in is stored for renewal. Makes a live request; returns no credentials. During setup, use infomentor_setup_status instead.',
       inputSchema: z.object({}).strict(),
       outputSchema: sessionStatusSchema,
       annotations: READ_ONLY,
