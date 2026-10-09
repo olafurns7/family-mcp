@@ -242,6 +242,9 @@ export type Slot = 'current' | 'candidate';
 /** Store failures carry fixed messages; verification passes them on unchanged. */
 class StoreFailure extends SafeError {}
 
+/** A session Abler will never accept again; retrying its verification cannot help. */
+export class ExpiredSession extends SafeError {}
+
 /** Fixed messages: a store failure never shows a path, key or cookie, and never falls back. */
 function storeError(error: SessionStoreError): StoreFailure {
   switch (error.code) {
@@ -329,7 +332,7 @@ async function storedJar(stored: StoredJar): Promise<CookieJar> {
   try {
     return await importCookies(stored);
   } catch {
-    throw new SafeError('Invalid or expired Abler session. Capture/import a fresh session.');
+    throw new ExpiredSession('Invalid or expired Abler session. Capture/import a fresh session.');
   }
 }
 
@@ -555,7 +558,15 @@ export async function withSession<T>(
           slot === 'candidate' && candidate
             ? { ...next, candidate: { id: candidate.id, jar: rotated } }
             : { ...next, current: rotated };
-        await guarded(() => store.write(encodeRecord(next)));
+
+        try {
+          await store.write(encodeRecord(next));
+        } catch {
+          // Abler has consumed the old refresh token, so the record must never offer it again.
+          // Removing it under the held lock reads as STORE_WRITE_UNCERTAIN until the next login.
+          await rm(record.path, { force: true }).catch(() => undefined);
+          throw storeError(new SessionStoreError('STORE_WRITE_UNCERTAIN', 'Rotated session lost.'));
+        }
       };
 
       return work(jar, save, `Saved in ${storageName(record.keys)}.`);
@@ -581,12 +592,17 @@ export function sessionStorage(legacy = sessionPath(), keys?: KeyProvider): Prom
 /** Verifies the candidate slot, for example with a forced refresh and an authenticated read. */
 export type Verify = () => Promise<object>;
 
-async function verifyCandidate(verify: Verify): Promise<void> {
+async function verifyCandidate(verify: Verify, reset = false): Promise<void> {
   try {
     await verify();
   } catch (error) {
     // A refresh may already have rotated the candidate; it stays retained in the store.
-    if (error instanceof StoreFailure) throw error;
+    if (error instanceof StoreFailure || error instanceof ExpiredSession) throw error;
+
+    if (reset)
+      throw new SafeError(
+        'Session verification failed. The old store could not be read without its key and was replaced; the new session is retained in the encrypted store. Run abler-mcp auth retry-candidate, or capture a fresh session.',
+      );
     throw new SafeError(
       'Session verification failed. The previous session was kept; the new one is retained in the encrypted store. Run abler-mcp auth retry-candidate, or capture a fresh session.',
     );
@@ -635,7 +651,7 @@ export function saveVerifiedSession(
       return reset;
     });
 
-    await verifyCandidate(verify);
+    await verifyCandidate(verify, replaced);
     await promote(record, legacy, candidate.id);
 
     return replaced;

@@ -21,8 +21,8 @@ attendance state from a failed request or undocumented value.
 - Initial login belongs in Abler's browser. Never invent credentials, bypass
   CAPTCHA/OTP, or ask for cookie values in chat.
 - Import an existing browser export only from a private host-local path. Verify
-  it before removing the temporary export; a failed rotated import retains a
-  `.pending` candidate and is not a successful sign-in.
+  it before removing the temporary export; a failed import retains its
+  candidate in the encrypted store and is not a successful sign-in.
 - Use `get_profile` to discover child IDs. IDs, not names or positions, select
   children. Continue each child's cursor independently.
 - The server has no mutation tools. Raw attendance codes stay raw; an empty list

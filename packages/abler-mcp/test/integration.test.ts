@@ -1,5 +1,6 @@
 import { test, expect } from 'bun:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import {
   chmod,
   link,
@@ -18,7 +19,12 @@ import { dirname, resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { SafeError } from '@family-mcp/mcp-runtime';
-import { FakeKeyProvider, SessionStoreError, type KeyProvider } from '@family-mcp/session-store';
+import {
+  FakeKeyProvider,
+  SessionStoreError,
+  withSecretStore,
+  type KeyProvider,
+} from '@family-mcp/session-store';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import * as z from 'zod/v4';
@@ -1935,6 +1941,108 @@ test('ABLER_SESSION_FILE may not overlap the encrypted store or its key', async 
     }
 
     expect(await refreshOf(path)).toBe('private-refresh');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+const uncertain = /The last write to the Abler session store did not complete/;
+
+test('a rotation the store cannot write removes the record, so the spent token is never offered', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-rotation-lost-'));
+  const path = join(directory, 'session.json');
+  const seen: string[] = [];
+
+  // Abler rotates to a refresh token larger than the store allows.
+  const request = async (_url: string, init: RequestInit) => {
+    seen.push(new Headers(init.headers).get('cookie') ?? '');
+    const response = Response.json({ access_token: 'access' });
+    response.headers.append('Set-Cookie', `refreshToken=${'x'.repeat(600_000)}; Path=/`);
+
+    return response;
+  };
+
+  try {
+    await saveSession(path, await importCookies([cookie]));
+    expect(await migrateSession(path)).toBe('migrated');
+    const client = new AblerClient(path, request);
+    await assert.rejects(client.status(true), uncertain);
+    expect(await Bun.file(store.record).exists()).toBe(false);
+    await assert.rejects(client.status(true), uncertain);
+    expect(seen).toEqual(['refreshToken=private-refresh']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+const revoked = async () => new Response(null, { status: 401 });
+
+test('verification passes on expired-session and store messages, and never claims a reset store was kept', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'abler-verify-errors-'));
+  const path = join(directory, 'session.json');
+  const keys = new FakeKeyProvider(new Uint8Array(32).fill(9));
+
+  // Abler refuses the candidate's refresh token.
+  const verifyWith = (provider: KeyProvider) => () =>
+    new AblerClient(path, revoked, provider, 'candidate').status(true);
+
+  try {
+    await saveSession(`${path}.a.pending`, await importCookies([cookie]));
+    expect(await migrateSession(path, keys)).toBe('candidate');
+
+    await assert.rejects(retryCandidate(verifyWith(keys), path, keys), /expired or was revoked/);
+    await assert.rejects(
+      retryCandidate(verifyWith(failing('STORE_WRITE_UNCERTAIN')), path, keys),
+      uncertain,
+    );
+
+    // The candidate replaced between verification and promote is never promoted.
+    const record = {
+      path: store.record,
+      server: 'abler-mcp',
+      profile: 'default',
+      purpose: 'session',
+      schema: 1,
+      maxBytes: 600_000,
+      keys,
+    };
+
+    await assert.rejects(
+      retryCandidate(
+        () =>
+          withSecretStore(record, async (secrets) => {
+            const held = z
+              .looseObject({ candidate: z.looseObject({ id: z.string() }) })
+              .parse(JSON.parse((await secrets.read()) ?? ''));
+
+            held.candidate.id = randomUUID();
+            await secrets.write(JSON.stringify(held));
+
+            return {};
+          }),
+        path,
+        keys,
+      ),
+      /The Abler session candidate changed/,
+    );
+
+    // A lost key: a failed import reset the store, so nothing was kept.
+    await assert.rejects(
+      saveVerifiedSession(
+        await importCookies([cookie]),
+        async () => {
+          throw new Error('synthetic verification failure');
+        },
+        path,
+        new FakeKeyProvider(),
+      ),
+      (error: Error) => {
+        expect(error.message).toContain('was replaced; the new session is retained');
+        expect(error.message).not.toContain('previous session was kept');
+
+        return true;
+      },
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

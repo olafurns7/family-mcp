@@ -40,10 +40,7 @@ Expected output: `Sign in to Abler in the browser window that opened.`
   "mcpServers": {
     "abler": {
       "command": "/absolute/path/to/.local/bin/abler-mcp",
-      "args": ["serve"],
-      "env": {
-        "ABLER_SESSION_FILE": "/absolute/path/abler-session.json"
-      }
+      "args": ["serve"]
     }
   }
 }
@@ -52,7 +49,7 @@ Expected output: `Sign in to Abler in the browser window that opened.`
 **Claude Code**
 
 ```sh
-claude mcp add abler -e ABLER_SESSION_FILE=/absolute/path/abler-session.json -- /absolute/path/to/.local/bin/abler-mcp serve
+claude mcp add abler -- /absolute/path/to/.local/bin/abler-mcp serve
 ```
 
 **Codex**
@@ -61,7 +58,6 @@ claude mcp add abler -e ABLER_SESSION_FILE=/absolute/path/abler-session.json -- 
 [mcp_servers.abler]
 command = "/absolute/path/to/.local/bin/abler-mcp"
 args = ["serve"]
-env = { ABLER_SESSION_FILE = "/absolute/path/abler-session.json" }
 ```
 
 </details>

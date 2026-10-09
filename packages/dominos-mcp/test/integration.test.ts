@@ -460,6 +460,83 @@ test('a read retried after 401 refreshes once inside the same store hold', async
   }
 });
 
+test('a refreshed session for another account is rejected and nothing is saved', async () => {
+  const fixture = await setup(true);
+  const marker = `${fixture.home.record}.marker`;
+  const { request } = fixture.provider;
+
+  const client = new DominosClient(fixture.path, async (url, options) => {
+    if (new URL(url).pathname === '/api/token')
+      return Response.json({
+        access_token: 'rotated-access',
+        refresh_token: 'rotated-refresh',
+        token_type: 'bearer',
+        username: '3545550999',
+        expires_in: 3600,
+      });
+
+    return request(url, options);
+  });
+
+  try {
+    const files = async () => [await readFile(fixture.home.record), await readFile(marker)];
+    const before = await files();
+    await assert.rejects(client.status(), /refreshed Domino’s account differs/);
+    assert.deepEqual(await files(), before);
+    assert.equal(fixture.provider.requests.length, 0);
+    assert.equal((await current(fixture.path)).refreshToken, 'synthetic-refresh');
+  } finally {
+    await client.close();
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test('a 401 during checkout or payment is never retried', async () => {
+  const fixture = await setup();
+  const { request } = fixture.provider;
+  let reject = '';
+
+  const client = new DominosClient(fixture.path, async (url, options) => {
+    if (reject !== '' && new URL(url).pathname.endsWith(reject)) {
+      reject = '';
+
+      return new Response('', { status: 401 });
+    }
+
+    return request(url, options);
+  });
+
+  try {
+    const quote = await client.quoteOrder(cart);
+    const input = { quoteId: quote.quoteId, expectedTotal: quote.total };
+    reject = '/api/user/newuser';
+    await assert.rejects(client.createCheckout(input), /No automatic retry was made/);
+    assert.equal(fixture.provider.refreshes, 0);
+    assert.equal(fixture.provider.orders, 0);
+
+    const checkout = await client.createCheckout(input);
+    assert.equal(checkout.state, 'ready');
+    reject = '/payments';
+
+    const paid = await client.paySavedCard({
+      checkoutId: checkout.checkoutId,
+      cardId: 'card_1',
+      expectedTotal: checkout.total,
+      confirm: true,
+    });
+
+    // The payment call's 401 never reaches the retry: the attempt is recorded as unknown.
+    assert.equal(paid.state, 'unknown');
+    assert.equal(fixture.provider.payments, 0);
+    assert.equal(fixture.provider.refreshes, 0);
+    assert.equal(fixture.provider.orders, 1);
+  } finally {
+    await client.close();
+    await fixture.client.close();
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 /** The longest JSON a schema-valid session can have, at a given token. */
 const worst = (token: string): Session => ({
   version: 1,
@@ -511,7 +588,12 @@ test('a refreshed session that cannot be stored poisons the old record and nothi
     await rm(marker, { recursive: true });
     await rename(`${marker}.aside`, marker);
 
-    for (const run of [() => client.status(), () => sessionStorage(fixture.path)])
+    // Login refuses too, before the SMS code is exchanged.
+    for (const run of [
+      () => client.status(),
+      () => sessionStorage(fixture.path),
+      () => login('5550123', '123456', fixture.path, request),
+    ])
       await assert.rejects(run(), /did not complete.*run dominos-mcp auth login again/);
     assert.equal(fixture.provider.requests.length, 1);
     assert.deepEqual(await filesContaining(fixture.directory, TOKENS), []);
@@ -682,6 +764,38 @@ test('a lost key fails closed until an explicit login replaces the store', async
     await assert.rejects(stat(fixture.path));
     assert.equal((await fixture.client.status()).authenticated, true);
     assert.match(await readFile(`${fixture.home.record}.marker`, 'utf8'), /"generation":1\}/);
+  } finally {
+    await fixture.client.close();
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+/** Domino's refuses every request, so a login exchange fails. */
+const rejecting = async () => new Response('', { status: 400 });
+
+test('migrate resumes on an empty store with a marker, and refuses it untouched while its key is missing', async () => {
+  const fixture = await setup();
+
+  try {
+    // A login after a lost key resets the store, then the code exchange fails: marker, no record.
+    await rm(fixture.home.key);
+    await assert.rejects(login('5550123', '123456', fixture.path, rejecting));
+    await assert.rejects(stat(fixture.home.record));
+    const key = await readFile(fixture.home.key);
+    await rm(fixture.home.key);
+    await saveSession(fixture.path, saved(false, 'planted'));
+    const marker = await readFile(`${fixture.home.record}.marker`);
+
+    await assert.rejects(migrate(fixture.path), /store key is missing/);
+    await assert.rejects(stat(fixture.home.key));
+    assert.deepEqual(await readFile(`${fixture.home.record}.marker`), marker);
+    assert.ok(await stat(fixture.path));
+
+    await writeFile(fixture.home.key, key, { mode: 0o600 });
+    await assert.rejects(fixture.client.status(), /No saved Domino’s session/);
+    assert.equal(await migrate(fixture.path), 'migrated');
+    assert.equal((await current(fixture.path)).accessToken, 'planted-access');
+    await assert.rejects(stat(fixture.path));
   } finally {
     await fixture.client.close();
     await rm(fixture.directory, { recursive: true, force: true });

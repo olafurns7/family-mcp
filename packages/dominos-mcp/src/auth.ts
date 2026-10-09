@@ -481,8 +481,8 @@ export async function requestCode(phone: string, request: Request = fetch): Prom
 
 /**
  * Exchange the SMS code and save the verified session in the store, then remove any plaintext
- * file. The key is prepared first, so a locked keychain refuses before the code is used. True if
- * a store whose key was lost was reset.
+ * file. The key is prepared and the store read first, so a locked keychain or an unusable store
+ * refuses before the code is used. True if a store whose key was lost was reset.
  */
 export async function login(
   phone: string,
@@ -496,6 +496,9 @@ export async function login(
 
   return changeSession(path, keys, async (store, record) => {
     const replaced = await prepareKey(store, record, true);
+
+    // An uncertain or unreadable store refuses here, before the SMS code is spent.
+    if (await storeDecides(store, record)) await store.read();
 
     const value = await exchangeToken(
       request,

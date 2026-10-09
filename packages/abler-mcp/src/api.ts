@@ -3,7 +3,15 @@ import type { KeyProvider } from '@family-mcp/session-store';
 import { Cookie, type CookieJar } from 'tough-cookie';
 import * as z from 'zod/v4';
 
-import { AUTH_COOKIES, ORIGIN, sessionPath, withSession, type SaveJar, type Slot } from './auth.js';
+import {
+  AUTH_COOKIES,
+  ExpiredSession,
+  ORIGIN,
+  sessionPath,
+  withSession,
+  type SaveJar,
+  type Slot,
+} from './auth.js';
 
 const id = z.string().min(1).max(256);
 
@@ -403,7 +411,7 @@ export class AblerClient {
     const response = await this.post(session, '/oauth/token');
 
     if ([401, 403].includes(response.status))
-      throw new SafeError(
+      throw new ExpiredSession(
         'Abler session expired or was revoked. Sign in again and capture/import it.',
       );
 

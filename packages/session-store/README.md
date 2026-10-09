@@ -1,9 +1,10 @@
 # @family-mcp/session-store
 
-Private workspace package shared by `abler-mcp`, `infomentor-mcp`, and `kronan-mcp`. It owns the two
-things a server must get right for a locally saved credential: coordinating every local process that
-uses one session file (Abler and InfoMentor), and reading or writing that file without exposing it
-(all three, including Krónan's non-rotating token file). It has no runtime dependencies.
+Private workspace package shared by the family-mcp servers. It owns the two things a server must get
+right for a locally saved credential: coordinating every local process that uses one session, and
+keeping it unreadable to others: encrypted secret records whose key is in the macOS Keychain or a
+Linux key file, and owner-only private files, such as an older version's plaintext session. It has no
+runtime dependencies.
 
 ```ts
 import {

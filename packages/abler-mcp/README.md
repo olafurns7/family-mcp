@@ -165,7 +165,7 @@ With a browser that only provides developer tools, open **Application → Cookie
 }
 ```
 
-These cookies are HttpOnly, so `document.cookie` cannot export them. Treat the JSON as a credential; keep it out of source control and chat, and remove the temporary export after a successful, verified import. A failed verification keeps the previous session and retains the new one as an encrypted candidate, because Abler may already have rotated the imported credential: `Session verification failed. The previous session was kept; the new one is retained in the encrypted store. Run abler-mcp auth retry-candidate, or capture a fresh session.` `abler-mcp auth retry-candidate` verifies the retained candidate again and uses it if it works. A later successful login, capture or import replaces it; no plaintext `.pending` file is written.
+These cookies are HttpOnly, so `document.cookie` cannot export them. Treat the JSON as a credential; keep it out of source control and chat, and remove the temporary export after a successful, verified import. A failed verification keeps the previous session and retains the new one as an encrypted candidate, because Abler may already have rotated the imported credential: `Session verification failed. The previous session was kept; the new one is retained in the encrypted store. Run abler-mcp auth retry-candidate, or capture a fresh session.` `abler-mcp auth retry-candidate` verifies the retained candidate again and uses it if it works. If Abler reports the new session expired or revoked, that message is shown instead; retrying cannot help, so sign in again. A store failure shows its own message. A later successful login, capture or import replaces it; no plaintext `.pending` file is written.
 
 ### Move to a server without a browser
 
@@ -179,9 +179,10 @@ other devices.
 
 Processes on one machine coordinate refresh, reads, imports, and logout with file
 locks: `session.enc.lock` beside the encrypted record, and, for login, import,
-migrate and logout, `session.json.lock` beside the plaintext session path. A
-request waits up to 30 seconds for a busy lock and then fails with a busy error;
-retry later. After a hard process crash, the lock is released as soon as its PID no
+retry-candidate, migrate and logout, `session.json.lock` beside the plaintext
+session path. A request waits up to 30 seconds for a busy lock and then fails with
+a busy error; retry later.
+After a hard process crash, the lock is released as soon as its PID no
 longer exists. A live process is never expired based on the lock's age, including
 while suspended. If the OS reuses a crashed owner's process ID for another live
 program, the lock can remain busy; remove it with `rm -r <file>.lock` only when no

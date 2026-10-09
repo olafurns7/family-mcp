@@ -654,7 +654,10 @@ test('auth login retains the captured candidate when verification fails', async 
     const { exit, stderr } = await collectProcess(child);
 
     expect(exit).toBe(1);
-    expect(stderr).toContain('Session verification failed.');
+    // Abler refused the refresh, so retry-candidate would not help and is not suggested.
+    expect(stderr.trim()).toBe(
+      'Abler session expired or was revoked. Sign in again and capture/import it.',
+    );
     // The previous plaintext session moved into the store as the current one, and is kept.
     expect(await savedCookies(sessionPath)).toEqual(
       new Map([['refreshToken', 'previous-refresh']]),
