@@ -2525,9 +2525,12 @@ test('store failures are fixed messages or a keep-alive status; only a login or 
   const calls = f.provider.calls.length;
 
   for (const [code, message] of [
-    ['STORE_LOCKED', 'The Inna store key is locked. Unlock it and try again.'],
-    ['STORE_ACCESS_DENIED', 'Access to the Inna store key was denied.'],
-    ['STORE_TIMEOUT', 'The Inna store key did not answer in time. Try again.'],
+    [
+      'UNSAFE_FILE',
+      'Cannot use the Inna session store. Run inna-mcp auth status in a terminal; it names the file and the fix. Do not delete the store first.',
+    ],
+    // A code no key file produces gets the general text.
+    ['STORE_LOCKED', 'Cannot access the private Inna files.'],
     ['STORE_BACKEND_RETIRED', 'The Inna session store is a leftover of an earlier test build'],
     ['STORE_ERROR', 'Cannot use the Inna session store.'],
     ['IO', 'Cannot access the private Inna files.'],

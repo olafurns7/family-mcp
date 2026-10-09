@@ -1849,9 +1849,12 @@ test('store failures have fixed messages, change no file and never fall back; on
     const before = await files();
 
     for (const [code, message] of [
-      ['STORE_LOCKED', /The Abler store key is locked\. Unlock it and try again\.$/],
-      ['STORE_TIMEOUT', /did not answer in time/],
-      ['STORE_ACCESS_DENIED', /Access to the Abler store key was denied\.$/],
+      [
+        'UNSAFE_FILE',
+        /Run abler-mcp auth status in a terminal; it names the file and the fix\. Do not delete the store first\.$/,
+      ],
+      // A code no key file produces gets the general text.
+      ['STORE_LOCKED', /damaged, unsafe, or not readable/],
       [
         'STORE_BACKEND_RETIRED',
         /leftover of an earlier test build .* run abler-mcp auth login again\.$/,

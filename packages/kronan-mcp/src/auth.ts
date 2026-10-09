@@ -47,12 +47,6 @@ export const tokenPath = () =>
 /** Fixed messages: a store failure never shows a path, key or token, and never falls back. */
 function storeError(error: SessionStoreError): SafeError {
   switch (error.code) {
-    case 'STORE_LOCKED':
-      return new SafeError('The Krónan store key is locked. Unlock it and try again.');
-    case 'STORE_ACCESS_DENIED':
-      return new SafeError('Access to the Krónan store key was denied.');
-    case 'STORE_TIMEOUT':
-      return new SafeError('The Krónan store key did not answer in time. Try again.');
     case 'STORE_UNAVAILABLE':
       return new SafeError(
         'The Krónan store key is missing. Run kronan-mcp auth set to save the token again.',
@@ -63,7 +57,7 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new SafeError(
-        'The last write to the Krónan token store did not complete, so its token is not used. Remove the Krónan secret store files and run kronan-mcp auth set again.',
+        'The last write to the Krónan token store did not complete, so its token is not used. Remove session.enc and session.enc.marker from the Krónan store folder, then run kronan-mcp auth set again.',
       );
     case 'SECRET_NOT_FOUND':
       return new SafeError('No saved Krónan access token. Run kronan-mcp auth set first.');
@@ -76,6 +70,10 @@ function storeError(error: SessionStoreError): SafeError {
     case 'TOO_LARGE':
       return new SafeError(
         'The Krónan token store holds more than one access token. Run kronan-mcp auth set again.',
+      );
+    case 'UNSAFE_FILE':
+      return new SafeError(
+        'Cannot use the Krónan token store. Run kronan-mcp auth status in a terminal; it names the file and the fix. Do not delete the store first.',
       );
     default:
       return new SafeError(

@@ -250,12 +250,6 @@ export class ExpiredSession extends SafeError {}
 /** Fixed messages: a store failure never shows a path, key or cookie, and never falls back. */
 function storeError(error: SessionStoreError): StoreFailure {
   switch (error.code) {
-    case 'STORE_LOCKED':
-      return new StoreFailure('The Abler store key is locked. Unlock it and try again.');
-    case 'STORE_ACCESS_DENIED':
-      return new StoreFailure('Access to the Abler store key was denied.');
-    case 'STORE_TIMEOUT':
-      return new StoreFailure('The Abler store key did not answer in time. Try again.');
     case 'STORE_UNAVAILABLE':
       return new StoreFailure(
         'The Abler store key is missing. Run abler-mcp auth login, capture or import to sign in again.',
@@ -266,7 +260,7 @@ function storeError(error: SessionStoreError): StoreFailure {
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new StoreFailure(
-        'The last write to the Abler session store did not complete, so its session is not used. Remove the Abler secret store files and run abler-mcp auth login again.',
+        'The last write to the Abler session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Abler store folder, then run abler-mcp auth login again.',
       );
     case 'SECRET_NOT_FOUND':
       return new StoreFailure(noSession().message);
@@ -283,6 +277,10 @@ function storeError(error: SessionStoreError): StoreFailure {
     case 'TOO_LARGE':
       return new StoreFailure(
         'The Abler session is larger than the store allows. Capture or import a fresh session.',
+      );
+    case 'UNSAFE_FILE':
+      return new StoreFailure(
+        'Cannot use the Abler session store. Run abler-mcp auth status in a terminal; it names the file and the fix. Do not delete the store first.',
       );
     default:
       return new StoreFailure(

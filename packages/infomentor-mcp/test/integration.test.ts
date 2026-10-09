@@ -2103,27 +2103,31 @@ test('store failures give fixed messages without paths and never fall back to th
     );
     await allRefuse(/damaged, unsafe, or not readable/);
 
-    // A locked key refuses, and the key is never created as a fallback.
+    // A key that fails refuses, and the key is never created as a fallback.
     await anotherHome(store);
     await login({ sessionFile: file, credentialsFile, fetch: routes.fetch });
 
-    const locked: KeyProvider = {
-      backend: 'locked',
-      keySource: 'locked-key',
+    const refusing: KeyProvider = {
+      backend: 'unsafe',
+      keySource: 'unsafe-key',
       keyId: 'test',
       getKey: async () => {
-        throw new SessionStoreError('STORE_LOCKED', 'Locked.');
+        throw new SessionStoreError('UNSAFE_FILE', 'Unsafe.');
       },
-      createKey: async () => assert.fail('A locked key must not get a new key.'),
+      createKey: async () => assert.fail('An unsafe key must not get a new key.'),
     };
 
     await assert.rejects(
-      read(locked),
-      refused(/The InfoMentor store key is locked\. Unlock it and try again\./),
+      read(refusing),
+      refused(
+        /Run infomentor-mcp status in a terminal; it names the file and the fix\. Do not delete the store first\./,
+      ),
     );
     await assert.rejects(
-      login({ sessionFile: file, credentialsFile, fetch: routes.fetch, keys: locked }),
-      refused(/The InfoMentor store key is locked\. Unlock it and try again\./),
+      login({ sessionFile: file, credentialsFile, fetch: routes.fetch, keys: refusing }),
+      refused(
+        /Run infomentor-mcp status in a terminal; it names the file and the fix\. Do not delete the store first\./,
+      ),
     );
   } finally {
     await rm(tree.directory, { recursive: true, force: true });

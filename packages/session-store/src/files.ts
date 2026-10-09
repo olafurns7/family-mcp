@@ -51,9 +51,18 @@ const ANY_TEMPORARY = new RegExp(`.\\.${UUID}\\.tmp$`);
 // O_NOFOLLOW refuses symbolic links and O_NONBLOCK keeps a FIFO from blocking the open.
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0);
 
+// Shared with the store's startup check, which prints the path and any command beside them.
+export const LINKED_FILE =
+  'This file has a second name (a hard link). Remove the other name and start again.';
+
+export const OPEN_FILE = 'Other users can open this file.';
+
+const OPEN_FILE_FIX = `${OPEN_FILE} Make it owner-only with chmod 600.`;
+
+export const FOREIGN_FILE = 'This file belongs to another user, often root after a sudo run.';
+
 export function assertNoHardLinks(nlink: number): void {
-  if (nlink > 1)
-    throw new SessionStoreError('UNSAFE_FILE', 'Files with hard links are not supported.');
+  if (nlink > 1) throw new SessionStoreError('UNSAFE_FILE', LINKED_FILE);
 }
 
 type FileState = { ino: number; size: number; mtimeMs: number };
@@ -110,15 +119,11 @@ export async function readPrivateBytes(path: string, options: ReadOptions): Prom
     assertNoHardLinks(info.nlink);
 
     if (process.platform !== 'win32') {
-      if ((info.mode & 0o077) !== 0)
-        throw new SessionStoreError(
-          'UNSAFE_FILE',
-          'The file is accessible to other users; use owner-only permissions (chmod 600).',
-        );
+      if ((info.mode & 0o077) !== 0) throw new SessionStoreError('UNSAFE_FILE', OPEN_FILE_FIX);
       const uid = process.getuid?.();
 
       if (uid !== undefined && info.uid !== uid)
-        throw new SessionStoreError('UNSAFE_FILE', 'The file is owned by another user.');
+        throw new SessionStoreError('UNSAFE_FILE', FOREIGN_FILE);
     }
 
     if (info.size > maxBytes)

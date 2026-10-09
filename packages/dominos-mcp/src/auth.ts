@@ -74,12 +74,6 @@ export const sessionPath = () =>
 /** Fixed messages: a store failure never shows a path, key or token, and never falls back. */
 function storeError(error: SessionStoreError): SafeError {
   switch (error.code) {
-    case 'STORE_LOCKED':
-      return new SafeError('The Domino’s store key is locked. Unlock it and try again.');
-    case 'STORE_ACCESS_DENIED':
-      return new SafeError('Access to the Domino’s store key was denied.');
-    case 'STORE_TIMEOUT':
-      return new SafeError('The Domino’s store key did not answer in time. Try again.');
     case 'STORE_UNAVAILABLE':
       return new SafeError(
         'The Domino’s store key is missing. Run dominos-mcp auth login to sign in again.',
@@ -90,7 +84,7 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new SafeError(
-        'The last write to the Domino’s session store did not complete, so its session is not used. Remove the Domino’s secret store files and run dominos-mcp auth login again.',
+        'The last write to the Domino’s session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Domino’s store folder, then run dominos-mcp auth login again.',
       );
     case 'SECRET_NOT_FOUND':
       return new SafeError('No saved Domino’s session. Run dominos-mcp auth login first.');
@@ -103,6 +97,10 @@ function storeError(error: SessionStoreError): SafeError {
     case 'TOO_LARGE':
       return new SafeError(
         'The Domino’s session is larger than the store allows. Run dominos-mcp auth login again.',
+      );
+    case 'UNSAFE_FILE':
+      return new SafeError(
+        'Cannot use the Domino’s session store. Run dominos-mcp auth status in a terminal; it names the file and the fix. Do not delete the store first.',
       );
     default:
       return new SafeError(

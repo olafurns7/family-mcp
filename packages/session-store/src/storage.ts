@@ -4,17 +4,24 @@ import { userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
 
 import { SessionStoreError, systemErrorCode } from './errors.js';
+import { FOREIGN_FILE, LINKED_FILE, OPEN_FILE } from './files.js';
 import { runBounded } from './spawn.js';
 
-/** A refused store path. The message stays path-free; `path` is for the owner's terminal only. */
+/**
+ * A refused store path. The message stays path-free; `path` is for the owner's terminal only, and
+ * `fix`, when there is one, is the command that fixes it once the path is added.
+ */
 export class StoreRefusal extends SessionStoreError {
+  readonly fix: string | undefined;
+
   constructor(
     message: string,
     readonly path: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { fix?: string | undefined },
   ) {
     super('UNSAFE_FILE', message, options);
     this.name = 'StoreRefusal';
+    this.fix = options?.fix;
   }
 }
 
@@ -24,7 +31,37 @@ export type StoreStat = Pick<Stats, 'mode' | 'uid' | 'nlink'> & {
   isSymbolicLink(): boolean;
 };
 
-const NOT_A_DIRECTORY = 'The directory path is not a directory.';
+const NOT_A_DIRECTORY =
+  'Something other than a folder is at this store path. Move it away and start again.';
+
+const FOREIGN_DIRECTORY =
+  'This store directory belongs to another user, often root after a sudo run.';
+
+const OPEN_DIRECTORY = 'Other users can open this store directory.';
+
+const WRITABLE_ANCESTOR = 'Other users can write to a folder above the store.';
+
+const OWNED_ACL =
+  'Extra sharing permissions (an access control list, set in Finder’s Get Info) let other users in.';
+
+// `chmod -N` would also drop the stock `everyone deny delete` entry, so this one has no command.
+const ANCESTOR_ACL =
+  'Extra sharing permissions (an access control list) on a folder above the store let other users change it. List them with ls -led and remove the entry that allows another user to write.';
+
+// The command for each refusal that has one; the startup line adds the quoted path.
+const FIXES = new Map([
+  [FOREIGN_DIRECTORY, 'sudo chown -R "$(id -un)"'],
+  [OPEN_DIRECTORY, 'chmod 700'],
+  [WRITABLE_ANCESTOR, 'chmod go-w'],
+  [OPEN_FILE, 'chmod 600'],
+  [FOREIGN_FILE, 'sudo chown "$(id -un)"'],
+  [OWNED_ACL, 'chmod -N'],
+]);
+
+/** A refusal with its fixed command, if it has one. */
+function refusal(problem: string, path: string): StoreRefusal {
+  return new StoreRefusal(problem, path, { fix: FIXES.get(problem) });
+}
 
 const STICKY = 0o1000;
 
@@ -34,10 +71,9 @@ export function ownedDirectoryProblem(info: StoreStat, uid: number): string | un
 
   if (!info.isDirectory()) return NOT_A_DIRECTORY;
 
-  if (info.uid !== uid) return 'The store directory is owned by another user.';
+  if (info.uid !== uid) return FOREIGN_DIRECTORY;
 
-  if ((info.mode & 0o077) !== 0)
-    return 'The store directory is accessible to other users; use owner-only permissions (chmod 700).';
+  if ((info.mode & 0o077) !== 0) return OPEN_DIRECTORY;
 
   return undefined;
 }
@@ -60,15 +96,15 @@ export function ancestorProblem(
   const sticky =
     (info.mode & STICKY) !== 0 && childUid !== undefined && (childUid === uid || childUid === 0);
 
-  if ((info.mode & 0o022) !== 0 && !sticky)
-    return 'A directory above the store is writable by other users; remove their write permission (chmod go-w).';
+  if ((info.mode & 0o022) !== 0 && !sticky) return WRITABLE_ANCESTOR;
 
   return undefined;
 }
 
 /**
- * A key, record or marker file: the same rules and texts as `readPrivateBytes`. `links` is the
- * number of names it may have, more than one only for a recognised interrupted key publication.
+ * A key, record or marker file: the same rules and texts as `readPrivateBytes`, less the command
+ * that the refusal's `fix` carries. `links` is the number of names it may have, more than one
+ * only for a recognised interrupted key publication.
  */
 export function privateFileProblem(
   info: StoreStat,
@@ -79,14 +115,13 @@ export function privateFileProblem(
 
   if (!info.isFile()) return 'The path is not a regular file.';
 
-  if (info.nlink > links) return 'Files with hard links are not supported.';
+  if (info.nlink > links) return LINKED_FILE;
 
   if (process.platform === 'win32') return undefined;
 
-  if ((info.mode & 0o077) !== 0)
-    return 'The file is accessible to other users; use owner-only permissions (chmod 600).';
+  if ((info.mode & 0o077) !== 0) return OPEN_FILE;
 
-  if (uid !== undefined && info.uid !== uid) return 'The file is owned by another user.';
+  if (uid !== undefined && info.uid !== uid) return FOREIGN_FILE;
 
   return undefined;
 }
@@ -159,7 +194,7 @@ export async function checkStorePaths(options: {
     if (info === undefined) continue;
     const problem = ownedDirectoryProblem(info, uid);
 
-    if (problem !== undefined) throw new StoreRefusal(problem, directory);
+    if (problem !== undefined) throw refusal(problem, directory);
     checked.push({ path: directory, info, role: 'owned' });
   }
 
@@ -184,7 +219,7 @@ export async function checkStorePaths(options: {
 
     const problem = privateFileProblem(info, uid, links);
 
-    if (problem !== undefined) throw new StoreRefusal(problem, file);
+    if (problem !== undefined) throw refusal(problem, file);
     checked.push({ path: file, info, role: 'owned' });
   }
 
@@ -228,7 +263,7 @@ async function ancestorsOf(directory: string, uid: number): Promise<Checked[]> {
     const child = await lstatOrMissing(entry);
     const problem = ancestorProblem(info, uid, child?.uid);
 
-    if (problem !== undefined) throw new StoreRefusal(problem, await shown(current, absolute));
+    if (problem !== undefined) throw refusal(problem, await shown(current, absolute));
     found.set(current, { path: current, info, role: 'ancestor', from: absolute });
 
     if (next === undefined || child === undefined) break;
@@ -359,7 +394,7 @@ async function checkAcls(checked: readonly Checked[]): Promise<void> {
     const problem = aclProblem(entries[index] ?? [], entry.role, self);
 
     if (problem !== undefined)
-      throw new StoreRefusal(
+      throw refusal(
         problem,
         entry.from === undefined ? entry.path : await shown(entry.path, entry.from),
       );
@@ -412,9 +447,7 @@ export function aclProblem(
 }
 
 function aclMessage(role: AclRole): string {
-  return role === 'owned'
-    ? 'The store path grants access to other users through an access control list; remove it (chmod -N).'
-    : 'A directory above the store lets other users change it through an access control list; remove that entry (chmod -a).';
+  return role === 'owned' ? OWNED_ACL : ANCESTOR_ACL;
 }
 
 /** The store's recognised temporaries of `path`: `<name>.<uuid>.tmp` beside it. */

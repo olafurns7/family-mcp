@@ -9,8 +9,7 @@ import { migrateToken } from '../src/auth.js';
 
 const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 
-const E3 =
-  'The store directory is accessible to other users; use owner-only permissions (chmod 700).';
+const E3 = 'Other users can open this store directory.';
 
 /** Run the CLI against a scratch store (through the store test seam); stdin is closed. */
 async function run(home: string, args: string[]) {
@@ -52,7 +51,7 @@ test('the CLI refuses to start on an unsafe store and touches nothing', async ()
         const result = await run(home, args);
         expect(result).toEqual({
           stdout: '',
-          stderr: `kronan-mcp: cannot start: ${E3} (${directory})\n`,
+          stderr: `kronan-mcp: cannot start. ${E3}\n  Path: '${directory}'\n  Fix:  chmod 700 '${directory}'\n`,
           status: 1,
         });
         expect(await readdir(directory)).toEqual([]);

@@ -116,19 +116,13 @@ const encode = (saved: Saved | null) => JSON.stringify(saved && bounded(savedSch
 
 function uncertain(): SafeError {
   return new SafeError(
-    'The last write to the Inna session store did not complete, so its session is not used. Remove the Inna secret store files and run inna-mcp auth login again.',
+    'The last write to the Inna session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Inna store folder, then run inna-mcp auth login again.',
   );
 }
 
 /** Fixed messages: a store failure never shows a path, key or cookie, and never falls back. */
 function storeError(error: SessionStoreError): SafeError {
   switch (error.code) {
-    case 'STORE_LOCKED':
-      return new SafeError('The Inna store key is locked. Unlock it and try again.');
-    case 'STORE_ACCESS_DENIED':
-      return new SafeError('Access to the Inna store key was denied.');
-    case 'STORE_TIMEOUT':
-      return new SafeError('The Inna store key did not answer in time. Try again.');
     case 'STORE_UNAVAILABLE':
       return new SafeError(
         'The Inna store key is missing. Run inna-mcp auth login or auth import to sign in again.',
@@ -139,6 +133,10 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'STORE_WRITE_UNCERTAIN':
       return uncertain();
+    case 'UNSAFE_FILE':
+      return new SafeError(
+        'Cannot use the Inna session store. Run inna-mcp auth status in a terminal; it names the file and the fix. Do not delete the store first.',
+      );
     case 'STORE_ERROR':
       return new SafeError(
         'Cannot use the Inna session store. Its files or key are damaged, unsafe, or not readable.',

@@ -25,7 +25,12 @@ const TIMEOUT_MS = 5000;
 const ADD_TIMEOUT_MS = 20_000;
 
 const NOT_EXCLUDED =
-  'Cannot exclude the store from Time Machine backups; check that tmutil works, then try again.';
+  'Time Machine did not confirm that it skips this store folder. After the fix, tmutil isexcluded should show [Excluded].';
+
+/** The refusal for a directory Time Machine does not confirm as excluded. */
+function notExcludedRefusal(path: string): StoreRefusal {
+  return new StoreRefusal(NOT_EXCLUDED, path, { fix: 'tmutil addexclusion' });
+}
 
 // Directories verified in this process, by inode: a recreated directory is excluded again.
 const verified = new Map<string, string>();
@@ -86,7 +91,7 @@ export async function excludeFromBackups(
 
       const left = added.status === 0 ? await notExcluded(executable, still) : still;
 
-      if (left.length > 0) throw new StoreRefusal(NOT_EXCLUDED, left[0] ?? '');
+      if (left.length > 0) throw notExcludedRefusal(left[0] ?? '');
     }
   }
 
@@ -102,8 +107,7 @@ async function notExcluded(executable: string, paths: string[]): Promise<string[
 
   const lines = run.stdout.split('\n').filter((line) => line !== '');
 
-  if (run.status !== 0 || lines.length !== paths.length)
-    throw new StoreRefusal(NOT_EXCLUDED, paths[0] ?? '');
+  if (run.status !== 0 || lines.length !== paths.length) throw notExcludedRefusal(paths[0] ?? '');
 
   return paths.filter((_, index) => !lines[index]?.startsWith('[Excluded]'));
 }

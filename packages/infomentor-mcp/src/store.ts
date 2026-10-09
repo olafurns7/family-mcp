@@ -81,21 +81,6 @@ export const deleteCredentialsAdvice = (file: string): string =>
 /** Fixed messages: a store failure never shows a path, key or secret, and never falls back. */
 function storeError(error: SessionStoreError): InfoMentorError {
   switch (error.code) {
-    case 'STORE_LOCKED':
-      return new InfoMentorError(
-        'INVALID_CONFIGURATION',
-        'The InfoMentor store key is locked. Unlock it and try again.',
-      );
-    case 'STORE_ACCESS_DENIED':
-      return new InfoMentorError(
-        'INVALID_CONFIGURATION',
-        'Access to the InfoMentor store key was denied.',
-      );
-    case 'STORE_TIMEOUT':
-      return new InfoMentorError(
-        'INVALID_CONFIGURATION',
-        'The InfoMentor store key did not answer in time. Try again.',
-      );
     case 'STORE_UNAVAILABLE':
       return new InfoMentorError(
         'INVALID_SESSION',
@@ -109,7 +94,7 @@ function storeError(error: SessionStoreError): InfoMentorError {
     case 'STORE_WRITE_UNCERTAIN':
       return new InfoMentorError(
         'INVALID_SESSION',
-        'The last write to the InfoMentor session store did not complete, so its session is not used. Remove the InfoMentor secret store files and run infomentor-mcp login again.',
+        'The last write to the InfoMentor session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the InfoMentor store folder, then run infomentor-mcp login again.',
       );
     case 'BUSY':
       return new InfoMentorError(
@@ -130,6 +115,11 @@ function storeError(error: SessionStoreError): InfoMentorError {
       return new InfoMentorError(
         'INVALID_SESSION',
         'The InfoMentor session is larger than the store allows. Run infomentor-mcp login again.',
+      );
+    case 'UNSAFE_FILE':
+      return new InfoMentorError(
+        'INVALID_CONFIGURATION',
+        'Cannot use the InfoMentor session store. Run infomentor-mcp status in a terminal; it names the file and the fix. Do not delete the store first.',
       );
     default:
       return new InfoMentorError(

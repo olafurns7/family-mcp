@@ -32,7 +32,7 @@ Absence tools require --allow-absence-writes. Prepare the exact kind, dates, and
     'inna_session_status',
     {
       description:
-        'Verify the saved session and the account/student/school of the default student or studentKey, and say where the session is saved. Returns no credentials.',
+        'Verify the saved session and the account/student/school of the default student or studentKey, and say how the session is saved. Returns no credentials.',
       inputSchema: z.object(student).strict(),
       outputSchema: z.object({
         authenticated: z.boolean(),

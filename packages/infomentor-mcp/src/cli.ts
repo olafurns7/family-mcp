@@ -41,8 +41,8 @@ const help = [
   'Environment: INFOMENTOR_SESSION_PATH, INFOMENTOR_CREDENTIALS_FILE,',
   '             INFOMENTOR_USERNAME (kennitala or username), INFOMENTOR_PASSWORD',
   '',
-  'The session and the stored sign-in are saved encrypted, in',
-  '~/Library/Application Support/family-mcp on macOS, or in ~/.config/infomentor-mcp with the key',
+  'The session and the stored sign-in are saved encrypted, with the key in a separate private',
+  'file: ~/Library/Application Support/family-mcp on macOS; ~/.config/infomentor-mcp with the key',
   'in ~/.local/share/family-mcp/keys on Linux.',
 ].join('\n');
 

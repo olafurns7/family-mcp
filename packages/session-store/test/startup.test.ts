@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { chmod, link, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -59,22 +60,49 @@ async function check(options: Partial<Parameters<typeof startupCheck>[0]>) {
   return { passed, text };
 }
 
-test('an unsafe store gets one line naming the path and the fix', async () => {
+test('an unsafe store gets the path and the exact command that fixes it', async () => {
   await scratch(async (root) => {
-    const records = join(root, 'family-mcp', 'test-mcp');
+    // A space and a quote in the path, as in Application Support: the commands still paste.
+    const base = join(root, "Owner's Support");
+    const records = join(base, 'family-mcp', 'test-mcp');
+    const quoted = `'${records.replaceAll("'", "'\\''")}'`;
     await mkdir(records, { recursive: true, mode: 0o700 });
     await chmod(records, 0o750);
 
-    expect(await check({ store: () => store(root) })).toEqual({
+    expect(await check({ store: () => store(base) })).toEqual({
       passed: false,
-      text: `test-mcp: cannot start: The store directory is accessible to other users; use owner-only permissions (chmod 700). (${records})\n`,
+      text: [
+        'test-mcp: cannot start. Other users can open this store directory.',
+        `  Path: ${quoted}`,
+        `  Fix:  chmod 700 ${quoted}`,
+        '',
+      ].join('\n'),
     });
     expect(await readdir(records)).toEqual([]);
+    expect(
+      execFileSync('/bin/sh', ['-c', `chmod 700 ${quoted} && echo done`], { encoding: 'utf8' }),
+    ).toBe('done\n');
+
+    // A refusal without a one-line fix names only the path.
+    await chmod(records, 0o700);
+    await mkdir(join(base, 'family-mcp', 'keys'), { mode: 0o700 });
+    const key = join(base, 'family-mcp', 'keys', 'test-mcp.key');
+    await writeFile(key, Buffer.alloc(32), { mode: 0o600 });
+    await link(key, join(root, 'second-name'));
+
+    expect(await check({ store: () => store(base) })).toEqual({
+      passed: false,
+      text: [
+        'test-mcp: cannot start. This file has a second name (a hard link). Remove the other name and start again.',
+        `  Path: '${key.replaceAll("'", "'\\''")}'`,
+        '',
+      ].join('\n'),
+    });
 
     // An unknown home is reported the same way, from building the store's options.
     expect(await check({ store: unknownHome })).toEqual({
       passed: false,
-      text: 'test-mcp: cannot start: The home directory is not known; set HOME to an absolute path.\n',
+      text: 'test-mcp: cannot start. The home directory is not known; set HOME to an absolute path.\n',
     });
 
     // Anything else is not a store refusal and is not hidden.
@@ -115,17 +143,17 @@ test('an earlier build’s store gets the exact cleanup commands, by metadata on
     expect(before).toEqual({
       passed: true,
       text: [
-        'test-mcp: an earlier build left a session store here; it is not used and nothing reads it:',
+        'test-mcp: an earlier test build left an old session store. Nothing uses it:',
         `  ${join(old, 'session.enc')}`,
         `  ${join(old, "it's.marker")}`,
         `  ${join(old, 'session.enc.lock')}`,
         'Sign in again: test-mcp auth login',
-        'After the new sign-in works, stop every test-mcp process, then remove the old files:',
+        'After the new sign-in works, quit your MCP host (for example Claude Desktop) so no test-mcp is running, then remove the old files:',
         `  rm '${join(old, 'session.enc')}' '${join(old, "it'\\''s.marker")}'`,
         `  rm -r '${join(old, 'session.enc.lock')}'`,
-        'If that build kept its key in the macOS Keychain, remove it too (Keychain Access may ask for your password):',
+        'If that build kept its key in the macOS Keychain, remove that too (macOS may ask for your login password):',
         '  security delete-generic-password -s family-mcp.test-mcp -a default.data-key',
-        'Older Time Machine backups may still hold those files.',
+        'Time Machine backups made before today may still hold copies of those files.',
         '',
       ].join('\n'),
     });

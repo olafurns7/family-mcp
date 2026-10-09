@@ -52,23 +52,22 @@ const OTHER = UID + 4242;
 
 const E1 = 'The store directory is a symbolic link; use a real directory.';
 
-const E2 = 'The store directory is owned by another user.';
+const E2 = 'This store directory belongs to another user, often root after a sudo run.';
 
-const E3 =
-  'The store directory is accessible to other users; use owner-only permissions (chmod 700).';
+const E3 = 'Other users can open this store directory.';
 
-const E4 =
-  'A directory above the store is writable by other users; remove their write permission (chmod go-w).';
+const E4 = 'Other users can write to a folder above the store.';
 
 const E5 = 'A directory above the store is owned by another user.';
 
-const HARD_LINKS = 'Files with hard links are not supported.';
+const HARD_LINKS =
+  'This file has a second name (a hard link). Remove the other name and start again.';
 
 const OWNED_ACL =
-  'The store path grants access to other users through an access control list; remove it (chmod -N).';
+  'Extra sharing permissions (an access control list, set in Finder’s Get Info) let other users in.';
 
 const ANCESTOR_ACL =
-  'A directory above the store lets other users change it through an access control list; remove that entry (chmod -a).';
+  'Extra sharing permissions (an access control list) on a folder above the store let other users change it. List them with ls -led and remove the entry that allows another user to write.';
 
 const TEMPORARY = '0f0e0d0c-0b0a-4908-8706-050403020100';
 
@@ -143,7 +142,7 @@ test('store directory and ancestor decisions are pure', () => {
   expect(ownedDirectoryProblem(fake('directory', 0o40750), UID)).toBe(E3);
   expect(ownedDirectoryProblem(fake('directory', 0o40701), UID)).toBe(E3);
   expect(ownedDirectoryProblem(fake('file', 0o100600), UID)).toBe(
-    'The directory path is not a directory.',
+    'Something other than a folder is at this store path. Move it away and start again.',
   );
 
   expect(ancestorProblem(fake('directory', 0o40755), UID, UID)).toBeUndefined();
@@ -233,10 +232,7 @@ test('the preflight refuses unsafe files without reading the key', async () => {
       await chmod(file, 0o644);
       await assert.rejects(
         checkSecretStore(store),
-        refused(
-          'The file is accessible to other users; use owner-only permissions (chmod 600).',
-          file,
-        ),
+        refused('Other users can open this file.', file),
       );
       await chmod(file, 0o600);
 

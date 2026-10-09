@@ -20,7 +20,7 @@ const help = `dominos-mcp — unofficial Domino’s Iceland MCP
   dominos-mcp [serve]       Start the stdio MCP server
   dominos-mcp auth login    Sign in with a phone number and SMS code (hidden input)
   dominos-mcp auth migrate  Move a session saved by an older version out of its plaintext file
-  dominos-mcp auth status   Show where the session is saved and verify it
+  dominos-mcp auth status   Show how the session is saved and verify it
   dominos-mcp auth logout   Remove the local login
   dominos-mcp --version     Print the installed version
 

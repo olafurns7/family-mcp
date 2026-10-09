@@ -18,7 +18,7 @@ const help = `inna-mcp — unofficial Inna school MCP (preview)
   inna-mcp auth login                 Electronic ID: hidden phone prompt; approve on your phone
   inna-mcp auth login --google        Google: sign in in the browser window that opens
   inna-mcp auth import FILE           Fallback without a desktop: save a private cookie export
-  inna-mcp auth status                Verify the saved session and say where it is saved
+  inna-mcp auth status                Verify the saved session and say how it is saved
   inna-mcp auth migrate               Move an older version's plaintext session into the encrypted store
   inna-mcp auth logout                Remove the local session; retain absence evidence
   inna-mcp --version                  Print the executable version
