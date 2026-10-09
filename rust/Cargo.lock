@@ -6,9 +6,8 @@ version = 4
 name = "abler-mcp"
 version = "0.6.0"
 dependencies = [
- "close_fds",
+ "browser-login",
  "family-store",
- "getrandom 0.4.3",
  "hyper",
  "mcp-runtime",
  "reqwest",
@@ -119,6 +118,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "browser-login"
+version = "0.1.0"
+dependencies = [
+ "close_fds",
+ "getrandom 0.4.3",
+ "rustix",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

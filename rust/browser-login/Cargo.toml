@@ -1,0 +1,20 @@
+[package]
+name = "browser-login"
+version = "0.1.0"
+description = "Browser sign-in over a private Chrome debugging pipe, and the JavaScript and tough-cookie semantics the native servers share"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Marks inherited descriptors close-on-exec before the browser starts; safe Rust has no other way
+# to name a descriptor it does not own.
+close_fds = "=0.3.2"
+getrandom = "=0.4.3"
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs", "process"] }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+tokio = { version = "=1.53.2", features = ["rt", "macros", "signal"] }
