@@ -538,3 +538,184 @@ fn a_tampered_header_or_body_fails_closed_in_both_languages() {
         assert_eq!(shared.ts("read", &[]), "error:STORE_ERROR");
     }
 }
+
+const LAYOUT_OPERATION: &str = "FAMILY_STORE_TEST_OPERATION";
+
+/// The default layout of `test-mcp` under a scratch HOME, as a server would find it: with the
+/// store test seam (the Linux layout, in absolute XDG directories) or without it (the platform's
+/// own layout: Application Support on macOS, with the real Time Machine exclusion).
+struct Layout {
+    home: Scratch,
+    seam: bool,
+}
+
+impl Layout {
+    fn environment(&self, command: &mut Command) {
+        let home = &self.home.0;
+        command
+            .env("HOME", home)
+            .env_remove(TEST_SEAM)
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove(family_store::TEST_TMUTIL)
+            .env_remove(family_store::TEST_LS)
+            .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0")
+            .stdin(Stdio::null());
+
+        if self.seam {
+            command
+                .env(TEST_SEAM, "1")
+                .env("XDG_CONFIG_HOME", home.join("config"))
+                .env("XDG_DATA_HOME", home.join("data"));
+        }
+    }
+
+    /// Where the record and the key must be.
+    fn files(&self) -> (PathBuf, PathBuf) {
+        let home = &self.home.0;
+        let (config, data) = if self.seam {
+            (home.join("config"), home.join("data/family-mcp"))
+        } else if cfg!(target_os = "macos") {
+            let root = home.join("Library/Application Support/family-mcp");
+            (root.clone(), root)
+        } else {
+            (home.join(".config"), home.join(".local/share/family-mcp"))
+        };
+        (
+            config.join("test-mcp/session.enc"),
+            data.join("keys/test-mcp.default.key"),
+        )
+    }
+
+    fn ts(&self, mode: &str, arguments: &[&str]) -> String {
+        let bun = std::env::var_os("FAMILY_MCP_BUN")
+            .expect("FAMILY_MCP_BUN must name a Bun 1.4.2 executable; interop tests never skip");
+        let mut command = Command::new(bun);
+        command
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ts/store.ts"))
+            .args([mode, "default", "default"])
+            .args(arguments);
+        self.environment(&mut command);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "store.ts {mode} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .trim_end()
+            .to_owned()
+    }
+
+    /// The same operation in a child of this test binary, whose environment is this layout's.
+    fn rust(&self, operation: &str) -> String {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "default_layout_operation",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(LAYOUT_OPERATION, operation);
+        self.environment(&mut command);
+        let output = command.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("result:"))
+            .unwrap_or_else(|| panic!("no result: {stdout}"))
+            .to_owned()
+    }
+
+    fn run(&self, side: &str, operation: &str) -> String {
+        match (side, operation.split_once(' ')) {
+            ("ts", Some((mode, value))) => self.ts(mode, &[value]),
+            ("ts", None) => self.ts(operation, &[]),
+            _ => self.rust(operation),
+        }
+    }
+}
+
+/// `create-key`, `read` or `write VALUE` on the default layout. Run by the layout tests.
+#[test]
+#[ignore = "run by the default layout interop tests"]
+fn default_layout_operation() {
+    let operation = std::env::var(LAYOUT_OPERATION).unwrap();
+    let store = SecretRecordOptions::new(
+        family_store::default_secret_record_path("test-mcp").unwrap(),
+        "test-mcp",
+        "default",
+        "session",
+        1,
+        family_store::default_key_provider("test-mcp", "default").unwrap(),
+        1024,
+    );
+    let result = match operation.split_once(' ') {
+        Some(("write", value)) => put(&store, value),
+        _ if operation == "create-key" => create_secret_key(&store).map(|()| None),
+        _ => read_secret_record(&store).map(Some),
+    };
+    println!("result:{}", shown(result));
+}
+
+fn both_languages_share_the_default_layout(seam: bool) {
+    for (creator, other) in [("ts", "rust"), ("rust", "ts")] {
+        let layout = Layout {
+            home: Scratch::new(),
+            seam,
+        };
+        assert_eq!(layout.run(creator, "create-key"), "none");
+        assert_eq!(layout.run(other, "create-key"), "error:STORE_ERROR");
+        assert_eq!(
+            layout.run(creator, &format!("write from-{creator}")),
+            format!("value:from-{creator}")
+        );
+        assert_eq!(layout.run(other, "read"), format!("value:from-{creator}"));
+        assert_eq!(
+            layout.run(other, &format!("write from-{other}")),
+            format!("value:from-{other}")
+        );
+        assert_eq!(layout.run(creator, "read"), format!("value:from-{other}"));
+
+        let (record, key) = layout.files();
+        assert_eq!(mode(&record), 0o600, "{creator}");
+        assert_eq!(mode(&key), 0o600, "{creator}");
+        assert_eq!(mode(record.parent().unwrap()), 0o700);
+        assert_eq!(mode(key.parent().unwrap()), 0o700);
+
+        // Without the seam on macOS both languages excluded the store folders from Time Machine.
+        if !seam && cfg!(target_os = "macos") {
+            let output = Command::new("/usr/bin/tmutil")
+                .arg("isexcluded")
+                .args([record.parent().unwrap(), key.parent().unwrap()])
+                .output()
+                .unwrap();
+            let listed = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                listed
+                    .lines()
+                    .filter(|line| line.starts_with("[Excluded]"))
+                    .count(),
+                2,
+                "{listed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn both_languages_share_the_default_layout_with_the_test_seam() {
+    both_languages_share_the_default_layout(true);
+}
+
+#[test]
+fn both_languages_share_the_platforms_default_layout_under_a_scratch_home() {
+    both_languages_share_the_default_layout(false);
+}

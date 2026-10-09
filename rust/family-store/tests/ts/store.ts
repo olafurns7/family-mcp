@@ -1,6 +1,8 @@
 // One TypeScript session-store operation in a separate process, driven by tests/interop.rs.
 // Prints `value:<text>`, `none` or `error:<CODE>` on stdout; anything unexpected exits non-zero.
+// RECORD and KEY `default` use the default layout of `test-mcp` for this environment.
 import { mkdir, rename, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -8,6 +10,8 @@ import {
   LocalKeyFileProvider,
   SessionStoreError,
   createSecretKey,
+  defaultKeyProvider,
+  defaultSecretRecordPath,
   readSecretRecord,
   withSecretRecord,
   withSecretStore,
@@ -18,17 +22,25 @@ const [mode, record, key, ...rest] = process.argv.slice(2);
 if (mode === undefined || record === undefined || key === undefined)
   throw new RangeError('Usage: store.ts MODE RECORD KEY [ARGUMENT...]');
 
-// The store stays in the test's scratch directories, with the store test seam on.
-if (process.env.FAMILY_MCP_STORE_TEST_SEAM !== '1')
-  throw new RangeError('Tests must keep FAMILY_MCP_STORE_TEST_SEAM=1; the real store is never used.');
+const layout = record === 'default' && key === 'default';
+const home = process.env.HOME ?? '';
+
+// The store stays in the test's scratch directories: through the store test seam, or, for the
+// default layout only, under a scratch HOME in the temporary directory.
+if (process.env.FAMILY_MCP_STORE_TEST_SEAM !== '1' && !(layout && home.startsWith(`${tmpdir()}/`)))
+  throw new RangeError(
+    'Tests must keep FAMILY_MCP_STORE_TEST_SEAM=1, or a scratch HOME for the default layout; the real store is never used.',
+  );
 
 const options = {
-  path: record,
+  path: layout ? defaultSecretRecordPath('test-mcp') : record,
   server: 'test-mcp',
   profile: 'default',
   purpose: 'session',
   schema: 1,
-  keys: new LocalKeyFileProvider({ path: key }),
+  keys: layout
+    ? defaultKeyProvider({ server: 'test-mcp', profile: 'default' })
+    : new LocalKeyFileProvider({ path: key }),
   maxBytes: 1024,
 };
 
