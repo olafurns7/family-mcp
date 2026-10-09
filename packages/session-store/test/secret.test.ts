@@ -792,7 +792,7 @@ test('a custom key provider with a malformed key is STORE_ERROR before any read 
 });
 
 const RETIRED =
-  'This store is a leftover of an earlier test build that kept its key in the macOS Keychain, which is no longer used. Remove session.enc and session.enc.marker from the store folder, then sign in again.';
+  "This store is a leftover of an earlier test build that kept its key in the macOS Keychain, which is no longer used. Remove session.enc and session.enc.marker from the server's folder in ~/Library/Application Support/family-mcp, then sign in again.";
 
 test('a store set up with the retired Keychain accessor is refused before any key or reset', async () => {
   await scratch(async (directory) => {

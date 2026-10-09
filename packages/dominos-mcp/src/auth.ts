@@ -80,11 +80,11 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'STORE_BACKEND_RETIRED':
       return new SafeError(
-        'The Domino’s session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from the Domino’s store folder, then run dominos-mcp auth login again.',
+        'The Domino’s session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from ~/Library/Application Support/family-mcp/dominos-mcp, then run dominos-mcp auth login again.',
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new SafeError(
-        'The last write to the Domino’s session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Domino’s store folder, then run dominos-mcp auth login again.',
+        'The last write to the Domino’s session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Domino’s store folder (~/Library/Application Support/family-mcp/dominos-mcp on macOS, ~/.config/dominos-mcp on Linux), then run dominos-mcp auth login again.',
       );
     case 'SECRET_NOT_FOUND':
       return new SafeError('No saved Domino’s session. Run dominos-mcp auth login first.');
@@ -100,7 +100,7 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'UNSAFE_FILE':
       return new SafeError(
-        'Cannot use the Domino’s session store. Run dominos-mcp auth status in a terminal; it names the file and the fix. Do not delete the store first.',
+        'Cannot use the Domino’s session store. Run dominos-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.',
       );
     default:
       return new SafeError(

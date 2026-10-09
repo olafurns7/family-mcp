@@ -116,7 +116,7 @@ const encode = (saved: Saved | null) => JSON.stringify(saved && bounded(savedSch
 
 function uncertain(): SafeError {
   return new SafeError(
-    'The last write to the Inna session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Inna store folder, then run inna-mcp auth login again.',
+    'The last write to the Inna session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Inna store folder (~/Library/Application Support/family-mcp/inna-mcp on macOS, ~/.config/inna-mcp on Linux), then run inna-mcp auth login again.',
   );
 }
 
@@ -129,13 +129,13 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'STORE_BACKEND_RETIRED':
       return new SafeError(
-        'The Inna session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from the Inna store folder, then run inna-mcp auth login again.',
+        'The Inna session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from ~/Library/Application Support/family-mcp/inna-mcp, then run inna-mcp auth login again.',
       );
     case 'STORE_WRITE_UNCERTAIN':
       return uncertain();
     case 'UNSAFE_FILE':
       return new SafeError(
-        'Cannot use the Inna session store. Run inna-mcp auth status in a terminal; it names the file and the fix. Do not delete the store first.',
+        'Cannot use the Inna session store. Run inna-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.',
       );
     case 'STORE_ERROR':
       return new SafeError(

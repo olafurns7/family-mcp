@@ -780,7 +780,7 @@ async function exists(path: string): Promise<boolean> {
 function retiredBackend(): SessionStoreError {
   return new SessionStoreError(
     'STORE_BACKEND_RETIRED',
-    'This store is a leftover of an earlier test build that kept its key in the macOS Keychain, which is no longer used. Remove session.enc and session.enc.marker from the store folder, then sign in again.',
+    "This store is a leftover of an earlier test build that kept its key in the macOS Keychain, which is no longer used. Remove session.enc and session.enc.marker from the server's folder in ~/Library/Application Support/family-mcp, then sign in again.",
   );
 }
 

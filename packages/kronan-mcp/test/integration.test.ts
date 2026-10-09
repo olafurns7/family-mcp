@@ -867,7 +867,7 @@ test('store key failures fail closed with fixed messages and never fall back or 
         for (const [code, pattern] of [
           [
             'UNSAFE_FILE',
-            /^Cannot use the Krónan token store\. Run kronan-mcp auth status in a terminal; it names the file and the fix\. Do not delete the store first\.$/,
+            /^Cannot use the Krónan token store\. Run kronan-mcp auth status in a terminal; it shows what is wrong and where\. Do not delete the store first\.$/,
           ],
           [
             'STORE_BACKEND_RETIRED',

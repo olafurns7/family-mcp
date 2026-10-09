@@ -2527,7 +2527,7 @@ test('store failures are fixed messages or a keep-alive status; only a login or 
   for (const [code, message] of [
     [
       'UNSAFE_FILE',
-      'Cannot use the Inna session store. Run inna-mcp auth status in a terminal; it names the file and the fix. Do not delete the store first.',
+      'Cannot use the Inna session store. Run inna-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.',
     ],
     // A code no key file produces gets the general text.
     ['STORE_LOCKED', 'Cannot access the private Inna files.'],

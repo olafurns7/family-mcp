@@ -89,12 +89,12 @@ function storeError(error: SessionStoreError): InfoMentorError {
     case 'STORE_BACKEND_RETIRED':
       return new InfoMentorError(
         'INVALID_SESSION',
-        'The InfoMentor session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from the InfoMentor store folder, then run infomentor-mcp login again.',
+        'The InfoMentor session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from ~/Library/Application Support/family-mcp/infomentor-mcp, then run infomentor-mcp login again.',
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new InfoMentorError(
         'INVALID_SESSION',
-        'The last write to the InfoMentor session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the InfoMentor store folder, then run infomentor-mcp login again.',
+        'The last write to the InfoMentor session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the InfoMentor store folder (~/Library/Application Support/family-mcp/infomentor-mcp on macOS, ~/.config/infomentor-mcp on Linux), then run infomentor-mcp login again.',
       );
     case 'BUSY':
       return new InfoMentorError(
@@ -119,7 +119,7 @@ function storeError(error: SessionStoreError): InfoMentorError {
     case 'UNSAFE_FILE':
       return new InfoMentorError(
         'INVALID_CONFIGURATION',
-        'Cannot use the InfoMentor session store. Run infomentor-mcp status in a terminal; it names the file and the fix. Do not delete the store first.',
+        'Cannot use the InfoMentor session store. Run infomentor-mcp status in a terminal; it shows what is wrong and where. Do not delete the store first.',
       );
     default:
       return new InfoMentorError(

@@ -53,11 +53,11 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'STORE_BACKEND_RETIRED':
       return new SafeError(
-        'The Krónan token store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from the Krónan store folder, then run kronan-mcp auth set again.',
+        'The Krónan token store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from ~/Library/Application Support/family-mcp/kronan-mcp, then run kronan-mcp auth set again.',
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new SafeError(
-        'The last write to the Krónan token store did not complete, so its token is not used. Remove session.enc and session.enc.marker from the Krónan store folder, then run kronan-mcp auth set again.',
+        'The last write to the Krónan token store did not complete, so its token is not used. Remove session.enc and session.enc.marker from the Krónan store folder (~/Library/Application Support/family-mcp/kronan-mcp on macOS, ~/.config/kronan-mcp on Linux), then run kronan-mcp auth set again.',
       );
     case 'SECRET_NOT_FOUND':
       return new SafeError('No saved Krónan access token. Run kronan-mcp auth set first.');
@@ -73,7 +73,7 @@ function storeError(error: SessionStoreError): SafeError {
       );
     case 'UNSAFE_FILE':
       return new SafeError(
-        'Cannot use the Krónan token store. Run kronan-mcp auth status in a terminal; it names the file and the fix. Do not delete the store first.',
+        'Cannot use the Krónan token store. Run kronan-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.',
       );
     default:
       return new SafeError(

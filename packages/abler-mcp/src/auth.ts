@@ -256,11 +256,11 @@ function storeError(error: SessionStoreError): StoreFailure {
       );
     case 'STORE_BACKEND_RETIRED':
       return new StoreFailure(
-        'The Abler session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from the Abler store folder, then run abler-mcp auth login again.',
+        'The Abler session store is a leftover of an earlier test build that kept its key in the macOS Keychain. Remove session.enc and session.enc.marker from ~/Library/Application Support/family-mcp/abler-mcp, then run abler-mcp auth login again.',
       );
     case 'STORE_WRITE_UNCERTAIN':
       return new StoreFailure(
-        'The last write to the Abler session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Abler store folder, then run abler-mcp auth login again.',
+        'The last write to the Abler session store did not complete, so its session is not used. Remove session.enc and session.enc.marker from the Abler store folder (~/Library/Application Support/family-mcp/abler-mcp on macOS, ~/.config/abler-mcp on Linux), then run abler-mcp auth login again.',
       );
     case 'SECRET_NOT_FOUND':
       return new StoreFailure(noSession().message);
@@ -280,7 +280,7 @@ function storeError(error: SessionStoreError): StoreFailure {
       );
     case 'UNSAFE_FILE':
       return new StoreFailure(
-        'Cannot use the Abler session store. Run abler-mcp auth status in a terminal; it names the file and the fix. Do not delete the store first.',
+        'Cannot use the Abler session store. Run abler-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.',
       );
     default:
       return new StoreFailure(

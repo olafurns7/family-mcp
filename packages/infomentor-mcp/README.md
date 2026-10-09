@@ -452,11 +452,11 @@ If a store file or directory could be read or replaced by another user (permissi
 that let others in, another owner, a link instead of a real file or folder, a folder
 above it that others can write to, or extra sharing permissions on macOS), or Time
 Machine did not confirm that it skips the store, `infomentor-mcp` prints
-`infomentor-mcp: cannot start.` with what is wrong, the path, and the command that
-fixes it, and exits; it never changes permissions for you. A store left by an
-earlier test build that kept its key in the macOS Keychain is refused: remove
-`session.enc` and `session.enc.marker` from the store folder in the table above,
-then run `infomentor-mcp login` again.
+`infomentor-mcp: cannot start.` with what is wrong, the path, and, for most
+problems, the command that fixes it, and exits; it never changes permissions for
+you. A store left by an earlier test build that kept its key in the macOS Keychain
+is refused at the first command: remove `session.enc` and `session.enc.marker` from
+the store folder in the table above, then run `infomentor-mcp login` again.
 
 An earlier test build kept this store under `~/.config` on macOS, with the key in
 the macOS Keychain or under `~/.local/share`. That store is not used. At start the

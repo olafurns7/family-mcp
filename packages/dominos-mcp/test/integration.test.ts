@@ -702,7 +702,7 @@ test('store failures have fixed messages, change no file and never fall back', a
     for (const [code, message] of [
       [
         'UNSAFE_FILE',
-        /Run dominos-mcp auth status in a terminal; it names the file and the fix\. Do not delete the store first\.$/,
+        /Run dominos-mcp auth status in a terminal; it shows what is wrong and where\. Do not delete the store first\.$/,
       ],
       // A code no key file produces gets the general text.
       ['STORE_LOCKED', /damaged, unsafe, or not readable/],

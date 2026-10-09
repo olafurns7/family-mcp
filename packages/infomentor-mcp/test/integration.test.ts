@@ -2120,13 +2120,13 @@ test('store failures give fixed messages without paths and never fall back to th
     await assert.rejects(
       read(refusing),
       refused(
-        /Run infomentor-mcp status in a terminal; it names the file and the fix\. Do not delete the store first\./,
+        /Run infomentor-mcp status in a terminal; it shows what is wrong and where\. Do not delete the store first\./,
       ),
     );
     await assert.rejects(
       login({ sessionFile: file, credentialsFile, fetch: routes.fetch, keys: refusing }),
       refused(
-        /Run infomentor-mcp status in a terminal; it names the file and the fix\. Do not delete the store first\./,
+        /Run infomentor-mcp status in a terminal; it shows what is wrong and where\. Do not delete the store first\./,
       ),
     );
   } finally {

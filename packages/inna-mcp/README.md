@@ -155,8 +155,8 @@ If a store file or directory could be read or replaced by another user (permissi
 that let others in, another owner, a link instead of a real file or folder, a folder
 above it that others can write to, or extra sharing permissions on macOS), or Time
 Machine did not confirm that it skips the store, `inna-mcp` prints
-`inna-mcp: cannot start.` with what is wrong, the path, and the command that fixes
-it, and exits; it never changes permissions for you.
+`inna-mcp: cannot start.` with what is wrong, the path, and, for most problems, the
+command that fixes it, and exits; it never changes permissions for you.
 
 An earlier test build kept this store under `~/.config` on macOS, with the key in
 the macOS Keychain or under `~/.local/share`. That store is not used. At start the
@@ -195,15 +195,15 @@ Machine backups made before the exclusion; indexers such as Spotlight; the key i
 crash dumps, swap or hibernation images. Disk encryption (FileVault on macOS, LUKS
 on Linux) protects a stolen computer that is switched off.
 
-| Message                                | Action                                                                                                                                                                                                                                                        |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Saved in a plaintext file              | Run `inna-mcp auth migrate`.                                                                                                                                                                                                                                  |
-| `inna-mcp: cannot start.`              | The store is unsafe, or Time Machine did not confirm that it skips it. The next lines name the path and the command that fixes it (for example `chmod 700`, `chmod 600`, or `tmutil addexclusion`). Nothing is changed for you.                               |
-| Leftover of an earlier test build      | That build kept the key in the macOS Keychain. Remove `session.enc` and `session.enc.marker` from `~/Library/Application Support/family-mcp/inna-mcp`, then run `inna-mcp auth login` again.                                                                  |
-| The Inna store key is missing          | The key was deleted. The record cannot be decrypted; `inna-mcp auth login` or `auth import` replaces it with a new key and record.                                                                                                                            |
-| The last write … did not complete      | `session.enc` and `session.enc.marker` disagree, or the record was removed after a failed write. Remove both files, then sign in again.                                                                                                                       |
-| Cannot use the Inna session store      | Run `inna-mcp auth status` in a terminal: an unsafe store gets the path and the fix there. Otherwise the record, marker, or key is damaged or from another key; nothing is reset automatically. Restore the key, or remove the record and marker and sign in. |
-| INNA_SESSION_FILE overlaps the … store | Point `INNA_SESSION_FILE` away from the encrypted record, its marker and lock, and the key file.                                                                                                                                                              |
+| Message                                | Action                                                                                                                                                                                                                                                              |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Saved in a plaintext file              | Run `inna-mcp auth migrate`.                                                                                                                                                                                                                                        |
+| `inna-mcp: cannot start.`              | The store is unsafe, or Time Machine did not confirm that it skips it. The next lines name the path and, for most problems, the command that fixes it (for example `chmod 700`, `chmod 600`, or `tmutil addexclusion`). Nothing is changed for you.                 |
+| Leftover of an earlier test build      | That build kept the key in the macOS Keychain. Remove `session.enc` and `session.enc.marker` from `~/Library/Application Support/family-mcp/inna-mcp`, then run `inna-mcp auth login` again.                                                                        |
+| The Inna store key is missing          | The key was deleted. The record cannot be decrypted; `inna-mcp auth login` or `auth import` replaces it with a new key and record.                                                                                                                                  |
+| The last write … did not complete      | `session.enc` and `session.enc.marker` disagree, or the record was removed after a failed write. Remove both files (see the table above), then sign in again.                                                                                                       |
+| Cannot use the Inna session store      | Run `inna-mcp auth status` in a terminal: an unsafe store gets what is wrong and its path there. Otherwise the record, marker, or key is damaged or from another key; nothing is reset automatically. Restore the key, or remove the record and marker and sign in. |
+| INNA_SESSION_FILE overlaps the … store | Point `INNA_SESSION_FILE` away from the encrypted record, its marker and lock, and the key file.                                                                                                                                                                    |
 
 Never remove the absence record to fix a session-store message.
 
