@@ -91,17 +91,24 @@ fn login_without_a_browser_names_the_alternatives_and_leaves_no_profile() {
         command.output().unwrap()
     };
 
-    for (args, browser) in [
-        (&["auth", "login"][..], None),
-        (&["auth", "login"], Some("/nonexistent/chrome")),
+    // Without an override, macOS looks in /Applications rather than PATH, so a Mac with Chrome
+    // installed finds it; the unit tests cover that list. Discovery cases run elsewhere only.
+    let discovers = !cfg!(target_os = "macos");
+    for (args, browser, discovery) in [
+        (&["auth", "login"][..], None, true),
+        (&["auth", "login"], Some("/nonexistent/chrome"), false),
         // A directory, and a file that is not executable, are not browsers.
-        (&["auth", "login", "--browser", "/"], None),
+        (&["auth", "login", "--browser", "/"], None, false),
         (
             &["auth", "login", "--browser", "/etc/hostname"],
             Some("/bin/sh"),
+            false,
         ),
-        (&["auth", "login", "--browser="], None),
+        (&["auth", "login", "--browser="], None, true),
     ] {
+        if discovery && !discovers {
+            continue;
+        }
         let output = run(args, browser);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         assert_eq!(String::from_utf8_lossy(&output.stderr), found, "{args:?}");
