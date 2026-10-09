@@ -450,4 +450,29 @@ mod tests {
         assert!(valid_token(&"x".repeat(4096)) && !valid_token(&"x".repeat(4097)));
         assert!(!valid_token("synthetic-tökén"));
     }
+
+    /// The checks of integration.test.ts that inject a key provider, which the binary cannot be
+    /// given: tests/ts/integration.test.ts runs the rest through it.
+    #[test]
+    fn injected_store_failures_have_the_typescript_messages() {
+        for (code, ending) in [
+            (
+                Code::UnsafeFile,
+                "Cannot use the Krónan token store. Run kronan-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.",
+            ),
+            (Code::StoreBackendRetired, "run kronan-mcp auth set again."),
+            // A code no key file produces gets the general text.
+            (Code::StoreLocked, "damaged, unsafe, or not readable."),
+        ] {
+            let Fail::Safe(message) = store_error(&StoreError::new(code, "")) else {
+                panic!("{code:?} is not a store failure");
+            };
+            assert!(message.ends_with(ending), "{message}");
+        }
+        let Fail::Safe(retired) = store_error(&StoreError::new(Code::StoreBackendRetired, ""))
+        else {
+            panic!("STORE_BACKEND_RETIRED is not a store failure");
+        };
+        assert!(retired.contains("leftover of an earlier test build "));
+    }
 }

@@ -1,9 +1,13 @@
 // packages/kronan-mcp/test/startup.test.ts against the Rust binary, run by tests/typescript.rs from
 // packages/kronan-mcp. Changed only to start KRONAN_RUST_BINARY; each other change is marked `Rust:`.
 import { expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// Rust: `auth migrate` of the binary.
+import { migrateToken } from './rust-kronan.ts';
 
 const rustBinary = process.env.KRONAN_RUST_BINARY!;
 
@@ -64,5 +68,46 @@ test('the CLI refuses to start on an unsafe store and touches nothing', async ()
   }
 }, 60_000);
 
-// Rust: the macOS transition case runs `auth migrate`, which this binary gains with its token
-// commands; it is added then.
+// Rust: registered only on macOS, so tests/typescript.rs sees no skipped case elsewhere.
+(process.platform === 'darwin' ? test : () => undefined)(
+  'an earlier build’s macOS store keeps deciding, so no plaintext is imported over it',
+  async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kronan-mcp-transition-'));
+    const legacy = join(home, 'legacy-session.json');
+
+    // The production macOS layout under a scratch HOME: the test seam is off for this test.
+    const variables = {
+      FAMILY_MCP_STORE_TEST_SEAM: undefined,
+      HOME: home,
+      XDG_CONFIG_HOME: undefined,
+      XDG_DATA_HOME: undefined,
+      KRONAN_TOKEN_FILE: legacy,
+    };
+
+    const saved = Object.fromEntries(
+      Object.keys(variables).map((name) => [name, process.env[name]]),
+    );
+
+    try {
+      for (const [name, value] of Object.entries(variables))
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      await mkdir(join(home, '.config', 'kronan-mcp'), { recursive: true, mode: 0o700 });
+      await writeFile(join(home, '.config', 'kronan-mcp', 'session.enc.marker'), 'old', {
+        mode: 0o600,
+      });
+      await writeFile(legacy, '{}', { mode: 0o600 });
+
+      await assert.rejects(migrateToken(), /store key is missing/);
+      expect(await readFile(legacy, 'utf8')).toBe('{}');
+      expect(
+        await readFile(join(home, '.config', 'kronan-mcp', 'session.enc.marker'), 'utf8'),
+      ).toBe('old');
+    } finally {
+      for (const [name, value] of Object.entries(saved))
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+);
