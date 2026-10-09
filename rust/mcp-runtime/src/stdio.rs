@@ -38,6 +38,10 @@ impl<S: Server> AsyncRead for Input<S> {
 
 /// Serve until stdin ends or SIGINT or SIGTERM arrives, then wait for the server's `close`.
 /// Fails, before serving and without closing, only when the signal handler cannot be installed.
+///
+/// The caller must end its runtime with `shutdown_background` after this returns, not with
+/// `#[tokio::main]` or a drop: the stdin read may still block, and waiting for it keeps a
+/// signalled process alive while the host holds stdin open. See the crate's entry point docs.
 pub async fn serve_stdio<S: Server>(server: S) -> std::io::Result<()> {
     let server = Arc::new(server);
     let mut terminate = signal(SignalKind::terminate())?;
