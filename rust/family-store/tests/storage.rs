@@ -177,7 +177,10 @@ fn mkdir(path: &Path, mode: u32) {
 }
 
 fn missing() -> StoreCheck {
-    StoreCheck { exists: false }
+    StoreCheck {
+        exists: false,
+        retired: Vec::new(),
+    }
 }
 
 fn set_up(layout: &Layout) {
@@ -200,7 +203,10 @@ fn the_preflight_passes_on_a_missing_store_creates_nothing_and_reads_no_key() {
     let before = listing(root);
     assert_eq!(
         check_secret_store(&layout.store).unwrap(),
-        StoreCheck { exists: true }
+        StoreCheck {
+            exists: true,
+            retired: Vec::new(),
+        }
     );
     assert_eq!(layout.reads(), reads);
     assert_eq!(listing(root), before);

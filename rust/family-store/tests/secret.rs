@@ -3,7 +3,7 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -15,8 +15,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use common::*;
 use family_store::{
     Cancel, Code, Error, FakeKeyProvider, Key, KeyProvider, LocalKeyFileProvider,
-    SecretRecordOptions, create_secret_key, read_secret_record, secret_store_exists,
-    with_secret_record, with_secret_store,
+    SecretRecordOptions, create_secret_key, existing_paths, read_secret_record,
+    secret_store_exists, with_secret_record, with_secret_store,
 };
 
 const MAX_INTEGER: u64 = 999_999_999_999_999;
@@ -823,4 +823,66 @@ fn every_record_header_field_is_authenticated_not_only_compared() {
         assert_eq!(text(&original.path), record);
         assert_eq!(text(&marker_file), changed);
     }
+}
+
+const RETIRED: &str = "This store is a leftover of an earlier test build that kept its key in the macOS Keychain, which is no longer used. Remove session.enc and session.enc.marker from the server's folder in ~/Library/Application Support/family-mcp, then sign in again.";
+
+fn retired<T: std::fmt::Debug>(result: Result<T, Error>) {
+    let error = result.expect_err("retired");
+    assert_eq!(error.code, Code::StoreBackendRetired);
+    assert_eq!(error.message, RETIRED);
+}
+
+#[test]
+fn a_store_set_up_with_the_retired_keychain_accessor_is_refused_before_any_key_or_reset() {
+    let scratch = Scratch::new();
+    let keys = Arc::new(LocalKeyFileProvider::new(scratch.join("keys/test-mcp.key")));
+    let store = options_with(&scratch.0, keys.clone(), 1024);
+    let marker = marker_path(&store);
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(scratch.join("records"))
+        .unwrap();
+    write(
+        &marker,
+        "{\"backend\":\"encrypted-file\",\"keySource\":\"keychain-accessor\",\"keyId\":\"keychain\",\"profile\":\"default\",\"migrated\":true,\"generation\":1}\n",
+    );
+    write(&store.path, forge(&store, 1, SECRET));
+    let before = [fs::read(&store.path).unwrap(), fs::read(&marker).unwrap()];
+
+    // Without a key file, as that build leaves it, and with one: the marker decides first.
+    for with_key in [false, true] {
+        if with_key {
+            keys.create_key(&Cancel::default()).unwrap();
+        }
+        retired(read_secret_record(&store));
+        refuses(&store, Code::StoreBackendRetired);
+        retired(with_secret_store(&store, |held| held.reset()));
+        retired(create_secret_key(&store));
+        retired(with_secret_store(&store, |held| held.check_key()));
+        assert_eq!(
+            [fs::read(&store.path).unwrap(), fs::read(&marker).unwrap()],
+            before
+        );
+    }
+}
+
+#[test]
+fn files_of_a_retired_layout_make_the_store_decide_without_being_read() {
+    let scratch = Scratch::new();
+    let old = scratch.join("old/session.enc.marker");
+    let store = SecretRecordOptions {
+        retired: vec![scratch.join("missing"), old.clone()],
+        ..options(&scratch.0)
+    };
+    let held_exists = || with_secret_store(&store, |held| held.exists()).unwrap();
+
+    assert!(!held_exists());
+    fs::create_dir(scratch.join("old")).unwrap();
+    // Unreadable and malformed: existence is all that is checked.
+    fs::write(&old, "not a marker").unwrap();
+    fs::set_permissions(&old, fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(held_exists());
+    assert_eq!(with_secret_store(&store, |held| held.read()).unwrap(), None);
+    assert_eq!(existing_paths(&store.retired).unwrap(), [old]);
 }

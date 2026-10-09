@@ -16,7 +16,7 @@ use crate::files::{
 };
 use crate::keys::{Key, KeyProvider, key_temporary};
 use crate::lock::{DEFAULT_WAIT, LockOptions, with_file_lock};
-use crate::storage::{StorePaths, check_store_paths, store_directories};
+use crate::storage::{MAX_LINKS, StorePaths, check_store_paths, store_directories};
 
 #[derive(Clone)]
 pub struct SecretRecordOptions {
@@ -35,6 +35,11 @@ pub struct SecretRecordOptions {
     pub cancel: Cancel,
     /// Longest wait for a busy lock. Default 30 s.
     pub wait: Duration,
+    /// Files of an earlier layout of this store ([`crate::retired_store_paths`]). While one exists
+    /// the store decides (`exists()` is true), so an older plaintext credential is never imported
+    /// over it; that includes a link or entry that cannot be followed. Only one shown to be the
+    /// current store under another name is ignored. They are only checked by metadata, never read.
+    pub retired: Vec<PathBuf>,
 }
 
 impl SecretRecordOptions {
@@ -57,6 +62,7 @@ impl SecretRecordOptions {
             max_bytes,
             cancel: Cancel::default(),
             wait: DEFAULT_WAIT,
+            retired: Vec::new(),
         }
     }
 }
@@ -84,6 +90,8 @@ const MARKER_MAX_BYTES: usize = 1024;
 
 // The largest generation or schema the 15-digit header and marker fields hold.
 const MAX_INTEGER: u64 = 999_999_999_999_999;
+
+const RETIRED_KEY_SOURCE: &str = "keychain-accessor";
 
 /// A store whose record lock is already held, from [`with_secret_store`]. Nothing locks again, and
 /// the borrow ends with the hold.
@@ -115,7 +123,7 @@ impl SecretStore<'_> {
         let mut fetched = None;
         let key = match &self.state {
             Some((key, _)) => key,
-            None => &*fetched.insert(self.options.keys.get_key(&self.options.cancel)?),
+            None => &*fetched.insert(current_key(self.options)?),
         };
         let (current, marker) = load(self.options, key)?;
 
@@ -128,10 +136,12 @@ impl SecretStore<'_> {
         Ok((current, marker))
     }
 
-    /// True once a marker exists: the store then decides, also while it holds no record.
+    /// True once a marker exists, or a file of an earlier layout that is not shown to be this
+    /// store: the store then decides, also while it holds no record.
     pub fn exists(&self) -> Result<bool> {
         self.usable()?;
-        secret_store_exists(&self.options.path)
+        Ok(secret_store_exists(&self.options.path)?
+            || !leftovers(self.options)?.deciding.is_empty())
     }
 
     /// The committed plaintext, or `None` while the store holds no record.
@@ -215,6 +225,8 @@ impl SecretStore<'_> {
         self.usable()?;
         self.forget();
         let options = self.options;
+        // A missing key is what that build leaves; its record may still open with the Keychain key.
+        refuse_retired(options)?;
 
         if !key_missing(options)? {
             return Err(Error::new(
@@ -244,6 +256,15 @@ impl SecretStore<'_> {
         }
         sweep_temp(&options.path, DEFAULT_SWEEP_AGE)?;
         Ok(())
+    }
+
+    /// Confirm the key is there without reading the record: STORE_BACKEND_RETIRED first for a
+    /// store set up through the retired Keychain accessor, then whatever `get_key` returns
+    /// (STORE_UNAVAILABLE while the key is missing).
+    pub fn check_key(&self) -> Result<()> {
+        self.usable()?;
+        // The probed key is wiped as it is dropped.
+        current_key(self.options).map(drop)
     }
 }
 
@@ -306,6 +327,10 @@ pub fn create_secret_key(options: &SecretRecordOptions) -> Result<()> {
 pub struct StoreCheck {
     /// A marker exists at the store's path.
     pub exists: bool,
+    /// The `retired` files that exist and are shown to be separate from the current store: an
+    /// earlier layout to clean up after a new sign-in. An old entry that cannot be followed is
+    /// left out here, although it still makes the store decide.
+    pub retired: Vec<PathBuf>,
 }
 
 /// Startup preflight: refuse unsafe store directories and files before serving, with an
@@ -343,7 +368,129 @@ pub fn check_secret_store(options: &SecretRecordOptions) -> Result<StoreCheck> {
 
     Ok(StoreCheck {
         exists: secret_store_exists(path)?,
+        retired: leftovers(options)?.named,
     })
+}
+
+/// The `retired` files that exist, split by use.
+struct Leftovers {
+    /// Every one not shown to be the current store's record, marker, lock or key under another
+    /// name: an old entry whose link or metadata cannot be followed still decides, so a broken old
+    /// store never lets an older plaintext credential back in.
+    deciding: Vec<PathBuf>,
+    /// Only those shown to be separate files, safe to name in a cleanup command.
+    named: Vec<PathBuf>,
+}
+
+/// The current files are protected by canonical directory entry (the resolved directory plus the
+/// file name), which an atomic save leaves unchanged, and by device and inode for any other alias.
+/// A name followed through its links to a current entry is that entry. When the current files
+/// cannot be read, nothing is named and every old entry decides.
+fn leftovers(options: &SecretRecordOptions) -> Result<Leftovers> {
+    let found = existing_paths(&options.retired)?;
+
+    if found.is_empty() {
+        return Ok(Leftovers {
+            deciding: Vec::new(),
+            named: Vec::new(),
+        });
+    }
+    let path = options.path.as_path();
+    let mut current = vec![
+        path.to_path_buf(),
+        marker_path(path),
+        suffixed(path, ".lock"),
+    ];
+    current.extend(options.keys.key_file().map(Path::to_path_buf));
+    let mut entries = Vec::new();
+    let mut identities = Vec::new();
+
+    for file in &current {
+        match (directory_entry(file), identity(file)) {
+            (Ok(entry), Ok(id)) => {
+                entries.extend(entry);
+                identities.extend(id);
+            }
+            _ => {
+                return Ok(Leftovers {
+                    deciding: found,
+                    named: Vec::new(),
+                });
+            }
+        }
+    }
+    let mut leftovers = Leftovers {
+        deciding: Vec::new(),
+        named: Vec::new(),
+    };
+
+    for file in found {
+        // None when the name cannot be followed: gone, dangling, unreadable or looping.
+        let entry = linked_entry(&file).ok();
+        let id = identity(&file).ok().flatten();
+
+        if entry.as_ref().is_some_and(|entry| entries.contains(entry))
+            || id.is_some_and(|id| identities.contains(&id))
+        {
+            continue;
+        }
+
+        if entry.is_some() && id.is_some() {
+            leftovers.named.push(file.clone());
+        }
+        leftovers.deciding.push(file);
+    }
+    Ok(leftovers)
+}
+
+/// The resolved directory plus the file name; `None` when the directory does not exist.
+fn directory_entry(path: &Path) -> std::io::Result<Option<PathBuf>> {
+    let name = path.file_name().ok_or(std::io::ErrorKind::InvalidInput)?;
+
+    match fs::canonicalize(parent(path)) {
+        Ok(directory) => Ok(Some(directory.join(name))),
+        Err(error) if errno(&error) == Some(Errno::NOENT) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The directory entry `path` reaches after its links, by `lstat` and `readlink`: never opened.
+fn linked_entry(path: &Path) -> std::io::Result<PathBuf> {
+    let mut entry = path.to_path_buf();
+
+    for _ in 0..=MAX_LINKS {
+        let name = entry.file_name().ok_or(std::io::ErrorKind::InvalidInput)?;
+        entry = fs::canonicalize(parent(&entry))?.join(name);
+
+        if !fs::symlink_metadata(&entry)?.is_symlink() {
+            return Ok(entry);
+        }
+        entry = parent(&entry).join(fs::read_link(&entry)?);
+    }
+    Err(std::io::ErrorKind::InvalidInput.into())
+}
+
+/// Device and inode of what `path` names, following links; `None` when nothing is there.
+fn identity(path: &Path) -> std::io::Result<Option<(u64, u64)>> {
+    use std::os::unix::fs::MetadataExt;
+
+    match fs::metadata(path) {
+        Ok(info) => Ok(Some((info.dev(), info.ino()))),
+        Err(error) if errno(&error) == Some(Errno::NOENT) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The paths that exist, by `lstat` only: nothing is followed, opened or read.
+pub fn existing_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+
+    for path in paths {
+        if exists(path)? {
+            found.push(path.clone());
+        }
+    }
+    Ok(found)
 }
 
 /// A marker exists, so the store decides even while it holds no record.
@@ -401,6 +548,31 @@ fn check_generation_left(marker: Option<&Marker>) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The key, after a store of the retired Keychain accessor is refused.
+fn current_key(options: &SecretRecordOptions) -> Result<Key> {
+    refuse_retired(options)?;
+    options.keys.get_key(&options.cancel)
+}
+
+/// STORE_BACKEND_RETIRED when the marker names the retired Keychain accessor, before any key is
+/// asked for. Only the marker's key source is read here; every other marker problem is left to
+/// `read_marker`.
+fn refuse_retired(options: &SecretRecordOptions) -> Result<()> {
+    if options.keys.key_source() == RETIRED_KEY_SOURCE {
+        return Ok(());
+    }
+    let text = match read_private_bytes(&marker_path(&options.path), MARKER_MAX_BYTES) {
+        Ok(text) => text,
+        Err(error) if error.code == Code::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+
+    match parse_marker(&text) {
+        Some((_, RETIRED_KEY_SOURCE, ..)) => Err(retired_backend()),
+        _ => Ok(()),
+    }
 }
 
 /// True only for STORE_UNAVAILABLE; a readable key is false and every other failure propagates.
@@ -657,6 +829,11 @@ fn read_marker(options: &SecretRecordOptions) -> Result<Option<Marker>> {
     let (backend, key_source, key_id, profile, marker) = parse_marker(&text)
         .ok_or_else(|| Error::new(Code::StoreError, "The secret store marker is malformed."))?;
 
+    // Set up by an earlier build through security(1), which no server runs any more.
+    if key_source == RETIRED_KEY_SOURCE && keys.key_source() != RETIRED_KEY_SOURCE {
+        return Err(retired_backend());
+    }
+
     if backend != keys.backend()
         || key_source != keys.key_source()
         || key_id != keys.key_id()
@@ -805,6 +982,13 @@ fn exists(path: &Path) -> Result<bool> {
             "Cannot inspect the secret store. Check its permissions.",
         )),
     }
+}
+
+fn retired_backend() -> Error {
+    Error::new(
+        Code::StoreBackendRetired,
+        "This store is a leftover of an earlier test build that kept its key in the macOS Keychain, which is no longer used. Remove session.enc and session.enc.marker from the server's folder in ~/Library/Application Support/family-mcp, then sign in again.",
+    )
 }
 
 const UNCERTAIN: &str =

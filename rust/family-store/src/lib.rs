@@ -12,6 +12,7 @@ mod paths;
 mod seam;
 mod secret;
 mod spawn;
+mod startup;
 mod storage;
 
 pub use errors::{Cancel, Code, Error, Result};
@@ -29,5 +30,6 @@ pub use paths::{
 pub use seam::{TEST_LS, TEST_SEAM, TEST_TMUTIL, test_seam};
 pub use secret::{
     SecretRecordOptions, SecretStore, StoreCheck, check_secret_store, create_secret_key,
-    read_secret_record, secret_store_exists, with_secret_record, with_secret_store,
+    existing_paths, read_secret_record, secret_store_exists, with_secret_record, with_secret_store,
 };
+pub use startup::startup_check;
