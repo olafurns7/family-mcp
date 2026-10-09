@@ -3,7 +3,7 @@
 // with `test-origin`), each in its own scratch home and against the same local fake upstream, and
 // compares outputs, exit codes, upstream requests, the stored token and the files left behind.
 // Prints mismatches and exits 1 on any.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, realpathSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -45,6 +45,40 @@ const TOKEN = 'synthetic-token-0123456789';
 const LEGACY = { file: '.config/kronan-mcp/session.json', text: JSON.stringify({ version: 1, token: TOKEN }) + '\n' };
 
 const MAX_BODY = 4 * 1024 * 1024;
+
+/** The order-attempt record beside the default legacy token file. */
+const ATTEMPTS = `${LEGACY.file}.order-attempts.json`;
+
+/** Records as the TypeScript client writes them, with keys and values a reader must keep or drop. */
+const attemptsText = JSON.stringify({
+  version: 1,
+  extra: true,
+  attempts: [
+    {
+      id: '1b4e28ba-2fa1-41d2-883f-0016d3cca427',
+      tool: 'complete_checkout',
+      checkoutToken: '123e4567-e89b-12d3-a456-426614174006',
+      fingerprint: 'f'.repeat(64),
+      total: 1489,
+      state: 'unknown',
+      orderToken: null,
+      createdAt: '2026-09-25T10:00:00.000Z',
+      updatedAt: '2026-09-25T10:00:01.000Z',
+      upstreamOnly: UPSTREAM_EXTRA,
+    },
+    {
+      updatedAt: '2026-09-24T10:00:01.000Z',
+      createdAt: '2026-09-24T10:00:00.000Z',
+      orderToken: ORDER_TOKEN,
+      state: 'accepted',
+      total: 1.0,
+      fingerprint: 'e'.repeat(64),
+      checkoutToken: 'mjólk "checkout"',
+      tool: 'reserve_pickup_slot',
+      id: 'two',
+    },
+  ],
+});
 
 /** A JSON document of exactly `bytes` bytes: a product whose description pads it out. */
 function sized(bytes: number): string {
@@ -327,6 +361,103 @@ const scenarios: Scenario[] = [
       { serve: [['auth_status', {}]] },
     ],
   },
+  {
+    name: 'auth',
+    steps: [
+      { mode: 'ok' },
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'migrate'] },
+      { cli: ['auth', 'logout'] },
+      { file: 'token.txt', text: `  ${TOKEN} \n` },
+      { cli: ['auth', 'set', 'token.txt'] },
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'migrate'] },
+      { cli: ['auth', 'set', '-'], stdin: 'other-synthetic-token-42\n' },
+      { cli: ['auth', 'set'], stdin: `\u00a0\ufeff${TOKEN}\u2028\u3000` },
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'set'], stdin: `\u0085${TOKEN}` },
+      { cli: ['auth', 'set'], stdin: '' },
+      { cli: ['auth', 'set'], stdin: 'short' },
+      { cli: ['auth', 'set'], stdin: 'synthetic\r\ntoken-0123' },
+      { cli: ['auth', 'set'], stdin: 'synthetic-tökén-0123' },
+      { cli: ['auth', 'set'], stdin: 'x'.repeat(4097) },
+      { cli: ['auth', 'set'], stdin: ' '.repeat(16_384 - TOKEN.length) + TOKEN },
+      { cli: ['auth', 'set'], stdin: ' '.repeat(16_385 - TOKEN.length) + TOKEN },
+      { cli: ['auth', 'set'], stdin: 'ð'.repeat(16_385) },
+      { cli: ['auth', 'set'], stdin: 'y'.repeat(20_000) },
+      { file: 'shared.txt', text: TOKEN, permissions: 0o644 },
+      { cli: ['auth', 'set', 'shared.txt'] },
+      { cli: ['auth', 'set', 'absent.txt'] },
+      { file: 'huge.txt', text: 'x'.repeat(16_385) },
+      { cli: ['auth', 'set', 'huge.txt'] },
+      { cli: ['auth', 'set', '.config'] },
+      { mode: 'status401' },
+      { cli: ['auth', 'set', '-'], stdin: 'rejected-synthetic-token' },
+      { cli: ['auth', 'status'] },
+      { mode: 'status403' },
+      { cli: ['auth', 'status'] },
+      { mode: 'ok' },
+      { cli: ['auth', 'logout'] },
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'migrate'] },
+      { file: LEGACY.file, text: LEGACY.text },
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'migrate'] },
+      { file: LEGACY.file, text: LEGACY.text },
+      { cli: ['auth', 'migrate'] },
+      { file: LEGACY.file, text: LEGACY.text },
+      { cli: ['auth', 'logout'] },
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'set', '-'], stdin: TOKEN },
+      { serve: [['auth_status', {}]] },
+    ],
+  },
+  {
+    name: 'legacy',
+    steps: [
+      { mode: 'ok' },
+      { file: LEGACY.file, text: LEGACY.text },
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'migrate'] },
+      { cli: ['auth', 'status'] },
+      { file: LEGACY.file, text: '{"version":1,"token":"short"}' },
+      { cli: ['auth', 'migrate'] },
+      { cli: ['auth', 'logout'] },
+      { file: LEGACY.file, text: LEGACY.text },
+      { cli: ['auth', 'migrate'] },
+    ],
+  },
+  {
+    name: 'legacy-invalid',
+    steps: [
+      { mode: 'ok' },
+      { file: LEGACY.file, text: '{"version":1,"token":"short"}' },
+      { cli: ['auth', 'migrate'] },
+      { cli: ['auth', 'status'] },
+      { file: LEGACY.file, text: LEGACY.text, permissions: 0o640 },
+      { cli: ['auth', 'migrate'] },
+      { cli: ['auth', 'logout'] },
+      { cli: ['auth', 'migrate'] },
+    ],
+  },
+  {
+    name: 'attempts',
+    steps: [
+      { cli: ['orders', 'clear-attempts'] },
+      { file: ATTEMPTS, text: attemptsText },
+      ...['n\n', '\n', '', 'yes please\n', 'N'].map((stdin) => ({ cli: ['orders', 'clear-attempts'], stdin })),
+      { cli: ['orders', 'clear-attempts'], stdin: '  Y  \nextra' },
+      { cli: ['orders', 'clear-attempts'] },
+      { file: ATTEMPTS, text: 'not json' },
+      { cli: ['orders', 'clear-attempts'], stdin: 'n\n' },
+      { cli: ['orders', 'clear-attempts'], stdin: 'Y\n' },
+      { file: ATTEMPTS, text: attemptsText, permissions: 0o644 },
+      { cli: ['orders', 'clear-attempts'], stdin: 'y' },
+      { file: ATTEMPTS, text: JSON.stringify({ version: 1, attempts: [] }) },
+      { cli: ['orders', 'clear-attempts'], stdin: 'y' },
+    ],
+  },
+  { name: 'attempts-file', env: { KRONAN_TOKEN_FILE: 'nested/../t.json' }, steps: [{ file: 't.json.order-attempts.json', text: attemptsText }, { cli: ['orders', 'clear-attempts'], stdin: 'y\n' }] },
   { name: 'token-file', env: { KRONAN_TOKEN_FILE: 'nested/../token.json' }, steps: [{ file: 'token.json', text: LEGACY.text }, { mode: 'ok' }, { serve: [['auth_status', {}]] }] },
 ];
 
@@ -363,7 +494,10 @@ async function runCli(side: 'ts' | 'rust', home: string, env: Record<string, str
     child.exited,
   ]);
 
-  return { args, code, stdout, stderr };
+  // Printed paths name each side's own scratch home.
+  const local = (text: string) => text.replaceAll(realpathSync(home), '<home>').replaceAll(home, '<home>');
+
+  return { args, code, stdout: local(stdout), stderr: local(stderr) };
 }
 
 async function runServe(side: 'ts' | 'rust', home: string, env: Record<string, string>, calls: [string, unknown][], surface = false) {
@@ -499,6 +633,9 @@ try {
   for (const scenario of scenarios) {
     if (only && scenario.name !== only) continue;
     const ts = await run('ts', scenario);
+
+    // Debugging aid: PARITY_DUMP=1 prints what the TypeScript side did.
+    if (process.env.PARITY_DUMP === '1') console.error(JSON.stringify(ts, null, 1).slice(0, 20_000));
     coverage.cli += scenario.steps.filter((step) => 'cli' in step).length;
     coverage.tools += JSON.stringify(ts.steps).split('"content"').length - 1;
     coverage.succeeded += JSON.stringify(ts.steps).split('"structuredContent"').length - 1;
@@ -509,7 +646,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-if (!only && (coverage.cli < 30 || coverage.tools < 230 || coverage.succeeded < 55)) failures.push(`coverage too low: ${JSON.stringify(coverage)}`);
+if (!only && (coverage.cli < 85 || coverage.tools < 230 || coverage.succeeded < 55)) failures.push(`coverage too low: ${JSON.stringify(coverage)}`);
 
 if (failures.length) {
   console.log(failures.join('\n'));

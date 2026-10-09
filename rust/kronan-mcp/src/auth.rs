@@ -8,9 +8,9 @@ use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use family_store::{
-    Code, Error as StoreError, SecretRecordOptions, SecretStore, default_key_provider,
-    default_secret_record_path, default_session_path, read_private_file, retired_store_paths,
-    startup_check, with_secret_store,
+    Code, DEFAULT_SWEEP_AGE, Error as StoreError, LockOptions, SecretRecordOptions, SecretStore,
+    default_key_provider, default_secret_record_path, default_session_path, read_private_file,
+    retired_store_paths, startup_check, sweep_temp, with_file_lock, with_secret_store,
 };
 use serde_json::Value;
 
@@ -23,6 +23,8 @@ pub const TOKEN_MAX_BYTES: usize = 16_384;
 const APP: &str = "kronan-mcp";
 
 const NO_TOKEN: &str = "No saved Krónan access token. Run kronan-mcp auth set first.";
+
+const STORAGE: &str = "an encrypted file";
 
 /// Node's `path.resolve`: absolute, with `.` and `..` resolved lexically.
 pub fn resolve(path: &Path) -> PathBuf {
@@ -182,16 +184,230 @@ fn load_legacy_token(path: &Path) -> Result<String> {
     ))
 }
 
-/// Before the store has a marker the legacy file is authoritative. Once it has one only the store
-/// is read, whatever it holds.
-pub fn load_token() -> Result<String> {
+fn encode_record(token: Option<&str>) -> String {
+    serde_json::json!({ "version": 1, "token": token }).to_string()
+}
+
+/// The token and how it is saved.
+pub struct Saved {
+    pub token: String,
+    pub storage: String,
+}
+
+/// Before the store has a marker the legacy file is authoritative, and `storage` says so. Once it
+/// has one only the store is read, whatever it holds.
+pub fn load_saved_token() -> Result<Saved> {
     let record = token_record()?;
 
     with_secret_store(&record, |store| {
         if !store_decides(store, &record.path)? {
-            return load_legacy_token(&token_path()?);
+            return Ok(Saved {
+                token: load_legacy_token(&token_path()?)?,
+                storage: "Saved in a plaintext file. Run kronan-mcp auth migrate.".to_owned(),
+            });
         }
-        stored_token(store)?.flatten().ok_or(Fail::Safe(NO_TOKEN))
+        let token = stored_token(store)?.flatten().ok_or(Fail::Safe(NO_TOKEN))?;
+        Ok(Saved {
+            token,
+            storage: format!("Saved in {STORAGE}."),
+        })
+    })
+}
+
+pub fn load_token() -> Result<String> {
+    Ok(load_saved_token()?.token)
+}
+
+/// Create the key when it is missing; only an explicit new login may reset a lost key's store.
+fn prepare_key(store: &mut SecretStore, record: &SecretRecordOptions, reset: bool) -> Result<bool> {
+    match store.check_key() {
+        Ok(()) => Ok(false),
+        Err(error) if error.code != Code::StoreUnavailable => Err(error.into()),
+        Err(error) => {
+            let used = store_decides(store, &record.path)?;
+
+            if used {
+                if !reset {
+                    return Err(error.into());
+                }
+                store.reset()?;
+            }
+            store.create_key()?;
+            Ok(used)
+        }
+    }
+}
+
+/// The legacy file is a credential; remove it and any orphaned temporaries beside it.
+fn remove_legacy(path: &Path) -> Result<bool> {
+    let removed = (|| {
+        let found = exists(path).ok()?;
+
+        match fs::remove_file(path) {
+            Err(error) if error.kind() != ErrorKind::NotFound => return None,
+            _ => {}
+        }
+        sweep_temp(path, DEFAULT_SWEEP_AGE).ok()?;
+        Some(found)
+    })();
+    removed.ok_or(Fail::Safe(
+        "Saved in the encrypted store, but the old plaintext token file could not be removed. Remove it by hand.",
+    ))
+}
+
+/// Resolve symbolic links in the longest existing prefix, so aliases compare equal.
+fn canonical(path: &Path) -> Result<PathBuf> {
+    let mut existing = resolve(path);
+    let mut rest = Vec::new();
+
+    loop {
+        match fs::canonicalize(&existing) {
+            Ok(real) => return Ok(rest.iter().rev().fold(real, |path, name| path.join(name))),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else {
+                    break;
+                };
+                rest.push(name.to_owned());
+                existing = parent.to_owned();
+            }
+            Err(_) => break,
+        }
+    }
+    Err(Fail::Safe(
+        "Cannot resolve the Krónan token paths. Check their permissions.",
+    ))
+}
+
+/// Same file, or one name is the other's `<name>.` namespace (lock, marker, temporaries) beside it.
+fn overlaps(first: &Path, second: &Path) -> bool {
+    let (Some(a), Some(b)) = (first.file_name(), second.file_name()) else {
+        return false;
+    };
+    let (a, b) = (a.as_encoded_bytes(), b.as_encoded_bytes());
+    let namespace =
+        |name: &[u8], of: &[u8]| name.starts_with(of) && name.get(of.len()) == Some(&b'.');
+    first.parent() == second.parent() && (a == b || namespace(a, b) || namespace(b, a))
+}
+
+/// The order-attempt journal beside the legacy token file.
+pub fn journal_of(legacy: &Path) -> PathBuf {
+    let mut name = legacy.as_os_str().to_owned();
+    name.push(".order-attempts.json");
+    PathBuf::from(name)
+}
+
+/// The legacy file is removed and swept, and the store can be reset, so neither may alias the
+/// other, the key file, or the order-attempt journal. Checked before anything is touched.
+fn reject_collisions(record: &SecretRecordOptions, legacy: &Path) -> Result<()> {
+    let store = canonical(&record.path)?;
+    let token = canonical(legacy)?;
+    let journal = canonical(&journal_of(legacy))?;
+    let mut owned = vec![store];
+
+    if let Some(key) = record.keys.key_file() {
+        owned.push(canonical(key)?);
+    }
+
+    if owned
+        .iter()
+        .any(|path| overlaps(&token, path) || overlaps(&journal, path))
+    {
+        return Err(Fail::Safe(
+            "KRONAN_TOKEN_FILE overlaps the encrypted Krónan token store or its key. Choose another path.",
+        ));
+    }
+    Ok(())
+}
+
+/// Set, migrate and logout hold the legacy file's lock and then the store's for the whole
+/// authority decision, legacy read, store commit and legacy removal. Readers take only the
+/// store's lock, so the order never inverts.
+fn change_token<T>(
+    work: impl FnOnce(&mut SecretStore, &SecretRecordOptions, &Path) -> Result<T>,
+) -> Result<T> {
+    let record = token_record()?;
+    let legacy = token_path()?;
+    reject_collisions(&record, &legacy)?;
+
+    with_file_lock(&legacy, &LockOptions::default(), || {
+        with_secret_store(&record, |store| work(store, &record, &legacy))
+    })
+}
+
+/// Save a verified token in the store, then remove the plaintext file. True if a store was reset.
+pub fn save_token(token: &str) -> Result<bool> {
+    if !valid_token(token) {
+        // TypeScript's schema parse throws a ZodError here, which no caller reaches.
+        return Err(Fail::Unknown);
+    }
+    let plaintext = encode_record(Some(token));
+
+    change_token(|store, record, legacy| {
+        let replaced = prepare_key(store, record, true)?;
+        store.update(|_| Ok::<_, Fail>(Some(plaintext)))?;
+        remove_legacy(legacy)?;
+        Ok(replaced)
+    })
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Migrated {
+    Moved,
+    Already,
+    AlreadyRemovedLegacy,
+}
+
+/// Move the legacy token into the store, read it back, then remove the plaintext file. A store
+/// with a marker but no record (an interrupted first write or reset) takes the explicit migration.
+pub fn migrate_token() -> Result<Migrated> {
+    change_token(|store, record, legacy| {
+        if store_decides(store, &record.path)? && stored_token(store)?.is_some() {
+            return Ok(match remove_legacy(legacy)? {
+                true => Migrated::AlreadyRemovedLegacy,
+                false => Migrated::Already,
+            });
+        }
+        let token = load_legacy_token(legacy)?;
+        prepare_key(store, record, false)?;
+        store.update(|_| Ok::<_, Fail>(Some(encode_record(Some(&token)))))?;
+        remove_legacy(legacy)?;
+        Ok(Migrated::Moved)
+    })
+}
+
+/// Store a logged-out record when the store decides, and remove any plaintext file.
+pub fn logout_token() -> Result<()> {
+    change_token(|store, record, legacy| {
+        if store_decides(store, &record.path)? {
+            store.update(|_| Ok::<_, Fail>(Some(encode_record(None))))?;
+        }
+        remove_legacy(legacy)?;
+        Ok(())
+    })
+}
+
+/// Accept pasted or piped input with surrounding whitespace; reject anything that is not one token.
+pub fn normalize_token(raw: &str) -> Result<String> {
+    let token = js::trim(raw);
+
+    match valid_token(token) {
+        true => Ok(token.to_owned()),
+        false => Err(Fail::Safe(
+            "Invalid Krónan access token. Paste the token exactly as Krónan shows it, on one line.",
+        )),
+    }
+}
+
+/// A pasted-token source file is a credential too; it must meet the same private-file rules.
+pub fn read_token_source(path: &Path) -> Result<String> {
+    read_private_file(path, TOKEN_MAX_BYTES).map_err(|error| {
+        Fail::Safe(match error.code {
+            Code::NotFound => "The token source file does not exist.",
+            Code::TooLarge => "The token source file is too large to hold one access token.",
+            _ => {
+                "Cannot read the token source file. Use a regular file that you own with owner-only permissions (chmod 600 on Unix), not a symlink or hard link."
+            }
+        })
     })
 }
 

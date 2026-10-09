@@ -1,17 +1,21 @@
 //! kronan-mcp: the command line of packages/kronan-mcp/src/cli.ts.
 
 mod api;
+mod attempts;
 mod auth;
 mod error;
 mod input;
 mod js;
 mod server;
 mod shapes;
+mod terminal;
 
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use crate::api::Client;
+use crate::api::{Client, Token};
+use serde_json::Value;
+
 use crate::error::{Fail, Result};
 
 const HELP: &str = "kronan-mcp — unofficial Krónan MCP server (products, shopping note, basket, and confirmed orders)
@@ -106,11 +110,102 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> std::result::Result<Arg
 
 /// Serve until stdin ends or SIGINT or SIGTERM arrives, then cancel and wait for operations.
 async fn serve() -> Result<()> {
-    let client = Arc::new(Client::new()?);
+    let client = Arc::new(Client::new(Token::Saved)?);
 
     mcp_runtime::serve_stdio(server::Kronan { client })
         .await
         .map_err(|_| Fail::Unknown)
+}
+
+/// Run blocking store or terminal work off the runtime thread.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or(Err(Fail::Unknown))
+}
+
+/// Krónan's `/me/` with `token`, the same authenticated read as `auth_status`.
+async fn verify(token: String) -> Result<Value> {
+    let client = Arc::new(Client::new(Token::Given(token))?);
+    let status = client.run(Client::status).await;
+    client.close().await;
+    status
+}
+
+async fn auth_set(source: Option<String>) -> Result<()> {
+    let given = source.clone();
+    let token =
+        blocking(move || auth::normalize_token(&terminal::read_token_input(given.as_deref())?))
+            .await?;
+    // Verify before saving, so a saved token is always one that Krónan accepted.
+    verify(token.clone()).await?;
+
+    if blocking(move || auth::save_token(&token)).await? {
+        println!("The old Krónan token store could not be read without its key and was replaced.");
+    }
+    println!("Krónan access token verified and saved encrypted.");
+
+    if source.is_some_and(|source| source != "-") {
+        println!("Remove the source file now; it holds the same credential.");
+    }
+    Ok(())
+}
+
+async fn auth_status() -> Result<()> {
+    let saved = blocking(auth::load_saved_token).await?;
+    println!("{}", saved.storage);
+    println!("{}", verify(saved.token).await?);
+    Ok(())
+}
+
+/// A human-only escape hatch: no MCP tool can clear the order-attempt record.
+fn clear_order_attempts() -> Result<()> {
+    let path = attempts::attempts_path()?;
+    let shown = attempts::list_attempts(&path);
+    let path_text = path.display();
+
+    match &shown {
+        Some(listed) if listed.is_empty() => {
+            println!("No recorded order attempts in {path_text}.");
+            return Ok(());
+        }
+        None => println!("The order-attempt record {path_text} is unreadable or unsafe."),
+        Some(listed) => {
+            println!("Recorded order attempts in {path_text}:");
+
+            for attempt in listed {
+                let text = |key: &str| attempt[key].as_str().unwrap_or_default().to_owned();
+                println!(
+                    "  {}  {}  {}  checkout {}  total {} ISK  order {}",
+                    text("createdAt"),
+                    text("tool"),
+                    text("state"),
+                    text("checkoutToken"),
+                    attempt["total"],
+                    attempt["orderToken"].as_str().unwrap_or("-"),
+                );
+            }
+        }
+    }
+    println!(
+        "Clear these only after you checked your Krónan orders. A submitting or unknown attempt may have placed an order."
+    );
+
+    if !terminal::read_answer("Clear the recorded order attempts? [y/N] ").eq_ignore_ascii_case("y")
+    {
+        println!("Kept the recorded order attempts.");
+        return Ok(());
+    }
+
+    if !attempts::clear_attempts(&path, shown.as_deref())? {
+        return Err(Fail::Safe(
+            "The order-attempt record changed while you answered. Run the command again.",
+        ));
+    }
+    println!("Cleared the recorded order attempts.");
+    Ok(())
 }
 
 async fn main_async(args: Args) -> Result<ExitCode> {
@@ -125,10 +220,7 @@ async fn main_async(args: Args) -> Result<ExitCode> {
     }
 
     // The store is checked before anything serves or touches it; help and version never do.
-    if !tokio::task::spawn_blocking(auth::check_store_at_startup)
-        .await
-        .unwrap_or(Err(Fail::Unknown))?
-    {
+    if !blocking(auth::check_store_at_startup).await? {
         return Ok(ExitCode::FAILURE);
     }
     let positionals: Vec<&str> = args.positionals.iter().map(String::as_str).collect();
@@ -142,7 +234,9 @@ async fn main_async(args: Args) -> Result<ExitCode> {
         && positionals.get(1) == Some(&"clear-attempts")
         && positionals.len() == 2
     {
-        return Err(Fail::Unknown);
+        return blocking(clear_order_attempts)
+            .await
+            .map(|()| ExitCode::SUCCESS);
     }
 
     if command != "auth" || positionals.len() > 3 {
@@ -150,9 +244,29 @@ async fn main_async(args: Args) -> Result<ExitCode> {
     }
 
     match (positionals.get(1).copied(), positionals.get(2)) {
-        (Some("set"), _) | (Some("migrate" | "status" | "logout"), None) => Err(Fail::Unknown),
-        _ => Err(INVALID_COMMAND),
+        (Some("set"), source) => auth_set(source.map(|source| (*source).to_owned())).await?,
+        (Some("migrate"), None) => println!(
+            "{}",
+            match blocking(auth::migrate_token).await? {
+                auth::Migrated::Moved => {
+                    "Krónan access token moved to the encrypted store; the plaintext file was removed."
+                }
+                auth::Migrated::Already => "Already migrated.",
+                auth::Migrated::AlreadyRemovedLegacy => {
+                    "Already migrated. Removed a leftover plaintext token file."
+                }
+            }
+        ),
+        (Some("status"), None) => auth_status().await?,
+        (Some("logout"), None) => {
+            blocking(auth::logout_token).await?;
+            println!(
+                "Saved Krónan access token removed from this computer. The token itself stays valid until revoked in Krónan settings."
+            );
+        }
+        _ => return Err(INVALID_COMMAND),
     }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn main() -> ExitCode {

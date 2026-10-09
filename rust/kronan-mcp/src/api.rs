@@ -122,7 +122,15 @@ fn offset_page(page: Value, window: Window) -> Value {
     })
 }
 
+/// Where the client's token comes from: the saved one, read for every request so `auth set`
+/// applies without a restart, or one given to verify or show it.
+pub enum Token {
+    Saved,
+    Given(String),
+}
+
 pub struct Client {
+    token: Token,
     http: reqwest::Client,
     origin: String,
     handle: Handle,
@@ -131,7 +139,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new() -> Result<Self> {
+    pub fn new(token: Token) -> Result<Self> {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
@@ -140,6 +148,7 @@ impl Client {
             .map_err(|_| Fail::Unknown)?;
 
         Ok(Self {
+            token,
             http,
             origin: origin(),
             handle: Handle::current(),
@@ -195,8 +204,10 @@ impl Client {
         query: &Query,
         body: Option<&Value>,
     ) -> Result<Exchange> {
-        // The saved token is read for every request, so `auth set` applies without a restart.
-        let token = auth::load_token()?;
+        let token = match &self.token {
+            Token::Saved => auth::load_token()?,
+            Token::Given(token) => token.clone(),
+        };
 
         // Identifiers are validated and encoded, so URL normalization must not move the request.
         if path
