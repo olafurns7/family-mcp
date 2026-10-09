@@ -116,7 +116,8 @@ impl Parse<'_> {
         text
     }
 
-    /// `z.array(element).min(min).max(max)`.
+    /// `z.array(element).min(min).max(max)`. Every element is checked, so each failed element
+    /// reports its issues in order, as zod does.
     pub fn array<T>(
         &mut self,
         value: Option<&Value>,
@@ -124,11 +125,14 @@ impl Parse<'_> {
         mut element: impl FnMut(&mut Parse, &Value) -> Option<T>,
     ) -> Option<Vec<T>> {
         let parsed = match value {
-            Some(Value::Array(items)) => items
-                .iter()
-                .enumerate()
-                .map(|(index, item)| element(&mut self.at(&index.to_string()), item))
-                .collect(),
+            Some(Value::Array(items)) => {
+                let parsed: Vec<_> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| element(&mut self.at(&index.to_string()), item))
+                    .collect();
+                parsed.into_iter().collect()
+            }
             _ => {
                 self.wrong_type("array", value);
                 None
@@ -279,6 +283,52 @@ mod tests {
         assert_eq!(
             named(&args(json!({"name": "no", "tags": []}))).unwrap_err(),
             "tags: Too small: expected array to have >=1 items, name must not be no"
+        );
+    }
+
+    /// `z.object({ ids: z.array(z.string().min(1).max(256)).min(1).max(50).optional() })`.
+    fn ids(arguments: Value) -> Result<Option<Vec<String>>, String> {
+        object(
+            &args(arguments),
+            &["ids"],
+            |parse, args| {
+                optional(parse, args, "ids", |p, v| {
+                    p.array(v, (1, 50), |p, item| p.string(Some(item), (1, 256)))
+                })
+            },
+            |_| None,
+        )
+    }
+
+    #[test]
+    fn every_array_element_is_checked() {
+        // Texts from zod 4.6.2's safeParse of the same schema.
+        let long = "x".repeat(300);
+        let wrong = "Invalid input: expected string, received number";
+        let too_big = "Too big: expected string to have <=256 characters";
+        assert_eq!(
+            ids(json!({"ids": [1, long]})).unwrap_err(),
+            format!("ids.0: {wrong}, ids.1: {too_big}")
+        );
+        assert_eq!(
+            ids(json!({"ids": [1, 2]})).unwrap_err(),
+            format!("ids.0: {wrong}, ids.1: {wrong}")
+        );
+        assert_eq!(
+            ids(json!({"ids": [long, 1]})).unwrap_err(),
+            format!("ids.0: {too_big}, ids.1: {wrong}")
+        );
+        let mut many = vec![json!(1), json!(2)];
+        many.extend(std::iter::repeat_n(json!("a"), 49));
+        assert_eq!(
+            ids(json!({"ids": many})).unwrap_err(),
+            format!(
+                "ids.0: {wrong}, ids.1: {wrong}, ids: Too big: expected array to have <=50 items"
+            )
+        );
+        assert_eq!(
+            ids(json!({"ids": ["a", "b"]})),
+            Ok(Some(vec!["a".to_owned(), "b".to_owned()]))
         );
     }
 }
