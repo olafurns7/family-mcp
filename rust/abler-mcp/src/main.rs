@@ -12,15 +12,11 @@ mod server;
 
 use std::io::Read;
 use std::path::Path;
-use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use family_store::{Code, read_private_file};
-use rmcp::ServiceExt;
 use serde_json::json;
-use tokio::io::{AsyncRead, ReadBuf};
 
 use crate::api::Client;
 use crate::auth::{Migrated, Slot};
@@ -47,6 +43,9 @@ The temporary profile is deleted after login; --keep-browser leaves live credent
 The session is saved encrypted. ABLER_SESSION_FILE names an older version's plaintext session file.
 On a headless machine, run auth import there with a browser cookie export.
 ";
+
+/// What the CLI prints for a failure without a reviewed message.
+const FAILED: &str = "Abler MCP failed.";
 
 const INVALID_COMMAND: Fail = Fail::Safe("Invalid command. Run abler-mcp --help for usage.");
 
@@ -274,54 +273,13 @@ fn administer(args: Args) -> Result<()> {
     save_verified(&jar)
 }
 
-/// Standard input that aborts the client's requests where it ends, as the TypeScript server
-/// closes on `end` instead of letting them finish.
-struct Input {
-    stdin: tokio::io::Stdin,
-    client: Arc<Client>,
-}
-
-impl AsyncRead for Input {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let before = buffer.filled().len();
-        let polled = Pin::new(&mut self.stdin).poll_read(context, buffer);
-
-        if matches!(polled, Poll::Ready(Ok(())))
-            && buffer.filled().len() == before
-            && buffer.remaining() > 0
-        {
-            self.client.abort();
-        }
-        polled
-    }
-}
-
 /// Serve until stdin ends or SIGINT or SIGTERM arrives, then cancel and wait for operations.
 async fn serve() -> Result<()> {
     let client = Arc::new(Client::new(auth::session_path()?, Slot::Current, None)?);
-    let server = server::Abler {
-        client: client.clone(),
-    };
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|_| Fail::Unknown)?;
 
-    tokio::select! {
-        _ = async {
-            let input = Input { stdin: tokio::io::stdin(), client: client.clone() };
-
-            if let Ok(running) = server.serve((input, tokio::io::stdout())).await {
-                let _ = running.waiting().await;
-            }
-        } => {}
-        _ = tokio::signal::ctrl_c() => {}
-        _ = terminate.recv() => {}
-    }
-    client.close().await;
-    Ok(())
+    mcp_runtime::serve_stdio(server::Abler { client })
+        .await
+        .map_err(|_| Fail::Unknown)
 }
 
 async fn main_async() -> Result<ExitCode> {
@@ -381,7 +339,7 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(fail) => {
             // Only reviewed diagnostics cross the terminal boundary; library messages may hold secrets.
-            eprintln!("{}", fail.cli_text());
+            eprintln!("{}", mcp_runtime::cli_text(fail, FAILED));
             ExitCode::FAILURE
         }
     }
