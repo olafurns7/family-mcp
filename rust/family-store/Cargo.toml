@@ -10,9 +10,18 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Test seam only: `enable_test_seam` turns the store test seam on inside a test process, which
+# cannot set its own environment. Off by default, so it does not exist in `cargo build` or
+# `cargo run`; this crate's own tests turn it on below.
+test-seam = []
+
 [dependencies]
 aes-gcm = { version = "=0.11.1", default-features = false, features = ["aes", "alloc", "zeroize"] }
 base64 = { version = "=0.23.1", default-features = false, features = ["alloc"] }
 getrandom = "=0.4.3"
 rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs", "process"] }
 zeroize = { version = "=1.9.1", default-features = false }
+
+[dev-dependencies]
+family-store = { path = ".", features = ["test-seam"] }

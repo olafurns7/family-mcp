@@ -13,8 +13,9 @@ use std::sync::Arc;
 
 use common::*;
 use family_store::{
-    Cancel, Code, Error, LocalKeyFileProvider, SecretRecordOptions, TEST_TMUTIL,
-    check_secret_store, create_secret_key, with_secret_store,
+    Cancel, Code, Error, LocalKeyFileProvider, SecretRecordOptions, StoreEnvironment, TEST_TMUTIL,
+    check_secret_store, create_secret_key, default_secret_record_path_in, key_provider_in,
+    with_secret_store,
 };
 
 const NOT_EXCLUDED: &str = "Time Machine did not confirm that it skips this store folder. Run the command below; then tmutil isexcluded on the same folder should say [Excluded].";
@@ -116,9 +117,8 @@ fn not_excluded<T: std::fmt::Debug>(result: Result<T, Error>) {
 /// Runs the ignored case `test` in a child with the fake tmutil in `mode` (none for `None`).
 fn in_child(test: &str, mode: &str, tmutil: Option<&str>) {
     let scratch = Scratch::new();
-    let mut command = Command::new(std::env::current_exe().unwrap());
+    let mut command = child_case(test, &scratch.0);
     command
-        .args(["--exact", test, "--ignored", "--nocapture"])
         .env(ROOT, &scratch.0)
         .env(MODE, mode)
         .env_remove(TEST_TMUTIL);
@@ -216,24 +216,49 @@ fn setup_excludes() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn a_store_that_cannot_be_excluded_is_refused_before_any_secret() {
+fn a_store_that_cannot_be_excluded_is_refused_before_any_secret_also_in_application_support() {
     for mode in ["fails", "lies"] {
         in_child("cannot_be_excluded", mode, Some(mode));
     }
 }
 
 #[test]
-#[ignore = "run by a_store_that_cannot_be_excluded_is_refused_before_any_secret"]
+#[ignore = "run by a_store_that_cannot_be_excluded_is_refused_before_any_secret_also_in_application_support"]
 fn cannot_be_excluded() {
     let (directory, _) = child();
     let home = directory.join("home");
-    let store = layout(&home);
+    // The production macOS layout under a scratch HOME, as a server without the seam chooses it;
+    // only the fake tmutil needs the seam that this child has.
+    let production = StoreEnvironment {
+        os: "macos".to_owned(),
+        home: Some(directory.join("production")),
+        ..StoreEnvironment::default()
+    };
+    let support = directory.join("production/Library/Application Support");
+    let stores = [
+        (layout(&home), home.clone()),
+        (
+            SecretRecordOptions::new(
+                default_secret_record_path_in(&production, "test-mcp").unwrap(),
+                "test-mcp",
+                "default",
+                "session",
+                1,
+                key_provider_in(&production, "test-mcp", "default").unwrap(),
+                1024,
+            ),
+            support,
+        ),
+    ];
 
-    not_excluded(create_secret_key(&store));
-    not_excluded(store.keys.create_key(&Cancel::default()));
-    // The record directory was made for the exclusion, and nothing went into it.
-    assert!(names(&home.join("family-mcp/test-mcp")).is_empty());
-    assert!(names(&home.join("family-mcp/keys")).is_empty());
+    for (store, root) in stores {
+        assert!(store.path.starts_with(&root));
+        not_excluded(create_secret_key(&store));
+        not_excluded(store.keys.create_key(&Cancel::default()));
+        // The record directory was made for the exclusion, and nothing went into it.
+        assert!(names(&root.join("family-mcp/test-mcp")).is_empty());
+        assert!(names(&root.join("family-mcp/keys")).is_empty());
+    }
 }
 
 #[cfg(target_os = "macos")]
