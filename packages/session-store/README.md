@@ -62,8 +62,9 @@ await withFileLock(path, { waitMs: 30_000 }, async () => {
 
 `ensurePrivateDir(path, { enforceMode? })` creates directories with `0700` and leaves an existing
 directory's mode alone unless `enforceMode` is set. `sweepTemp(path)` and
-`sweepTempInDirectory(directory)` remove `*.tmp` files and directories left by a hard crash once
-they are older than five minutes. Lock temporaries use `<file>.lock-tmp.<owner>`, which `sweepTemp`
+`sweepTempInDirectory(directory)` remove the `<name>.<uuid>.tmp` regular files `writePrivateFile`
+leaves after a hard crash once they are older than five minutes; a directory or link under such a
+name is never removed. Lock temporaries use `<file>.lock-tmp.<owner>`, which `sweepTemp`
 does not match; sweeps should still run under the lock. `defaultSessionPath(appName, { legacy? })` returns
 `$XDG_CONFIG_HOME/<app>/session.json` (default `~/.config/<app>/session.json`), keeping an existing
 legacy file's path when one is given.
@@ -129,10 +130,30 @@ generation, pending?}`. A write first commits a marker naming the pending genera
 it holds no record (after a reset or an interrupted first write); a caller must not fall back to an
 older credential source.
 
-`withSecretStore(options, work)` holds the record lock for all of `work` and hands it `exists()`,
-`update()`, `createKey()` and `reset()`: the same operations as the functions here, without taking
-the lock again, so one critical section can decide, read, set up and write. A caller that also
-holds another lock takes that one first.
+`withSecretStore(options, work)` holds the record lock for all of `work` and hands it a handle,
+so one critical section can decide, read, set up and write without taking the lock again:
+
+```ts
+await withSecretStore(store, async (held) => {
+  let session = parse(await held.read()); // null while the store holds no record
+  if (expired(session)) await held.write(serialize((session = await refresh(session))));
+  await work(session); // a refresh in the middle writes again under the same hold
+});
+```
+
+- `read()` returns the committed plaintext or `null`, with the same recovery as a transaction.
+- `write(next)` runs the whole write protocol each time: next generation, pending marker, record,
+  authenticated read-back, marker commit. Several writes in one hold are several generations, and
+  a crash between them keeps the last committed one. A write that fails after a file changed is
+  `STORE_WRITE_UNCERTAIN`; one refused before (`TOO_LARGE`, no generation left, or the store
+  failing to open) keeps its code. Either way the handle is unusable afterwards, and every later
+  call throws that error.
+- `exists()`, `update()`, `createKey()` and `reset()` are the operations of the functions here.
+  `withSecretRecord` is `read()`, `update`, then `write()` on one handle.
+- The handle stops working when `work` settles; later calls throw `STORE_ERROR`. The signal only
+  aborts the lock wait and `update`; a started `write` always completes, so a rotated token is
+  never lost to cancellation.
+- A caller that also holds another lock takes that one first.
 
 `createSecretKey(options)` calls `keys.createKey()` under the record lock, only while there is no
 record and either no marker or a generation-0 marker without a pending write whose key `getKey()`

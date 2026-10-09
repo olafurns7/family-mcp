@@ -31,6 +31,13 @@ export type SecretUpdate = (current: string | null) => Promise<string | undefine
 export type SecretStore = {
   /** True once a marker exists: the store then decides, also while it holds no record. */
   exists(): Promise<boolean>;
+  /** The committed plaintext, or null while the store holds no record. */
+  read(): Promise<string | null>;
+  /**
+   * Commit `next` as the next generation: pending marker, record, authenticated read-back, marker
+   * commit. Any failure ends the handle; one after a file changed is STORE_WRITE_UNCERTAIN.
+   */
+  write(next: string): Promise<void>;
   /** `withSecretRecord`'s transaction. */
   update(update: SecretUpdate): Promise<string | null>;
   /** `createSecretKey`'s setup. */
@@ -85,7 +92,8 @@ const BASE64URL_PATTERN = /^[\w-]+$/;
 
 /**
  * Hold the record's lock for all of `work`, so a caller can decide, read, set up and write in one
- * critical section. A caller that also holds another lock always takes that one first.
+ * critical section. A caller that also holds another lock always takes that one first. The handle
+ * stops working when `work` settles or after a failed write.
  */
 export async function withSecretStore<T>(
   options: SecretRecordOptions,
@@ -93,13 +101,76 @@ export async function withSecretStore<T>(
 ): Promise<T> {
   checkOptions(options);
 
-  return withFileLock(options.path, { signal: options.signal, waitMs: options.waitMs }, () =>
-    work({
-      exists: () => secretStoreExists(options.path),
-      update: (update) => updateRecord(options, update),
-      createKey: () => createKey(options),
-      reset: () => reset(options),
-    }),
+  return withFileLock(
+    options.path,
+    { signal: options.signal, waitMs: options.waitMs },
+    async () => {
+      let ended: SessionStoreError | undefined;
+      // The key and the marker as of the last read or write in this hold.
+      let state: { key: Uint8Array; marker: Marker | null } | undefined;
+
+      const usable = () => {
+        if (ended !== undefined) throw ended;
+      };
+
+      const open = async () => {
+        usable();
+        await sweepTemp(options.path);
+        const key = state?.key ?? checkedKey(await options.keys.getKey(options.signal));
+        const { current, marker } = await load(options, key);
+        state = { key, marker };
+
+        return { current: current?.toString('utf8') ?? null, key, marker };
+      };
+
+      const write = async (next: string): Promise<void> => {
+        usable();
+
+        try {
+          const { key, marker } = state ?? (await open());
+          checkGenerationLeft(marker);
+          state = { key, marker: await store(options, key, marker, next) };
+        } catch (error) {
+          // Errors before any file changed keep their code; later ones are already uncertain.
+          ended = error instanceof SessionStoreError ? error : uncertain(error);
+          throw error;
+        }
+      };
+
+      // Setup and recovery change the key or the files, so the next read or write loads again.
+      const changing = async (change: () => Promise<void>): Promise<void> => {
+        usable();
+        state = undefined;
+        await change();
+      };
+
+      try {
+        return await work({
+          exists: async () => {
+            usable();
+
+            return secretStoreExists(options.path);
+          },
+          read: async () => (await open()).current,
+          write,
+          update: async (update) => {
+            const { current, marker } = await open();
+            checkGenerationLeft(marker);
+            throwIfAborted(options.signal);
+            const next = await update(current);
+
+            if (next === undefined) return current;
+            await write(next);
+
+            return next;
+          },
+          createKey: () => changing(() => createKey(options)),
+          reset: () => changing(() => reset(options)),
+        });
+      } finally {
+        ended = new SessionStoreError('STORE_ERROR', 'This secret store hold has ended.');
+      }
+    },
   );
 }
 
@@ -177,23 +248,9 @@ function checkOptions(options: SecretRecordOptions): void {
     throw new RangeError('maxBytes must be a non-negative integer.');
 }
 
-async function updateRecord(
-  options: SecretRecordOptions,
-  update: SecretUpdate,
-): Promise<string | null> {
-  await sweepTemp(options.path);
-  const key = checkedKey(await options.keys.getKey(options.signal));
-  const { current, marker } = await load(options, key);
-
+function checkGenerationLeft(marker: Marker | null): void {
   if ((marker?.generation ?? 0) >= MAX_INTEGER)
     throw new SessionStoreError('STORE_ERROR', 'The secret store has no generation left.');
-  throwIfAborted(options.signal);
-  const next = await update(current?.toString('utf8') ?? null);
-
-  if (next === undefined) return current?.toString('utf8') ?? null;
-  await store(options, key, marker, next);
-
-  return next;
 }
 
 async function createKey(options: SecretRecordOptions): Promise<void> {
@@ -318,7 +375,7 @@ async function store(
   key: Uint8Array,
   marker: Marker | null,
   next: string,
-): Promise<void> {
+): Promise<Marker> {
   const plaintext = Buffer.from(next, 'utf8');
 
   if (plaintext.length > options.maxBytes)
@@ -363,6 +420,8 @@ async function store(
       ? error
       : uncertain(error);
   }
+
+  return committed;
 }
 
 function seal(

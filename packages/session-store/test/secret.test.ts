@@ -3,7 +3,17 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createCipheriv, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { chmod, link, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -326,6 +336,93 @@ test('withSecretStore holds one lock across setup, reads and writes', async () =
   });
 });
 
+test('withSecretStore commits every write in one hold as its own generation', async () => {
+  await scratch(async (directory) => {
+    const store = options(directory);
+    const markerPath = `${store.path}.marker`;
+
+    await withSecretStore(store, async (held) => {
+      expect(await held.read()).toBeNull();
+      await held.write('one');
+      expect(await readFile(markerPath, 'utf8')).toContain('"generation":1}');
+      await held.write('two');
+      expect(await held.read()).toBe('two');
+      await held.write('three');
+      expect(await readFile(markerPath, 'utf8')).toContain('"generation":3}');
+    });
+
+    expect(await readSecretRecord(store)).toBe('three');
+
+    // A write without a read first loads the store itself.
+    await withSecretStore(store, (held) => held.write('four'));
+    expect(await readSecretRecord(store)).toBe('four');
+    expect(await readFile(markerPath, 'utf8')).toContain('"generation":4}');
+  });
+});
+
+test('a withSecretStore handle stops working after its hold or a failed write', async () => {
+  await scratch(async (directory) => {
+    const store = options(directory);
+    const markerPath = `${store.path}.marker`;
+    const leaked = await withSecretStore(store, async (held) => held);
+
+    for (const call of [
+      () => leaked.read(),
+      () => leaked.write('late'),
+      () => leaked.update(async () => 'late'),
+      () => leaked.exists(),
+      () => leaked.createKey(),
+      () => leaked.reset(),
+    ])
+      await assert.rejects(call(), hasCode('STORE_ERROR'));
+    await assert.rejects(stat(markerPath));
+
+    await withSecretStore(store, async (held) => {
+      expect(await held.read()).toBeNull();
+      // The record path cannot be replaced, so the write fails after its pending marker.
+      await mkdir(join(store.path, 'blocked'), { recursive: true });
+      await assert.rejects(held.write('lost'), hasCode('STORE_WRITE_UNCERTAIN'));
+      await assert.rejects(held.read(), hasCode('STORE_WRITE_UNCERTAIN'));
+      await assert.rejects(held.write('again'), hasCode('STORE_WRITE_UNCERTAIN'));
+    });
+
+    // The next hold finds the write never committed and drops it.
+    await rm(store.path, { recursive: true });
+    expect(await readFile(markerPath, 'utf8')).toContain('"pending"');
+    await withSecretStore(store, async (held) => expect(await held.read()).toBeNull());
+    expect(await readFile(markerPath, 'utf8')).not.toContain('"pending"');
+
+    // A write refused before any file changed keeps its code and still ends the handle.
+    await withSecretStore({ ...store, maxBytes: 4 }, async (held) => {
+      await assert.rejects(held.write('too large'), hasCode('TOO_LARGE'));
+      await assert.rejects(held.write('ok'), hasCode('TOO_LARGE'));
+    });
+
+    // A write that fails while opening the store ends the handle too, though the key then works.
+    let refusals = 0;
+
+    const flaky: KeyProvider = {
+      backend: 'test',
+      keySource: 'memory',
+      keyId: 'test',
+      createKey: async () => undefined,
+      getKey: async () => {
+        if (refusals++ === 0) throw new SessionStoreError('STORE_LOCKED', 'synthetic refusal');
+
+        return KEY;
+      },
+    };
+
+    await withSecretStore(options(directory, flaky), async (held) => {
+      await assert.rejects(held.write('first'), hasCode('STORE_LOCKED'));
+      await assert.rejects(held.write('second'), hasCode('STORE_LOCKED'));
+      await assert.rejects(held.read(), hasCode('STORE_LOCKED'));
+    });
+    expect(refusals).toBe(1);
+    await assert.rejects(readSecretRecord(store), hasCode('SECRET_NOT_FOUND'));
+  });
+});
+
 test('key files must be single-link, owner-only regular files of exactly 32 bytes', async () => {
   await scratch(async (directory) => {
     const keyPath = join(directory, 'keys', 'test-mcp.key');
@@ -517,6 +614,43 @@ test('separate processes serialize encrypted read-modify-write cycles', async ()
     expect(await Promise.all(runs)).toEqual([0, 1, 2].map(() => ({ exit: 0, err: '' })));
     expect(await readSecretRecord(store)).toBe('3');
     expect(await readFile(`${store.path}.marker`, 'utf8')).toContain('"generation":3}');
+  });
+}, 30_000);
+
+test('separate processes serialize holds with several writes, and a crash keeps the last commit', async () => {
+  await scratch(async (directory) => {
+    const keyPath = join(directory, 'keys', 'test-mcp.key');
+    const store = options(directory, new LocalKeyFileProvider({ path: keyPath }), 64);
+    await createSecretKey(store);
+
+    const start = (pause: string) =>
+      spawn(process.execPath, [worker, store.path, keyPath, pause, 'store'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+    const runs = [1, 2, 3].map(async () => {
+      const child = start('150');
+      let err = '';
+
+      child.stderr.on('data', (chunk: Buffer) => {
+        err += chunk.toString();
+      });
+      await once(child, 'close');
+
+      return { exit: child.exitCode, err };
+    });
+
+    expect(await Promise.all(runs)).toEqual([0, 1, 2].map(() => ({ exit: 0, err: '' })));
+    expect(await readSecretRecord(store)).toBe('6');
+    expect(await readFile(`${store.path}.marker`, 'utf8')).toContain('"generation":6}');
+
+    // Killed between its two writes while holding the lock: the first write stays committed.
+    const child = start('60000');
+    await once(child.stdout, 'data');
+    child.kill('SIGKILL');
+    await once(child, 'close');
+    expect(await readSecretRecord(store)).toBe('7');
+    expect(await readFile(`${store.path}.marker`, 'utf8')).toContain('"generation":7}');
   });
 }, 30_000);
 

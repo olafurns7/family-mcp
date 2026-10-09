@@ -161,7 +161,7 @@ test('an abort observed at the commit point keeps the previous file and leaves n
   }
 });
 
-test('sweeping removes only old temporaries that belong to the target', async () => {
+test('sweeping removes only old temporary files that belong to the target', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'session-store-sweep-'));
   const file = join(directory, 'session.json');
   const old = new Date(Date.now() - 600_000);
@@ -172,19 +172,27 @@ test('sweeping removes only old temporaries that belong to the target', async ()
     const staleLock = `${file}.lock.${process.pid}-${randomUUID()}.tmp`;
     const fresh = `${file}.${randomUUID()}.tmp`;
     const pending = `${file}.${randomUUID()}.pending`;
+    const loose = `${file}.0123.tmp`;
     const unrelated = join(directory, `other.json.${randomUUID()}.tmp`);
+    // Someone else's data under a temporary's exact name is a directory, never a sweep target.
+    const planted = `${file}.${randomUUID()}.tmp`;
     await writeFile(staleFile, '', { mode: 0o600 });
     await mkdir(staleLock, { mode: 0o700 });
     await writeFile(join(staleLock, 'owner'), '', { mode: 0o600 });
     await writeFile(fresh, '', { mode: 0o600 });
     await writeFile(pending, '', { mode: 0o600 });
+    await writeFile(loose, '', { mode: 0o600 });
     await writeFile(unrelated, '', { mode: 0o600 });
+    await mkdir(join(planted, 'checkouts'), { recursive: true, mode: 0o700 });
+    await writeFile(join(planted, 'checkouts', 'quote.json'), 'kept', { mode: 0o600 });
 
-    for (const path of [staleFile, staleLock, pending, unrelated]) await utimes(path, old, old);
-    expect(await sweepTemp(file)).toBe(2);
+    for (const path of [staleFile, staleLock, pending, loose, unrelated, planted])
+      await utimes(path, old, old);
+    expect(await sweepTemp(file)).toBe(1);
+    const kept = [fresh, pending, loose, unrelated, planted, staleLock, file];
     assert.deepEqual(
       (await readdir(directory)).toSorted(),
-      [fresh, pending, unrelated, file].map((path) => path.slice(directory.length + 1)).toSorted(),
+      kept.map((path) => path.slice(directory.length + 1)).toSorted(),
     );
     expect(await sweepTemp(file)).toBe(0);
     expect(await sweepTempInDirectory(directory)).toBe(1);
@@ -193,8 +201,11 @@ test('sweeping removes only old temporaries that belong to the target', async ()
     expect(await sweepTempInDirectory(directory, { olderThanMs: 0 })).toBe(1);
     assert.deepEqual(
       (await readdir(directory)).toSorted(),
-      ['session.json', pending.slice(directory.length + 1)].toSorted(),
+      [file, pending, loose, planted, staleLock]
+        .map((path) => path.slice(directory.length + 1))
+        .toSorted(),
     );
+    expect(await readFile(join(planted, 'checkouts', 'quote.json'), 'utf8')).toBe('kept');
     expect(await sweepTemp(join(directory, 'absent', 'session.json'))).toBe(0);
   } finally {
     await rm(directory, { recursive: true, force: true });
