@@ -265,12 +265,12 @@ fn the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli() {
         );
         let mut rust = run("rust");
 
-        if case.keys == b"55x\x7f50000\n"
+        if (case.keys == b"55x\x7f50000\n" || case.keys == b"5\x04550000\r")
             && case.signals.is_empty()
             && case.after.is_empty()
             && !case.hang_up
         {
-            check_keystrokes(&rust, &ts);
+            check_keystrokes(&rust, &ts, case.keys);
             continue;
         }
 
@@ -289,9 +289,9 @@ fn the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli() {
     }
 }
 
-// taskr 76066/76588: Bun may ignore DEL on the pty; only its exact plain-input result is allowed.
+// taskr 76066/76588/76640/76644: Bun may ignore DEL or cancel on nonempty-line Ctrl-D on the pty.
 // Rust stays strict; input-close, signal, hang-up and non-editing cases keep exact parity.
-fn check_keystrokes(rust: &Outcome, ts: &Outcome) {
+fn check_keystrokes(rust: &Outcome, ts: &Outcome, keys: &[u8]) {
     let documented = Outcome {
         code: Some(1),
         signal: None,
@@ -304,12 +304,15 @@ fn check_keystrokes(rust: &Outcome, ts: &Outcome) {
         code: Some(1),
         signal: None,
         stdout: String::new(),
-        stderr:
+        stderr: if keys == b"5\x04550000\r" {
+            "Icelandic phone number (input hidden): \nInna login cancelled.\n"
+        } else {
             "Icelandic phone number (input hidden): \nEnter a seven-digit Icelandic phone number.\n"
-                .into(),
+        }
+        .into(),
         sent: Vec::new(),
         restored: Some(true),
     };
     assert_eq!(rust, &documented);
-    assert!(ts == &documented || ts == &plain_input, "DEL: {ts:?}");
+    assert!(ts == &documented || ts == &plain_input, "{keys:?}: {ts:?}");
 }
