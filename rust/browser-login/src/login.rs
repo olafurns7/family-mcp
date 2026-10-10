@@ -884,6 +884,8 @@ struct Started {
     profile: Option<PathBuf>,
     /// The browser, its pipe, and whether it answered on the pipe.
     browser: Option<(Browser, Pipe, bool)>,
+    /// The browser answered on the pipe before any cancel; only then may `keep_browser` keep it.
+    ready: bool,
 }
 
 fn sign_in<S: Site>(
@@ -911,6 +913,7 @@ fn sign_in<S: Site>(
     *owned = ready.is_ok();
     throw_if_cancelled(cancel)?;
     ready?;
+    started.ready = true;
 
     site.debugging();
     wait_for_session(site, pipe, timeout, cancel)
@@ -926,13 +929,25 @@ pub fn login_in_browser<S: Site>(
     timeout: Duration,
     keep_browser: bool,
 ) -> Result<S::Session> {
+    login_until(site, signals.flag(), browser, timeout, keep_browser)
+}
+
+/// `login_in_browser`, cancelled by `cancel`.
+fn login_until<S: Site>(
+    site: &S,
+    cancel: &AtomicBool,
+    browser: Option<&str>,
+    timeout: Duration,
+    keep_browser: bool,
+) -> Result<S::Session> {
     let mut started = Started::default();
-    let outcome = sign_in(site, &mut started, browser, timeout, signals.flag());
+    let outcome = sign_in(site, &mut started, browser, timeout, cancel);
     let mut cleanup_error = None;
     let mut keep_profile = false;
+    let ready = started.ready;
 
     match started.browser {
-        Some((_, mut pipe, true)) if keep_browser => {
+        Some((_, mut pipe, true)) if keep_browser && ready => {
             pipe.close();
             site.kept();
             keep_profile = true;
@@ -954,7 +969,7 @@ pub fn login_in_browser<S: Site>(
     if let Some(error) = cleanup_error {
         return Err(error);
     }
-    throw_if_cancelled(signals.flag())?;
+    throw_if_cancelled(cancel)?;
     outcome
 }
 
@@ -1261,6 +1276,87 @@ mod tests {
         // It ignores Browser.close, so its process group is signalled.
         assert!(close_browser(&mut running, &mut pipe, true));
         assert!(running.gone() && pipe.closed_by_peer);
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// A site that never signs in, and records whether it was asked to keep the browser.
+    #[derive(Default)]
+    struct Slow {
+        kept: AtomicBool,
+    }
+
+    impl Site for Slow {
+        type Session = ();
+        const PROFILE_PREFIX: &'static str = "browser-login-unit-keep-";
+        const START_URL: &'static str = START;
+        const FOLLOW_TAB: bool = false;
+
+        fn is_tab(&self, _: &str) -> bool {
+            false
+        }
+
+        fn cookie_urls(&self) -> Value {
+            json!([])
+        }
+
+        fn session(&self, _: &Value) -> Option<()> {
+            None
+        }
+
+        fn kept(&self) {
+            self.kept.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn a_cancel_while_the_browser_starts_closes_it_even_with_keep_browser() {
+        let directory = scratch("keep-cancel");
+        // Answer Browser.getVersion only after 400 ms, then exit at the next command.
+        let browser = script(
+            &directory,
+            "echo $$ > \"$(dirname \"$0\")/pid\"\nhead -c 39 <&3 >/dev/null\nsleep 0.4\nprintf '{\"id\":1,\"result\":{\"product\":\"x\"}}\\0' >&4\nhead -c 1 <&3 >/dev/null\nexit 0",
+        );
+        let profiles = || -> Vec<PathBuf> {
+            fs::read_dir(tmpdir())
+                .unwrap()
+                .filter_map(|entry| Some(entry.ok()?.path()))
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(Slow::PROFILE_PREFIX))
+                })
+                .collect()
+        };
+        let before = profiles();
+        let cancel = AtomicBool::new(false);
+        let site = Slow::default();
+
+        let outcome = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                // The cancel lands while the first Browser.getVersion waits for its answer.
+                let deadline = Instant::now() + Duration::from_secs(10);
+
+                while !directory.join("pid").exists() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+                cancel.store(true, Ordering::SeqCst);
+            });
+            login_until(
+                &site,
+                &cancel,
+                browser.to_str(),
+                Duration::from_secs(30),
+                true,
+            )
+        });
+
+        assert!(matches!(outcome, Err(Error::Cancelled)), "{outcome:?}");
+        assert!(!site.kept.load(Ordering::SeqCst));
+        let pid = fs::read_to_string(directory.join("pid")).unwrap();
+        let pid = Pid::from_raw(pid.trim().parse().unwrap()).unwrap();
+        assert!(!process_is_running(pid));
+        assert_eq!(profiles(), before);
         fs::remove_dir_all(&directory).unwrap();
     }
 
