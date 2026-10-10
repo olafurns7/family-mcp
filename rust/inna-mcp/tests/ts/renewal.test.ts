@@ -33,6 +33,7 @@ async function fixture(bound = 1_500, args: string[] = []) {
     FAMILY_MCP_STORE_TEST_SEAM: '1',
     INNA_TEST_ORIGIN: fake.origin,
     INNA_TEST_RENEWAL_MS: String(bound),
+    INNA_TEST_KEEP_ALIVE: '1',
   };
   mkdirSync(env.XDG_CONFIG_HOME, { mode: 0o700 });
   const source = join(directory, 'cookies.json');
@@ -64,7 +65,11 @@ async function fixture(bound = 1_500, args: string[] = []) {
   const pending = new Map<number, (value: any) => void>();
   let id = 0;
   let stdout = '';
-  const stderr = new Response(child.stderr).text();
+  let errors = '';
+  const stderr = (async () => {
+    for await (const chunk of child.stderr) errors += new TextDecoder().decode(chunk);
+    return errors;
+  })();
   const output = (async () => {
     let buffer = '';
     for await (const chunk of child.stdout) {
@@ -108,6 +113,13 @@ async function fixture(bound = 1_500, args: string[] = []) {
     rmSync(directory, { recursive: true, force: true });
     return { stdout, stderr: errors };
   };
+  // The startup tick must finish saving its rotation before a case arms faults or counts calls.
+  try {
+    await until(() => errors.includes('keep-alive: kept\n'), bound / 30 + 2_000);
+  } catch (error) {
+    await close();
+    throw error;
+  }
   return { state, seen, paths, call, close, cli, source, started };
 }
 
