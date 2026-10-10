@@ -2,7 +2,9 @@
 // against the TypeScript CLI (with rewrite.ts preloaded) and once against the Rust binary (built
 // with `test-origin`), each in its own scratch home, against the same fake Inna (fake-inna.ts) and
 // clock, and compares outputs, exit codes, the requests Inna saw and the files left behind, with
-// the home path written as <home>. Prints mismatches and exits 1 on any.
+// the home path written as <home> and each prepared absence's random operation ID as <operation>.
+// A `swap` step runs the other side's implementation in this side's home, so each reads what the
+// other wrote. Prints mismatches and exits 1 on any.
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -11,7 +13,7 @@ import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
 import { cookieExportSchema, sessionJar } from '../../../../packages/inna-mcp/src/client.js';
-import { COOKIES, fresh, startFake, type Seen, type State } from './fake-inna.ts';
+import { COOKIES, fresh, startFake, type Planted, type Seen, type State } from './fake-inna.ts';
 
 const [rust, only] = process.argv.slice(2);
 
@@ -37,7 +39,7 @@ type Step =
   | { legacy: string }
   | { upstream: Partial<State> }
   | { clock: number }
-  | { serve: [string, unknown][]; args?: string[]; surface?: boolean }
+  | { serve: [string, unknown][]; args?: string[]; surface?: boolean; swap?: boolean }
   | { file: string; text: string; permissions?: number }
   | { directory: string; permissions: number };
 
@@ -146,6 +148,34 @@ const FAILURES: Step[] = [
   // Past the longest pause, about three years.
   { clock: NOW + 4 * 365 * 86_400_000 },
   { serve: [['inna_get_overview', {}]] },
+];
+
+const WRITES = ['--allow-absence-writes'];
+
+const sick = (day: string, extra: object = {}) => ({ kind: 'sick', dateFrom: day, dateTo: day, reason: ' Synthetic reason ', ...extra });
+
+const leave = (dateFrom: string, dateTo: string, extra: object = {}) => ({ kind: 'leave', dateFrom, dateTo, reason: 'Synthetic leave', ...extra });
+
+const submit = (operationId = '<operation>'): [string, unknown] => ['inna_submit_absence', { operationId, confirm: true }];
+
+/** Inna's absence history, empty, and its answer to a write. */
+const clear = (write: Planted = { status: 200, body: '{"id":123,"extra":"x"}' }): Partial<State> => ({
+  planted: {
+    '/api/RegisterAbsence/GetStudentRegisteredAbsences': { status: 200, body: '[]' },
+    '/api/RegisterAbsence/GetLeaves': { status: 200, body: '[]' },
+    '/api/RegisterAbsence/AddNewLeave': write,
+  },
+});
+
+const ABSENCE_INVALID: [string, unknown][] = [
+  ['inna_prepare_absence', {}],
+  ['inna_prepare_absence', sick('2040-01-02', { dateTo: '2040-01-03' })],
+  ['inna_prepare_absence', leave('2040-01-03', '2040-01-02', { reason: '  ', q: 1 })],
+  ['inna_prepare_absence', sick('2040-02-30', { kind: 'x', studentKey: 'x' })],
+  ['inna_prepare_absence', sick('2040-01-02', { reason: 'x'.repeat(2001) })],
+  ['inna_submit_absence', {}],
+  ['inna_submit_absence', { operationId: 'x', confirm: false }],
+  ['inna_submit_absence', { operationId: '123e4567-e89b-12d3-a456-426614174000', confirm: true, x: 1 }],
 ];
 
 const scenarios: Scenario[] = [
@@ -321,6 +351,107 @@ const scenarios: Scenario[] = [
     ],
   },
   {
+    name: 'absence-writes',
+    steps: [
+      { seed: true },
+      { upstream: clear() },
+      {
+        serve: [
+          ...ABSENCE_INVALID,
+          ['inna_prepare_absence', sick('2040-01-01')],
+          ['inna_prepare_absence', sick('2040-01-03')],
+          submit(),
+          ['inna_prepare_absence', sick('2040-01-02')],
+          ['inna_absence_status', {}],
+          submit(),
+          submit(),
+          submit('123e4567-e89b-12d3-a456-426614174000'),
+          ['inna_absence_status', {}],
+          // A sibling's leave: prepared for that student, then submitted to it after a switch away.
+          ['inna_prepare_absence', leave('2040-02-01', '2040-02-03', { studentKey: '5' })],
+          ['inna_get_overview', {}],
+          submit(),
+          ['inna_absence_status', {}],
+        ],
+        args: WRITES,
+      },
+      // A preview past its ten minutes.
+      { serve: [['inna_prepare_absence', leave('2040-03-01', '2040-03-01')]], args: WRITES },
+      { clock: NOW + 600_000 },
+      { serve: [submit(), ['inna_absence_status', {}]], args: WRITES },
+      // Tomorrow's sick day, where Inna allows it.
+      { upstream: { odd: true } },
+      { upstream: clear() },
+      { serve: [['inna_prepare_absence', sick('2040-01-03')]], args: WRITES },
+    ],
+  },
+  {
+    // Registered absences and leave applications that overlap, an unrecognized date after a
+    // match and before one, and failed reads.
+    name: 'absence-history',
+    steps: [
+      { seed: true },
+      { serve: [['inna_prepare_absence', leave('2040-01-02', '2040-01-05')], ['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+      { upstream: { planted: { '/api/RegisterAbsence/GetStudentRegisteredAbsences': { status: 200, body: '[]' } } } },
+      { serve: [['inna_prepare_absence', leave('2040-01-02', '2040-01-05')], ['inna_prepare_absence', leave('2040-01-03', '2040-01-05')]], args: WRITES },
+      {
+        upstream: {
+          planted: {
+            '/api/RegisterAbsence/GetStudentRegisteredAbsences': {
+              status: 200,
+              body: JSON.stringify([
+                { id: 1, date: '01.03.2040', statusCode: 0, allDay: '1', classes: [] },
+                { id: 2, date: '31.02.2040', statusCode: 0, allDay: '1', classes: [] },
+              ]),
+            },
+          },
+        },
+      },
+      { serve: [['inna_prepare_absence', leave('2040-01-03', '2040-01-05')], ['inna_prepare_absence', leave('2040-03-01', '2040-03-02')]], args: WRITES },
+      { upstream: { planted: { '/api/RegisterAbsence/GetRegisterAbsences': { status: 500 } } } },
+      { serve: [['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+      { upstream: { planted: { '/api/UserData/GetLoggedInUser': { status: 200, body: '{"x":1}' } } } },
+      { serve: [['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+    ],
+  },
+  {
+    // A write whose outcome is unknown blocks every later preview and is never sent again, also
+    // by the other side and after a logout.
+    name: 'absence-uncertain',
+    steps: [
+      { seed: true },
+      { upstream: clear({ status: 500 }) },
+      { serve: [['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+      { serve: [submit(), ['inna_absence_status', {}]], args: WRITES, swap: true },
+      { serve: [submit(), ['inna_prepare_absence', leave('2040-02-01', '2040-02-01', { studentKey: '5' })]], args: WRITES },
+      { cli: ['auth', 'logout'] },
+      { seed: true },
+      { serve: [['inna_absence_status', {}], ['inna_prepare_absence', sick('2040-01-02')]], args: WRITES, swap: true },
+    ],
+  },
+  {
+    // Each side submits the preview the other prepared, and each returns the other's result.
+    name: 'absence-interop',
+    steps: [
+      { seed: true },
+      { upstream: clear() },
+      { serve: [['inna_prepare_absence', leave('2040-02-01', '2040-02-02', { studentKey: '5' })]], args: WRITES, swap: true },
+      { serve: [['inna_absence_status', {}], submit(), ['inna_absence_status', {}]], args: WRITES },
+      { serve: [submit(), ['inna_absence_status', {}], ['inna_prepare_absence', leave('2040-02-01', '2040-02-02')]], args: WRITES, swap: true },
+    ],
+  },
+  {
+    // An answer without a positive ID leaves the outcome unknown on either side.
+    name: 'absence-interop-unknown',
+    steps: [
+      { seed: true },
+      { upstream: clear({ status: 200, body: '{"id":0}' }) },
+      { serve: [['inna_prepare_absence', leave('2040-02-01', '2040-02-02', { studentKey: '5' })]], args: WRITES, swap: true },
+      { serve: [submit(), ['inna_absence_status', {}]], args: WRITES },
+      { serve: [submit()], args: WRITES, swap: true },
+    ],
+  },
+  {
     name: 'store-file-open',
     steps: [{ file: storeFile, text: 'x', permissions: 0o644 }, { cli: ['auth', 'status'] }, { cli: ['auth', 'bogus'] }],
   },
@@ -352,6 +483,24 @@ function environment(home: string, extra: Record<string, string> = {}): Record<s
   };
 }
 
+const other = (side: 'ts' | 'rust') => (side === 'ts' ? 'rust' : 'ts');
+
+/** The operation ID a side's run last prepared, which `<operation>` stands for in its steps. */
+let operation: string | undefined;
+
+/** `<operation>` in a call's arguments names the last prepared operation. */
+const placed = (args: unknown): Record<string, unknown> =>
+  JSON.parse(JSON.stringify(args).replaceAll('<operation>', operation ?? '<operation>'));
+
+/** A result with the prepared operation ID written as `<operation>`. */
+function hiddenOperation(result: unknown): unknown {
+  const prepared = (result as { structuredContent?: { operationId?: unknown } }).structuredContent?.operationId;
+
+  if (typeof prepared === 'string') operation = prepared;
+
+  return operation ? JSON.parse(JSON.stringify(result).replaceAll(operation, '<operation>')) : result;
+}
+
 function command(side: 'ts' | 'rust', args: string[]): string[] {
   return side === 'ts' ? [process.execPath, '--preload', rewrite, cli, ...args] : [rust!, ...args];
 }
@@ -379,9 +528,9 @@ async function runServe(
   side: 'ts' | 'rust',
   home: string,
   env: Record<string, string>,
-  step: { serve: [string, unknown][]; args?: string[]; surface?: boolean },
+  step: { serve: [string, unknown][]; args?: string[]; surface?: boolean; swap?: boolean },
 ) {
-  const [executable, ...args] = command(side, ['serve', ...(step.args ?? [])]);
+  const [executable, ...args] = command(step.swap ? other(side) : side, ['serve', ...(step.args ?? [])]);
   const transport = new StdioClientTransport({ command: executable!, args, cwd: home, env: environment(home, env), stderr: 'pipe' });
   const client = new Client({ name: 'inna-parity', version: '1.0.0' });
   const results: unknown[] = [];
@@ -398,7 +547,7 @@ async function runServe(
 
   for (const [name, args] of step.serve) {
     try {
-      results.push(await client.callTool({ name, arguments: args as Record<string, unknown> }));
+      results.push(hiddenOperation(await client.callTool({ name, arguments: placed(args) })));
     } catch (error) {
       results.push({ protocolError: error instanceof Error ? error.message : String(error) });
     }
@@ -433,6 +582,7 @@ async function run(side: 'ts' | 'rust', scenario: Scenario) {
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const steps: unknown[] = [];
   current = { state: fresh(), seen: [] };
+  operation = undefined;
   writeFileSync(clock, String(NOW));
   // `<home>` in arguments and the environment names this side's home.
   const place = (text: string) => text.replaceAll('<home>', home);
@@ -451,7 +601,9 @@ async function run(side: 'ts' | 'rust', scenario: Scenario) {
     else write(home, step);
   }
 
-  return { steps, seen: current.seen, files: existsSync(home) ? files(home) : [] };
+  const seen = operation ? JSON.parse(JSON.stringify(current.seen).replaceAll(operation, '<operation>')) : current.seen;
+
+  return { steps, seen, files: existsSync(home) ? files(home) : [] };
 }
 
 const failures: string[] = [];
@@ -498,7 +650,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-if (!only && (coverage.cli < 130 || coverage.tools < 44 || coverage.results < 78 || coverage.requests < 336))
+if (!only && (coverage.cli < 137 || coverage.tools < 44 || coverage.results < 102 || coverage.requests < 463))
   failures.push(`coverage too low: ${JSON.stringify(coverage)}`);
 
 if (failures.length) {

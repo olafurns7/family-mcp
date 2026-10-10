@@ -219,8 +219,19 @@ impl Server for Inna {
                 input::empty(arguments)?;
                 client.run(signal, |c, s, x| c.absence_status(s, x)).await
             }
-            // The absence writes arrive in a later change; until then they fail closed. The
-            // runtime lists and accepts only the surface's tools.
+            "inna_prepare_absence" => {
+                let request = input::absence(arguments)?;
+                client
+                    .run(signal, move |c, s, x| c.prepare_absence(s, x, request))
+                    .await
+            }
+            "inna_submit_absence" => {
+                let id = input::submit(arguments)?;
+                client
+                    .run(signal, move |c, s, x| c.submit_absence(s, x, &id))
+                    .await
+            }
+            // The runtime lists and accepts only the surface's tools.
             _ => Err(Fail::Unknown),
         })
     }

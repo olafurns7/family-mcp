@@ -6,9 +6,8 @@
 // client's life, and its keep-alive is that serve's own, ticked by SIGUSR1 (INNA_TEST_KEEP_ALIVE).
 // An import, a migration and a logout are the binary's `auth` commands, against the same upstream
 // and clock. `checkStore`, `defaultUserId` and `saveVerifiedSession` have no command of their
-// own (the binary's import and both sign-ins run them), and absence previews are not the binary's
-// yet, so those four are still the TypeScript client's: they read and write the store and
-// absence record the binary shares.
+// own (the binary's import and both sign-ins run them), so those three are still the TypeScript
+// client's: they read and write the store the binary shares.
 import { afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -358,8 +357,10 @@ export class InnaClient {
     this.#typescript.saveVerifiedSession(...args);
   checkStore = () => this.#typescript.checkStore();
   defaultUserId = () => this.#typescript.defaultUserId();
-  prepareAbsence = (...args: Parameters<TypeScriptClient['prepareAbsence']>) =>
-    this.#typescript.prepareAbsence(...args);
+  prepareAbsence = (input: object, signal?: AbortSignal) =>
+    this.#write('inna_prepare_absence', input, signal);
+  submitAbsence = (operationId: string, confirm: true, signal?: AbortSignal) =>
+    this.#write('inna_submit_absence', { operationId, confirm }, signal);
 
   /** One tick of the binary's own keep-alive. The signal is the scheduler's; ticks end by themselves. */
   keepAlive = async (_signal?: AbortSignal): Promise<KeepAlive> => {
@@ -375,6 +376,17 @@ export class InnaClient {
     this.#harness ??= harness(this.options);
 
     return this.#harness;
+  }
+
+  /**
+   * An absence write tool. Without the option, `serve` neither lists nor accepts the tool, so the
+   * TypeScript client's own refusal, which its server cannot reach either, stands in for it.
+   */
+  async #write(name: string, args: object, signal?: AbortSignal) {
+    if (!this.options.allowAbsenceWrites)
+      throw new SafeError('Absence writes require --allow-absence-writes.');
+
+    return this.#call(name, args, signal);
   }
 
   /** One `inna-mcp` command line; its stdout, or its stderr line as the failure. */

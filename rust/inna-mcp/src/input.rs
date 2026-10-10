@@ -6,7 +6,9 @@ pub use mcp_runtime::input::empty;
 use mcp_runtime::input::{Parse, object, optional};
 use serde_json::{Map, Value};
 
+use crate::absence::Request;
 use crate::dates;
+use crate::js;
 use crate::shapes::is_letter;
 
 const SAFE: f64 = 9_007_199_254_740_991.0;
@@ -241,6 +243,94 @@ pub fn message(
     Ok(((id.unwrap_or_default(), kind.unwrap_or_default()), key))
 }
 
+/// `absenceInputSchema`: strict, with the reason trimmed before its length checks. Both
+/// refinements run once nothing aborted; the runtime takes one refinement message, so when both
+/// fail it gets them joined as zod joins issues.
+pub fn absence(arguments: &Map<String, Value>) -> Result<Request, String> {
+    let (kind, date_from, date_to, reason, student_key) = object(
+        arguments,
+        &["kind", "dateFrom", "dateTo", "reason", "studentKey"],
+        |parse, args| {
+            let kind = ["sick", "leave"]
+                .into_iter()
+                .find(|kind| args.get("kind").and_then(Value::as_str) == Some(kind));
+
+            if kind.is_none() {
+                parse.at("kind").issue(
+                    "Invalid option: expected one of \"sick\"|\"leave\"".to_owned(),
+                    false,
+                );
+            }
+            let date_from = parse.at("dateFrom").date(args.get("dateFrom"));
+            let date_to = parse.at("dateTo").date(args.get("dateTo"));
+            let reason = {
+                let mut at = parse.at("reason");
+                let trimmed = args
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(|text| Value::String(js::trim(text).to_owned()));
+                let reason = at.string(trimmed.as_ref().or(args.get("reason")), (1, 2000));
+                reason.filter(|_| trimmed.is_some())
+            };
+            (kind, date_from, date_to, reason, student_key(parse, args))
+        },
+        |(kind, from, to, _, _)| {
+            let (Some(kind), Some(from), Some(to)) = (kind, from, to) else {
+                return None;
+            };
+            let unordered = js::compare(from, to).is_gt();
+            let several = *kind == "sick" && from != to;
+
+            match (unordered, several) {
+                (true, true) => Some("Dates must be in order., Register one sick day at a time."),
+                (true, false) => Some("Dates must be in order."),
+                (false, true) => Some("Register one sick day at a time."),
+                (false, false) => None,
+            }
+        },
+    )?;
+    let (Some(kind), Some(date_from), Some(date_to), Some(reason)) =
+        (kind, date_from, date_to, reason)
+    else {
+        unreachable!("a missing field is an issue");
+    };
+    Ok(Request {
+        kind,
+        date_from,
+        date_to,
+        reason,
+        student_key,
+    })
+}
+
+/// `inna_submit_absence`: `{ operationId: z.uuid(), confirm: z.literal(true) }`, strict.
+pub fn submit(arguments: &Map<String, Value>) -> Result<String, String> {
+    let id = object(
+        arguments,
+        &["operationId", "confirm"],
+        |parse, args| {
+            let id = {
+                let mut at = parse.at("operationId");
+                let id = at.string(args.get("operationId"), (0, usize::MAX));
+
+                if id.as_deref().is_some_and(|id| !js::is_uuid(id)) {
+                    at.issue("Invalid UUID".to_owned(), true);
+                }
+                id
+            };
+
+            if args.get("confirm") != Some(&Value::Bool(true)) {
+                parse
+                    .at("confirm")
+                    .issue("Invalid input: expected true".to_owned(), false);
+            }
+            id
+        },
+        |_| None,
+    )?;
+    Ok(id.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -367,6 +457,126 @@ mod tests {
                 "type: Invalid string: must match pattern /^[A-Z]$/"
             );
         }
+    }
+
+    #[test]
+    fn absence_inputs_get_the_zod_texts() {
+        // Texts from the TypeScript server's `absenceInputSchema` and submit input.
+        let absent = |value: Value| absence(&args(value)).unwrap_err();
+        let both = "Dates must be in order., Register one sick day at a time.";
+        let sick = |reason: Value| json!({"kind": "sick", "dateFrom": "2040-01-03", "dateTo": "2040-01-02", "reason": reason});
+        assert_eq!(
+            absent(json!({})),
+            "kind: Invalid option: expected one of \"sick\"|\"leave\", dateFrom: Invalid input: expected string, received undefined, dateTo: Invalid input: expected string, received undefined, reason: Invalid input: expected string, received undefined"
+        );
+        assert_eq!(absent(sick(json!("r"))), both);
+        assert_eq!(
+            absent(
+                json!({"kind": "sick", "dateFrom": "2040-01-02", "dateTo": "2040-01-03", "reason": "r"})
+            ),
+            "Register one sick day at a time."
+        );
+        assert_eq!(
+            absent(
+                json!({"kind": "leave", "dateFrom": "2040-01-03", "dateTo": "2040-01-02", "reason": "r"})
+            ),
+            "Dates must be in order."
+        );
+        assert_eq!(
+            absent(
+                json!({"kind": "x", "dateFrom": "2040-01-03", "dateTo": "2040-01-02", "reason": "r"})
+            ),
+            "kind: Invalid option: expected one of \"sick\"|\"leave\""
+        );
+        assert_eq!(
+            absent(sick(json!("   "))),
+            format!("reason: Too small: expected string to have >=1 characters, {both}")
+        );
+        assert_eq!(
+            absent(sick(json!("x".repeat(2001)))),
+            format!("reason: Too big: expected string to have <=2000 characters, {both}")
+        );
+        assert_eq!(absent(sick(json!(format!(" {} ", "x".repeat(2000))))), both);
+        assert_eq!(
+            absent(sick(json!(5))),
+            "reason: Invalid input: expected string, received number"
+        );
+        let mut extra = sick(json!("r"));
+        extra["q"] = json!(1);
+        assert_eq!(absent(extra), format!("Unrecognized key: \"q\", {both}"));
+        let mut key = sick(json!("r"));
+        key["studentKey"] = json!("x");
+        assert_eq!(
+            absent(key),
+            format!("studentKey: Invalid string: must match pattern /^\\d+$/, {both}")
+        );
+        assert_eq!(
+            absent(
+                json!({"kind": "sick", "dateFrom": "2040-02-30", "dateTo": "2040-01-02", "reason": ""})
+            ),
+            format!(
+                "dateFrom: Invalid ISO date, reason: Too small: expected string to have >=1 characters, {both}"
+            )
+        );
+        let leave = |reason: Value| json!({"kind": "leave", "dateFrom": "2040-01-02", "dateTo": "2040-01-02", "reason": reason});
+        for (reason, text) in [
+            (
+                json!([]),
+                "reason: Invalid input: expected string, received array, reason: Too small: expected array to have >=1 items",
+            ),
+            (
+                json!(["a"]),
+                "reason: Invalid input: expected string, received array",
+            ),
+            (
+                json!(vec![1; 2001]),
+                "reason: Invalid input: expected string, received array, reason: Too big: expected array to have <=2000 items",
+            ),
+            (
+                json!(null),
+                "reason: Invalid input: expected string, received null",
+            ),
+        ] {
+            assert_eq!(absent(leave(reason)), text);
+        }
+        assert_eq!(
+            absence(&args(leave(json!("\t\n r \u{2028}")))),
+            Ok(Request {
+                kind: "leave",
+                date_from: "2040-01-02".to_owned(),
+                date_to: "2040-01-02".to_owned(),
+                reason: "r".to_owned(),
+                student_key: None,
+            })
+        );
+
+        let submitted = |value: Value| submit(&args(value));
+        let id = "123e4567-e89b-12d3-a456-426614174000";
+        for (value, text) in [
+            (
+                json!({}),
+                "operationId: Invalid input: expected string, received undefined, confirm: Invalid input: expected true",
+            ),
+            (
+                json!({"operationId": "x", "confirm": false}),
+                "operationId: Invalid UUID, confirm: Invalid input: expected true",
+            ),
+            (
+                json!({"operationId": 5, "confirm": "true"}),
+                "operationId: Invalid input: expected string, received number, confirm: Invalid input: expected true",
+            ),
+            (
+                json!({"operationId": id, "confirm": true, "x": 1}),
+                "Unrecognized key: \"x\"",
+            ),
+        ] {
+            assert_eq!(submitted(value).unwrap_err(), text);
+        }
+        let upper = id.to_uppercase();
+        assert_eq!(
+            submitted(json!({"operationId": upper, "confirm": true})),
+            Ok(upper.clone())
+        );
     }
 
     #[test]

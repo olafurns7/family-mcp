@@ -4,19 +4,6 @@
 // The store helpers, an import, and the session changes stay TypeScript: they set up and inspect
 // the files the two languages share.
 //
-// Rust: not yet here, until the absence tools land (slice 4 of the port):
-//   'both opt-in absence tools round-trip through MCP, including confirmed inclusive leave dates'
-//   'UTC midnight or preview expiry during submission checks prevents a POST'
-//   'malformed or overlapping illness history blocks both sick and leave requests'
-//   'whole-day writes require preview, confirmation, permissions, and the same student'
-//   'lost write response survives restart and logout without allowing another POST'
-//   'a student switch during absence preflight prevents the POST'
-//   'expired previews and revoked absence permissions never reach the write endpoint'
-//   'a sibling preview is submitted to that student once, after switching back to it'
-//   'a switch away from the sibling during absence preflight prevents the POST'
-//   'a changed or missing school on the selected entry discards reads and prevents the POST'
-//   'one uncertain operation blocks new previews for every student'
-//   'all 16 tools round-trip through MCP for the sibling studentKey'
 // Rust: not here: these drive the TypeScript scheduler or SDK runtime directly, which the binary
 // does not share; src/keep_alive.rs and the stdio runtime's own tests cover the binary's, and
 // src/input.rs and src/html.rs test the pure functions:
@@ -78,7 +65,11 @@ import {
   updateStored,
   type Store,
 } from '../../../../packages/inna-mcp/test/scratch.js';
-import { type User } from '../../../../packages/inna-mcp/src/schemas.js';
+import {
+  absencePreviewSchema,
+  absenceRecordSchema,
+  type User,
+} from '../../../../packages/inna-mcp/src/schemas.js';
 
 const NOW = Date.parse('2040-01-02T12:00:00Z');
 
@@ -540,6 +531,62 @@ test('every read tool round-trips through MCP without marking read or fetching e
   }
 });
 
+test('both opt-in absence tools round-trip through MCP, including confirmed inclusive leave dates', async () => {
+  const f = await fixture(true);
+  // Rust: `serve` over stdio in place of createServer over an in-process transport.
+  const server = await serveStdio(f.options);
+  const client = new Client({ name: 'inna-write-offline', version: '1' });
+  await client.connect(server.transport);
+
+  try {
+    expect((await client.listTools()).tools).toHaveLength(16);
+
+    const prepared = await client.callTool({
+      name: 'inna_prepare_absence',
+      arguments: { ...request, kind: 'leave', dateFrom: '2040-02-01', dateTo: '2040-02-03' },
+    });
+
+    expect(prepared.isError).not.toBe(true);
+    const preview = absencePreviewSchema.parse(prepared.structuredContent);
+    expect(f.provider.posts).toBe(0);
+
+    const unconfirmed = await client.callTool({
+      name: 'inna_submit_absence',
+      arguments: { operationId: preview.operationId, confirm: false },
+    });
+
+    expect(unconfirmed.isError).toBe(true);
+    expect(f.provider.posts).toBe(0);
+
+    const result = await client.callTool({
+      name: 'inna_submit_absence',
+      arguments: { operationId: preview.operationId, confirm: true },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(absenceRecordSchema.parse(result.structuredContent).state).toBe('submitted');
+    expect(z.object({ timeZone: z.string() }).parse(result.structuredContent).timeZone).toBe('UTC');
+    await client.callTool({
+      name: 'inna_submit_absence',
+      arguments: { operationId: preview.operationId, confirm: true },
+    });
+    expect(f.provider.posts).toBe(1);
+    expect(
+      JSON.parse(f.provider.calls.find((call) => call.method === 'POST')?.body ?? '{}'),
+    ).toEqual({
+      firstDay: '01.02.2040',
+      lastDay: '03.02.2040',
+      leaveStatus: 0,
+      leaveType: 3,
+      allDay: 1,
+      comment: request.reason,
+    });
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('message continuation follows delivered rows and rejects incomplete or inconsistent pages', async () => {
   const f = await fixture();
 
@@ -701,6 +748,58 @@ test('numeric and HTTP-date rate-limit pauses survive restart and expire at the 
     expect(f.provider.calls).toHaveLength(calls);
     now += wait;
     expect((await restarted.messages()).count).toBe(1);
+  }
+});
+
+test('UTC midnight or preview expiry during submission checks prevents a POST', async () => {
+  for (const delay of [10 * 60_000, 12 * 60 * 60_000]) {
+    const f = await fixture(true);
+    const preview = await f.client.prepareAbsence(request);
+    let now = NOW;
+
+    const client = new InnaClient({
+      ...f.options,
+      now: () => now,
+      fetch: async (url, options) => {
+        const response = await f.provider.fetch(url, options);
+
+        if (new URL(url).pathname === '/api/RegisterAbsence/GetLeaves') now += delay;
+
+        return response;
+      },
+    });
+
+    await assert.rejects(
+      client.submitAbsence(preview.operationId, true),
+      /UTC day changed|preview expired/,
+    );
+    expect(f.provider.posts).toBe(0);
+    expect((await f.client.absenceStatus()).operation?.state).toBe('prepared');
+  }
+});
+
+test('malformed or overlapping illness history blocks both sick and leave requests', async () => {
+  for (const date of ['02.01.2040 malformed time', '02.01.2040']) {
+    const f = await fixture(true);
+
+    const client = new InnaClient({
+      ...f.options,
+      fetch: async (url, options) => {
+        const response = await f.provider.fetch(url, options);
+
+        return new URL(url).pathname === '/api/RegisterAbsence/GetStudentRegisteredAbsences'
+          ? Response.json([{ id: 1, date, statusCode: 0, allDay: '1', classes: [] }])
+          : response;
+      },
+    });
+
+    for (const kind of ['sick', 'leave'] as const)
+      await assert.rejects(
+        client.prepareAbsence({ ...request, kind }),
+        /unrecognized absence date|already registered/,
+      );
+
+    expect(f.provider.posts).toBe(0);
   }
 });
 
@@ -905,6 +1004,98 @@ test('private import, principal binding, redirect refusal, and shared rate-limit
   const count = f.provider.calls.length;
   await assert.rejects(new InnaClient(f.options).overview(), /requested a pause/);
   expect(f.provider.calls).toHaveLength(count);
+});
+
+test('whole-day writes require preview, confirmation, permissions, and the same student', async () => {
+  const f = await fixture(true);
+  await assert.rejects(
+    new InnaClient({ ...f.options, allowAbsenceWrites: false }).prepareAbsence(request),
+    /allow-absence-writes/,
+  );
+  const preview = await f.client.prepareAbsence(request);
+  expect(f.provider.posts).toBe(0);
+  expect(preview.studentName).toBe('Synthetic student');
+  const submitted = await f.client.submitAbsence(preview.operationId, true);
+  expect(submitted.state).toBe('submitted');
+  expect(submitted.upstreamId).toBe(123);
+  await f.client.submitAbsence(preview.operationId, true);
+  expect(f.provider.posts).toBe(1);
+
+  const payload = z
+    .object({
+      firstDay: z.string(),
+      lastDay: z.string(),
+      leaveType: z.number(),
+      allDay: z.number(),
+      comment: z.string(),
+    })
+    .parse(JSON.parse(f.provider.calls.find((call) => call.method === 'POST')?.body ?? '{}'));
+
+  expect(payload).toEqual({
+    firstDay: '02.01.2040',
+    lastDay: '02.01.2040',
+    leaveType: 1,
+    allDay: 1,
+    comment: 'Synthetic reason',
+  });
+
+  const leave = await f.client.prepareAbsence({
+    ...request,
+    kind: 'leave',
+    dateFrom: '2040-02-01',
+    dateTo: '2040-02-03',
+  });
+
+  f.provider.user = { ...f.provider.user, studentId: '99' };
+  await assert.rejects(f.client.submitAbsence(leave.operationId, true), /changed account/);
+  expect(f.provider.posts).toBe(1);
+});
+
+test('lost write response survives restart and logout without allowing another POST', async () => {
+  const f = await fixture(true);
+  const preview = await f.client.prepareAbsence(request);
+  f.provider.failPost = true;
+  await assert.rejects(f.client.submitAbsence(preview.operationId, true), /uncertain/);
+  const restarted = new InnaClient(f.options);
+  expect((await restarted.absenceStatus()).operation?.state).toBe('unknown');
+  await assert.rejects(restarted.submitAbsence(preview.operationId, true), /will not be replayed/);
+  await assert.rejects(restarted.prepareAbsence(request), /earlier absence/);
+  expect(f.provider.posts).toBe(1);
+  await restarted.logout();
+  expect(await readFile(`${f.path}.absence.json`, 'utf8')).toContain('unknown');
+});
+
+test('a student switch during absence preflight prevents the POST', async () => {
+  const f = await fixture(true);
+  const preview = await f.client.prepareAbsence(request);
+
+  const concurrent = new InnaClient({
+    ...f.options,
+    fetch: async (url, options) => {
+      const response = await f.provider.fetch(url, options);
+
+      if (new URL(url).pathname === '/api/RegisterAbsence/GetLeaves')
+        f.provider.user = { ...f.provider.user, studentId: '99' };
+
+      return response;
+    },
+  });
+
+  await assert.rejects(
+    concurrent.submitAbsence(preview.operationId, true),
+    /changed during absence checks/,
+  );
+  expect(f.provider.posts).toBe(0);
+});
+
+test('expired previews and revoked absence permissions never reach the write endpoint', async () => {
+  const f = await fixture(true);
+  const preview = await f.client.prepareAbsence(request);
+  const expired = new InnaClient({ ...f.options, now: () => NOW + 10 * 60_000 });
+  await assert.rejects(expired.submitAbsence(preview.operationId, true), /preview expired/);
+  f.provider.user = { ...f.provider.user, registerAbsenceGuardian: '0' };
+  await assert.rejects(f.client.submitAbsence(preview.operationId, true), /does not permit/);
+  expect(f.provider.posts).toBe(0);
 });
 
 test('rate limiting during a replacement import preserves the saved session pause', async () => {
@@ -1324,6 +1515,208 @@ test('import onto a learned sibling is refused unless the account change is deli
   expect(replaced.account.studentId).toBe('6');
   expect(Object.keys(replaced.students)).toEqual([SIBLING]);
   await assert.rejects(f.client.absenceStatus(), /belongs to another account/);
+});
+
+test('a sibling preview is submitted to that student once, after switching back to it', async () => {
+  const f = await fixture(true);
+  const preview = await f.client.prepareAbsence({ ...request, studentKey: SIBLING });
+  expect(preview.studentName).toBe('Synthetic sibling');
+  expect(preview.schoolName).toBe('Synthetic second school');
+  expect(preview.studentKey).toBe(SIBLING);
+  expect(preview.account.studentId).toBe('6');
+  expect(preview.request).toEqual(request);
+
+  expect((await f.client.overview()).context.studentId).toBe('2');
+  const status = await f.client.absenceStatus();
+  expect(status.context.studentId).toBe('2');
+  expect(status.operation?.account.studentId).toBe('6');
+  expect(f.provider.selected).toBe('1');
+
+  const from = f.provider.calls.length;
+  const submitted = await f.client.submitAbsence(preview.operationId, true);
+  expect(submitted.state).toBe('submitted');
+  expect(submitted.studentKey).toBe(SIBLING);
+  expect(f.provider.paths(from).slice(0, 4)).toEqual([
+    '/api/UserData/GetLoggedInUser',
+    '/auth/system',
+    '/Components/Students/Students.html',
+    '/api/UserData/GetLoggedInUser',
+  ]);
+  expect(f.provider.paths(from).at(-1)).toBe('/api/RegisterAbsence/AddNewLeave');
+  expect(f.provider.selected).toBe(SIBLING);
+  await f.client.overview();
+  await f.client.submitAbsence(preview.operationId, true);
+  expect(f.provider.posts).toBe(1);
+});
+
+test('a switch away from the sibling during absence preflight prevents the POST', async () => {
+  for (const moveContext of [true, false]) {
+    const f = await fixture(true);
+    const preview = await f.client.prepareAbsence({ ...request, studentKey: SIBLING });
+
+    const concurrent = new InnaClient({
+      ...f.options,
+      fetch: async (url, options) => {
+        const response = await f.provider.fetch(url, options);
+
+        if (new URL(url).pathname === '/api/RegisterAbsence/GetLeaves') {
+          f.provider.selected = '1';
+
+          if (moveContext) f.provider.user = student;
+        }
+
+        return response;
+      },
+    });
+
+    await assert.rejects(
+      concurrent.submitAbsence(preview.operationId, true),
+      /changed during absence checks/,
+    );
+    expect(f.provider.posts).toBe(0);
+    expect((await f.client.absenceStatus()).operation?.state).toBe('prepared');
+  }
+});
+
+test('a changed or missing school on the selected entry discards reads and prevents the POST', async () => {
+  const changed = { system: '1', status: '2', skoli_id: '99', skoli_heiti: 'Synthetic other' };
+  const missing = { system: '1', status: '2', skoli_heiti: 'Synthetic second school' };
+
+  for (const entry of [changed, missing]) {
+    for (const endpoint of ['/api/Timetable/GetTimetable', '/api/RegisterAbsence/GetLeaves']) {
+      const f = await fixture(true);
+      const preview = await f.client.prepareAbsence({ ...request, studentKey: SIBLING });
+
+      // The context binding stays the sibling's; only its access entry stops agreeing on the school.
+      const client = new InnaClient({
+        ...f.options,
+        fetch: async (url, options) => {
+          const response = await f.provider.fetch(url, options);
+
+          if (new URL(url).pathname === endpoint) f.provider.entries.set(SIBLING, entry);
+
+          return response;
+        },
+      });
+
+      if (endpoint === '/api/Timetable/GetTimetable')
+        await assert.rejects(
+          client.timetable({ ...range, studentKey: SIBLING }),
+          /during the read.*discarded/,
+        );
+      else
+        await assert.rejects(
+          client.submitAbsence(preview.operationId, true),
+          /changed during absence checks/,
+        );
+      expect(f.provider.user.studentId).toBe('6');
+      expect(f.provider.selected).toBe(SIBLING);
+      expect(f.provider.posts).toBe(0);
+      expect((await f.client.absenceStatus()).operation?.state).toBe('prepared');
+    }
+  }
+});
+
+test('one uncertain operation blocks new previews for every student', async () => {
+  const f = await fixture(true);
+  const preview = await f.client.prepareAbsence({ ...request, studentKey: SIBLING });
+  f.provider.failPost = true;
+  await assert.rejects(f.client.submitAbsence(preview.operationId, true), /uncertain/);
+  await assert.rejects(f.client.prepareAbsence(request), /earlier absence/);
+  await assert.rejects(
+    f.client.prepareAbsence({ ...request, studentKey: SIBLING }),
+    /earlier absence/,
+  );
+  expect(f.provider.posts).toBe(1);
+});
+
+test('all 16 tools round-trip through MCP for the sibling studentKey', async () => {
+  const f = await fixture(true);
+  // Rust: `serve` over stdio in place of createServer over an in-process transport.
+  const server = await serveStdio(f.options);
+  const client = new Client({ name: 'inna-students-offline', version: '1' });
+  await client.connect(server.transport);
+
+  try {
+    const tools = await client.listTools();
+    const keyed = { studentKey: SIBLING };
+
+    const calls = [
+      ['inna_list_students', {}],
+      ['inna_session_status', keyed],
+      ['inna_get_overview', keyed],
+      ['inna_get_timetable', { ...range, ...keyed }],
+      ['inna_get_assignments', keyed],
+      ['inna_get_assignment', { assignmentId: '5', ...keyed }],
+      ['inna_get_grades', keyed],
+      ['inna_get_course_grades', { groupId: '7', ...keyed }],
+      ['inna_get_attendance', keyed],
+      ['inna_get_materials', { groupId: '7', ...keyed }],
+      ['inna_get_messages', keyed],
+      ['inna_get_message', { messageId: '11', type: 'A', ...keyed }],
+      ['inna_get_absences', { ...range, ...keyed }],
+      ['inna_prepare_absence', { ...request, ...keyed }],
+      ['inna_absence_status', {}],
+    ] satisfies [string, object][];
+
+    expect(tools.tools.map((tool) => tool.name).toSorted()).toEqual(
+      [...calls.map(([name]) => name), 'inna_submit_absence'].toSorted(),
+    );
+
+    for (const tool of tools.tools) {
+      const accepts = JSON.stringify(tool.inputSchema).includes('studentKey');
+
+      expect(accepts, tool.name).toBe(
+        !['inna_list_students', 'inna_absence_status', 'inna_submit_absence'].includes(tool.name),
+      );
+    }
+
+    let operationId = '';
+
+    for (const [name, args] of calls) {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError, name).not.toBe(true);
+      expectClean(JSON.stringify(result));
+      expect(JSON.stringify(result)).not.toContain('synthetic-s');
+
+      const output = z
+        .object({
+          retrievedAt: z.string(),
+          timeZone: z.literal('UTC'),
+          context: z.object({ studentId: z.string() }).optional(),
+          account: z.object({ studentId: z.string() }).optional(),
+          operationId: z.string().optional(),
+        })
+        .parse(result.structuredContent);
+
+      if (name !== 'inna_list_students')
+        expect((output.context ?? output.account)?.studentId, name).toBe('6');
+      operationId = output.operationId ?? operationId;
+    }
+
+    expect(f.provider.switches).toBe(1);
+
+    const refused = await client.callTool({
+      name: 'inna_submit_absence',
+      arguments: { operationId, confirm: true, ...keyed },
+    });
+
+    expect(refused.isError).toBe(true);
+    await client.callTool({ name: 'inna_get_overview', arguments: {} });
+
+    const submitted = await client.callTool({
+      name: 'inna_submit_absence',
+      arguments: { operationId, confirm: true },
+    });
+
+    expect(submitted.isError).not.toBe(true);
+    expect(absenceRecordSchema.parse(submitted.structuredContent).account.studentId).toBe('6');
+    expect(f.provider.posts).toBe(1);
+    expect(f.provider.switches).toBe(3);
+  } finally {
+    await client.close();
+    await server.close();
+  }
 });
 
 const USER_PATH = '/api/UserData/GetLoggedInUser';

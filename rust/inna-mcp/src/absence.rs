@@ -4,13 +4,13 @@
 
 use std::path::Path;
 
-use family_store::{Code as StoreCode, read_private_bytes};
+use family_store::{Cancel, Code as StoreCode, read_private_bytes, write_private_file};
 use serde_json::{Map, Value, json};
 
 use crate::dates;
 use crate::error::{Fail, Result};
 use crate::js;
-use crate::session::{Binding, absence_path, positive};
+use crate::session::{Binding, absence_path, positive, store_error};
 use crate::shapes::is_id;
 
 const MAX_RECORD_BYTES: usize = 32_768;
@@ -183,6 +183,13 @@ pub fn read(legacy: &Path) -> Result<Option<Record>> {
         .and_then(Record::parse)
         .map(Some)
         .ok_or(UNREADABLE)
+}
+
+/// `saveAbsence`: replaces the record. Like the TypeScript write, it is never cancelled.
+pub fn write(legacy: &Path, record: &Record) -> Result<()> {
+    let text = record.to_json().to_string();
+    write_private_file(&absence_path(legacy), text.as_bytes(), &Cancel::default())
+        .map_err(|error| store_error(&error))
 }
 
 #[cfg(test)]

@@ -44,7 +44,7 @@ fn bun_test(file: &str, passed: usize) {
 
 #[test]
 fn the_integration_cases_pass_against_this_binary() {
-    bun_test("integration.test.ts", 42);
+    bun_test("integration.test.ts", 54);
 }
 
 #[test]

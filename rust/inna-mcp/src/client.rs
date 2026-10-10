@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::RwLock;
 use url::Url;
 
-use crate::absence;
+use crate::absence::{self, Record, State};
 use crate::dates;
 use crate::error::{Fail, Result};
 use crate::html::plain_text;
@@ -66,6 +66,20 @@ const UNEXPECTED: Fail = Fail::Safe("Inna returned an unavailable or unexpected 
 const NO_SESSION: Fail = Fail::Safe(
     "No Inna session. Run inna-mcp auth login or auth import with a private cookie export.",
 );
+
+const WRITES_NOT_ALLOWED: Fail = Fail::Safe("Absence writes require --allow-absence-writes.");
+
+/// `noPreview`.
+const NO_PREVIEW: Fail =
+    Fail::Safe("No matching absence preview for this account, student, and school.");
+
+const PREVIEW_EXPIRED: Fail =
+    Fail::Safe("The absence preview expired. Prepare and approve a fresh preview.");
+
+/// How long a preview may be submitted: ten minutes.
+const PREVIEW_LIFETIME: f64 = 600_000.0;
+
+const DAY: f64 = 86_400_000.0;
 
 /// `new URL(ORIGIN)`.
 fn origin() -> Url {
@@ -126,6 +140,14 @@ impl User {
             binding: self.binding(),
             student_name: self.text("studentName").to_owned(),
         }
+    }
+
+    fn is_set(&self, key: &str) -> bool {
+        self.text(key) == "1"
+    }
+
+    fn older_than_18(&self) -> bool {
+        self.0.get("olderThan18") == Some(&Value::Bool(true))
     }
 
     /// `contextSchema.parse(user)`.
@@ -288,6 +310,124 @@ pub struct Target {
     pub user: User,
     pub binding: Binding,
     pub key: Option<String>,
+}
+
+/// `canRegisterAbsence`: whether Inna lets this login register `kind` for the student.
+fn can_register_absence(user: &User, kind: &str) -> bool {
+    let guardian = user.text("logInType") == "2";
+    let older = user.older_than_18();
+
+    match kind {
+        "sick" => {
+            (guardian && user.is_set("registerAbsenceGuardian"))
+                || (!older && user.is_set("registerAbsenceUnder18"))
+                || (older && user.is_set("registerAbsenceOver18"))
+        }
+        _ => {
+            (guardian && (user.is_set("registerLeave") || user.is_set("registerAbsence")))
+                || (user.text("logInType") == "1"
+                    && older
+                    && (user.is_set("student18RegisterLeave")
+                        || user.is_set("student18RegisterAbsence")))
+        }
+    }
+}
+
+/// `upstreamDate`: the UTC day of a date Inna returned.
+fn upstream_date(value: Option<&Value>) -> Result<String> {
+    match dates::normalize(value) {
+        Some(iso) => Ok(iso[..10].to_owned()),
+        None => Err(Fail::Safe(
+            "Inna returned an unrecognized absence date. Review history before submitting.",
+        )),
+    }
+}
+
+/// `new Date(ms).toISOString().slice(0, 10)`.
+fn utc_day(ms: f64) -> Result<String> {
+    let iso = js::iso_string(ms).ok_or(Fail::Unknown)?;
+    Ok(iso[..10].to_owned())
+}
+
+/// `checkAbsence`: the request starts today or later, Inna permits it for this login (and, for
+/// a sick day, that date), and nothing in Inna's history overlaps it. Returns the UTC day it
+/// checked on.
+fn check_absence(
+    connection: &mut Connection,
+    user: &User,
+    request: &absence::Request,
+) -> Result<String> {
+    let checked_at = js::client_now();
+    let today = utc_day(checked_at)?;
+    let (from, to) = (request.date_from.as_str(), request.date_to.as_str());
+
+    if from < today.as_str() {
+        return Err(Fail::Safe("New absence requests cannot start in the past."));
+    }
+
+    if !can_register_absence(user, request.kind) {
+        return Err(Fail::Safe(
+            "Inna does not permit this absence request for that account.",
+        ));
+    }
+
+    if request.kind == "sick" {
+        let options = connection.read(
+            "/api/RegisterAbsence/GetRegisterAbsences",
+            &[],
+            &shapes::SICK_OPTIONS,
+        )?;
+        let allowed = |key: &str| options.get(key) == Some(&Value::Bool(true));
+        let tomorrow = utc_day(checked_at + DAY)?;
+        let permitted = match from == today {
+            true => allowed("todayAllowed"),
+            false => {
+                from == tomorrow
+                    && allowed("tomorrowAllowed")
+                    && user.is_set("registerIllnessTomorrow")
+            }
+        };
+
+        if !permitted {
+            return Err(Fail::Safe(
+                "Inna does not permit sick-day registration for that date and account.",
+            ));
+        }
+    }
+    let (inna_from, inna_to) = (inna_date(from), inna_date(to));
+    let records = connection.read(
+        "/api/RegisterAbsence/GetStudentRegisteredAbsences",
+        &[("dateFrom", &inna_from), ("dateTo", &inna_to)],
+        &shapes::SICKNESS,
+    )?;
+
+    // `some`: a date after the first match is never read.
+    for record in records.as_array().map(Vec::as_slice).unwrap_or_default() {
+        let day = upstream_date(record.get("date"))?;
+
+        if from <= day.as_str() && day.as_str() <= to {
+            return Err(Fail::Safe(
+                "An absence is already registered in that date range. Review it in Inna before submitting another.",
+            ));
+        }
+    }
+    let leaves = connection.read(
+        "/api/RegisterAbsence/GetLeaves",
+        &[("getDateFrom", &inna_from), ("getDateTo", &inna_to)],
+        &shapes::LEAVES,
+    )?;
+
+    for record in leaves.as_array().map(Vec::as_slice).unwrap_or_default() {
+        // `&&`: the end is read only when the start does not already rule the leave out.
+        if upstream_date(record.get("dateFrom"))?.as_str() <= to
+            && upstream_date(record.get("dateTo"))?.as_str() >= from
+        {
+            return Err(Fail::Safe(
+                "An overlapping absence application exists. Review it in Inna before submitting another.",
+            ));
+        }
+    }
+    Ok(today)
 }
 
 fn still_selected(target: &Target, current: &User) -> bool {
@@ -723,19 +863,20 @@ impl Client {
         outcome
     }
 
-    /// `withStudent`: the read, for the student chosen by `key`, verified before and (unless
-    /// `verify_after` is false) after it, and stamped.
+    /// `withStudent`: the read, for the student `pick` chooses inside the hold, verified before
+    /// and (unless `verify_after` is false) after it, and stamped.
     fn with_student(
         &self,
         signal: &Signal,
         cancel: &Cancel,
-        key: Option<&str>,
+        pick: impl FnOnce() -> Result<Option<String>>,
         verify_after: bool,
         work: impl FnOnce(&mut Connection, &Target) -> Result<Map<String, Value>>,
     ) -> Result<Value> {
         self.session(signal, cancel, |connection, saved| {
+            let key = pick()?;
             let user = connection.user()?;
-            let target = select(connection, saved, user, key)?;
+            let target = select(connection, saved, user, key.as_deref())?;
             let mut output = work(connection, &target)?;
 
             if verify_after && !still_selected(&target, &connection.user()?) {
@@ -756,7 +897,8 @@ impl Client {
         key: Option<&str>,
         work: impl FnOnce(&mut Connection, &User) -> Result<Vec<(&'static str, Value)>>,
     ) -> Result<Value> {
-        self.with_student(signal, cancel, key, true, |connection, target| {
+        let pick = || Ok(key.map(str::to_owned));
+        self.with_student(signal, cancel, pick, true, |connection, target| {
             let fields = work(connection, &target.user)?;
             let mut output = Map::new();
             output.insert("context".to_owned(), target.user.context());
@@ -815,7 +957,8 @@ impl Client {
         let Some(storage) = storage else {
             return Ok(json!({ "authenticated": false }));
         };
-        self.with_student(signal, cancel, key, true, |_, target| {
+        let pick = || Ok(key.map(str::to_owned));
+        self.with_student(signal, cancel, pick, true, |_, target| {
             let mut output = Map::new();
             output.insert("authenticated".to_owned(), json!(true));
             output.insert("storage".to_owned(), json!(storage));
@@ -1272,6 +1415,155 @@ impl Client {
             stamp(&mut output)?;
             Ok(Value::Object(output))
         })
+    }
+
+    /// `prepareAbsence`: checks the request against Inna for the chosen student and saves it as
+    /// the one preview `submit_absence` may send, for ten minutes. Sends nothing.
+    pub fn prepare_absence(
+        &self,
+        signal: &Signal,
+        cancel: &Cancel,
+        mut request: absence::Request,
+    ) -> Result<Value> {
+        if !self.allow_absence_writes {
+            return Err(WRITES_NOT_ALLOWED);
+        }
+        let key = request.student_key.take();
+
+        self.with_student(signal, cancel, || Ok(key), false, |connection, target| {
+            let user = &target.user;
+            let previous = absence::read(&self.path)?;
+
+            if previous.is_some_and(|previous| {
+                matches!(previous.state, State::Submitting | State::Unknown)
+            }) {
+                return Err(Fail::Safe(
+                    "An earlier absence submission is uncertain. Review its status and Inna history; do not retry it.",
+                ));
+            }
+            check_absence(connection, user, &request)?;
+            let record = Record {
+                operation_id: js::uuid().ok_or(Fail::Unknown)?,
+                account: user.binding(),
+                student_key: target.key.clone(),
+                request,
+                state: State::Prepared,
+                expires_at: js::client_now() + PREVIEW_LIFETIME,
+                upstream_id: None,
+            };
+            absence::write(&self.path, &record)?;
+            let mut output = record_fields(&record);
+            output.insert("studentName".to_owned(), json!(user.text("studentName")));
+            output.insert("schoolName".to_owned(), json!(user.text("schoolLong")));
+            Ok(output)
+        })
+    }
+
+    /// `submitAbsence`: sends the saved preview `operation_id` once, to the student it was
+    /// prepared for, after checking context, permission, overlaps, expiry and the UTC day again.
+    /// The record is marked submitting before the write and unknown when its outcome is not
+    /// known, and neither is ever sent again.
+    pub fn submit_absence(
+        &self,
+        signal: &Signal,
+        cancel: &Cancel,
+        operation_id: &str,
+    ) -> Result<Value> {
+        if !self.allow_absence_writes {
+            return Err(WRITES_NOT_ALLOWED);
+        }
+        let saved = |user: Option<&User>| -> Result<Record> {
+            absence::read(&self.path)?
+                .filter(|record| record.operation_id == operation_id)
+                .filter(|record| user.is_none_or(|user| record.account == user.binding()))
+                .ok_or(NO_PREVIEW)
+        };
+        // The preview decides the student: Inna is switched to it before any check.
+        let pick = || Ok(saved(None)?.student_key);
+
+        self.with_student(signal, cancel, pick, false, |connection, target| {
+            let user = &target.user;
+            let mut record = saved(Some(user))?;
+
+            match record.state {
+                State::Submitted => return Ok(record_fields(&record)),
+                State::Prepared => {}
+                State::Submitting | State::Unknown => {
+                    return Err(Fail::Safe(
+                        "Submission outcome is uncertain. Review Inna history; this request will not be replayed.",
+                    ));
+                }
+            }
+
+            if record.expires_at <= js::client_now() {
+                return Err(PREVIEW_EXPIRED);
+            }
+            let checked_day = check_absence(connection, user, &record.request)?;
+            let current = connection.user()?;
+
+            if record.account != current.binding()
+                || !still_selected(target, &current)
+                || !can_register_absence(&current, record.request.kind)
+            {
+                return Err(Fail::Safe(
+                    "Inna context or permissions changed during absence checks. Review the intended account before preparing another request.",
+                ));
+            }
+
+            if utc_day(js::client_now())? != checked_day {
+                return Err(Fail::Safe(
+                    "The UTC day changed during absence checks. Prepare and approve a fresh preview.",
+                ));
+            }
+
+            if record.expires_at <= js::client_now() {
+                return Err(PREVIEW_EXPIRED);
+            }
+            record.state = State::Submitting;
+            absence::write(&self.path, &record)?;
+            // ponytail: whole days only; partial days need per-lesson writes and
+            // partial-success recovery.
+            let request = &record.request;
+            let body = json!({
+                "firstDay": inna_date(&request.date_from),
+                "lastDay": inna_date(&request.date_to),
+                "leaveStatus": 0,
+                "leaveType": if request.kind == "sick" { 1 } else { 3 },
+                "allDay": 1,
+                "comment": request.reason,
+            });
+            let mut send = || -> Result<()> {
+                let response = connection.request(
+                    "/api/RegisterAbsence/AddNewLeave",
+                    &[],
+                    Some(body.to_string()),
+                )?;
+                let id = response.get("id").and_then(positive).ok_or(Fail::Invalid)?;
+                record.state = State::Submitted;
+                record.upstream_id = Some(id);
+                absence::write(&self.path, &record)
+            };
+
+            match send() {
+                Ok(()) => Ok(record_fields(&record)),
+                // Any failure, the final save included, leaves the outcome unknown.
+                Err(_) => {
+                    record.state = State::Unknown;
+                    absence::write(&self.path, &record)?;
+                    Err(Fail::Safe(
+                        "Absence submission outcome is uncertain. Do not retry; review the saved operation and Inna history.",
+                    ))
+                }
+            }
+        })
+    }
+}
+
+/// A record's fields, for a tool's output.
+fn record_fields(record: &Record) -> Map<String, Value> {
+    match record.to_json() {
+        Value::Object(fields) => fields,
+        _ => unreachable!("a record is an object"),
     }
 }
 
