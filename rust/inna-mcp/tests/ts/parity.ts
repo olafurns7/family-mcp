@@ -32,7 +32,8 @@ let current = { state: fresh(), seen: [] as Seen[] };
 const fake = await startFake(() => current);
 
 type Step =
-  | { cli: string[]; stdin?: string }
+  // `absent`: text neither side may print in this step.
+  | { cli: string[]; stdin?: string; absent?: string }
   // Each side's `auth import` of the synthetic cookie export.
   | { seed: true; args?: string[] }
   // An older version's plaintext session file at this path under the home.
@@ -452,6 +453,24 @@ const scenarios: Scenario[] = [
     ],
   },
   {
+    // A store that passes the startup check but holds a damaged record or marker: `auth login`
+    // refuses it before it asks for the phone number.
+    name: 'login-store-unusable',
+    steps: [
+      { seed: true },
+      { file: storeFile, text: 'x' },
+      { cli: ['auth', 'login'], stdin: '5550000\n', absent: 'phone number' },
+    ],
+  },
+  {
+    name: 'login-marker-unusable',
+    steps: [
+      { seed: true },
+      { file: `${storeFile}.marker`, text: 'x' },
+      { cli: ['auth', 'login'], stdin: '5550000\n', absent: 'phone number' },
+    ],
+  },
+  {
     name: 'store-file-open',
     steps: [{ file: storeFile, text: 'x', permissions: 0o644 }, { cli: ['auth', 'status'] }, { cli: ['auth', 'bogus'] }],
   },
@@ -589,7 +608,13 @@ async function run(side: 'ts' | 'rust', scenario: Scenario) {
   const env = Object.fromEntries(Object.entries(scenario.env ?? {}).map(([name, value]) => [name, place(value)]));
 
   for (const step of scenario.steps) {
-    if ('cli' in step) steps.push(await runCli(side, home, env, step.cli.map(place), step.stdin));
+    if ('cli' in step) {
+      const result = await runCli(side, home, env, step.cli.map(place), step.stdin);
+
+      if (step.absent && (result.stdout + result.stderr).includes(step.absent))
+        failures.push(`${scenario.name} (${side}): printed ${JSON.stringify(step.absent)}: ${JSON.stringify(result)}`);
+      steps.push(result);
+    }
     else if ('seed' in step) {
       write(home, { file: 'cookies.json', text: COOKIES });
       steps.push(await runCli(side, home, env, ['auth', 'import', join(home, 'cookies.json'), ...(step.args ?? [])]));

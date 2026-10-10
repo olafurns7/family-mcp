@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use family_store::{
-    Error as StoreError, KeyProvider, SecretRecordOptions, default_key_provider,
-    default_secret_record_path, retired_store_paths, startup_check,
+    Error as StoreError, KeyProvider, SecretRecordOptions, StoreEnvironment,
+    default_secret_record_path_in, key_provider_in, retired_store_paths_in, startup_check,
 };
 
 use crate::error::{Fail, Result};
@@ -33,21 +33,34 @@ pub const RECORD_MAX_BYTES: usize =
         + (MAX_STUDENTS * STUDENT_BYTES - 1)
         + 24;
 
+/// Where the store is: this process's environment, or in a unit test the scratch store
+/// `tests::scratch` chose for its thread.
+fn environment() -> StoreEnvironment {
+    #[cfg(test)]
+    return tests::SCRATCH
+        .with(|scratch| scratch.borrow().clone())
+        .expect(
+            "A unit test opens its store with store::tests::scratch; the real store is never used.",
+        );
+    #[cfg(not(test))]
+    StoreEnvironment::current()
+}
+
 /// The store's record options; `keys` is a test seam, the default being the store's key file.
 pub fn session_record(
     keys: Option<Arc<dyn KeyProvider>>,
 ) -> std::result::Result<SecretRecordOptions, StoreError> {
-    let path = default_secret_record_path(APP)?;
+    let environment = environment();
+    let path = default_secret_record_path_in(&environment, APP)?;
     let keys = match keys {
         Some(keys) => keys,
-        None => default_key_provider(APP, "default")?,
+        None => key_provider_in(&environment, APP, "default")?,
     };
     // A test never reaches the real store. The test build refuses to choose one unless the store
     // test seam points it at absolute XDG directories, as the packages' bunfig preload does, or
     // the production layout sits under a scratch HOME in the temporary directory.
     #[cfg(feature = "test-origin")]
     {
-        let environment = family_store::StoreEnvironment::current();
         let absolute = |variable: &Option<std::ffi::OsString>| {
             variable
                 .as_deref()
@@ -57,6 +70,7 @@ pub fn session_record(
             true => absolute(&environment.xdg_config_home) && absolute(&environment.xdg_data_home),
             false => environment
                 .home
+                .as_ref()
                 .is_some_and(|home| home.starts_with(std::env::temp_dir())),
         };
         assert!(
@@ -66,7 +80,7 @@ pub fn session_record(
     }
     let mut record =
         SecretRecordOptions::new(path, APP, "default", "session", 1, keys, RECORD_MAX_BYTES);
-    record.retired = retired_store_paths(APP, "default")?;
+    record.retired = retired_store_paths_in(&environment, APP, "default")?;
     Ok(record)
 }
 
@@ -85,8 +99,37 @@ pub fn check_store_at_startup() -> Result<bool> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
+    use std::cell::RefCell;
+    use std::fs::{self, DirBuilder};
+    use std::os::unix::fs::DirBuilderExt;
+    use std::path::PathBuf;
+
     use super::*;
+
+    thread_local! {
+        pub static SCRATCH: RefCell<Option<StoreEnvironment>> = const { RefCell::new(None) };
+    }
+
+    /// A fresh scratch directory whose `config` and `data` hold this thread's store, through the
+    /// store test seam, as the packages' tests keep theirs.
+    pub fn scratch(name: &str) -> PathBuf {
+        family_store::enable_test_seam();
+        let root = std::env::temp_dir().join(format!("inna-unit-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        DirBuilder::new().mode(0o700).create(&root).unwrap();
+        SCRATCH.with(|scratch| {
+            *scratch.borrow_mut() = Some(StoreEnvironment {
+                os: std::env::consts::OS.to_owned(),
+                home: Some(root.clone()),
+                xdg_config_home: Some(root.join("config").into()),
+                xdg_data_home: Some(root.join("data").into()),
+                key_backend: None,
+                test_seam: true,
+            });
+        });
+        root
+    }
 
     #[test]
     fn the_record_bound_is_the_typescript_one() {

@@ -13,7 +13,8 @@ use crate::error::{Fail, Result};
 use crate::jar::{Cookie, Jar};
 use crate::js;
 use crate::session::{
-    COOKIE_NAMES, STORAGE, Saved, encode, key_lost, locked, read_saved, remove_legacy, store_error,
+    COOKIE_NAMES, Held, STORAGE, Saved, encode, key_lost, locked, read_saved, remove_legacy,
+    store_error,
 };
 use crate::signal::Signal;
 use crate::store::MAX_SESSION_BYTES;
@@ -228,29 +229,7 @@ impl Client {
                     None => candidate.students.push((key, learned)),
                 }
             }
-            let text = encode(Some(&candidate))?;
-
-            if signal.aborted() {
-                return Err(Fail::Unknown);
-            }
-
-            if lost {
-                if held.decides {
-                    held.store.reset().map_err(|error| store_error(&error))?;
-                }
-                held.store
-                    .create_key()
-                    .map_err(|error| store_error(&error))?;
-            }
-            held.store
-                .write(&text)
-                .map_err(|error| store_error(&error))?;
-            // The store decides from here on, so a plaintext file would never be read again.
-            remove_legacy(self.path())?;
-            Ok(SavedSession {
-                storage: STORAGE,
-                replaced: lost && held.decides,
-            })
+            commit(held, &candidate, lost, signal)
         })
     }
 
@@ -320,10 +299,121 @@ impl Client {
     }
 }
 
+/// The end of `saveVerifiedSession`: nothing is written, and no lost key replaced, once `signal`
+/// has aborted.
+fn commit(held: &mut Held, candidate: &Saved, lost: bool, signal: &Signal) -> Result<SavedSession> {
+    let text = encode(Some(candidate))?;
+
+    if signal.aborted() {
+        return Err(Fail::Unknown);
+    }
+
+    if lost {
+        if held.decides {
+            held.store.reset().map_err(|error| store_error(&error))?;
+        }
+        held.store
+            .create_key()
+            .map_err(|error| store_error(&error))?;
+    }
+    held.store
+        .write(&text)
+        .map_err(|error| store_error(&error))?;
+    // The store decides from here on, so a plaintext file would never be read again.
+    remove_legacy(held.legacy)?;
+    Ok(SavedSession {
+        storage: STORAGE,
+        replaced: lost && held.decides,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    use crate::session::Binding;
+    use crate::signal::Controller;
+    use crate::store::tests::scratch;
+
+    /// A client on a scratch store, with the Tokio runtime its HTTP client needs.
+    fn scratch_client(name: &str) -> (tokio::runtime::Runtime, Client, std::path::PathBuf) {
+        let root = scratch(name);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = {
+            let _entered = runtime.enter();
+            Client::new(root.join("legacy").join("session.json"), false).unwrap()
+        };
+        (runtime, client, root)
+    }
+
+    fn saved(user_id: i64) -> Saved {
+        Saved {
+            jar: Jar::default().serialize().unwrap(),
+            account: Binding {
+                user_id,
+                student_id: "2".to_owned(),
+                school_id: "3".to_owned(),
+            },
+            students: Vec::new(),
+            pause_until: 0.0,
+        }
+    }
+
+    /// `commit` as the sign-in calls it: `lost` when the key is missing, as on a fresh store,
+    /// unless `lost` says otherwise.
+    fn save(
+        client: &Client,
+        session: &Saved,
+        lost: Option<bool>,
+        signal: &Signal,
+    ) -> Result<SavedSession> {
+        locked(client.path(), &Cancel::default(), |held| {
+            let lost = match lost {
+                Some(lost) => lost,
+                None => key_lost(held.store)?,
+            };
+            commit(held, session, lost, signal)
+        })
+    }
+
+    #[test]
+    fn a_save_after_the_sign_in_was_cancelled_leaves_the_store_unchanged() {
+        let (_runtime, client, root) = scratch_client("aborted-save");
+        let cancel = Cancel::default();
+        save(&client, &saved(7), None, &Signal::default()).unwrap();
+        let controller = Controller::default();
+        controller.abort();
+
+        for lost in [false, true] {
+            assert!(matches!(
+                save(&client, &saved(8), Some(lost), &controller.signal()),
+                Err(Fail::Unknown)
+            ));
+            assert_eq!(client.default_user_id(&cancel).unwrap(), Some(7));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_student_is_preferred_once_the_key_is_lost_or_after_logout() {
+        let (_runtime, client, root) = scratch_client("default-user");
+        let cancel = Cancel::default();
+        assert_eq!(client.default_user_id(&cancel).unwrap(), None);
+        save(&client, &saved(7), None, &Signal::default()).unwrap();
+        assert_eq!(client.default_user_id(&cancel).unwrap(), Some(7));
+        client.logout(&cancel).unwrap();
+        assert_eq!(client.default_user_id(&cancel).unwrap(), None);
+
+        save(&client, &saved(9), None, &Signal::default()).unwrap();
+        assert_eq!(client.default_user_id(&cancel).unwrap(), Some(9));
+        std::fs::remove_file(root.join("data/family-mcp/keys/inna-mcp.default.key")).unwrap();
+        assert_eq!(client.default_user_id(&cancel).unwrap(), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn cookies(value: Value) -> Option<Vec<Exported>> {
         exported_cookies(&value)
