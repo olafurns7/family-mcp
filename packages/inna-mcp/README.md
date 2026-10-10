@@ -29,7 +29,8 @@ saved school sessions or absence-operation records. After upgrading from 0.3.0
 or earlier, run `inna-mcp auth migrate` once (see
 [Upgrading from 0.3.0](#upgrading-from-030)).
 
-To build before publication, use the pinned Bun 1.4.2 from the repository root:
+To build before publication, use the pinned Bun 1.4.2 and the Rust toolchain that
+`rust/rust-toolchain.toml` pins, from the repository root:
 
 ```sh
 bun install
@@ -416,6 +417,28 @@ bun run --cwd packages/inna-mcp check
 bun run --cwd packages/inna-mcp test:binary
 bun run --cwd packages/inna-mcp test:installer
 ```
+
+The release executable is built from the Rust crate in `rust/inna-mcp`
+(`familyMcp.release.rust`), which serves the same tools, texts, CLI, sign-ins,
+encrypted store, plaintext migration and absence record as the TypeScript
+sources here. From `rust/`:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+FAMILY_MCP_BUN="$(command -v bun)" cargo test --all-features --locked
+```
+
+The Rust tests run this package's integration, sign-in, browser and startup
+cases against the binary, and compare it with the TypeScript CLI and MCP server
+on the same synthetic inputs. They also check that either implementation reads
+the store and the absence record the other writes, and submits a preview the
+other prepared. Only the `test-origin` build that tests use sends requests to a
+loopback fake. The release build sends them only to the HTTPS hosts
+`nam.inna.is`, `r.inna.is`, `heimdallur.inna.is`, `inna.is` and
+`innskra.island.is`; Google sign-in happens in the browser window, not in the
+executable. Archives include the license notices of every statically linked
+crate.
 
 Tests use synthetic responses only. A separately authorized live native check
 verified phone login, private session reuse, and the 13 read/status tools of
