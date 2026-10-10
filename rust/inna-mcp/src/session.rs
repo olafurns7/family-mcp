@@ -601,6 +601,49 @@ mod tests {
         assert_eq!(credentials(&saved("{")), Err(Fail::Unknown));
     }
 
+    /// The table of the TypeScript case 'store failures are fixed messages or a keep-alive status;
+    /// only a login or import replaces a lost key', whose key provider throws each code: the
+    /// binary reads only its key file, so the codes are checked here.
+    #[test]
+    fn store_failures_get_fixed_messages() {
+        let message = |code| message_of(store_error(&StoreError::new(code, "Synthetic.")));
+        for (code, start) in [
+            (
+                StoreCode::UnsafeFile,
+                "Cannot use the Inna session store. Run inna-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.",
+            ),
+            // A code no key file produces gets the general text.
+            (
+                StoreCode::StoreLocked,
+                "Cannot access the private Inna files.",
+            ),
+            (
+                StoreCode::StoreBackendRetired,
+                "The Inna session store is a leftover of an earlier test build",
+            ),
+            (StoreCode::StoreError, "Cannot use the Inna session store."),
+            (StoreCode::Io, "Cannot access the private Inna files."),
+            (
+                StoreCode::StoreUnavailable,
+                "The Inna store key is missing. Run inna-mcp auth",
+            ),
+        ] {
+            assert!(message(code).starts_with(start), "{code:?}");
+        }
+        assert_eq!(
+            message(StoreCode::StoreWriteUncertain),
+            message_of(UNCERTAIN)
+        );
+        assert_eq!(message(StoreCode::InvalidArgument), "unknown");
+    }
+
+    fn message_of(fail: Fail) -> &'static str {
+        match fail {
+            Fail::Safe(message) => message,
+            Fail::Invalid | Fail::Unknown => "unknown",
+        }
+    }
+
     #[test]
     fn collisions_compare_namespaces_beside_and_above_each_other() {
         let path = Path::new;

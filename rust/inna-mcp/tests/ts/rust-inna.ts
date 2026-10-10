@@ -5,7 +5,8 @@
 // after each upstream answer. A client's reads are MCP tool calls to one `inna-mcp serve` for the
 // client's life, and its keep-alive is that serve's own, ticked by SIGUSR1 (INNA_TEST_KEEP_ALIVE).
 // Sign-in and session changes (import, saveVerifiedSession, checkStore, defaultUserId, migrate,
-// logout) are still the TypeScript client's: they write the store the binary reads.
+// logout) and absence previews are still the TypeScript client's: they write the store and the
+// absence record the binary reads.
 import { afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -301,6 +302,8 @@ export class InnaClient {
   defaultUserId = () => this.#typescript.defaultUserId();
   migrate = () => this.#typescript.migrate();
   logout = () => this.#typescript.logout();
+  prepareAbsence = (...args: Parameters<TypeScriptClient['prepareAbsence']>) =>
+    this.#typescript.prepareAbsence(...args);
 
   /** One tick of the binary's own keep-alive. The signal is the scheduler's; ticks end by themselves. */
   keepAlive = async (_signal?: AbortSignal): Promise<KeepAlive> => {

@@ -12,18 +12,11 @@
 //   'lost write response survives restart and logout without allowing another POST'
 //   'a student switch during absence preflight prevents the POST'
 //   'expired previews and revoked absence permissions never reach the write endpoint'
-//   'import onto a learned sibling is refused unless the account change is deliberate'
 //   'a sibling preview is submitted to that student once, after switching back to it'
 //   'a switch away from the sibling during absence preflight prevents the POST'
 //   'a changed or missing school on the selected entry discards reads and prevents the POST'
 //   'one uncertain operation blocks new previews for every student'
 //   'all 16 tools round-trip through MCP for the sibling studentKey'
-//   'the session is saved only encrypted after import, keep-alive, and reads'
-//   'auth migrate moves a plaintext session once; later plaintext files are never read'
-//   'a login or import before migration moves the plaintext session into the store'
-//   'a jar that cannot be written back removes the record and is never offered again'
-//   'store failures are fixed messages or a keep-alive status; only a login or import replaces a lost key'
-//   'a session path that overlaps the store, its key, or their namespaces is refused untouched'
 // Rust: not yet here, until the CLI signs in and migrates (slice 3 of the port):
 //   'Google browser sign-in saves a version 2 session and refuses a changed binding'
 //   'the CLI migrates a plaintext session, reports where it is saved, and repeats safely'
@@ -41,12 +34,23 @@
 import { afterEach, expect, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync } from 'node:fs';
-import { mkdtemp, chmod, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  chmod,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 import { SafeError } from '@family-mcp/mcp-runtime';
+import { LocalKeyFileProvider } from '@family-mcp/session-store';
 import {
   MAX_SESSION_BYTES,
   RECORD_MAX_BYTES,
@@ -69,6 +73,13 @@ import { type User } from '../../../../packages/inna-mcp/src/schemas.js';
 const NOW = Date.parse('2040-01-02T12:00:00Z');
 
 const directories: string[] = [];
+
+const request = {
+  kind: 'sick',
+  dateFrom: '2040-01-02',
+  dateTo: '2040-01-02',
+  reason: 'Synthetic reason',
+} satisfies Parameters<InnaClient['prepareAbsence']>[0];
 
 const student: User = {
   userId: 1,
@@ -1196,6 +1207,22 @@ test('a learned student binding that later differs is refused', async () => {
   expect((await savedFile(duplicate.store)).students[SIBLING]).toBeUndefined();
 });
 
+test('import onto a learned sibling is refused unless the account change is deliberate', async () => {
+  const f = await fixture(true);
+  await f.client.prepareAbsence(request);
+  await f.client.overview(undefined, SIBLING);
+  const before = await readStored(f.store);
+  await assert.rejects(f.client.importSession(f.source), /Select the default student/);
+  expect(await readStored(f.store)).toBe(before);
+  expect((await f.client.absenceStatus()).operation?.account.studentId).toBe('2');
+
+  await f.client.importSession(f.source, true);
+  const replaced = await savedFile(f.store);
+  expect(replaced.account.studentId).toBe('6');
+  expect(Object.keys(replaced.students)).toEqual([SIBLING]);
+  await assert.rejects(f.client.absenceStatus(), /belongs to another account/);
+});
+
 const USER_PATH = '/api/UserData/GetLoggedInUser';
 
 // Drives the scheduler by hand: the injected timer never fires on its own.
@@ -1435,6 +1462,149 @@ async function generation(store: Store) {
   );
 }
 
+test('the session is saved only encrypted after import, keep-alive, and reads', async () => {
+  const f = await fixture(true);
+  expect(await plaintextCookies(f)).toEqual([]);
+  expect(await f.client.status()).toMatchObject({
+    authenticated: true,
+    storage: 'Saved in an encrypted file.',
+  });
+  await assert.rejects(stat(f.path), /ENOENT/);
+  expect((await stat(f.store.path)).mode & 0o777).toBe(0o600);
+  expect((await stat(f.store.key)).mode & 0o777).toBe(0o600);
+
+  f.provider.rotation = 'synthetic-kept';
+  expect(await f.client.keepAlive()).toEqual({ status: 'kept' });
+  expect(await readStored(f.store)).toContain('synthetic-kept');
+  await f.client.prepareAbsence(request);
+  await f.client.overview(undefined, SIBLING);
+  expect(await plaintextCookies(f)).toEqual([]);
+  // The absence record stays a plaintext private file beside the legacy session path.
+  expect(JSON.parse((await bytes(`${f.path}.absence.json`)) ?? '')).toMatchObject({
+    state: 'prepared',
+  });
+});
+
+test('auth migrate moves a plaintext session once; later plaintext files are never read', async () => {
+  const f = await fixture(true);
+  const preview = await f.client.prepareAbsence(request);
+  const absence = await bytes(`${f.path}.absence.json`);
+  const legacy = await readStored(f.store);
+  const planted = legacy.replaceAll('synthetic-rotated', 'synthetic-planted');
+  const store = storeAt(join(f.directory, 'unmigrated'));
+  const cookies: string[] = [];
+
+  const client = new InnaClient({
+    ...f.options,
+    store,
+    fetch: (url, options) => {
+      cookies.push(new Headers(options.headers).get('Cookie') ?? '');
+
+      return f.provider.fetch(url, options);
+    },
+  });
+
+  expect(await client.status()).toEqual({ authenticated: false });
+  await assert.rejects(client.migrate(), /^SafeError: No Inna session\./);
+  await assert.rejects(stat(`${store.path}.marker`), /ENOENT/);
+
+  await writeFile(f.path, legacy, { mode: 0o600 });
+  expect(await client.status()).toMatchObject({
+    storage: 'Saved in a plaintext file. Run inna-mcp auth migrate.',
+  });
+  expect((await client.absenceStatus()).operation?.operationId).toBe(preview.operationId);
+  expect(await client.migrate()).toBe('migrated');
+  await assert.rejects(stat(f.path), /ENOENT/);
+  expect(parseSaved(await readStored(store)).account).toEqual(parseSaved(legacy).account);
+  expect(await client.status()).toMatchObject({ storage: 'Saved in an encrypted file.' });
+  expect(await client.migrate()).toBe('already');
+  expect(await plaintextCookies(f)).toEqual([]);
+
+  // A plaintext file planted after the marker exists is removed unread.
+  await writeFile(f.path, planted, { mode: 0o600 });
+  expect(await client.keepAlive()).toEqual({ status: 'kept' });
+  expect((await client.overview()).context.studentId).toBe('2');
+  expect((await client.absenceStatus()).operation?.operationId).toBe(preview.operationId);
+  expect(await bytes(f.path)).toBe(planted);
+  expect(await client.migrate()).toBe('already-removed-legacy');
+  await assert.rejects(stat(f.path), /ENOENT/);
+
+  // Logout keeps the store deciding, so a planted file stays unread and login is still needed.
+  await client.logout();
+  await writeFile(f.path, planted, { mode: 0o600 });
+  const calls = f.provider.calls.length;
+  expect(await client.status()).toEqual({ authenticated: false });
+  expect(await client.keepAlive()).toEqual({ status: 'skipped' });
+  expect(await client.defaultUserId()).toBeUndefined();
+  await assert.rejects(client.overview(), /^SafeError: No Inna session\./);
+  expect(f.provider.calls).toHaveLength(calls);
+  expect(await client.migrate()).toBe('already-removed-legacy');
+  expect(await readStored(store)).toBe('null');
+  expect(cookies.join('\n')).not.toContain('synthetic-planted');
+  expect(cookies.length).toBeGreaterThan(0);
+  expect(await bytes(`${f.path}.absence.json`)).toBe(absence);
+});
+
+test('a login or import before migration moves the plaintext session into the store', async () => {
+  const f = await fixture(true);
+  await f.client.prepareAbsence(request);
+  await f.client.overview(undefined, SIBLING);
+  await f.client.overview();
+  const absence = await bytes(`${f.path}.absence.json`);
+  const legacy = await readStored(f.store);
+  const store = storeAt(join(f.directory, 'unmigrated'));
+  const client = new InnaClient({ ...f.options, store });
+  await writeFile(f.path, legacy, { mode: 0o600 });
+
+  // The plaintext session still decides what an import may replace.
+  f.provider.user = { ...f.provider.user, studentId: '99' };
+  await assert.rejects(client.importSession(f.source), /changes the account/);
+  expect(await bytes(f.path)).toBe(legacy);
+  await assert.rejects(stat(`${store.path}.marker`), /ENOENT/);
+  await assert.rejects(stat(store.key), /ENOENT/);
+
+  f.provider.user = { ...f.provider.user, studentId: '2' };
+  expect(await client.importSession(f.source)).toEqual({
+    storage: 'Saved in an encrypted file.',
+    replaced: false,
+  });
+  await assert.rejects(stat(f.path), /ENOENT/);
+  // The students learned before the import are kept, as in a replacement import.
+  expect(Object.keys((await savedFile(store)).students).toSorted()).toEqual(['1', SIBLING]);
+  expect(await plaintextCookies(f)).toEqual([]);
+  expect(await bytes(`${f.path}.absence.json`)).toBe(absence);
+});
+
+test('a jar that cannot be written back removes the record and is never offered again', async () => {
+  const f = await fixture(true);
+  await f.client.prepareAbsence(request);
+  const absence = await bytes(`${f.path}.absence.json`);
+  const uncertain = /^SafeError: The last write to the Inna session store did not complete/;
+  f.provider.rotation = `synthetic-huge-${'x'.repeat(MAX_SESSION_BYTES)}`;
+  await assert.rejects(f.client.overview(), uncertain);
+  f.provider.rotation = 'synthetic-rotated';
+  await assert.rejects(stat(f.store.path), /ENOENT/);
+  await writeFile(f.path, 'planted plaintext session', { mode: 0o600 });
+  const files = await storeFiles(f);
+  const calls = f.provider.calls.length;
+
+  for (const refused of [
+    () => f.client.overview(),
+    () => f.client.status(),
+    () => f.client.absenceStatus(),
+    () => f.client.defaultUserId(),
+    () => f.client.checkStore(),
+    () => f.client.migrate(),
+    () => f.client.logout(),
+    () => f.client.importSession(f.source),
+  ])
+    await assert.rejects(refused(), uncertain);
+  expect(await f.client.keepAlive()).toEqual({ status: 'failed' });
+  expect(f.provider.calls).toHaveLength(calls);
+  expect(await storeFiles(f)).toEqual(files);
+  expect(await bytes(`${f.path}.absence.json`)).toBe(absence);
+});
+
 test('a failed write-back with unchanged cookies keeps the record for the next read', async () => {
   const f = await fixture(true);
   await f.client.overview(); // Settles the cookie the fake rotates to on every user read.
@@ -1474,6 +1644,47 @@ const storeOperations = (client: InnaClient) => [
   () => client.migrate(),
   () => client.logout(),
 ];
+
+test('store failures are fixed messages or a keep-alive status; only a login or import replaces a lost key', async () => {
+  const f = await fixture(true);
+  await f.client.prepareAbsence(request);
+  await writeFile(f.path, 'planted plaintext session', { mode: 0o600 });
+  const files = await storeFiles(f);
+  const calls = f.provider.calls.length;
+
+  // Rust: the binary reads only its key file, so no key provider can throw each store code;
+  // session::tests::store_failures_get_fixed_messages checks this table's messages.
+
+  // A lost key refuses everything except the explicit sign-in that replaces the store.
+  await rm(f.store.key);
+
+  for (const refused of storeOperations(f.client))
+    await assert.rejects(
+      refused(),
+      /^SafeError: The Inna store key is missing\. Run inna-mcp auth/,
+    );
+  expect(await f.client.keepAlive()).toEqual({ status: 'failed' });
+  expect(await f.client.defaultUserId()).toBeUndefined();
+  await f.client.checkStore();
+  expect(f.provider.calls).toHaveLength(calls);
+  expect(await storeFiles(f)).toEqual([files[0], files[1], undefined, files[3], files[4]]);
+
+  // A failed sign-in replaces nothing either.
+  f.provider.unauthorized = true;
+  await assert.rejects(f.client.importSession(f.source), /sign-in is required/);
+  f.provider.unauthorized = false;
+  expect(await storeFiles(f)).toEqual([files[0], files[1], undefined, files[3], files[4]]);
+
+  expect(await f.client.importSession(f.source)).toEqual({
+    storage: 'Saved in an encrypted file.',
+    replaced: true,
+  });
+  expect((await f.client.status()).authenticated).toBe(true);
+  // The sign-in that replaced the store also removes the leftover plaintext file.
+  expect(await bytes(f.path)).toBeUndefined();
+  expect(await bytes(`${f.path}.absence.json`)).toBe(files[4]);
+  expect(await plaintextCookies(f)).toEqual([]);
+});
 
 test('a store with a marker but no record never reads the plaintext file, and migrate resumes', async () => {
   const f = await fixture();
@@ -1533,6 +1744,69 @@ test('a record without its marker is uncertain, not a reason to read the plainte
   expect(await f.client.keepAlive()).toEqual({ status: 'failed' });
   expect(f.provider.calls).toHaveLength(calls);
   expect(await storeFiles(f)).toEqual(files);
+});
+
+test('a session path that overlaps the store, its key, or their namespaces is refused untouched', async () => {
+  const f = await fixture(true);
+  await f.client.prepareAbsence(request);
+  const files = await storeFiles(f);
+  const link = join(f.directory, 'link');
+  await symlink(join(f.directory, 'store'), link);
+  const elsewhere = new LocalKeyFileProvider({ path: join(f.directory, 'elsewhere', 'key') });
+
+  const aliases: Pick<
+    ConstructorParameters<typeof InnaClient>[0] & object,
+    'sessionFile' | 'store'
+  >[] = [
+    { sessionFile: f.store.path },
+    { sessionFile: `${f.store.path}.marker` },
+    { sessionFile: `${f.store.path}.lock` },
+    { sessionFile: f.store.key },
+    { sessionFile: join(`${f.store.path}.lock`, 'session.json') },
+    { sessionFile: join(link, 'config', 'inna-mcp', 'session.enc') },
+    { sessionFile: f.store.path.replace(/\.enc$/, '') },
+    { store: { path: `${f.path}.absence.json`, keys: elsewhere } },
+    { store: { path: `${f.path}.lock`, keys: elsewhere } },
+    { store: { path: join(`${f.path}.absence.json.lock`, 'session.enc'), keys: elsewhere } },
+    { store: { path: f.store.path, keys: new LocalKeyFileProvider({ path: f.path }) } },
+    {
+      store: {
+        path: f.store.path,
+        keys: new LocalKeyFileProvider({ path: `${f.path}.absence.json` }),
+      },
+    },
+  ];
+
+  // Rust: the binary's store and key follow its own layout, so only the session path moves; a
+  // store or key moved onto the session or absence path is the same overlap seen from the other
+  // side, which session::tests::collisions_compare_namespaces_beside_and_above_each_other checks.
+  for (const alias of aliases.filter((alias) => !alias.store)) {
+    const client = new InnaClient({ ...f.options, ...alias });
+
+    for (const refused of [
+      () => client.overview(),
+      () => client.status(),
+      () => client.absenceStatus(),
+      () => client.defaultUserId(),
+      () => client.checkStore(),
+      () => client.importSession(f.source),
+      () => client.migrate(),
+      () => client.logout(),
+    ])
+      await assert.rejects(
+        refused(),
+        /^SafeError: INNA_SESSION_FILE overlaps the encrypted Inna session store or its key\. Choose another path\.$/,
+      );
+    expect(await client.keepAlive()).toEqual({ status: 'failed' });
+    expect(await storeFiles(f)).toEqual(files);
+  }
+
+  expect((await readdir(join(f.directory, 'store', 'config', 'inna-mcp'))).toSorted()).toEqual([
+    'session.enc',
+    'session.enc.marker',
+  ]);
+  await assert.rejects(stat(join(f.directory, 'elsewhere')), /ENOENT/);
+  expect((await f.client.absenceStatus()).operation?.state).toBe('prepared');
 });
 
 const digits = (index: number) => String(index).padStart(32, '9');
