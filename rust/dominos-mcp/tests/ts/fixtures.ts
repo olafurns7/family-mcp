@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import { dirname, join } from 'node:path';
 import * as z from 'zod/v4';
 import type { KeyProvider } from '@family-mcp/session-store';
-import { saveSession, migrate, withSession, type Session } from '../../../../packages/dominos-mcp/src/auth.ts';
+import {
+  saveSession,
+  withSession,
+  type Session,
+} from '../../../../packages/dominos-mcp/src/auth.ts';
 import { scratchHome } from './scratch.ts';
-import { DominosClient } from './rust-dominos.ts';
+import { DominosClient, migrate } from './rust-dominos.ts';
 const availability = {
   isHidden: false,
   storeAvailability: [],
@@ -243,5 +247,17 @@ async function setup(expired = false, legacy = false) {
   return { directory, path, home, provider, client };
 }
 
-
-export { availability, pizza, menu, html, cart, profile, store, Provider, setup, saved, current, TOKENS };
+export {
+  availability,
+  pizza,
+  menu,
+  html,
+  cart,
+  profile,
+  store,
+  Provider,
+  setup,
+  saved,
+  current,
+  TOKENS,
+};

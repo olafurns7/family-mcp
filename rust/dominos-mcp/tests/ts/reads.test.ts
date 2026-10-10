@@ -55,4 +55,3 @@ test('public menu parsing never evaluates JavaScript and MCP results omit secret
     await rm(fixture.directory, { recursive: true, force: true });
   }
 });
-

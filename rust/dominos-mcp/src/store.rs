@@ -1,7 +1,8 @@
 use crate::error::{Fail, Result};
 use family_store::{
-    SecretRecordOptions, default_key_provider, default_secret_record_path, retired_store_paths,
-    startup_check,
+    DEFAULT_SWEEP_AGE, LockOptions, SecretRecordOptions, default_key_provider,
+    default_secret_record_path, retired_store_paths, startup_check, sweep_temp, with_file_lock,
+    write_private_file,
 };
 
 pub const APP: &str = "dominos-mcp";
@@ -166,18 +167,228 @@ pub fn load_legacy(path: &Path) -> Result<Session> {
 pub fn with_session<T>(
     legacy: &Path,
     cancel: &Cancel,
-    work: impl FnOnce(&Session) -> Result<T>,
+    work: impl FnOnce(Session, &mut dyn FnMut(&Session) -> Result<()>, &'static str) -> Result<T>,
 ) -> Result<T> {
     let mut record = session_record()?;
     record.cancel = cancel.clone();
     with_secret_store(&record, |store| {
-        let current = if store_decides(store, &record.path)? {
-            stored_session(store)?
-                .flatten()
-                .ok_or(Fail::Safe(NO_SESSION))?
-        } else {
-            load_legacy(legacy)?
-        };
-        work(&current)
+        if !store_decides(store, &record.path)? {
+            return work(
+                load_legacy(legacy)?,
+                &mut |next| save_legacy(legacy, next),
+                "Saved in a plaintext file. Run dominos-mcp auth migrate.",
+            );
+        }
+        let current = stored_session(store)?
+            .flatten()
+            .ok_or(Fail::Safe(NO_SESSION))?;
+        work(
+            current,
+            &mut |next| save_refreshed(store, &record.path, next),
+            "Saved in an encrypted file.",
+        )
     })
+}
+/// Create the key when it is missing; only an explicit new login may reset a lost key's store.
+fn prepare_key(store: &mut SecretStore, record: &SecretRecordOptions, reset: bool) -> Result<bool> {
+    match store.check_key() {
+        Ok(()) => Ok(false),
+        Err(error) if error.code != Code::StoreUnavailable => Err(error.into()),
+        Err(error) => {
+            let used = store_decides(store, &record.path)?;
+
+            if used {
+                if !reset {
+                    return Err(error.into());
+                }
+                store.reset()?;
+            }
+            store.create_key()?;
+            Ok(used)
+        }
+    }
+}
+
+/// The legacy file is a credential; remove it and any orphaned temporaries beside it.
+fn remove_legacy(path: &Path) -> Result<bool> {
+    let removed = (|| {
+        let found = exists(path).ok()?;
+
+        match fs::remove_file(path) {
+            Err(error) if error.kind() != ErrorKind::NotFound => return None,
+            _ => {}
+        }
+        sweep_temp(path, DEFAULT_SWEEP_AGE).ok()?;
+        Some(found)
+    })();
+    removed.ok_or(Fail::Safe(
+        "Saved in the encrypted store, but the old plaintext session file could not be removed. Remove it by hand.",
+    ))
+}
+
+/// Resolve symbolic links in the longest existing prefix, so aliases compare equal.
+fn canonical(path: &Path) -> Result<PathBuf> {
+    let mut existing = resolve(path)?;
+    let mut rest = Vec::new();
+
+    loop {
+        match fs::canonicalize(&existing) {
+            Ok(real) => return Ok(rest.iter().rev().fold(real, |path, name| path.join(name))),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let (Some(parent), Some(name)) = (existing.parent(), existing.file_name()) else {
+                    break;
+                };
+                rest.push(name.to_owned());
+                existing = parent.to_owned();
+            }
+            Err(_) => break,
+        }
+    }
+    Err(Fail::Safe(
+        "Cannot resolve the Domino’s session paths. Check their permissions.",
+    ))
+}
+
+/// Same file, or one name is the other's `<name>.` namespace (lock, marker, temporaries) beside it.
+fn overlaps(first: &Path, second: &Path) -> bool {
+    let (Some(a), Some(b)) = (first.file_name(), second.file_name()) else {
+        return false;
+    };
+    let (a, b) = (a.as_encoded_bytes(), b.as_encoded_bytes());
+    let namespace =
+        |name: &[u8], of: &[u8]| name.starts_with(of) && name.get(of.len()) == Some(&b'.');
+    first.parent() == second.parent() && (a == b || namespace(a, b) || namespace(b, a))
+}
+
+fn collides(first: &Path, second: &Path) -> bool {
+    first.ancestors().any(|path| overlaps(path, second))
+        || second.ancestors().any(|path| overlaps(path, first))
+}
+fn checkout_directory(legacy: &Path) -> PathBuf {
+    let mut path = legacy.as_os_str().to_owned();
+    path.push(".checkouts");
+    PathBuf::from(path)
+}
+fn reject_collisions(record: &SecretRecordOptions, legacy: &Path) -> Result<()> {
+    let used = [canonical(legacy)?, canonical(&checkout_directory(legacy))?];
+    let mut owned = vec![canonical(&record.path)?];
+    if let Some(key) = record.keys.key_file() {
+        owned.push(canonical(key)?);
+    }
+    if owned
+        .iter()
+        .any(|path| used.iter().any(|other| collides(path, other)))
+    {
+        return Err(Fail::Safe(
+            "DOMINOS_SESSION_FILE overlaps the encrypted Domino’s session store or its key. Choose another path.",
+        ));
+    }
+    Ok(())
+}
+pub fn change_session<T>(
+    work: impl FnOnce(&mut SecretStore, &SecretRecordOptions, &Path) -> Result<T>,
+) -> Result<T> {
+    let record = session_record()?;
+    let legacy = session_path()?;
+    reject_collisions(&record, &legacy)?;
+    with_file_lock(&legacy, &LockOptions::default(), || {
+        with_secret_store(&record, |store| work(store, &record, &legacy))
+    })
+}
+pub fn save_login(work: impl FnOnce() -> Result<Session>) -> Result<bool> {
+    change_session(|store, record, legacy| {
+        let replaced = prepare_key(store, record, true)?;
+        if store_decides(store, &record.path)? {
+            store.read()?;
+        }
+        let value = work()?;
+        store.write(&value.to_string())?;
+        remove_legacy(legacy)?;
+        Ok(replaced)
+    })
+}
+pub fn migrate() -> Result<&'static str> {
+    change_session(|store, record, legacy| {
+        if store_decides(store, &record.path)? && stored_session(store)?.is_some() {
+            return Ok(if remove_legacy(legacy)? {
+                "Already migrated. Removed a leftover plaintext session file."
+            } else {
+                "Already migrated."
+            });
+        }
+        let value = load_legacy(legacy)?;
+        prepare_key(store, record, false)?;
+        store.write(&value.to_string())?;
+        remove_legacy(legacy)?;
+        Ok("Domino’s session moved to the encrypted store; the plaintext file was removed.")
+    })
+}
+pub fn logout() -> Result<()> {
+    change_session(|store, record, legacy| {
+        if store_decides(store, &record.path)? {
+            store.write("null")?;
+        }
+        remove_legacy(legacy)?;
+        Ok(())
+    })
+}
+fn save_refreshed(store: &mut SecretStore, path: &Path, next: &Session) -> Result<()> {
+    if store.write(&next.to_string()).is_err() {
+        let _ = fs::remove_file(path);
+        return Err(store_error(&StoreError::new(
+            Code::StoreWriteUncertain,
+            "Refreshed session lost.",
+        )));
+    }
+    Ok(())
+}
+fn save_legacy(path: &Path, next: &Session) -> Result<()> {
+    write_private_file(path,format!("{next}\n").as_bytes(),&Cancel::default()).map_err(|_|Fail::Safe("Cannot save the refreshed Domino’s session file. Check its permissions, or sign in again."))
+}
+pub fn session_storage() -> Result<&'static str> {
+    with_session(&session_path()?, &Cancel::default(), |_, _, storage| {
+        Ok(storage)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn the_session_bound_and_schema_cover_the_largest_rotated_session() {
+        let value = json!({"version":1,"accessToken":"\"".repeat(32768),"refreshToken":"\"".repeat(32768),"username":"\u{1}".repeat(256),"expiresAt":-f64::MAX});
+        let session = parse_session(&value).unwrap();
+        assert_eq!(session.to_string().len(), SESSION_MAX_BYTES);
+        for (key, invalid) in [
+            ("accessToken", json!("x".repeat(32769))),
+            ("refreshToken", json!("not a header")),
+            ("username", json!("x".repeat(257))),
+            ("version", json!(2)),
+        ] {
+            let mut bad = value.clone();
+            bad[key] = invalid;
+            assert!(parse_session(&bad).is_none());
+        }
+    }
+    #[test]
+    fn every_store_failure_has_a_fixed_text_without_its_underlying_cause() {
+        use mcp_runtime::Failure;
+        for code in [
+            Code::StoreUnavailable,
+            Code::StoreBackendRetired,
+            Code::StoreWriteUncertain,
+            Code::SecretNotFound,
+            Code::Busy,
+            Code::Cancelled,
+            Code::TooLarge,
+            Code::UnsafeFile,
+            Code::StoreError,
+            Code::StoreLocked,
+        ] {
+            let text = store_error(&StoreError::new(code, "synthetic-secret-cause"))
+                .safe()
+                .unwrap();
+            assert!(!text.contains("synthetic-secret-cause"));
+        }
+    }
 }

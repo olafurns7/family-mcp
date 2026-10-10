@@ -46,3 +46,24 @@ fn bun_test(file: &str, passed: usize) {
 fn the_public_menu_and_mcp_case_passes_against_this_binary() {
     bun_test("reads.test.ts", 1);
 }
+
+#[test]
+fn the_sms_auth_cases_pass_against_this_binary() {
+    bun_test("auth.test.ts", 2);
+}
+#[test]
+fn the_auth_rotation_and_store_cases_pass_against_this_binary() {
+    bun_test("auth-integration.test.ts", 10);
+}
+#[test]
+fn the_startup_cases_pass_against_this_binary() {
+    bun_test(
+        "startup.test.ts",
+        if cfg!(target_os = "macos") { 2 } else { 1 },
+    );
+}
+
+#[test]
+fn the_session_record_is_interoperable_in_both_directions() {
+    bun_test("interop.test.ts", 2);
+}

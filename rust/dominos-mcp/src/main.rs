@@ -1,3 +1,4 @@
+mod auth;
 mod catalog;
 mod client;
 mod error;
@@ -7,6 +8,7 @@ mod origin;
 mod server;
 mod shapes;
 mod store;
+mod terminal;
 
 use crate::error::{Fail, Result};
 use std::process::ExitCode;
@@ -96,7 +98,49 @@ async fn main_async(args: Args) -> Result<ExitCode> {
         && positionals[0] == "auth"
         && ["login", "migrate", "logout", "status"].contains(&positionals[1])
     {
-        return Err(Fail::Unknown);
+        match positionals[1] {
+            "login" => {
+                let client = std::sync::Arc::new(client::Client::new()?);
+                let saved = terminal::Saved::current();
+                let work = async move {
+                    tokio::task::spawn_blocking(move || sign_in(&client))
+                        .await
+                        .map_err(|_| Fail::Unknown)?
+                };
+                if let Some(saved) = saved {
+                    until_signalled(work, &saved).await?;
+                } else {
+                    work.await?;
+                }
+            }
+            "migrate" => println!(
+                "{}",
+                tokio::task::spawn_blocking(store::migrate)
+                    .await
+                    .map_err(|_| Fail::Unknown)??
+            ),
+            "logout" => {
+                tokio::task::spawn_blocking(store::logout)
+                    .await
+                    .map_err(|_| Fail::Unknown)??;
+                println!("Local Domino’s login removed.");
+            }
+            "status" => {
+                println!(
+                    "{}",
+                    tokio::task::spawn_blocking(store::session_storage)
+                        .await
+                        .map_err(|_| Fail::Unknown)??
+                );
+                let client = std::sync::Arc::new(client::Client::new()?);
+                let status = client
+                    .run("auth_status".into(), serde_json::json!({}))
+                    .await;
+                client.close().await;
+                println!("{}", status?);
+            }
+            _ => return Err(Fail::Unknown),
+        }
     } else {
         eprint!("{HELP}");
         return Ok(ExitCode::FAILURE);
@@ -132,5 +176,36 @@ fn main() -> ExitCode {
             eprintln!("{}", mcp_runtime::cli_text(fail, FAILED));
             ExitCode::FAILURE
         }
+    }
+}
+
+fn sign_in(client: &client::Client) -> Result<()> {
+    let mut input = terminal::Input::new()?;
+    eprint!("Icelandic phone number (input hidden): ");
+    let phone = input.line()?;
+    auth::request_code(client, &phone)?;
+    eprint!("\nSMS sent. Six-digit code (input hidden): ");
+    let pin = input.line()?;
+    let replaced = auth::login(client, &phone, js::trim(&pin))?;
+    eprintln!();
+    if replaced {
+        println!(
+            "The old Domino’s session store could not be read without its key and was replaced."
+        );
+    }
+    println!("Signed in. Session saved encrypted.");
+    Ok(())
+}
+async fn until_signalled(
+    work: impl std::future::Future<Output = Result<()>>,
+    saved: &terminal::Saved,
+) -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate()).map_err(|_| Fail::Unknown)?;
+    let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| Fail::Unknown)?;
+    tokio::select! {
+        outcome=work=>outcome,
+        _=terminate.recv()=>saved.restore_and_exit(15),
+        _=interrupt.recv()=>saved.restore_and_exit(2),
     }
 }

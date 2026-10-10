@@ -4,7 +4,8 @@ import { SafeError } from '@family-mcp/mcp-runtime';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 const rustBinary = process.env.DOMINOS_RUST_BINARY;
-if (!rustBinary || process.env.FAMILY_MCP_STORE_TEST_SEAM !== '1') throw new Error('Binary and scratch store required.');
+if (!rustBinary || process.env.FAMILY_MCP_STORE_TEST_SEAM !== '1')
+  throw new Error('Binary and scratch store required.');
 export type Fetch = (url: string, init: RequestInit) => Response | Promise<Response>;
 type Upstream = { origin: string; close: () => Promise<void> };
 async function body(request: IncomingMessage): Promise<string | undefined> {
@@ -67,13 +68,20 @@ export async function upstream(request: Fetch): Promise<Upstream> {
     let response: Response;
 
     try {
-      response = await request(incoming.url!.startsWith('/website/') ? `https://www.dominos.is${incoming.url!.slice(8)}` : incoming.url!.startsWith('/adyen/') ? `https://checkoutshopper-live.adyen.com${incoming.url!.slice(6)}` : `https://api.dominos.is${incoming.url}`, {
-        method: incoming.method,
-        headers,
-        body: await body(incoming),
-        redirect: 'error',
-        signal: aborted.signal,
-      });
+      response = await request(
+        incoming.url!.startsWith('/website/')
+          ? `https://www.dominos.is${incoming.url!.slice(8)}`
+          : incoming.url!.startsWith('/adyen/')
+            ? `https://checkoutshopper-live.adyen.com${incoming.url!.slice(6)}`
+            : `https://api.dominos.is${incoming.url}`,
+        {
+          method: incoming.method,
+          headers,
+          body: await body(incoming),
+          redirect: 'error',
+          signal: aborted.signal,
+        },
+      );
     } catch {
       incoming.socket.destroy();
 
@@ -101,14 +109,27 @@ export async function upstream(request: Fetch): Promise<Upstream> {
   };
 }
 
-
 export class DominosClient {
-  constructor(private readonly path: string, private readonly request: Fetch) {}
+  constructor(
+    private readonly path: string,
+    private readonly request: Fetch,
+  ) {}
   private readonly active = new Set<Client>();
-  async close() { await Promise.all([...this.active].map((client) => client.close())); }
+  async close() {
+    await Promise.all([...this.active].map((client) => client.close()));
+  }
   async serve() {
     const fake = await upstream(this.request);
-    const transport = new StdioClientTransport({ command: rustBinary!, args: ['serve'], env: { ...process.env as Record<string,string>, DOMINOS_SESSION_FILE: this.path, DOMINOS_TEST_ORIGIN: fake.origin }, stderr: 'pipe' });
+    const transport = new StdioClientTransport({
+      command: rustBinary!,
+      args: ['serve'],
+      env: {
+        ...(process.env as Record<string, string>),
+        DOMINOS_SESSION_FILE: this.path,
+        DOMINOS_TEST_ORIGIN: fake.origin,
+      },
+      stderr: 'pipe',
+    });
     return { transport, close: () => fake.close() };
   }
   // oxlint-disable-next-line typescript/no-explicit-any -- Each method returns its tool's output.
@@ -118,21 +139,102 @@ export class DominosClient {
     this.active.add(client);
     try {
       await client.connect(served.transport);
-      const result = await client.callTool({ name, arguments: args as Record<string,unknown> });
+      const result = await client.callTool({ name, arguments: args as Record<string, unknown> });
       if (result.isError) {
-        const text=(result.content as {text:string}[])[0]?.text ?? '';
+        const text = (result.content as { text: string }[])[0]?.text ?? '';
         throw new SafeError(text);
       }
       return result.structuredContent;
-    } finally { await client.close(); this.active.delete(client); await served.close(); }
+    } finally {
+      await client.close();
+      this.active.delete(client);
+      await served.close();
+    }
   }
   status = () => this.call('auth_status');
   profile = () => this.call('get_profile');
   stores = () => this.call('list_stores');
-  searchMenu = (input: object = {}) => this.call('search_menu',input);
-  menuItem = (input: object) => this.call('get_menu_item',input);
-  addresses = (query: string) => this.call('search_addresses',{query});
-  deliveryStore = (address: string, postalCode: string) => this.call('get_delivery_store',{address,postalCode});
+  searchMenu = (input: object = {}) => this.call('search_menu', input);
+  menuItem = (input: object) => this.call('get_menu_item', input);
+  addresses = (query: string) => this.call('search_addresses', { query });
+  deliveryStore = (address: string, postalCode: string) =>
+    this.call('get_delivery_store', { address, postalCode });
   receipts = () => this.call('list_receipts');
   tracker = () => this.call('get_tracker');
+}
+
+/** CLI-backed auth functions; TS helpers only seed or inspect synthetic records. */
+async function cli(args: string[], path: string, request?: Fetch, stdin?: string) {
+  const fake = request ? await upstream(request) : undefined;
+  try {
+    const child = Bun.spawn([rustBinary!, ...args], {
+      env: {
+        ...process.env,
+        DOMINOS_SESSION_FILE: path,
+        DOMINOS_TEST_ORIGIN: fake?.origin ?? 'http://127.0.0.1:9',
+      },
+      stdin: stdin === undefined ? 'ignore' : new Blob([stdin]),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [exit, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    if (exit !== 0)
+      throw new SafeError(
+        stderr
+          .replace(/^Icelandic phone number \(input hidden\): /, '')
+          .replace(/^\nSMS sent\. Six-digit code \(input hidden\): /, '')
+          .trim(),
+      );
+    return stdout;
+  } finally {
+    await fake?.close();
+  }
+}
+export async function login(phone: string, pin: string, path: string, request: Fetch) {
+  // The module-level TS login exchanges an already requested code. The CLI requests one first;
+  // answer that extra request locally without calling the module fixture again. CLI parity
+  // and prompt tests check the actual complete SMS sequence separately.
+  const out = await cli(
+    ['auth', 'login'],
+    path,
+    (url, options) => (url.includes('/sendPin') ? new Response('') : request(url, options)),
+    `${phone}\n${pin}\n`,
+  );
+  return out.includes('was replaced.');
+}
+export async function requestCode(phone: string, request: Fetch) {
+  try {
+    await cli(
+      ['auth', 'login'],
+      `${process.env.XDG_CONFIG_HOME}/dominos-code.json`,
+      request,
+      `${phone}\n`,
+    );
+  } catch (error) {
+    if ((error as Error).message === 'Sign-in cancelled.') return;
+    throw error;
+  }
+}
+export async function migrate(path: string) {
+  const out = await cli(['auth', 'migrate'], path);
+  if (out.startsWith('Domino’s session moved')) return 'migrated';
+  if (out.startsWith('Already migrated. Removed')) return 'already-removed-legacy';
+  if (out === 'Already migrated.\n') return 'already';
+  throw new Error('Unexpected migrate result.');
+}
+export async function logout(path: string) {
+  await cli(['auth', 'logout'], path);
+}
+export async function sessionStorage(path: string) {
+  // No verification is required by the TS helper, but the CLI verifies after printing storage.
+  // Answer that read locally; no credential or account result escapes this helper.
+  return (
+    await cli(['auth', 'status'], path, () =>
+      Response.json({ id: 1, name: null, phoneNumber: '', email: null }),
+    )
+  ).split('\n')[0]!;
 }

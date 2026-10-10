@@ -23,5 +23,8 @@ serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tokio = { version = "=1.53.2", features = ["rt", "macros", "signal", "sync", "time"] }
 url = "=2.5.8"
 
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "termios"] }
+
 [dev-dependencies]
 family-store = { path = "../family-store", features = ["test-seam"] }
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "termios", "pty"] }

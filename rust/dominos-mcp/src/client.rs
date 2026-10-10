@@ -28,14 +28,14 @@ pub struct Client {
 }
 impl Client {
     pub fn new() -> Result<Self> {
+        let builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never());
+        #[cfg(feature = "test-origin")]
+        let builder = builder.no_proxy();
         Ok(Self {
             path: store::session_path()?,
-            http: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .retry(reqwest::retry::never())
-                .no_proxy()
-                .build()
-                .map_err(|_| Fail::Unknown)?,
+            http: builder.build().map_err(|_| Fail::Unknown)?,
             origins: origin::origins(),
             handle: Handle::current(),
             stop: watch::channel(false).0,
@@ -134,8 +134,42 @@ impl Client {
             None,
         )?)
     }
-    fn authenticated(&self, work: impl FnOnce(&store::Session) -> Result<Value>) -> Result<Value> {
-        store::with_session(&self.path, &self.cancel, work)
+    pub fn api_url(&self, path: &str) -> String {
+        format!("{}{path}", self.origins[0])
+    }
+    fn refresh(
+        &self,
+        previous: &store::Session,
+        save: &mut dyn FnMut(&store::Session) -> Result<()>,
+    ) -> Result<store::Session> {
+        let next = crate::auth::exchange(
+            self,
+            format!(
+                "grant_type=refresh_token&refresh_token={}",
+                js::encode_query(previous["refreshToken"].as_str().unwrap_or_default())
+            ),
+        )?;
+        if next["username"] != previous["username"] {
+            return Err(Fail::Safe(
+                "The refreshed Domino’s account differs from the saved account. Sign in again.",
+            ));
+        }
+        save(&next)?;
+        Ok(next)
+    }
+    fn authenticated(
+        &self,
+        mut work: impl FnMut(&store::Session) -> Result<Value>,
+    ) -> Result<Value> {
+        store::with_session(&self.path, &self.cancel, |mut session, save, _| {
+            if session["expiresAt"].as_f64().unwrap_or(0.0) <= js::now() as f64 + 60_000.0 {
+                session = self.refresh(&session, save)?;
+            }
+            match work(&session) {
+                Err(Fail::Http(401)) => work(&self.refresh(&session, save)?),
+                outcome => outcome,
+            }
+        })
     }
     fn call(&self, name: &str, input: &Value) -> Result<Value> {
         match name {
