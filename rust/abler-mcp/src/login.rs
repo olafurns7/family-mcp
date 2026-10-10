@@ -3,6 +3,7 @@
 //! from `spawn_blocking`.
 
 use std::io::Write;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use browser_login::{Cancellation, Error, Signals, Site};
@@ -82,7 +83,20 @@ pub fn login_in_browser(
     let signals = Signals::install(Cancellation::InterruptOrTerminate).map_err(message)?;
     let outcome = browser_login::login_in_browser(&Abler, &signals, browser, timeout, keep_browser);
     signals.stop();
-    outcome.map_err(message)
+    settled(outcome, signals.flag().load(Ordering::SeqCst)).map_err(message)
+}
+
+/// A signal that arrived after the login's last cancel check but before `stop` still cancels a
+/// sign-in that finished, so its cookies are never saved; from `stop` on, a signal ends the
+/// process.
+fn settled(
+    outcome: std::result::Result<Jar, Error>,
+    cancelled: bool,
+) -> std::result::Result<Jar, Error> {
+    match outcome {
+        Ok(_) if cancelled => Err(Error::Cancelled),
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -97,5 +111,18 @@ mod tests {
         assert_eq!(message(Error::Unknown), Fail::Unknown);
         assert!(Abler.is_tab("https://www.abler.io/coach"));
         assert!(!Abler.is_tab("https://www.abler.io.evil/"));
+    }
+
+    #[test]
+    fn a_signal_before_stop_cancels_a_finished_sign_in() {
+        assert!(matches!(
+            settled(Ok(Jar::default()), true),
+            Err(Error::Cancelled)
+        ));
+        assert!(settled(Ok(Jar::default()), false).is_ok());
+        assert!(matches!(
+            settled(Err(Error::TimedOut), true),
+            Err(Error::TimedOut)
+        ));
     }
 }
