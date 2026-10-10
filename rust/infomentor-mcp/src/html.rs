@@ -3,6 +3,8 @@
 //! void elements, an ignored nested form, foreign content, end-of-input closes), so the same open,
 //! close and text callbacks arrive. Nothing here runs or evaluates page content.
 
+use std::collections::HashSet;
+
 use html5gum::emitters::callback::{CallbackEmitter, CallbackEvent};
 use html5gum::{Span, State, Tokenizer};
 
@@ -152,6 +154,8 @@ enum Foreign {
 struct Pending {
     name: String,
     attributes: Vec<(String, String)>,
+    /// The names in `attributes`, so a duplicate is found in constant time however many a tag has.
+    seen: HashSet<String>,
     /// The attribute a value belongs to; `None` after a duplicate name.
     current: Option<usize>,
     /// Whether the tag began in foreign content, where no tag is text-only.
@@ -298,6 +302,7 @@ fn parse(html: &str, handler: &mut dyn Handler) {
                 pending = Some(Pending {
                     name,
                     attributes: Vec::new(),
+                    seen: HashSet::new(),
                     current: None,
                     foreign,
                     raw,
@@ -307,9 +312,9 @@ fn parse(html: &str, handler: &mut dyn Handler) {
             Event::Attribute(name) => {
                 if let Some(tag) = &mut pending {
                     // The first of duplicate attributes wins.
-                    tag.current = match tag.attributes.iter().any(|(known, _)| *known == name) {
-                        true => None,
-                        false => {
+                    tag.current = match tag.seen.insert(name.clone()) {
+                        false => None,
+                        true => {
                             tag.attributes.push((name, String::new()));
                             Some(tag.attributes.len() - 1)
                         }
@@ -519,6 +524,25 @@ pub fn parent_scripts(html: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Page text is untrusted: one tag with very many attributes must not stall a call. The first
+    /// of duplicate attributes still wins.
+    #[test]
+    fn a_tag_with_very_many_attributes_is_read_quickly() {
+        let attributes: String = (0..100_000).map(|index| format!(" a{index}=1")).collect();
+        let started = std::time::Instant::now();
+        let forms = parse_forms(&format!(
+            "<form id=first{attributes} id=second><input type=hidden name=n value=v{attributes} value=w></form>"
+        ));
+        assert_eq!(forms.len(), 1);
+        assert_eq!(forms[0].id, "first");
+        assert_eq!(forms[0].fields, [("n".to_owned(), "v".to_owned())]);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
 
     fn fields(form: &Form) -> Vec<(&str, &str)> {
         form.fields

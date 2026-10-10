@@ -5,6 +5,8 @@
 //! as in TypeScript. The tree rules are rust/infomentor-mcp/src/html.rs's, which its parity suite
 //! checks against htmlparser2. Nothing here runs or evaluates school content.
 
+use std::collections::HashSet;
+
 use html5gum::emitters::callback::{CallbackEmitter, CallbackEvent};
 use html5gum::{Span, State, Tokenizer};
 
@@ -152,6 +154,8 @@ enum Foreign {
 struct Pending {
     name: String,
     attributes: Vec<(String, String)>,
+    /// The names in `attributes`, so a duplicate is found in constant time however many a tag has.
+    seen: HashSet<String>,
     /// The attribute a value belongs to; `None` after a duplicate name.
     current: Option<usize>,
     /// Whether the tag began in foreign content, where no tag is text-only.
@@ -298,6 +302,7 @@ fn parse(html: &str, handler: &mut dyn Handler) {
                 pending = Some(Pending {
                     name,
                     attributes: Vec::new(),
+                    seen: HashSet::new(),
                     current: None,
                     foreign,
                     raw,
@@ -307,9 +312,9 @@ fn parse(html: &str, handler: &mut dyn Handler) {
             Event::Attribute(name) => {
                 if let Some(tag) = &mut pending {
                     // The first of duplicate attributes wins.
-                    tag.current = match tag.attributes.iter().any(|(known, _)| *known == name) {
-                        true => None,
-                        false => {
+                    tag.current = match tag.seen.insert(name.clone()) {
+                        false => None,
+                        true => {
                             tag.attributes.push((name, String::new()));
                             Some(tag.attributes.len() - 1)
                         }
@@ -476,6 +481,29 @@ pub fn plain_text(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// School text is untrusted: one tag with very many attributes must not stall a call, which
+    /// holds the session lock while it reads. The first of duplicate attributes still wins.
+    #[test]
+    fn a_tag_with_very_many_attributes_is_read_quickly() {
+        let attributes: String = (0..100_000).map(|index| format!(" a{index}=1")).collect();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            plain_text(&format!("<b{attributes} a0=2>Synthetic text</b>")),
+            "Synthetic text"
+        );
+        assert_eq!(
+            post_logout_links(&format!(
+                r#"<a class="PostLogoutRedirectUri"{attributes} href="x" a5=2 href="y">"#
+            )),
+            ["x"]
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
 
     #[test]
     fn logout_links_are_found_as_htmlparser2_reports_them() {
