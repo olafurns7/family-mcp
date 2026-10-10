@@ -970,6 +970,7 @@ test('failed and stalled response bodies are cancelled without returning a false
   // The 30 ms deadline starts with the stalled response, inside the session lock, so a slow lock
   // wait can never use it up first.
   const deadline = new AbortController();
+
   const stalled = new InnaClient({
     ...f.options,
     now: () => now,
