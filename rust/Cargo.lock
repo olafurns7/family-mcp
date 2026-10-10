@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abler-mcp"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "close_fds",
  "family-store",
@@ -856,6 +856,22 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kronan-mcp"
+version = "0.3.0"
+dependencies = [
+ "aws-lc-rs",
+ "family-store",
+ "getrandom 0.4.3",
+ "icu_properties",
+ "mcp-runtime",
+ "reqwest",
+ "rmcp",
+ "rustix",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

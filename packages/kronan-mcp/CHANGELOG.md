@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.0
+
+- The native binary is now built from Rust. Tools, inputs, results, order
+  confirmations and the order-attempt record, CLI commands and messages are
+  unchanged.
+- The access token is kept in the encrypted file store, with its key in a
+  separate private file: on macOS in `~/Library/Application Support/family-mcp`,
+  which is excluded from Time Machine; on Linux in `~/.config/kronan-mcp`, with
+  the key in `~/.local/share/family-mcp/keys`. `kronan-mcp auth status` shows
+  how the token is saved.
+- Every start checks the store's location and permissions. A refusal names the
+  path and, for most problems, the command that fixes it.
+- A token saved by 0.2.0 keeps working from its plaintext file. Run
+  `kronan-mcp auth migrate` once to move it into the encrypted store and remove
+  the file. Order-attempt records stay at
+  `<token file>.order-attempts.json` and keep blocking as before.
+- Tokens saved with earlier test builds that kept the store key in the macOS
+  Keychain are not migrated: remove the files the refusal names, then run
+  `kronan-mcp auth set` again.
+- When `auth set` is ended by SIGINT or SIGTERM while it waits at the token
+  prompt, it restores the terminal and exits with status 130 or 143. Before,
+  the process was killed by the signal. A failure without a reviewed message
+  now prints `Krónan MCP failed.` instead of the underlying error text.
+
 ## 0.2.0
 
 - Adds shopping-note writes: `add_shopping_note_lines`,
