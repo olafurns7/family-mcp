@@ -134,34 +134,40 @@ impl Keys {
 fn read_hidden_line() -> Result<Option<String>> {
     // Like `setRawMode` throwing: nothing is read while the terminal would echo it.
     let raw = Raw::enter().ok_or(Fail::Unknown)?;
+    let line = hidden_line(&mut std::io::stdin().lock());
+    drop(raw);
+    line
+}
+
+/// The keys read from `input` up to the line's end; `None` when they cancel it or the input ends.
+/// A failed read fails the prompt, as readline's error does: on Linux a terminal that hangs up
+/// fails the read (EIO), where macOS ends the input.
+fn hidden_line(input: &mut impl Read) -> Result<Option<String>> {
     let mut keys = Keys {
         line: String::new(),
         escape: Escape::None,
     };
     let mut chunk = [0u8; 4096];
-    let mut stdin = std::io::stdin().lock();
 
-    let line = 'read: loop {
-        let read = match stdin.read(&mut chunk) {
-            Ok(0) => break None,
+    loop {
+        let read = match input.read(&mut chunk) {
+            Ok(0) => return Ok(None),
             Ok(read) => read,
             // A signal the sign-in handles arrived while the read waited.
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break None,
+            Err(_) => return Err(Fail::Unknown),
         };
 
         // Each chunk is decoded on its own, as Node decodes each `data` Buffer.
         for char in String::from_utf8_lossy(&chunk[..read]).chars() {
             match keys.key(char) {
                 Key::Insert(char) => keys.line.push(char),
-                Key::Done => break 'read Some(std::mem::take(&mut keys.line)),
-                Key::Closed => break 'read None,
+                Key::Done => return Ok(Some(std::mem::take(&mut keys.line))),
+                Key::Closed => return Ok(None),
                 Key::Ignored => {}
             }
         }
-    };
-    drop(raw);
-    Ok(line)
+    }
 }
 
 /// The first line of piped input, ended by `\n` or `\r`, or the text before its end; `None` when
@@ -244,5 +250,32 @@ mod tests {
         assert_eq!(typed("555\u{3}"), None);
         assert_eq!(typed("\u{4}"), None);
         assert_eq!(typed("1\u{8}\u{4}"), None);
+    }
+
+    /// Reads `chunks` in turn, then fails as a hung-up Linux terminal does.
+    struct HungUp(Vec<std::io::Result<&'static [u8]>>);
+
+    impl Read for HungUp {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.is_empty() {
+                true => Err(std::io::Error::from_raw_os_error(5)),
+                false => self.0.remove(0).map(|chunk| {
+                    buffer[..chunk.len()].copy_from_slice(chunk);
+                    chunk.len()
+                }),
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_read_fails_the_prompt_and_an_ended_input_cancels_it() {
+        let interrupted = || Err(std::io::ErrorKind::Interrupted.into());
+        let line = |chunks| hidden_line(&mut HungUp(chunks));
+        assert!(matches!(line(vec![Ok(b"5550000")]), Err(Fail::Unknown)));
+        assert!(matches!(line(vec![Ok(b"555"), Ok(b"")]), Ok(None)));
+        assert!(matches!(
+            line(vec![Ok(b"555"), interrupted(), Ok(b"0000\r")]),
+            Ok(Some(line)) if line == "5550000"
+        ));
     }
 }

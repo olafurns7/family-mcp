@@ -236,6 +236,25 @@ fn the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli() {
         };
         let ts = run("ts");
         let hung_up = cfg!(target_os = "linux") && case.hang_up;
+
+        // A hang-up fails the read on Linux (EIO), which readline reports as an error; macOS
+        // ends the input instead, which cancels. The binary must follow each.
+        if case.hang_up {
+            let after_prompt = match hung_up {
+                true => {
+                    "Inna MCP failed. Check input format, file permissions, and local configuration.\n"
+                }
+                false => "\nInna login cancelled.\n",
+            };
+            assert_eq!(
+                (ts.code, ts.stderr.as_str()),
+                (
+                    Some(1),
+                    format!("Icelandic phone number (input hidden): {after_prompt}").as_str()
+                ),
+                "{case:?}"
+            );
+        }
         // Rust: a deliberate difference. Bun dies of the second SIGINT with the terminal still in
         // raw mode; the binary gives the terminal its mode back first.
         let raw_left = case.signals == ["INT", "INT"];
