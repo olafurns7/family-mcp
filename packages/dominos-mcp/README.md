@@ -2,12 +2,15 @@
 
 Unofficial Domino’s Iceland MCP: SMS sign-in, menu discovery, pickup and delivery
 quotes, receipts, tracking, and saved-card checkout through Domino’s Adyen sessions.
-This is a **preview release** (`dominos-mcp@0.1.0`).
+This is a **preview release** (`dominos-mcp@0.2.0`).
 
-Live checks verified SMS login, token refresh, profile and receipts, the tracker’s
+The earlier TypeScript preview’s live checks verified SMS login, token refresh, profile and receipts, the tracker’s
 no-active-order response, menu/address lookup, a 2,490 ISK quote, and an unpaid
 checkout returning a saved Visa from Adyen. No payment request was sent.
-Offline tests cover MCP schemas, checkout amounts, and duplicate payment prevention.
+The 0.2.0 native executable is compiled from Rust. Its offline tests compare the
+TypeScript reference and Rust through loopback fakes, including authentication,
+checkout amounts, record interchange, and duplicate payment prevention. The Rust
+port has not been validated against a live account.
 Charging a card still needs live validation with an explicitly approved purchase.
 Bank verification / 3-D Secure continuation is not implemented: a payment needing
 it stops at `requires_action`. Do not treat this preview as fully verified ordering.
@@ -17,7 +20,7 @@ it stops at `requires_action`. Do not treat this preview as fully verified order
 Install the standalone executable for macOS or glibc Linux, arm64/x64:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/dominos-mcp@0.1.0/packages/dominos-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/dominos-mcp@0.2.0/packages/dominos-mcp/install.sh | sh
 dominos-mcp auth login
 dominos-mcp auth status
 ```
@@ -30,7 +33,7 @@ SMS code in the terminal. Both inputs are hidden. Expected success is
 `Signed in. Session saved encrypted.` No API key, iPhone proxy, or trusted certificate is
 needed. Foreign phone numbers and Auðkenni login are not supported.
 
-The compiled executable runs without Bun or Node. Use its absolute path in the
+The Rust executable runs without Bun or Node. Use its absolute path in the
 MCP host, for example:
 
 ```json
@@ -208,7 +211,8 @@ the configured MCP host. Treat merchant-provided text as untrusted data.
 
 ## Development
 
-From the repository root, using Bun 1.4.2:
+Bun 1.4.2 runs the TypeScript reference and parity fixtures. Rust uses the compiler
+pinned in `rust/rust-toolchain.toml`. From the repository root:
 
 ```sh
 bun install --frozen-lockfile
@@ -216,7 +220,17 @@ bunx turbo run check test release:check --filter=dominos-mcp
 bunx turbo run test:binary test:installer --filter=dominos-mcp
 ```
 
-The native build is `packages/dominos-mcp/release/native/dominos-mcp`.
+From `rust/`, run the Rust gates with loopback test origins enabled:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+FAMILY_MCP_BUN="$(command -v bun)" cargo test --all-features --locked --no-fail-fast
+```
+
+The native build is `packages/dominos-mcp/release/native/dominos-mcp`, compiled
+from `rust/dominos-mcp` with default features. The `test-origin` feature is only
+for loopback fixtures and is excluded from releases.
 Tests use synthetic responses and never contact Domino’s or Adyen. Live account
 validation is a separate manual step; never make a purchase as an automated test.
 Endpoint evidence and remaining uncertainties are in the

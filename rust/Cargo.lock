@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "dominos-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "family-store",
  "getrandom 0.4.3",
