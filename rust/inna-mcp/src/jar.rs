@@ -134,6 +134,11 @@ impl Cookie {
         &self.value
     }
 
+    /// `cookie.secure = true`, as the electronic-ID sign-in marks each school cookie it keeps.
+    pub fn make_secure(&mut self) {
+        self.secure = true;
+    }
+
     /// `expiryTime()`: `Max-Age` counts from the last access; NaN for an invalid date.
     fn expiry_time(&self, now: f64) -> f64 {
         match self.max_age {

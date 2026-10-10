@@ -254,6 +254,28 @@ impl Client {
         })
     }
 
+    /// `checkStore`: refuses an unusable session store before the owner signs in, instead of
+    /// after. A lost key is not a refusal: the sign-in replaces that store.
+    pub fn check_store(&self, cancel: &Cancel) -> Result<()> {
+        locked(self.path(), cancel, |held| {
+            if held.decides && !key_lost(held.store)? {
+                held.stored()?;
+            }
+            Ok(())
+        })
+    }
+
+    /// `defaultUserId`: the saved default student's user id, read locally; a fresh sign-in
+    /// prefers it.
+    pub fn default_user_id(&self, cancel: &Cancel) -> Result<Option<i64>> {
+        locked(self.path(), cancel, |held| {
+            if held.decides && key_lost(held.store)? {
+                return Ok(None);
+            }
+            Ok(held.read()?.map(|saved| saved.account.user_id))
+        })
+    }
+
     /// `migrate`: move the legacy session into the store, which reads it back before it
     /// commits; only then does the plaintext file go. Never resets a store, never touches the
     /// absence record.

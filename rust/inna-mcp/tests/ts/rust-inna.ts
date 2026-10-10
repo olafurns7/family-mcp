@@ -38,7 +38,7 @@ if (process.env.FAMILY_MCP_STORE_TEST_SEAM !== '1')
 /** A closed loopback port: a case without an upstream can never reach Inna. */
 const NOWHERE = 'http://127.0.0.1:9';
 
-type Fetch = (url: string, options: RequestInit) => Promise<Response>;
+export type Fetch = (url: string, options: RequestInit) => Promise<Response>;
 
 type Upstream = { origin: string; close: () => Promise<void> };
 
@@ -87,13 +87,18 @@ async function answer(response: Response, out: ServerResponse): Promise<void> {
  * Serve `request` on loopback. The binary sends `https://<host><path>` as
  * `<origin>/<host><path>`; `request` gets the Inna URL back, with the method, headers, body, an
  * abort signal, and `redirect: 'manual'`, as the TypeScript client passes them. A thrown error
- * drops the connection, as a failed fetch. `answered` runs before each answer goes back.
+ * drops the connection, as a failed fetch. `answered` runs before each answer goes back. Only
+ * requests for `hosts` reach `request`.
  */
-async function upstream(request: Fetch, answered: () => void): Promise<Upstream> {
+export async function upstream(
+  request: Fetch,
+  answered: () => void,
+  hosts = ['nam.inna.is'],
+): Promise<Upstream> {
   const server = createServer(async (incoming, out) => {
     const [, host = ''] = (incoming.url ?? '/').split('/');
 
-    if (host !== 'nam.inna.is') {
+    if (!hosts.includes(host)) {
       out.statusCode = 404;
       out.end();
 
@@ -162,7 +167,7 @@ const safeMessages = (() => {
 })();
 
 /** A reviewed message becomes a `SafeError` again; any other text stays an `Error`. */
-function failure(message: string): Error {
+export function failure(message: string): Error {
   return safeMessages.has(message) ? new SafeError(message) : new Error(message);
 }
 

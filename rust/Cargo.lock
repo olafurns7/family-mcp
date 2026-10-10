@@ -853,6 +853,7 @@ dependencies = [
  "mcp-runtime",
  "reqwest",
  "rmcp",
+ "rustix",
  "serde_json",
  "tokio",
  "url",

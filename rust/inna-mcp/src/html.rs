@@ -1,4 +1,5 @@
-//! packages/inna-mcp/src/schemas.ts's `plainText`: the WHATWG tokenizer of html5gum under
+//! packages/inna-mcp/src/schemas.ts's `plainText`, and login.ts's search of the identity
+//! provider's logout page for its one continue link: the WHATWG tokenizer of html5gum under
 //! htmlparser2 12's tree rules in HTML mode (implied closes, void elements, an ignored nested
 //! form, foreign content, end-of-input closes), so the same open, close and text callbacks arrive
 //! as in TypeScript. The tree rules are rust/infomentor-mcp/src/html.rs's, which its parity suite
@@ -397,6 +398,40 @@ impl Handler for Plain {
     }
 }
 
+/// The `href`s of `<a>` tags whose class list holds `PostLogoutRedirectUri`, as login.ts's
+/// `onopentag` collects them: the class split on single spaces, and an empty `href` skipped.
+#[derive(Default)]
+struct Links(Vec<String>);
+
+impl Handler for Links {
+    fn open(&mut self, name: &str, attributes: &[(String, String)]) {
+        let attribute = |key: &str| {
+            attributes
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.as_str())
+        };
+
+        if name == "a"
+            && attribute("class")
+                .is_some_and(|class| class.split(' ').any(|name| name == "PostLogoutRedirectUri"))
+            && let Some(href) = attribute("href").filter(|href| !href.is_empty())
+        {
+            self.0.push(href.to_owned());
+        }
+    }
+
+    fn close(&mut self, _name: &str) {}
+
+    fn text(&mut self, _text: &str) {}
+}
+
+pub fn post_logout_links(html: &str) -> Vec<String> {
+    let mut links = Links::default();
+    parse(html, &mut links);
+    links.0
+}
+
 /// `plainText(html)`: school HTML as text. Runs of spaces and tabs become one space, a line does
 /// not start with them, at most one blank line separates paragraphs, and the ends are trimmed.
 pub fn plain_text(html: &str) -> String {
@@ -441,6 +476,47 @@ pub fn plain_text(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logout_links_are_found_as_htmlparser2_reports_them() {
+        assert_eq!(
+            post_logout_links(
+                r#"<a class="other PostLogoutRedirectUri" href="https://h/x?a=1&amp;b=2">C</a>"#
+            ),
+            ["https://h/x?a=1&b=2"]
+        );
+
+        for (html, count) in [
+            (r#"<A CLASS="PostLogoutRedirectUri" HREF="x" href="y">"#, 1),
+            (r#"<a class="PostLogoutRedirectUri" href="">"#, 0),
+            (r#"<a class="PostLogoutRedirectUri	other" href="x">"#, 0),
+            (r#"<a class="postlogoutredirecturi" href="x">"#, 0),
+            (
+                r#"<script><a class="PostLogoutRedirectUri" href="x"></script>"#,
+                0,
+            ),
+            (
+                r#"<a class="PostLogoutRedirectUri" href="x"><a class="PostLogoutRedirectUri" href="y">"#,
+                2,
+            ),
+            (r#"<a class="PostLogoutRedirectUri" href="x""#, 0),
+            (
+                r#"<textarea><a class="PostLogoutRedirectUri" href="x"></textarea>"#,
+                0,
+            ),
+            (r#"<!-- <a class="PostLogoutRedirectUri" href="x"> -->"#, 0),
+        ] {
+            assert_eq!(post_logout_links(html).len(), count, "{html}");
+        }
+        assert_eq!(
+            post_logout_links(r#"<A CLASS="PostLogoutRedirectUri" HREF="x" href="y">"#),
+            ["x"]
+        );
+        assert_eq!(
+            post_logout_links("<a class=PostLogoutRedirectUri href=x&amp>"),
+            ["x&"]
+        );
+    }
 
     #[test]
     fn plain_text_matches_htmlparser2() {

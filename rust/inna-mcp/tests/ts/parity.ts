@@ -285,6 +285,21 @@ const scenarios: Scenario[] = [
     ],
   },
   {
+    // The phone prompt read from piped input, up to the first request: the fake Inna answers the
+    // sign-in's first host with 404, which both sides report the same way.
+    name: 'login-input',
+    steps: [
+      ...['', '\n', ' 5550000 ', '123\r5550000\n', '555 0000\n', '5550000\u0000\n', '\ufeff5550000\u00a0\n', '５５５００００\n', '5550000\n'].map(
+        (stdin) => ({ cli: ['auth', 'login'], stdin }),
+      ),
+      { cli: ['auth', 'login'] },
+      { cli: ['auth', 'login', '--allow-account-change'], stdin: '5550000\r\n' },
+      { seed: true },
+      { cli: ['auth', 'login'], stdin: '5550000' },
+      { cli: ['auth', 'status'] },
+    ],
+  },
+  {
     name: 'store-file-open',
     steps: [{ file: storeFile, text: 'x', permissions: 0o644 }, { cli: ['auth', 'status'] }, { cli: ['auth', 'bogus'] }],
   },

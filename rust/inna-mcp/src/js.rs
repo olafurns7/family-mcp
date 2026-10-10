@@ -58,12 +58,39 @@ pub fn encode_query(text: &str) -> String {
     encoded
 }
 
+/// `encodeURIComponent` of a well-formed string: every UTF-8 byte escaped but the unreserved
+/// `A-Z a-z 0-9 - _ . ! ~ * ' ( )`.
+pub fn encode_uri_component(text: &str) -> String {
+    let mut encoded = String::new();
+
+    for byte in text.bytes() {
+        match byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            true => encoded.push(char::from(byte)),
+            false => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 /// `decodeURI`: escapes of UTF-8 decoded, except those of `;/?:@&=+$,#`; `None` where it throws.
 pub fn decode_uri(text: &str) -> Option<String> {
+    decode(text, b";/?:@&=+$,#")
+}
+
+/// `decodeURIComponent`: every escape of UTF-8 decoded; `None` where it throws.
+pub fn decode_uri_component(text: &str) -> Option<String> {
+    decode(text, b"")
+}
+
+/// The spec's `Decode`: an escaped ASCII byte in `reserved` stays escaped.
+fn decode(text: &str, reserved: &[u8]) -> Option<String> {
     let bytes = text.as_bytes();
     let hex = |at: usize| -> Option<u8> {
         let pair = bytes.get(at + 1..at + 3)?;
-        u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()
+        pair.iter()
+            .all(u8::is_ascii_hexdigit)
+            .then(|| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+            .flatten()
     };
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut at = 0;
@@ -77,7 +104,7 @@ pub fn decode_uri(text: &str) -> Option<String> {
         let first = hex(at)?;
 
         if first < 0x80 {
-            match b";/?:@&=+$,#".contains(&first) {
+            match reserved.contains(&first) {
                 true => decoded.extend_from_slice(&bytes[at..at + 3]),
                 false => decoded.push(first),
             }
@@ -322,6 +349,16 @@ mod tests {
             Some("/a b/%2F%3f/ðA")
         );
         assert_eq!(decode_uri("/%C3"), None);
+        assert_eq!(decode_uri("%+f"), None);
+        assert_eq!(
+            decode_uri_component("a%2Fb%3F%C3%B0").as_deref(),
+            Some("a/b?ð")
+        );
+        assert_eq!(decode_uri_component("%ED%A0%80"), None);
+        assert_eq!(
+            encode_uri_component("/connect/authorize/callback?state=a b&ð~'()*!"),
+            "%2Fconnect%2Fauthorize%2Fcallback%3Fstate%3Da%20b%26%C3%B0~'()*!"
+        );
         assert_eq!(
             sha256_hex("abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"

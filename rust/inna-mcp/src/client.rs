@@ -78,7 +78,7 @@ fn is_origin(url: &Url) -> bool {
 }
 
 /// `headers.get(name)`: every value, joined with `, `, as the bytes Bun reads as Latin-1.
-fn header(headers: &HeaderMap, name: HeaderName) -> Option<String> {
+pub fn header(headers: &HeaderMap, name: HeaderName) -> Option<String> {
     let values: Vec<String> = headers
         .get_all(name)
         .iter()

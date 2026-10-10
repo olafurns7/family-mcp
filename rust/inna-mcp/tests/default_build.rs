@@ -12,11 +12,12 @@ fn mentions(binary: &Path, text: &[u8]) -> bool {
 
 /// The test build's refusal to choose a store outside a scratch home, its fake upstream, its
 /// clock, and its keep-alive trigger.
-const SEAMS: [&[u8]; 4] = [
+const SEAMS: [&[u8]; 5] = [
     b"the real store is never used",
     b"INNA_TEST_ORIGIN",
     b"INNA_TEST_NOW",
     b"INNA_TEST_KEEP_ALIVE",
+    b"INNA_TEST_WAITS",
 ];
 
 #[test]

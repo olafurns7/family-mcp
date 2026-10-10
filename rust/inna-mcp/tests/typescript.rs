@@ -46,3 +46,8 @@ fn bun_test(file: &str, passed: usize) {
 fn the_integration_cases_pass_against_this_binary() {
     bun_test("integration.test.ts", 41);
 }
+
+#[test]
+fn the_electronic_id_login_cases_pass_against_this_binary() {
+    bun_test("login.test.ts", 3);
+}

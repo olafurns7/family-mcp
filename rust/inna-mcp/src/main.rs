@@ -10,11 +10,13 @@ mod input;
 mod jar;
 mod js;
 mod keep_alive;
+mod login;
 mod server;
 mod session;
 mod shapes;
 mod signal;
 mod store;
+mod terminal;
 mod upstream;
 
 use std::io::Write;
@@ -275,6 +277,128 @@ async fn session_command(command: Command) -> Result<()> {
     Ok(())
 }
 
+const LOGIN_CANCELLED: Fail = Fail::Safe("Inna login cancelled.");
+
+/// `signIn` from the phone prompt on: the prompt, the saved default student, the electronic-ID
+/// sign-in, and the verified save, all under `signal`.
+async fn sign_in_steps(
+    client: Arc<client::Client>,
+    allow_account_change: bool,
+    signal: signal::Signal,
+) -> Result<()> {
+    eprint!("Icelandic phone number (input hidden): ");
+    let _ = std::io::stderr().flush();
+    let phone = tokio::task::spawn_blocking(terminal::read_phone)
+        .await
+        .unwrap_or(Err(Fail::Unknown))?;
+    eprintln!();
+
+    let Some(phone) = phone.filter(|_| !signal.aborted()) else {
+        return Err(LOGIN_CANCELLED);
+    };
+
+    // A fresh login keeps the saved default student unless the owner asked to replace it.
+    let preferred_user_id = match allow_account_change {
+        true => None,
+        false => {
+            client
+                .run(signal::Signal::default(), |client, _, cancel| {
+                    client.default_user_id(cancel)
+                })
+                .await?
+        }
+    };
+    let (net, login_signal) = (client.net().clone(), signal.clone());
+    let jar = tokio::task::spawn_blocking(move || {
+        login::login_with_electronic_id(
+            &net,
+            js::trim(&phone),
+            |code| {
+                eprintln!(
+                    "Security code {code}: verify the match and approve on your phone. Enter your PIN only on your phone."
+                );
+            },
+            &login_signal,
+            preferred_user_id,
+        )
+    })
+    .await
+    .unwrap_or(Err(Fail::Unknown))?;
+
+    report_saved(
+        &client
+            .run(signal, move |client, signal, cancel| {
+                client.save_verified_session(jar, allow_account_change, signal, cancel)
+            })
+            .await?,
+    );
+    Ok(())
+}
+
+/// `signIn`. The first SIGINT cancels the sign-in, as cli.ts's `process.once('SIGINT')` does,
+/// and a second ends the process. SIGTERM keeps its default action unless the phone prompt may
+/// have changed the terminal's mode; then it gives the mode back first. Both then end with the
+/// shell's status for the signal, by `exit` rather than by the signal itself.
+async fn sign_in(client: Arc<client::Client>, allow_account_change: bool) -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+    let terminal = terminal::Saved::current();
+    let exit = |signal: i32| -> ! {
+        if let Some(terminal) = &terminal {
+            terminal.restore();
+        }
+        std::process::exit(128 + signal)
+    };
+    let controller = signal::Controller::default();
+    let cancelled = controller.signal();
+    let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| Fail::Unknown)?;
+    let mut terminate = match terminal {
+        Some(_) => Some(signal(SignalKind::terminate()).map_err(|_| Fail::Unknown)?),
+        None => None,
+    };
+    let terminated = async {
+        match terminate.as_mut() {
+            Some(terminate) => terminate.recv().await,
+            None => std::future::pending().await,
+        }
+    };
+    let work = sign_in_steps(client, allow_account_change, cancelled.clone());
+    tokio::pin!(work, terminated);
+    let mut interrupted = false;
+
+    let outcome = loop {
+        tokio::select! {
+            outcome = &mut work => break outcome,
+            _ = interrupt.recv() => match interrupted {
+                true => exit(SIGINT),
+                false => {
+                    interrupted = true;
+                    controller.abort();
+                }
+            },
+            _ = &mut terminated => exit(SIGTERM),
+        }
+    };
+
+    match outcome {
+        Err(_) if cancelled.aborted() => Err(LOGIN_CANCELLED),
+        outcome => outcome,
+    }
+}
+
+/// `auth login`: the store is checked before the owner is asked for anything.
+async fn login(allow_account_change: bool) -> Result<()> {
+    let client = Arc::new(client::Client::from_environment(false)?);
+    client
+        .run(signal::Signal::default(), |client, _, cancel| {
+            client.check_store(cancel)
+        })
+        .await?;
+    sign_in(client, allow_account_change).await
+}
+
 async fn main_async() -> Result<ExitCode> {
     let args = parse_args(
         std::env::args_os()
@@ -305,7 +429,12 @@ async fn main_async() -> Result<ExitCode> {
             allow_absence_writes,
             keep_alive,
         } => serve(allow_absence_writes, keep_alive).await?,
-        // Sign-in arrives with its own commits; until then it fails closed.
+        Command::Login {
+            google: false,
+            allow_account_change,
+            ..
+        } => login(allow_account_change).await?,
+        // Google sign-in arrives with its own commit; until then it fails closed.
         Command::Login { .. } => return Err(Fail::Unknown),
         command => session_command(command).await?,
     }
