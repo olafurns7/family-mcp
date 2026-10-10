@@ -55,7 +55,7 @@ enum MaxAge {
     NegInfinity,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Cookie {
     key: String,
     value: String,
@@ -550,7 +550,7 @@ impl Default for Options {
 }
 
 /// A `MemoryCookieStore`: one cookie per domain, path and key.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct Jar {
     cookies: Vec<Cookie>,
     options: Options,

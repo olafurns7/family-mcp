@@ -81,9 +81,24 @@ export async function makeFakeBrowser(directory: string): Promise<string> {
   const path = join(directory, 'fake-chrome');
   const helper = pathToFileURL(join(root, 'test/fake-browser.ts')).href;
 
-  await writeFile(path, `#!${process.execPath}\nimport ${JSON.stringify(helper)};\n`, {
-    mode: 0o700,
-  });
+  await writeFile(
+    path,
+    `#!${process.execPath}
+// Rust: failed pipe readiness can kill the fake before its asynchronous startup marker.
+import { statSync, writeFileSync } from 'node:fs';
+if (process.env.INNA_FAKE_BAD_READINESS === '1') {
+  const args = process.argv.slice(2);
+  const profile = args.find((arg) => arg.startsWith('--user-data-dir=')).slice('--user-data-dir='.length);
+  writeFileSync(process.env.INNA_FAKE_BROWSER_STATE, JSON.stringify({
+    pid: process.pid, profile, profileMode: statSync(profile).mode & 0o777, transport: 'pipe', args,
+  }));
+}
+await import(${JSON.stringify(helper)});
+`,
+    {
+      mode: 0o700,
+    },
+  );
   await chmod(path, 0o700);
 
   return path;

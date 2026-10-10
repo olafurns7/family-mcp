@@ -7,15 +7,35 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::Notify;
-use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
 use crate::signal::{Controller, Signal};
 
-pub const INTERVAL: Duration = Duration::from_secs(10 * 60);
+pub const MAX_RENEWAL_AGE: Duration = Duration::from_secs(30 * 60);
+
+pub fn max_renewal_age() -> Duration {
+    #[cfg(feature = "test-origin")]
+    if let Ok(milliseconds) = std::env::var("INNA_TEST_RENEWAL_MS") {
+        return Duration::from_millis(
+            milliseconds
+                .parse::<u64>()
+                .ok()
+                .filter(|ms| *ms >= 30)
+                .expect("INNA_TEST_RENEWAL_MS must be at least 30."),
+        );
+    }
+    MAX_RENEWAL_AGE
+}
+
+pub fn interval(optional_touches: bool) -> Duration {
+    max_renewal_age() / 3 * if optional_touches { 1 } else { 2 }
+}
+
+pub fn retry_interval() -> Duration {
+    max_renewal_age() / 30
+}
 
 pub struct KeepAlive {
     stopped: Controller,
@@ -29,34 +49,22 @@ impl KeepAlive {
     pub fn start<F, T>(interval: Duration, tick: F) -> Self
     where
         F: Fn(Signal) -> T + Send + 'static,
-        T: Future<Output = ()> + Send + 'static,
+        T: Future<Output = Duration> + Send + 'static,
     {
         let stopped = Controller::default();
         let fire = Arc::new(Notify::new());
         let (signal, fired) = (stopped.signal(), fire.clone());
 
         tokio::spawn(async move {
-            let running = Arc::new(AtomicBool::new(false));
-            let mut ticker = interval_at(Instant::now() + interval, interval);
-            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
+            let mut next = interval;
             loop {
                 tokio::select! {
                     biased;
                     () = signal.cancelled() => break,
-                    _ = ticker.tick() => {}
+                    () = tokio::time::sleep(next) => {}
                     () = fired.notified() => {}
                 }
-
-                if running.swap(true, Ordering::SeqCst) {
-                    continue;
-                }
-                let (running, run) = (running.clone(), tick(signal.clone()));
-
-                tokio::spawn(async move {
-                    run.await;
-                    running.store(false, Ordering::SeqCst);
-                });
+                next = tick(signal.clone()).await;
             }
         });
         Self {
@@ -86,7 +94,7 @@ impl KeepAlive {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -100,7 +108,7 @@ mod tests {
         let counted = runs.clone();
         let keep_alive = KeepAlive::start(Duration::from_millis(40), move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
-            async {}
+            async { Duration::from_millis(40) }
         });
         turn(10).await;
         assert_eq!(runs.load(Ordering::SeqCst), 0);
@@ -124,6 +132,7 @@ mod tests {
             async move {
                 signal.cancelled().await;
                 seen.fetch_add(1, Ordering::SeqCst);
+                Duration::from_secs(600)
             }
         });
         keep_alive.fire();

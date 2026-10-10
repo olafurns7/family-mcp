@@ -18,6 +18,12 @@ export type State = {
   /** Milliseconds by path to wait, once the request is recorded, before answering it. */
   delays: Record<string, number>;
   rotations: number;
+  /** Renewal-only test controls; omitted in the TS parity scenarios. */
+  ttl?: number;
+  renewedAt?: number;
+  renewalGaps?: number[];
+  once401?: Record<string, number>;
+  afterUser?: () => void;
 };
 
 export const fresh = (): State => ({
@@ -30,7 +36,7 @@ export const fresh = (): State => ({
   rotations: 0,
 });
 
-export type Seen = { method: string; url: string; headers: Record<string, string | null>; body: string };
+export type Seen = { method: string; url: string; headers: Record<string, string | null>; body: string; responseStatus?: number };
 
 const COMPARED_HEADERS = [
   'accept',
@@ -336,8 +342,10 @@ export async function startFake(current: () => { state: State; seen: Seen[] }) {
     const headers = Object.fromEntries(
       COMPARED_HEADERS.map((name) => [name, request.headers[name]?.toString() ?? null]),
     );
-    seen.push({ method: request.method ?? '', url: url.href, headers, body: await read(request) });
+    const observed: Seen = { method: request.method ?? '', url: url.href, headers, body: await read(request) };
+    seen.push(observed);
     const send = (status: number, body: string, extra: Record<string, string | string[]> = {}) => {
+      observed.responseStatus = status;
       response.writeHead(status, { 'content-type': 'application/json', ...extra });
       response.end(body);
     };
@@ -349,6 +357,13 @@ export async function startFake(current: () => { state: State; seen: Seen[] }) {
     if (host !== 'nam.inna.is') return send(404, '');
 
     if (planted) return send(planted.status, planted.body ?? '', planted.headers ?? {});
+    if ((state.once401?.[url.pathname] ?? 0) > 0) {
+      state.once401![url.pathname]! -= 1;
+      return send(401, '');
+    }
+    if (state.ttl && state.renewedAt && Date.now() - state.renewedAt > state.ttl)
+      return send(401, '');
+
 
     if (url.pathname === '/auth/system') {
       const key = ORDER[Number(url.searchParams.get('i'))];
@@ -370,6 +385,9 @@ export async function startFake(current: () => { state: State; seen: Seen[] }) {
 
     if (url.pathname === '/api/UserData/GetLoggedInUser') {
       state.rotations += 1;
+      if (state.renewedAt) state.renewalGaps?.push(Date.now() - state.renewedAt);
+      state.renewedAt = Date.now();
+      state.afterUser?.();
 
       return send(
         200,

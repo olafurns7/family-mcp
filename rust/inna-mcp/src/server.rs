@@ -3,6 +3,7 @@
 //! test), so names, descriptions, schemas and annotations match exactly. Without
 //! `--allow-absence-writes` the two write tools are neither listed nor callable, as there.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use mcp_runtime::{Cancelled, Server, Surface};
@@ -12,7 +13,7 @@ use serde_json::Value;
 use crate::client::Client;
 use crate::error::{Fail, Result};
 use crate::input;
-use crate::keep_alive::{INTERVAL, KeepAlive};
+use crate::keep_alive::{self, KeepAlive};
 use crate::signal::Controller;
 
 /// The tools `createServer` registers only with `allowAbsenceWrites`.
@@ -49,10 +50,13 @@ impl Inna {
     /// The server, and unless `--no-keep-alive` the keep-alive, which starts now.
     pub fn new(client: Client, keep_alive: bool) -> Self {
         let client = Arc::new(client);
-        let keep_alive = keep_alive.then(|| {
+        let cadence = keep_alive::interval(keep_alive);
+        let keep_alive = Some({
+            let warned = Arc::new(AtomicBool::new(false));
             let client = client.clone();
-            KeepAlive::start(INTERVAL, move |signal| {
+            KeepAlive::start(cadence, move |signal| {
                 let client = client.clone();
+                let warned = warned.clone();
                 async move {
                     let status = client
                         .run(signal, |client, signal, cancel| {
@@ -61,6 +65,26 @@ impl Inna {
                         .await
                         .unwrap_or("failed");
                     report(status);
+                    if status == "kept" {
+                        warned.store(false, Ordering::Relaxed);
+                    } else if (status == "signInRequired"
+                        || (status == "failed" && client.renewal_overdue()))
+                        && !warned.swap(true, Ordering::Relaxed)
+                    {
+                        eprintln!(
+                            "{}",
+                            if status == "signInRequired" {
+                                "Inna sign-in is required. Run auth login or import a fresh private cookie export."
+                            } else {
+                                "Inna renewal failed. School requests require successful renewal."
+                            }
+                        );
+                    }
+                    if status == "kept" {
+                        cadence
+                    } else {
+                        keep_alive::retry_interval()
+                    }
                 }
             })
         });

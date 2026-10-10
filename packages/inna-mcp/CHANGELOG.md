@@ -4,10 +4,27 @@
 
 - The native binary is now built from Rust. Tools, inputs, results, CLI
   commands, messages and exit codes are unchanged except as noted below, as are
-  electronic-ID and Google sign-in, cookie import, the keep-alive, student
+  electronic-ID and Google sign-in, cookie import, student
   switching, and the absence preview, submission and record. It was checked
   offline against the TypeScript sources and synthetic Inna, electronic-ID and
   browser fakes; it has not yet been run against Inna.
+- The native server measures successful session verification with a monotonic
+  clock and gates school requests at a maximum renewal age of thirty minutes.
+  Idle verification still runs every ten minutes; failures retry after one minute
+  without bypassing rate-limit pauses. Network, service and store failures can
+  prevent renewal; affected calls fail closed. Transient errors retain the session.
+  Unknown age after restart also requires verification. No renewal timestamp is
+  persisted, and status result fields remain unchanged.
+- `serve --no-keep-alive` now disables only the optional ten-minute touches;
+  mandatory renewal still runs every twenty minutes without tool calls. A blocked
+  renewal reports fixed text without credentials. These are intended deviations
+  from the TypeScript scheduler. Real Inna session extension remains unmeasured;
+  `docs/SESSION-CHECK.md` gives the owner's seventy-minute check.
+- An API read answered with 401 reloads the saved cookies or verifies the current
+  session, then retries the original request once. The TypeScript reference did
+  not retry reads. Absence submission POSTs still never retry, and their uncertain
+  outcome contract is unchanged. Offline tests cover short TTLs, blocked renewals,
+  one retry, another process's cookie rotation and secret-free whole-run output.
 - The session is kept in one encrypted record in the file store, with its key
   in a separate private file: on macOS in
   `~/Library/Application Support/family-mcp`, which is excluded from Time

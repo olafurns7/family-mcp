@@ -106,7 +106,7 @@ impl Learned {
 }
 
 /// `Saved`: version 1 files hold one binding and are read as version 2 without learned students.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Saved {
     /// The tough-cookie jar, serialized.
     pub jar: String,

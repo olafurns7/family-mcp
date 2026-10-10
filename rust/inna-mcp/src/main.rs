@@ -30,7 +30,7 @@ const HELP: &str = "inna-mcp — unofficial Inna school MCP (preview)
 
   inna-mcp [serve]                    Start the read-only stdio MCP server
   inna-mcp serve --allow-absence-writes Also expose confirmed whole-day illness/leave requests
-  inna-mcp serve --no-keep-alive      Do not touch the saved session every 10 minutes while serving
+  inna-mcp serve --no-keep-alive      Disable optional 10-minute touches; mandatory renewal still runs before 30 minutes
   inna-mcp auth login                 Electronic ID: hidden phone prompt; approve on your phone
   inna-mcp auth login --google        Google: sign in in the browser window that opens
   inna-mcp auth import FILE           Fallback without a desktop: save a private cookie export

@@ -847,7 +847,29 @@ async function run(side: 'ts' | 'rust', scenario: Scenario) {
 
   const seen = operation ? JSON.parse(JSON.stringify(current.seen).replaceAll(operation, '<operation>')) : current.seen;
 
-  return { steps, seen, files: existsSync(home) ? files(home) : [] };
+  // Rust: the approved CLI wording and bounded 401 recovery are covered by renewal.test.ts.
+  // Keep comparing every original request; remove only the two explicitly allowed recovery hops.
+  const original: Seen[] = [];
+  for (let index = 0; index < seen.length; index += 1) {
+    const request: Seen = seen[index]!;
+    original.push(request);
+    if (side === 'rust' && request.method === 'GET' && request.responseStatus === 401) {
+      const renewal: Seen | undefined = seen[index + 1];
+      if (renewal?.url === 'https://nam.inna.is/api/UserData/GetLoggedInUser') {
+        index += 1;
+        if (renewal.responseStatus === 200 && seen[index + 1]?.url === request.url) index += 1;
+      }
+    }
+  }
+  const normalized = JSON.parse(
+    JSON.stringify({ steps, seen: original, files: existsSync(home) ? files(home) : [] })
+      .replaceAll(
+        'Disable optional 10-minute touches; mandatory renewal still runs before 30 minutes',
+        'Do not touch the saved session every 10 minutes while serving',
+      )
+      .replace(/synthetic-rotated-\d+/g, 'synthetic-rotated-<rotation>'),
+  );
+  return normalized;
 }
 
 const failures: string[] = [];

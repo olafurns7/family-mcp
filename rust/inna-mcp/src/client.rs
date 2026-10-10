@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use family_store::Cancel;
 use reqwest::header::{
@@ -439,11 +439,21 @@ fn still_selected(target: &Target, current: &User) -> bool {
 }
 
 /// `Connection`: requests with the saved cookies, under the saved rate-limit pause.
+struct Renewed {
+    credentials: String,
+    at: Instant,
+}
+
 pub struct Connection<'a> {
     pub jar: Jar,
     pub pause_until: f64,
     net: &'a Net,
     signal: &'a Signal,
+    renewed_at: Option<Instant>,
+    reload: Option<&'a mut dyn FnMut() -> Result<Option<Saved>>>,
+    saved_credentials: Option<String>,
+    bindings: Vec<Binding>,
+    unauthorized: bool,
 }
 
 impl<'a> Connection<'a> {
@@ -453,6 +463,11 @@ impl<'a> Connection<'a> {
             pause_until,
             net,
             signal,
+            renewed_at: None,
+            reload: None,
+            saved_credentials: None,
+            bindings: Vec::new(),
+            unauthorized: false,
         }
     }
 
@@ -472,6 +487,7 @@ impl<'a> Connection<'a> {
 
     /// `capture`: only the session cookies are kept; one Inna may not set is an error.
     fn capture(&mut self, headers: &HeaderMap) -> Result<()> {
+        let before = self.jar.header(&origin());
         for value in headers.get_all(SET_COOKIE) {
             let text: String = value
                 .as_bytes()
@@ -486,6 +502,9 @@ impl<'a> Connection<'a> {
                     .set(cookie, &origin())
                     .map_err(|()| Fail::Unknown)?;
             }
+        }
+        if self.jar.header(&origin()) != before {
+            self.renewed_at = None;
         }
         Ok(())
     }
@@ -515,6 +534,41 @@ impl<'a> Connection<'a> {
         params: &[(&str, &str)],
         body: Option<String>,
     ) -> Result<Value> {
+        if endpoint != USER_ENDPOINT && self.reload.is_some() && self.stale() {
+            self.renew()?;
+        }
+        let outcome = self.request_once(endpoint, params, body.clone());
+        if !self.unauthorized || body.is_some() || self.reload.is_none() {
+            return outcome;
+        }
+        self.recover_401()?;
+        // Exactly one retry; request_once cannot enter recovery, including for the renewal GET.
+        self.request_once(endpoint, params, None)
+    }
+
+    fn recover_401(&mut self) -> Result<()> {
+        // The operation holds both store locks; reload without recursively acquiring either.
+        let saved = self.reload.as_mut().ok_or(Fail::Unknown)?()?.ok_or(NO_SESSION)?;
+        if Some(credentials(&saved)?) != self.saved_credentials {
+            if !self.bindings.contains(&saved.account) {
+                return Err(CONTEXT_CHANGED);
+            }
+            self.jar = Jar::deserialize(&saved.jar).ok_or(Fail::Unknown)?;
+            self.pause_until = self.pause_until.max(saved.pause_until);
+            self.renewed_at = None;
+        } else {
+            self.renew()?;
+        }
+        Ok(())
+    }
+
+    fn request_once(
+        &mut self,
+        endpoint: &str,
+        params: &[(&str, &str)],
+        body: Option<String>,
+    ) -> Result<Value> {
+        self.unauthorized = false;
         self.check_pause()?;
         let mut url = origin().join(endpoint).map_err(|_| Fail::Unknown)?;
 
@@ -561,6 +615,10 @@ impl<'a> Connection<'a> {
             .ok_or(Fail::Unknown)?;
         self.capture(&response.headers)?;
 
+        self.unauthorized = response.status == 401;
+        if self.unauthorized || (300..=399).contains(&response.status) {
+            self.renewed_at = None;
+        }
         match response.status {
             429 => return Err(self.pause(&response.headers)),
             401 | 300..=399 => return Err(Fail::Safe(SIGN_IN_REQUIRED)),
@@ -587,8 +645,42 @@ impl<'a> Connection<'a> {
         shapes::parse(schema, &value).ok_or(Fail::Invalid)
     }
 
+    fn stale(&self) -> bool {
+        self.renewed_at
+            .is_none_or(|at| at.elapsed() >= crate::keep_alive::max_renewal_age())
+    }
+
+    fn valid_session(&mut self) -> Result<()> {
+        let cookies = self.jar.get(&origin());
+        if !["SESSION", "XSRF-TOKEN"].iter().all(|name| {
+            cookies
+                .iter()
+                .any(|cookie| cookie.key() == *name && !cookie.value().is_empty())
+        }) {
+            return Err(Fail::Safe(SESSION_EXPIRED));
+        }
+        self.renewed_at = Some(Instant::now());
+        Ok(())
+    }
+
+    fn renew(&mut self) -> Result<()> {
+        let user = User::parse(&self.request_once(USER_ENDPOINT, &[], None)?)?;
+        if !self.bindings.contains(&user.binding()) {
+            return Err(CONTEXT_CHANGED);
+        }
+        self.valid_session()
+    }
+
+    fn user_once(&mut self) -> Result<User> {
+        let user = User::parse(&self.request_once(USER_ENDPOINT, &[], None)?)?;
+        self.valid_session()?;
+        Ok(user)
+    }
+
     pub fn user(&mut self) -> Result<User> {
-        User::parse(&self.request(USER_ENDPOINT, &[], None)?)
+        let user = User::parse(&self.request(USER_ENDPOINT, &[], None)?)?;
+        self.valid_session()?;
+        Ok(user)
     }
 
     /// `selectStudent`: Inna's own student switch, a cookie-only navigation that ends on the
@@ -608,7 +700,9 @@ impl<'a> Connection<'a> {
         .join("&");
         url.set_query(Some(&query));
 
-        for _ in 0..5 {
+        let mut hops = 0;
+        let mut retried = false;
+        while hops < 5 {
             if !self
                 .jar
                 .get(&url)
@@ -643,6 +737,11 @@ impl<'a> Connection<'a> {
             let location = header(&headers, LOCATION);
 
             if status == 401 {
+                if !retried && self.reload.is_some() {
+                    self.recover_401()?;
+                    retried = true;
+                    continue;
+                }
                 return Err(SWITCH_REFUSED);
             }
             let Some(location) =
@@ -664,6 +763,7 @@ impl<'a> Connection<'a> {
             }
             next.set_fragment(None);
             url = next;
+            hops += 1;
         }
         Err(UNEXPECTED)
     }
@@ -777,6 +877,8 @@ pub struct Client {
     pub allow_absence_writes: bool,
     /// The credentials Inna last refused, in memory only; keep-alive waits for new ones.
     refused: Mutex<Option<String>>,
+    renewed: Mutex<Option<Renewed>>,
+    started: Instant,
     /// Held by every operation in flight; `idle` waits for them, as the TypeScript process stays
     /// alive until its requests and write-backs end.
     running: Arc<RwLock<()>>,
@@ -790,6 +892,8 @@ impl Client {
             net: Net::new()?,
             allow_absence_writes,
             refused: Mutex::new(None),
+            renewed: Mutex::new(None),
+            started: Instant::now(),
             running: Arc::default(),
         })
     }
@@ -855,11 +959,37 @@ impl Client {
     ) -> Result<T> {
         let jar = Jar::deserialize(&saved.jar).ok_or(Fail::Unknown)?;
         let before = credentials(saved)?;
+        let mut reload = || held.read();
         let mut connection = Connection::new(jar, saved.pause_until, &self.net, signal);
+        connection.renewed_at = self
+            .renewed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|renewed| renewed.credentials == before)
+            .map(|renewed| renewed.at);
+        connection.reload = Some(&mut reload);
+        connection.saved_credentials = Some(before.clone());
+        connection.bindings = std::iter::once(saved.account.clone())
+            .chain(
+                saved
+                    .students
+                    .iter()
+                    .map(|(_, student)| student.binding.clone()),
+            )
+            .collect();
         let outcome = work(&mut connection, saved);
         saved.jar = connection.jar.serialize().ok_or(Fail::Unknown)?;
         saved.pause_until = connection.pause_until;
+        let renewed_at = connection.renewed_at;
+        drop(connection);
         held.write_back(saved, &before)?;
+        if let Some(at) = renewed_at {
+            *self.renewed.lock().unwrap_or_else(PoisonError::into_inner) = Some(Renewed {
+                credentials: credentials(saved)?,
+                at,
+            });
+        }
         outcome
     }
 
@@ -877,6 +1007,9 @@ impl Client {
             let key = pick()?;
             let user = connection.user()?;
             let target = select(connection, saved, user, key.as_deref())?;
+            if !connection.bindings.contains(&target.binding) {
+                connection.bindings.push(target.binding.clone());
+            }
             let mut output = work(connection, &target)?;
 
             if verify_after && !still_selected(&target, &connection.user()?) {
@@ -910,6 +1043,15 @@ impl Client {
         })
     }
 
+    pub fn renewal_overdue(&self) -> bool {
+        self.renewed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map_or(self.started.elapsed(), |renewed| renewed.at.elapsed())
+            >= crate::keep_alive::max_renewal_age()
+    }
+
     /// `keepAlive`: touches the saved session so Inna does not idle it out. Reads no school data,
     /// never switches or learns a student, and reports every failure as a status. It never
     /// resets the store.
@@ -927,11 +1069,20 @@ impl Client {
             };
             let saved = seen.insert(saved);
 
-            if saved.pause_until > js::client_now() || Some(credentials(saved)?) == refused() {
+            if Some(credentials(saved)?) == refused() {
                 return Ok("skipped");
             }
+            if saved.pause_until > js::client_now() {
+                return if self.renewal_overdue() {
+                    Err(Fail::Safe(
+                        "Inna requested a pause. Wait before making another request.",
+                    ))
+                } else {
+                    Ok("skipped")
+                };
+            }
             self.persisting(held, saved, signal, |connection, _| {
-                connection.user().map(drop)
+                connection.user_once().map(drop)
             })?;
             Ok("kept")
         });
