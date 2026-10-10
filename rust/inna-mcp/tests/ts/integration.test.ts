@@ -1809,8 +1809,9 @@ test('keep-alive makes no request without a session or during a pause', async ()
   limited.provider.rateLimit = false;
   const paused = limited.provider.calls.length;
   const file = await readStored(limited.store);
-  expect(await s.tick()).toEqual({ status: 'skipped' });
-  expect(await new InnaClient(limited.options).keepAlive()).toEqual({ status: 'skipped' });
+  // Rust: an unknown renewal age is overdue; the pause still sends no request.
+  expect(await s.tick()).toEqual({ status: 'failed' });
+  expect(await new InnaClient(limited.options).keepAlive()).toEqual({ status: 'failed' });
   expect(limited.provider.calls).toHaveLength(paused);
   expect(await readStored(limited.store)).toBe(file);
   s.scheduler.stop();

@@ -47,14 +47,14 @@ pub struct Inna {
 }
 
 impl Inna {
-    /// The server, and unless `--no-keep-alive` the keep-alive, which starts now.
+    /// Always renew while serving; the flag changes the cadence after the first renewal.
     pub fn new(client: Client, keep_alive: bool) -> Self {
         let client = Arc::new(client);
         let cadence = keep_alive::interval(keep_alive);
         let keep_alive = Some({
             let warned = Arc::new(AtomicBool::new(false));
             let client = client.clone();
-            KeepAlive::start(cadence, move |signal| {
+            KeepAlive::start(keep_alive::retry_interval(), move |signal| {
                 let client = client.clone();
                 let warned = warned.clone();
                 async move {

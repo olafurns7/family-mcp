@@ -1,9 +1,5 @@
-//! packages/inna-mcp/src/keep-alive.ts's `startKeepAlive` for the one stdio connection: touches
-//! the saved session on a fixed interval while the server runs. The first tick comes one interval
-//! after start, ticks never overlap (one due while another runs is dropped), and nothing is
-//! logged. `stop` is final and aborts the tick in flight. The TypeScript scheduler follows the
-//! SDK's per-negotiation server instances; this server has one connection for its lifetime, so it
-//! runs from start until the connection closes.
+//! One sequential renewal timer per stdio connection. The first delay is chosen by the caller;
+//! each completed tick chooses the next delay. Closing the connection cancels the tick in flight.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -45,8 +41,8 @@ pub struct KeepAlive {
 }
 
 impl KeepAlive {
-    /// Run `tick` every `interval`, with a signal that `stop` aborts.
-    pub fn start<F, T>(interval: Duration, tick: F) -> Self
+    /// Run `tick` after `first`, then after its returned delay; `stop` aborts its signal.
+    pub fn start<F, T>(first: Duration, tick: F) -> Self
     where
         F: Fn(Signal) -> T + Send + 'static,
         T: Future<Output = Duration> + Send + 'static,
@@ -56,7 +52,7 @@ impl KeepAlive {
         let (signal, fired) = (stopped.signal(), fire.clone());
 
         tokio::spawn(async move {
-            let mut next = interval;
+            let mut next = first;
             loop {
                 tokio::select! {
                     biased;
@@ -97,6 +93,15 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+
+    #[test]
+    fn production_durations_are_thirty_ten_twenty_and_one_minute() {
+        assert!(std::env::var_os("INNA_TEST_RENEWAL_MS").is_none());
+        assert_eq!(max_renewal_age(), Duration::from_secs(30 * 60));
+        assert_eq!(interval(true), Duration::from_secs(10 * 60));
+        assert_eq!(interval(false), Duration::from_secs(20 * 60));
+        assert_eq!(retry_interval(), Duration::from_secs(60));
+    }
 
     async fn turn(milliseconds: u64) {
         tokio::time::sleep(Duration::from_millis(milliseconds)).await;

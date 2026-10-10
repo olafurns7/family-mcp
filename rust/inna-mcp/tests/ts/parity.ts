@@ -861,15 +861,15 @@ async function run(side: 'ts' | 'rust', scenario: Scenario) {
       }
     }
   }
-  const normalized = JSON.parse(
-    JSON.stringify({ steps, seen: original, files: existsSync(home) ? files(home) : [] })
-      .replaceAll(
-        'Disable optional 10-minute touches; mandatory renewal still runs before 30 minutes',
-        'Do not touch the saved session every 10 minutes while serving',
-      )
-      .replace(/synthetic-rotated-\d+/g, 'synthetic-rotated-<rotation>'),
-  );
-  return normalized;
+  let normalized = JSON.stringify({ steps, seen: original, files: existsSync(home) ? files(home) : [] })
+    .replaceAll(
+      'Disable optional 10-minute touches; mandatory renewal still runs before 30 minutes',
+      'Do not touch the saved session every 10 minutes while serving',
+    );
+  if (scenario.steps.some((step) => 'upstream' in step &&
+    Object.values(step.upstream.planted ?? {}).some((reply) => reply.status === 401)))
+    normalized = normalized.replace(/synthetic-rotated-\d+/g, 'synthetic-rotated-<rotation>');
+  return JSON.parse(normalized);
 }
 
 const failures: string[] = [];

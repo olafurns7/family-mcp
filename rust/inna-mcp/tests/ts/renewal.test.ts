@@ -6,8 +6,18 @@ import { COOKIES, fresh, startFake, type Seen } from './fake-inna.ts';
 
 const binary = process.env.INNA_RUST_BINARY!;
 const USER = '/api/UserData/GetLoggedInUser';
-const SCHOOL = '/api/StudentTerms/GetStudentTerms';
+const SCHOOL = '/api/Announcements/GetStudentAnnouncements';
 const POST = '/api/RegisterAbsence/AddNewLeave';
+const SWITCH = '/auth/system';
+const WARNING = 'Inna renewal failed. School requests require successful renewal.';
+
+async function until(check: () => boolean, timeout = 2_000) {
+  const end = performance.now() + timeout;
+  while (!check()) {
+    if (performance.now() >= end) throw new Error('The fake request did not arrive in time.');
+    await Bun.sleep(5);
+  }
+}
 
 async function fixture(bound = 1_500, args: string[] = []) {
   const directory = mkdtempSync(join(process.env.TMPDIR!, 'renewal-'));
@@ -44,6 +54,7 @@ async function fixture(bound = 1_500, args: string[] = []) {
     expect(stdout + stderr).not.toContain('synthetic-');
   };
   await cli(['auth', 'import', source]);
+  const started = performance.now();
   const child = Bun.spawn([binary, 'serve', ...args], {
     env,
     stdin: 'pipe',
@@ -88,14 +99,16 @@ async function fixture(bound = 1_500, args: string[] = []) {
     child.stdin.end();
     await child.exited;
     await output;
-    const text = stdout + (await stderr);
+    const errors = await stderr;
+    const text = stdout + errors;
     // Every value, including rotations and the second process's import, uses this prefix.
     expect(text).not.toContain('synthetic-');
     expect(text).not.toContain('DO-NOT-RETURN');
     await fake.close();
     rmSync(directory, { recursive: true, force: true });
+    return { stdout, stderr: errors };
   };
-  return { state, seen, paths, call, close, cli, source };
+  return { state, seen, paths, call, close, cli, source, started };
 }
 
 test('idle serve survives several TTLs within the scaled 30-minute bound, including the flag', async () => {
@@ -160,7 +173,7 @@ test('read 401 refreshes once and retries once; a second 401 has no third school
   }
 });
 
-test('a separate CLI import rotates the stored session used by 401 recovery', async () => {
+test('a separate CLI import is used by the next call', async () => {
   const f = await fixture(60_000);
   try {
     await f.call();
@@ -185,7 +198,9 @@ test('renewal age is checked again between school requests within one call', asy
       f.state.planted[USER] = { status: 500 };
     };
     const from = f.seen.length;
-    expect((await f.call()).isError).toBe(true);
+    const result = await f.call();
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain('unavailable or unexpected');
     expect(f.paths(from).slice(0, 3)).toEqual([USER, first, USER]);
     expect(f.paths(from).filter((path) => path !== USER)).toEqual([first]);
   } finally {
@@ -222,4 +237,85 @@ test('401 on absence POST sends once and retains the uncertain outcome', async (
   } finally {
     await f.close();
   }
+});
+
+test('serve start renews within bound/30 plus slack in both modes', async () => {
+  const bound = 6_000;
+  const slack = 400;
+  for (const args of [[], ['--no-keep-alive']]) {
+    const f = await fixture(bound, args);
+    try {
+      await until(() => f.state.rotations >= 2, bound / 30 + slack);
+      expect(performance.now() - f.started).toBeLessThan(bound / 30 + slack);
+      expect(f.paths().every((path) => path === USER)).toBe(true);
+    } finally {
+      await f.close();
+    }
+  }
+});
+
+test('a switch 401 recovers once and a persistent 401 refuses after exactly two switches', async () => {
+  for (const persistent of [false, true]) {
+    const f = await fixture(60_000);
+    try {
+      if (persistent) f.state.planted[SWITCH] = { status: 401 };
+      else f.state.once401 = { [SWITCH]: 1 };
+      const from = f.seen.length;
+      const result = await f.call('inna_get_overview', { studentKey: '5' });
+      expect(Boolean(result.isError)).toBe(persistent);
+      const paths = f.paths(from);
+      expect(paths.filter((path) => path === SWITCH)).toHaveLength(2);
+      const first = paths.indexOf(SWITCH);
+      expect(paths.slice(first, first + 3)).toEqual([SWITCH, USER, SWITCH]);
+      if (persistent)
+        expect(JSON.stringify(result)).toContain(
+          'Inna refused the student switch and asked for sign-in.',
+        );
+    } finally {
+      await f.close();
+    }
+  }
+});
+
+test('a 500 renewal after a checked read gets 401 keeps the transient text and sends no retry', async () => {
+  const f = await fixture(60_000);
+  try {
+    f.state.afterUser = () => {
+      f.state.planted[USER] = { status: 500 };
+    };
+    f.state.once401 = { [SCHOOL]: 1 };
+    const from = f.seen.length;
+    const result = await f.call();
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain('unavailable or unexpected');
+    expect(f.paths(from)).toEqual([USER, SCHOOL, USER]);
+  } finally {
+    await f.close();
+  }
+});
+
+test('failed ticks retry before cadence and warn exactly once past the age bound', async () => {
+  const bound = 1_500;
+  const retry = bound / 30;
+  const cadence = (bound * 2) / 3;
+  const f = await fixture(bound, ['--no-keep-alive']);
+  let output: Awaited<ReturnType<typeof f.close>>;
+  try {
+    await until(() => f.state.rotations >= 2);
+    const keptAt = f.state.renewedAt!;
+    f.state.planted[USER] = { status: 500 };
+    const from = f.seen.length;
+    await until(() => f.seen.length > from);
+    const failedAt = performance.now();
+    const failed = f.seen.length;
+    await until(() => f.seen.length >= failed + 2, cadence / 2);
+    expect(performance.now() - failedAt).toBeLessThan(cadence / 2);
+    await until(() => Date.now() - keptAt > bound + retry * 3);
+    delete f.state.planted[USER];
+    await until(() => f.state.rotations >= 3, cadence / 2);
+    expect(f.paths().every((path) => path === USER)).toBe(true);
+  } finally {
+    output = await f.close();
+  }
+  expect(output.stderr.split(WARNING).length - 1).toBe(1);
 });

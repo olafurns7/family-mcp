@@ -451,7 +451,6 @@ pub struct Connection<'a> {
     signal: &'a Signal,
     renewed_at: Option<Instant>,
     reload: Option<&'a mut dyn FnMut() -> Result<Option<Saved>>>,
-    saved_credentials: Option<String>,
     bindings: Vec<Binding>,
     unauthorized: bool,
 }
@@ -465,7 +464,6 @@ impl<'a> Connection<'a> {
             signal,
             renewed_at: None,
             reload: None,
-            saved_credentials: None,
             bindings: Vec::new(),
             unauthorized: false,
         }
@@ -548,18 +546,8 @@ impl<'a> Connection<'a> {
 
     fn recover_401(&mut self) -> Result<()> {
         // The operation holds both store locks; reload without recursively acquiring either.
-        let saved = self.reload.as_mut().ok_or(Fail::Unknown)?()?.ok_or(NO_SESSION)?;
-        if Some(credentials(&saved)?) != self.saved_credentials {
-            if !self.bindings.contains(&saved.account) {
-                return Err(CONTEXT_CHANGED);
-            }
-            self.jar = Jar::deserialize(&saved.jar).ok_or(Fail::Unknown)?;
-            self.pause_until = self.pause_until.max(saved.pause_until);
-            self.renewed_at = None;
-        } else {
-            self.renew()?;
-        }
-        Ok(())
+        self.reload.as_mut().ok_or(Fail::Unknown)?()?.ok_or(NO_SESSION)?;
+        self.renew()
     }
 
     fn request_once(
@@ -878,7 +866,6 @@ pub struct Client {
     /// The credentials Inna last refused, in memory only; keep-alive waits for new ones.
     refused: Mutex<Option<String>>,
     renewed: Mutex<Option<Renewed>>,
-    started: Instant,
     /// Held by every operation in flight; `idle` waits for them, as the TypeScript process stays
     /// alive until its requests and write-backs end.
     running: Arc<RwLock<()>>,
@@ -893,7 +880,6 @@ impl Client {
             allow_absence_writes,
             refused: Mutex::new(None),
             renewed: Mutex::new(None),
-            started: Instant::now(),
             running: Arc::default(),
         })
     }
@@ -969,7 +955,6 @@ impl Client {
             .filter(|renewed| renewed.credentials == before)
             .map(|renewed| renewed.at);
         connection.reload = Some(&mut reload);
-        connection.saved_credentials = Some(before.clone());
         connection.bindings = std::iter::once(saved.account.clone())
             .chain(
                 saved
@@ -1048,8 +1033,7 @@ impl Client {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map_or(self.started.elapsed(), |renewed| renewed.at.elapsed())
-            >= crate::keep_alive::max_renewal_age()
+            .is_none_or(|renewed| renewed.at.elapsed() >= crate::keep_alive::max_renewal_age())
     }
 
     /// `keepAlive`: touches the saved session so Inna does not idle it out. Reads no school data,
