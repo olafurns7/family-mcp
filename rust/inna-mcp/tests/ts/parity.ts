@@ -498,7 +498,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-if (!only && (coverage.cli < 106 || coverage.tools < 44 || coverage.results < 78 || coverage.requests < 328))
+if (!only && (coverage.cli < 130 || coverage.tools < 44 || coverage.results < 78 || coverage.requests < 336))
   failures.push(`coverage too low: ${JSON.stringify(coverage)}`);
 
 if (failures.length) {
