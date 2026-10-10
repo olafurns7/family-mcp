@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.4.0
+
+- The native binary is now built from Rust. Tools, inputs, results, CLI
+  commands, messages and exit codes are unchanged except as noted below, as are
+  electronic-ID and Google sign-in, cookie import, student
+  switching, and the absence preview, submission and record. It was checked
+  offline against the TypeScript sources and synthetic Inna, electronic-ID and
+  browser fakes; it has not yet been run against Inna.
+- The native server measures successful session verification with a monotonic
+  clock and gates school requests at a maximum renewal age of thirty minutes.
+  Idle verification still runs every ten minutes; failures retry after one minute
+  without bypassing rate-limit pauses. Network, service and store failures can
+  prevent renewal; affected calls fail closed. Transient errors retain the session.
+  Unknown age after restart also requires verification: the first idle tick runs
+  after one minute in both modes. No renewal timestamp is
+  persisted, and status result fields remain unchanged.
+- `serve --no-keep-alive` now disables only the optional ten-minute touches;
+  mandatory renewal still runs every twenty minutes without tool calls. A blocked
+  renewal reports fixed text without credentials. These are intended deviations
+  from the TypeScript scheduler. Real Inna session extension remains unmeasured;
+  `docs/SESSION-CHECK.md` gives the owner's seventy-minute check.
+- An API read answered with 401 reloads the saved session and makes one
+  verification request, then retries the original request once. The TypeScript reference did
+  not retry reads. A student switch answered with 401 also recovers once, then
+  reports the existing switch-refused text. Absence submission POSTs still never retry, and their uncertain
+  outcome contract is unchanged. Offline tests cover short TTLs, blocked renewals,
+  one retry, a separate CLI import used by the next call and secret-free whole-run output.
+- The session is kept in one encrypted record in the file store, with its key
+  in a separate private file: on macOS in
+  `~/Library/Application Support/family-mcp`, which is excluded from Time
+  Machine; on Linux in `~/.config/inna-mcp`, with the key in
+  `~/.local/share/family-mcp/keys`. `inna-mcp auth status` and
+  `inna_session_status` show how the session is saved.
+- Every start checks the store's location and permissions. A refusal names the
+  path and, for most problems, the command that fixes it.
+- A session saved by 0.3.0 or earlier keeps working from its plaintext file.
+  Stop running servers of the older version, then run `inna-mcp auth migrate`
+  once to move it into the encrypted store and remove the file; a login or
+  import moves it as well. The absence record stays at
+  `<session file>.absence.json`, is never changed by login, import, migrate or
+  logout, and keeps blocking as before.
+- Sessions saved with earlier test builds that kept the store key in the macOS
+  Keychain are not migrated: remove the files the refusal names, then run
+  `inna-mcp auth login` again.
+- When `auth login` is ended at the hidden phone prompt on a terminal by
+  SIGTERM, or by a second SIGINT (the first cancels the sign-in once the line
+  ends), it restores the terminal and exits with status 143 or 130. Before, the
+  process was killed by the signal, and a second SIGINT left the terminal
+  without echo. At the prompt Ctrl-C is a key, not a signal: it cancels the
+  sign-in. The hidden prompt takes typed characters, Backspace, Ctrl-U, Enter,
+  Ctrl-C and Ctrl-D on an empty line; arrow keys and other cursor movement are
+  ignored.
+- Pressing Ctrl-C (or sending SIGTERM) while `inna-mcp auth login --google` is
+  still starting the browser now gives the browser one more chance to answer
+  (up to about 2 s more). If it answers, inna-mcp closes it through its private
+  debugging pipe (`Browser.close`) before falling back to SIGTERM. A browser
+  that answers but ignores `Browser.close` is signalled after up to 5 s more.
+  The temporary profile is still removed and nothing is saved. Messages and
+  exit codes are unchanged.
+
 ## 0.3.0
 
 - `inna-mcp auth login --google` signs in with Google in one command. It opens

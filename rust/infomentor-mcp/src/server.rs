@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use mcp_runtime::{Server, Surface};
+use mcp_runtime::{Cancelled, Server, Surface};
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
 
@@ -59,11 +59,13 @@ impl Server for InfoMentor {
         &self.surface
     }
 
-    // The runtime passes no per-request cancellation; a call ends with the client's lifetime.
+    // A host's cancel is not passed on, though the TypeScript tools abort on theirs: a call ends
+    // with the client's lifetime.
     async fn call(
         &self,
         name: &str,
         arguments: &JsonObject,
+        _cancelled: Cancelled,
     ) -> std::result::Result<Result<Value>, String> {
         let client = &self.client;
         let signal = Signal::default();

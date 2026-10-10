@@ -19,7 +19,7 @@ in English and Icelandic.
 ## Abler
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.7.0/packages/abler-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/abler-mcp@0.7.1/packages/abler-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server; restart the MCP host, or
@@ -69,7 +69,7 @@ Other sign-in paths (capture an existing Chrome session, import cookies), headle
 ## InfoMentor
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.9.0/packages/infomentor-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.9.1/packages/infomentor-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server; restart the MCP host, or
@@ -135,7 +135,7 @@ WARP is currently unreliable on the tested Grok route; see the
 Install the preview and start electronic-ID login:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.3.0/packages/inna-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.4.0/packages/inna-mcp/install.sh | sh
 inna-mcp auth login
 ```
 

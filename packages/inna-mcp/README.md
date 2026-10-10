@@ -6,7 +6,7 @@ attendance, material metadata, messages, announcements, and absence history.
 Whole-day illness registration and leave applications are an explicit opt-in.
 A guardian's session can read [several students](#several-students).
 
-The current preview is `inna-mcp@0.3.0`. The read endpoints
+The current preview is `inna-mcp@0.4.0`. The read endpoints
 were captured in a real guardian account. Electronic-ID login and private session
 reuse were verified through the initial 0.1.0 compiled native CLI; the 0.1.1
 parsing and repeated-read changes are checked offline. Absence creation is based
@@ -20,7 +20,7 @@ release checksum, and installs `~/.local/bin/inna-mcp`. No Node, npm, or Bun is
 needed at runtime.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.3.0/packages/inna-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.4.0/packages/inna-mcp/install.sh | sh
 ```
 
 Upgrading replaces the command but not a running server. Restart the MCP host,
@@ -29,7 +29,8 @@ saved school sessions or absence-operation records. After upgrading from 0.3.0
 or earlier, run `inna-mcp auth migrate` once (see
 [Upgrading from 0.3.0](#upgrading-from-030)).
 
-To build before publication, use the pinned Bun 1.4.2 from the repository root:
+To build before publication, use the pinned Bun 1.4.2 and the Rust toolchain that
+`rust/rust-toolchain.toml` pins, from the repository root:
 
 ```sh
 bun install
@@ -230,27 +231,43 @@ at its key. Going back to 0.3.0 means signing in again in that version.
 
 ### Keeping the session alive
 
-Inna issues browser session cookies only; there is no refresh token, and a new
-session needs your phone or Google. While `inna-mcp serve` runs, it makes one
-small authenticated request every ten minutes and saves any rotated cookies, so
-the session is not left idle. The first request comes ten minutes after start.
-It reads no school data and never switches the selected student. This can only
-prevent an idle timeout: how long Inna keeps a session is unmeasured, and a
-session Inna ends for any other reason still needs a fresh login or import.
-After Inna asks for sign-in, the requests stop until the saved session cookies
-change, which a new login or import does. Rewriting the same cookies, as a tool
-call or a second `serve` on the same session does, does not restart them. A
-session-store failure only skips that request; the keep-alive never resets the
-store.
-A restarted server asks once more. They also wait out a rate-limit pause, and
-they stop when the MCP connection closes.
+Inna issues browser session cookies only; there is no refresh token. A new session
+needs your phone or Google. While the native `inna-mcp serve` runs, it verifies
+the session with a small authenticated request every ten minutes and saves any
+rotated cookies. It reads no school data and never switches the selected student.
+A successful, validated user response with usable session cookies counts as a
+renewal; cookie values and failures never count as proof of session lifetime.
 
-The keep-alive runs only while `serve` runs. Start the server with
-`inna-mcp serve --no-keep-alive` to turn it off. A host that starts the server
-per conversation leaves the session idle between conversations; there, schedule
-`inna-mcp auth status` (for example from cron) for the same effect. Unlike the
-keep-alive, `auth status` verifies the default student and switches Inna's
-selected student back to it when a browser or another call left it elsewhere.
+The renewal age limit is thirty minutes, measured in memory with a monotonic
+clock. Before a school request uses an unknown or older session, it must verify
+it first. Restarting the server makes the renewal age unknown, so the first idle
+verification runs after one minute, including with `--no-keep-alive`. Skipped or failed
+ticks retry after one minute; rate-limit pauses still prohibit requests. A
+network, service or store failure can prevent renewal, so the server fails school
+calls closed until verification succeeds. Transient failures retain the session;
+a sign-in refusal gives the existing re-sign-in message and pauses idle requests
+until the saved credentials change. The background server also reports a fixed,
+credential-free message when renewal is blocked past the bound.
+
+A read answered with 401 reloads the saved session and makes one verification
+request, then retries that read once. A second refusal fails
+closed. The absence submission POST is never retried: a failed response keeps
+its outcome uncertain, as before. A student switch answered with 401 also recovers
+once, then reports the existing switch-refused text.
+
+`inna-mcp serve --no-keep-alive` now disables only the optional ten-minute touches.
+Mandatory renewal still runs every twenty minutes while serving, including when
+no tools arrive. Both schedules stop when the connection closes. Outside `serve`,
+nothing renews the session automatically. A host that starts the server per
+conversation leaves the session idle between conversations; there, schedule
+`inna-mcp auth status` (for example from cron) for the same effect.
+
+These timing and retry guarantees were checked offline with synthetic short-lived
+sessions. Whether real Inna extends its session on these requests, and its actual
+session lifetime, remain unmeasured. The owner can run the read-only school check
+in [SESSION-CHECK.md](docs/SESSION-CHECK.md) for more than seventy minutes. `auth
+status` verifies the default student and may switch Inna's selection back to it;
+no absence is submitted.
 
 ### Connect an MCP host
 
@@ -416,6 +433,28 @@ bun run --cwd packages/inna-mcp check
 bun run --cwd packages/inna-mcp test:binary
 bun run --cwd packages/inna-mcp test:installer
 ```
+
+The release executable is built from the Rust crate in `rust/inna-mcp`
+(`familyMcp.release.rust`), which serves the same tools, texts, CLI, sign-ins,
+encrypted store, plaintext migration and absence record as the TypeScript
+sources here. From `rust/`:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+FAMILY_MCP_BUN="$(command -v bun)" cargo test --all-features --locked
+```
+
+The Rust tests run this package's integration, sign-in, browser and startup
+cases against the binary, and compare it with the TypeScript CLI and MCP server
+on the same synthetic inputs. They also check that either implementation reads
+the store and the absence record the other writes, and submits a preview the
+other prepared. Only the `test-origin` build that tests use sends requests to a
+loopback fake. The release build sends them only to the HTTPS hosts
+`nam.inna.is`, `r.inna.is`, `heimdallur.inna.is`, `inna.is` and
+`innskra.island.is`; Google sign-in happens in the browser window, not in the
+executable. Archives include the license notices of every statically linked
+crate.
 
 Tests use synthetic responses only. A separately authorized live native check
 verified phone login, private session reuse, and the 13 read/status tools of

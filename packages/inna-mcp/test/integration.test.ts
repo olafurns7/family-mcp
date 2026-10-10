@@ -957,19 +957,28 @@ test('failed and stalled response bodies are cancelled without returning a false
     }
   }
 
+  // The 30 ms deadline starts with the stalled response, inside the session lock, so a slow lock
+  // wait can never use it up first.
+  const deadline = new AbortController();
+
   const stalled = new InnaClient({
     ...f.options,
     now: () => now,
     fetch: async (url, options) => {
       const response = await f.provider.fetch(url, options);
 
-      return new URL(url).pathname === '/api/Messages/GetReceivedMessages'
-        ? new Response(new ReadableStream(), { headers: { 'Content-Type': 'application/json' } })
-        : response;
+      if (new URL(url).pathname !== '/api/Messages/GetReceivedMessages') return response;
+
+      const timeout = AbortSignal.timeout(30);
+      timeout.addEventListener('abort', () => deadline.abort(timeout.reason), { once: true });
+
+      return new Response(new ReadableStream(), {
+        headers: { 'Content-Type': 'application/json' },
+      });
     },
   });
 
-  await assert.rejects(stalled.messages(1, 21, AbortSignal.timeout(30)), /timed out/i);
+  await assert.rejects(stalled.messages(1, 21, deadline.signal), /timed out/i);
   expect(f.provider.posts).toBe(0);
 });
 

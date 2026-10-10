@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1
+
+- Pressing Ctrl-C (or sending SIGTERM) while `abler-mcp auth login` is still
+  starting the browser now gives the browser one more chance to answer (up to
+  about 2 s more). If it answers, abler-mcp closes it through its private
+  debugging pipe (`Browser.close`) before falling back to SIGTERM. A browser
+  that answers but ignores `Browser.close` is signalled after up to 5 s more.
+  The temporary profile is still removed and nothing is saved. Messages and
+  exit codes are unchanged.
+
 ## 0.7.0
 
 - The native binary is now built from Rust. Tools, inputs, results, CLI

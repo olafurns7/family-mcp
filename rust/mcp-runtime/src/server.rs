@@ -3,6 +3,7 @@
 //! match exactly; calls get the TypeScript SDK's error texts and `toolResult`'s results.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use rmcp::model::{
@@ -64,6 +65,12 @@ pub fn invalid_arguments(name: &str, issues: &str) -> CallToolResult {
     ))])
 }
 
+/// rmcp's per-request token, as the TypeScript SDK's `ctx.mcpReq.signal`: it completes when the
+/// host cancels the call (`notifications/cancelled`) and when serving stops, which on SIGINT or
+/// SIGTERM is at once, but at stdin's end only after rmcp has waited up to 5 s for calls in flight
+/// to answer (tests/signals.rs). It also completes once the call has answered.
+pub type Cancelled = Pin<Box<dyn Future<Output = ()> + Send>>;
+
 /// One MCP server: its identity, surface and tools, and its stdio lifetime hooks.
 pub trait Server: Send + Sync + 'static {
     type Fail: Failure + Send;
@@ -74,11 +81,13 @@ pub trait Server: Send + Sync + 'static {
 
     fn surface(&self) -> &Surface;
 
-    /// Run a listed tool: the input validation issues (`Err`), or the tool's outcome.
+    /// Run a listed tool: the input validation issues (`Err`), or the tool's outcome. `cancelled`
+    /// completes when the call is cancelled.
     fn call(
         &self,
         name: &str,
         arguments: &JsonObject,
+        cancelled: Cancelled,
     ) -> impl Future<Output = Result<Result<Value, Self::Fail>, String>> + Send;
 
     /// Standard input ended. Called on every read at the end, so it must be idempotent.
@@ -124,7 +133,7 @@ impl<S: Server> ServerHandler for Handler<S> {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let name = request.name.as_ref();
 
@@ -133,7 +142,9 @@ impl<S: Server> ServerHandler for Handler<S> {
         }
         let arguments = request.arguments.unwrap_or_default();
 
-        Ok(match self.0.call(name, &arguments).await {
+        let cancelled = Box::pin(context.ct.clone().cancelled_owned());
+
+        Ok(match self.0.call(name, &arguments, cancelled).await {
             Ok(output) => tool_result(output),
             Err(issues) => invalid_arguments(name, &issues),
         }
