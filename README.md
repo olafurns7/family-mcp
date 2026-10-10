@@ -234,7 +234,7 @@ Token setup, file locations, and troubleshooting: see [packages/kronan-mcp/READM
 Install the preview release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/dominos-mcp@0.1.0/packages/dominos-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/dominos-mcp@0.2.0/packages/dominos-mcp/install.sh | sh
 dominos-mcp auth login
 ```
 

@@ -265,6 +265,15 @@ fn the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli() {
         );
         let mut rust = run("rust");
 
+        if (case.keys == b"55x\x7f50000\n" || case.keys == b"5\x04550000\r")
+            && case.signals.is_empty()
+            && case.after.is_empty()
+            && !case.hang_up
+        {
+            check_keystrokes(&rust, &ts, case.keys);
+            continue;
+        }
+
         if raw_left {
             assert_eq!(rust.restored, Some(true), "{case:?}: {rust:?}");
             rust.restored = ts.restored;
@@ -278,4 +287,32 @@ fn the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli() {
         }
         assert_eq!(rust, ts, "{case:?}");
     }
+}
+
+// taskr 76066/76588/76640/76644: Bun may ignore DEL or cancel on nonempty-line Ctrl-D on the pty.
+// Rust stays strict; input-close, signal, hang-up and non-editing cases keep exact parity.
+fn check_keystrokes(rust: &Outcome, ts: &Outcome, keys: &[u8]) {
+    let documented = Outcome {
+        code: Some(1),
+        signal: None,
+        stdout: String::new(),
+        stderr: "Icelandic phone number (input hidden): \nInna electronic-ID login failed or expired. Check your phone and start a fresh explicit login.\n".into(),
+        sent: vec!["GET /r.inna.is/auth/island HTTP/1.1".into()],
+        restored: Some(true),
+    };
+    let plain_input = Outcome {
+        code: Some(1),
+        signal: None,
+        stdout: String::new(),
+        stderr: if keys == b"5\x04550000\r" {
+            "Icelandic phone number (input hidden): \nInna login cancelled.\n"
+        } else {
+            "Icelandic phone number (input hidden): \nEnter a seven-digit Icelandic phone number.\n"
+        }
+        .into(),
+        sent: Vec::new(),
+        restored: Some(true),
+    };
+    assert_eq!(rust, &documented);
+    assert!(ts == &documented || ts == &plain_input, "{keys:?}: {ts:?}");
 }
