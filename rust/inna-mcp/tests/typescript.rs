@@ -44,10 +44,26 @@ fn bun_test(file: &str, passed: usize) {
 
 #[test]
 fn the_integration_cases_pass_against_this_binary() {
-    bun_test("integration.test.ts", 41);
+    bun_test("integration.test.ts", 42);
 }
 
 #[test]
 fn the_electronic_id_login_cases_pass_against_this_binary() {
     bun_test("login.test.ts", 3);
+}
+
+#[test]
+fn the_fake_browser_cases_pass_against_this_binary() {
+    bun_test("browser-login.test.ts", 16);
+}
+
+#[test]
+fn the_startup_cases_pass_against_this_binary() {
+    bun_test(
+        "startup.test.ts",
+        match cfg!(target_os = "macos") {
+            true => 2,
+            false => 1,
+        },
+    );
 }

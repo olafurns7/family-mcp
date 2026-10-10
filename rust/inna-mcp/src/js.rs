@@ -22,6 +22,40 @@ pub fn client_now() -> f64 {
         .map_or(0.0, |elapsed| elapsed.as_millis() as f64)
 }
 
+/// `Number(text)`: decimal, or `0x`, `0o` and `0b` integers; anything else is NaN. Adapted from
+/// rust/infomentor-mcp's `number`.
+pub fn number_of(text: &str) -> f64 {
+    let text = trim(text);
+    let radix = |prefix: [&str; 2], radix| {
+        prefix
+            .iter()
+            .find_map(|prefix| text.strip_prefix(prefix))
+            .map(|digits| {
+                // `from_str_radix` would also take a sign, which JavaScript refuses here.
+                match !digits.is_empty() && digits.chars().all(|digit| digit.is_digit(radix)) {
+                    true => u128::from_str_radix(digits, radix).map_or(f64::NAN, |n| n as f64),
+                    false => f64::NAN,
+                }
+            })
+    };
+    radix(["0x", "0X"], 16)
+        .or_else(|| radix(["0o", "0O"], 8))
+        .or_else(|| radix(["0b", "0B"], 2))
+        .unwrap_or_else(|| match text {
+            "" => 0.0,
+            "Infinity" | "+Infinity" => f64::INFINITY,
+            "-Infinity" => f64::NEG_INFINITY,
+            // Rust also reads "inf" and "nan"; JavaScript reads neither.
+            _ if text
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b"+-.eE".contains(&b)) =>
+            {
+                text.parse().unwrap_or(f64::NAN)
+            }
+            _ => f64::NAN,
+        })
+}
+
 /// `text.length`: UTF-16 code units.
 pub fn units(text: &str) -> usize {
     text.encode_utf16().count()

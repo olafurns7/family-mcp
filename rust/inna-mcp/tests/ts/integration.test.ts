@@ -17,8 +17,6 @@
 //   'a changed or missing school on the selected entry discards reads and prevents the POST'
 //   'one uncertain operation blocks new previews for every student'
 //   'all 16 tools round-trip through MCP for the sibling studentKey'
-// Rust: not yet here, until the CLI signs in with Google (slice 3 of the port):
-//   'Google browser sign-in saves a version 2 session and refuses a changed binding'
 // Rust: not here: these drive the TypeScript scheduler or SDK runtime directly, which the binary
 // does not share; src/keep_alive.rs and the stdio runtime's own tests cover the binary's, and
 // src/input.rs and src/html.rs test the pure functions:
@@ -59,6 +57,18 @@ import {
 } from '../../../../packages/inna-mcp/src/client.js';
 import { startKeepAlive } from '../../../../packages/inna-mcp/src/keep-alive.js';
 import { InnaClient, serveStdio } from './rust-inna.js';
+// Rust: the harness copy, whose `spawnLogin` starts the binary.
+import {
+  browserEnvironment,
+  collectProcess,
+  makeFakeBrowser,
+  makePreload,
+  makeTestDirectory,
+  spawnLogin,
+  START_MESSAGE,
+  stopChild,
+  storeHome,
+} from './browser-harness.js';
 import {
   filesContaining,
   readStored,
@@ -923,6 +933,47 @@ async function savedFile(store: Store) {
   return parseSaved(await readStored(store));
 }
 
+// Runs the real CLI with the fake browser; its nam.inna.is requests reach the synthetic Provider.
+async function googleLogin(provider: Provider, extra: string[] = []) {
+  const { directory, temporaryDirectory } = await makeTestDirectory('inna-offline-google-');
+  directories.push(directory);
+  const path = join(directory, 'session.json');
+  const browser = await makeFakeBrowser(directory);
+  const preload = await makePreload(directory);
+
+  const bridge = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: (incoming) => {
+      const url = new URL(incoming.url);
+      // Rust: the binary asks for `https://nam.inna.is<path>` at `<origin>/nam.inna.is<path>`.
+      const path = url.pathname.replace(/^\/nam\.inna\.is(?=\/)/, '');
+
+      return provider.fetch(`https://nam.inna.is${path}${url.search}`, {
+        method: incoming.method,
+        headers: incoming.headers,
+        redirect: 'manual',
+      });
+    },
+  });
+
+  const env = browserEnvironment(directory, temporaryDirectory, path, {
+    INNA_TEST_ORIGIN: `http://127.0.0.1:${bridge.port}`,
+  });
+
+  async function run(args: string[] = extra) {
+    const child = spawnLogin(browser, env, 20, preload, args);
+
+    try {
+      return await collectProcess(child);
+    } finally {
+      await stopChild(child);
+    }
+  }
+
+  return { path, store: storeAt(storeHome(directory)), run, stop: () => bridge.stop(true) };
+}
+
 test('the saved default user id is read locally and is absent without a session', async () => {
   const f = await fixture();
   const count = f.provider.calls.length;
@@ -934,6 +985,58 @@ test('the saved default user id is read locally and is absent without a session'
   await f.client.logout();
   expect(await f.client.defaultUserId()).toBeUndefined();
   expect(f.provider.calls).toHaveLength(calls);
+});
+
+test('Google browser sign-in saves a version 2 session and refuses a changed binding', async () => {
+  const provider = new Provider();
+  const login = await googleLogin(provider);
+
+  try {
+    const first = await login.run();
+    expect(first).toEqual({
+      exit: 0,
+      stdout: 'Signed in. Saved in an encrypted file.\n',
+      stderr: START_MESSAGE,
+    });
+    expect(provider.paths()).toEqual([USER_PATH]);
+    const saved = await savedFile(login.store);
+    expect(saved.version).toBe(2);
+    expect(saved.account).toEqual({ userId: 1, studentId: '2', schoolId: '3' });
+    expect(Object.keys(saved.students)).toEqual(['1']);
+    expect(saved.jar).toContain('synthetic-rotated');
+    expect(saved.jar).toContain('synthetic-xsrf');
+    expect(saved.jar).not.toContain('decoy');
+    expect((await stat(login.store.path)).mode & 0o777).toBe(0o600);
+
+    const client = new InnaClient({
+      sessionFile: login.path,
+      store: login.store,
+      fetch: provider.fetch,
+    });
+
+    expect(await client.status()).toMatchObject({
+      authenticated: true,
+      context: { studentId: '2' },
+    });
+
+    const before = await readStored(login.store);
+    provider.user = { ...provider.user, studentId: '99' };
+    const refused = await login.run();
+    expect(refused.exit).toBe(1);
+    expect(refused.stdout).toBe('');
+    expect(refused.stderr).toBe(
+      `${START_MESSAGE}This export changes the account, student, or school. Use --allow-account-change deliberately.\n`,
+    );
+    expect(await readStored(login.store)).toBe(before);
+
+    const allowed = await login.run(['--allow-account-change']);
+    expect(allowed.exit).toBe(0);
+    expect(allowed.stdout).toBe('Signed in. Saved in an encrypted file.\n');
+    expect((await savedFile(login.store)).account.studentId).toBe('99');
+    expectClean(await readStored(login.store));
+  } finally {
+    await login.stop();
+  }
 });
 
 test('students are listed without switching or exposing identity fields', async () => {

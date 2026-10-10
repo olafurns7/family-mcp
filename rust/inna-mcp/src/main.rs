@@ -5,6 +5,7 @@ mod auth;
 mod client;
 mod dates;
 mod error;
+mod google;
 mod html;
 mod input;
 mod jar;
@@ -388,15 +389,82 @@ async fn sign_in(client: Arc<client::Client>, allow_account_change: bool) -> Res
     }
 }
 
+/// `signInWithGoogle`: the browser is closed and its profile removed before the session is
+/// verified and saved. SIGINT and SIGTERM cancel from before the browser starts until the save
+/// ends, as often as they arrive (`process.on`); the save polls for them.
+async fn sign_in_with_google(
+    client: Arc<client::Client>,
+    allow_account_change: bool,
+    timeout: Option<String>,
+    browser: Option<String>,
+) -> Result<()> {
+    use browser_login::{Cancellation, Signals};
+
+    let timeout = google::parse_timeout(timeout.as_deref())?;
+    google::require_display()?;
+    let signals =
+        Arc::new(Signals::install(Cancellation::InterruptOrTerminate).map_err(|_| Fail::Unknown)?);
+    // An option that is given, even empty, replaces INNA_BROWSER.
+    let browser = browser.or_else(|| {
+        std::env::var_os("INNA_BROWSER").map(|path| path.to_string_lossy().into_owned())
+    });
+    let watching = signals.clone();
+    let login = tokio::task::spawn_blocking(move || {
+        google::login_in_browser(&watching, browser.as_deref(), timeout)
+    })
+    .await
+    .unwrap_or(Err(Fail::Unknown));
+
+    let saved = match login {
+        Ok(jar) => {
+            let controller = signal::Controller::default();
+            let cancelled = controller.signal();
+            let save = client.run(controller.signal(), move |client, signal, cancel| {
+                client.save_verified_session(jar, allow_account_change, signal, cancel)
+            });
+            tokio::pin!(save);
+
+            let saved = loop {
+                tokio::select! {
+                    saved = &mut save => break saved,
+                    () = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
+                        if signals.cancelled() {
+                            controller.abort();
+                        }
+                    }
+                }
+            };
+
+            match saved {
+                Err(_) if cancelled.aborted() => Err(google::CANCELLED),
+                saved => saved,
+            }
+        }
+        Err(fail) => Err(fail),
+    };
+    signals.stop();
+    report_saved(&saved?);
+    Ok(())
+}
+
 /// `auth login`: the store is checked before the owner is asked for anything.
-async fn login(allow_account_change: bool) -> Result<()> {
+async fn login(
+    google: bool,
+    allow_account_change: bool,
+    timeout: Option<String>,
+    browser: Option<String>,
+) -> Result<()> {
     let client = Arc::new(client::Client::from_environment(false)?);
     client
         .run(signal::Signal::default(), |client, _, cancel| {
             client.check_store(cancel)
         })
         .await?;
-    sign_in(client, allow_account_change).await
+
+    match google {
+        true => sign_in_with_google(client, allow_account_change, timeout, browser).await,
+        false => sign_in(client, allow_account_change).await,
+    }
 }
 
 async fn main_async() -> Result<ExitCode> {
@@ -430,12 +498,11 @@ async fn main_async() -> Result<ExitCode> {
             keep_alive,
         } => serve(allow_absence_writes, keep_alive).await?,
         Command::Login {
-            google: false,
+            google,
             allow_account_change,
-            ..
-        } => login(allow_account_change).await?,
-        // Google sign-in arrives with its own commit; until then it fails closed.
-        Command::Login { .. } => return Err(Fail::Unknown),
+            timeout,
+            browser,
+        } => login(google, allow_account_change, timeout, browser).await?,
         command => session_command(command).await?,
     }
     Ok(ExitCode::SUCCESS)

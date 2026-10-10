@@ -300,6 +300,27 @@ const scenarios: Scenario[] = [
     ],
   },
   {
+    // Google sign-in up to the browser: every case names a missing browser, so neither side can
+    // open a real one.
+    name: 'google-refusals',
+    env: { INNA_BROWSER: '<home>/missing-from-environment' },
+    steps: [
+      ...[
+        ['--timeout', '0'],
+        ['--timeout=1.5'],
+        ['--timeout=', '--browser', '<home>/missing'],
+        ['--timeout', '0x10'],
+        ['--timeout', ' 7 '],
+        ['--browser', '<home>/missing'],
+        ['--browser', '<home>'],
+        [],
+        ['--allow-account-change'],
+      ].map((args) => ({ cli: ['auth', 'login', '--google', ...args] })),
+      { file: 'not-executable', text: '#!/bin/sh\n', permissions: 0o600 },
+      { cli: ['auth', 'login', '--google', '--browser', '<home>/not-executable'] },
+    ],
+  },
+  {
     name: 'store-file-open',
     steps: [{ file: storeFile, text: 'x', permissions: 0o644 }, { cli: ['auth', 'status'] }, { cli: ['auth', 'bogus'] }],
   },

@@ -39,7 +39,7 @@ pub enum Migrated {
 }
 
 /// One `exportedCookieSchema` entry, as `sessionJar` reads it.
-struct Exported {
+pub struct Exported {
     name: String,
     value: String,
     domain: String,
@@ -84,7 +84,7 @@ impl Exported {
 }
 
 /// `cookieExportSchema.parse`: an array of cookies, or an object holding one as `cookies`.
-fn exported_cookies(value: &Value) -> Option<Vec<Exported>> {
+pub fn exported_cookies(value: &Value) -> Option<Vec<Exported>> {
     let list = match value {
         Value::Array(list) => list,
         Value::Object(object) => object.get("cookies")?.as_array()?,
@@ -95,7 +95,7 @@ fn exported_cookies(value: &Value) -> Option<Vec<Exported>> {
 
 /// `sessionJar`: the only cookies a saved session holds, the three nam.inna.is session cookies at
 /// path `/`.
-fn session_jar(cookies: Vec<Exported>) -> Result<Jar> {
+pub fn session_jar(cookies: Vec<Exported>) -> Result<Jar> {
     let origin = Url::parse(ORIGIN).map_err(|_| Fail::Unknown)?;
     let mut jar = Jar::default();
 
