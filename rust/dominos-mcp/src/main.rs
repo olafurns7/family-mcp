@@ -4,6 +4,7 @@ mod client;
 mod error;
 mod input;
 mod js;
+mod money;
 mod origin;
 mod server;
 mod shapes;

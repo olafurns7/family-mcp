@@ -65,5 +65,20 @@ fn the_startup_cases_pass_against_this_binary() {
 
 #[test]
 fn the_session_record_is_interoperable_in_both_directions() {
-    bun_test("interop.test.ts", 2);
+    bun_test("interop.test.ts", 4);
+}
+
+#[test]
+fn the_money_and_record_cases_pass_against_this_binary() {
+    bun_test("money.test.ts", 5);
+}
+
+#[test]
+fn the_offer_slots_case_passes_against_this_binary() {
+    bun_test("catalog.test.ts", 1);
+}
+
+#[test]
+fn the_persisted_intent_failure_cases_pass_against_this_binary() {
+    bun_test("intent.test.ts", 6);
 }

@@ -15,6 +15,7 @@ workspace = true
 test-origin = []
 
 [dependencies]
+getrandom = "=0.4.3"
 family-store = { path = "../family-store" }
 mcp-runtime = { path = "../mcp-runtime" }
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"] }

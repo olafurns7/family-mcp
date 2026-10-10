@@ -18,12 +18,12 @@ pub const REQUEST_FAILED: &str =
 pub const INVALID_RESPONSE: &str =
     "Unexpected response from Domino’s or its payment provider. The service may have changed.";
 pub struct Client {
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     http: reqwest::Client,
-    origins: [String; 3],
+    pub(crate) origins: [String; 3],
     handle: Handle,
     stop: watch::Sender<bool>,
-    cancel: Cancel,
+    pub(crate) cancel: Cancel,
     active: Arc<RwLock<()>>,
 }
 impl Client {
@@ -98,11 +98,20 @@ impl Client {
         .ok_or(Fail::Safe(REQUEST_FAILED))?
         .map_err(|_| Fail::Safe(REQUEST_FAILED))?
     }
-    fn dominos(
+    pub(crate) fn dominos(
         &self,
         path: &str,
         schema: &shapes::S,
         session: Option<&store::Session>,
+    ) -> Result<Value> {
+        self.dominos_body(path, schema, session, None)
+    }
+    pub(crate) fn dominos_body(
+        &self,
+        path: &str,
+        schema: &shapes::S,
+        session: Option<&store::Session>,
+        body: Option<String>,
     ) -> Result<Value> {
         let mut headers = HeaderMap::new();
         headers.insert("accept", HeaderValue::from_static("application/json"));
@@ -116,17 +125,18 @@ impl Client {
                 .map_err(|_| Fail::Unknown)?,
             );
         }
-        let text = self.text(
-            &format!("{}{path}", self.origins[0]),
-            Method::GET,
-            headers,
-            None,
-        )?;
+        let method = if body.is_some() {
+            headers.insert("content-type", HeaderValue::from_static("application/json"));
+            Method::POST
+        } else {
+            Method::GET
+        };
+        let text = self.text(&format!("{}{path}", self.origins[0]), method, headers, body)?;
         js::parse(text.as_bytes())
             .and_then(|value| shapes::parse(schema, &value))
             .ok_or(Fail::Safe(INVALID_RESPONSE))
     }
-    fn menu(&self) -> Result<Value> {
+    pub(crate) fn menu(&self) -> Result<Value> {
         catalog::parse_menu(&self.text(
             &format!("{}/panta/pizzur", self.origins[1]),
             Method::GET,
@@ -157,8 +167,9 @@ impl Client {
         save(&next)?;
         Ok(next)
     }
-    fn authenticated(
+    pub(crate) fn authenticated(
         &self,
+        retry_read: bool,
         mut work: impl FnMut(&store::Session) -> Result<Value>,
     ) -> Result<Value> {
         store::with_session(&self.path, &self.cancel, |mut session, save, _| {
@@ -166,18 +177,22 @@ impl Client {
                 session = self.refresh(&session, save)?;
             }
             match work(&session) {
-                Err(Fail::Http(401)) => work(&self.refresh(&session, save)?),
+                Err(Fail::Http(401)) if retry_read => work(&self.refresh(&session, save)?),
                 outcome => outcome,
             }
         })
     }
     fn call(&self, name: &str, input: &Value) -> Result<Value> {
         match name {
-            "auth_status" => self.authenticated(|session| {
+            "quote_order" => self.quote_order(input),
+            "create_checkout" => self.create_checkout(input),
+            "get_checkout" => self.get_checkout(input),
+            "pay_saved_card" => self.pay_saved_card(input),
+            "auth_status" => self.authenticated(true, |session| {
                 let account=self.dominos("user/newuser",&shapes::PROFILE,Some(session))?;
                 Ok(json!({"authenticated":true,"name":account["name"]}))
             }),
-            "get_profile" => self.authenticated(|session| {
+            "get_profile" => self.authenticated(true, |session| {
                 let account=self.dominos("user/newuser",&shapes::PROFILE,Some(session))?;
                 let addresses=account["savedAddress"].as_array().map(|items|items.iter().map(|a|json!({"ID":a["AddressID"],"Name":a["Address"],"PostalCode":a["PostalCode"],"PostalCodeName":a["PostalCodeName"]})).collect::<Vec<_>>()).unwrap_or_default();
                 let orders=account["savedOrders"].as_array().map(|items|items.iter().map(|o|json!({"id":o["id"],"name":o["name"]})).collect::<Vec<_>>()).unwrap_or_default();
@@ -186,8 +201,8 @@ impl Client {
             "list_stores" => Ok(json!({"stores":self.dominos("store",&shapes::STORES,None)?})),
             "search_addresses" => Ok(json!({"addresses":self.dominos(&format!("addresses?q={}",js::encode_component(input["query"].as_str().unwrap_or_default())),&shapes::ADDRESSES,None)?})),
             "get_delivery_store" => self.dominos(&format!("addresses/GetAddressStoreWithWaitingTimes?address={}&postalCode={}",js::encode_query(input["address"].as_str().unwrap_or_default()),js::encode_query(input["postalCode"].as_str().unwrap_or_default())),&shapes::DELIVERY_STORE,None),
-            "list_receipts" => self.authenticated(|session|Ok(json!({"receipts":self.dominos("user/getreceipts",&shapes::RECEIPTS,Some(session))?}))),
-            "get_tracker" => self.authenticated(|session|Ok(json!({"tracker":self.dominos("tracker",&shapes::TRACKER,Some(session))?}))),
+            "list_receipts" => self.authenticated(true, |session|Ok(json!({"receipts":self.dominos("user/getreceipts",&shapes::RECEIPTS,Some(session))?}))),
+            "get_tracker" => self.authenticated(true, |session|Ok(json!({"tracker":self.dominos("tracker",&shapes::TRACKER,Some(session))?}))),
             "search_menu" => {
                 let menu=self.menu()?;
                 let query=input["query"].as_str().unwrap_or_default().to_lowercase();

@@ -43,7 +43,7 @@ async function answer(response: Response, out: ServerResponse): Promise<void> {
 }
 
 /**
- * Serve `request` on loopback. Each request reaches it as `https://api.kronan.is<path>` with the
+ * Serve `request` on loopback. Each request reaches it as `the production Domino’s/Adyen URL` with the
  * method, headers, body and an abort signal, and `redirect: 'error'` (the binary never follows
  * one; the loopback case checks that). A thrown error drops the connection, as a failed fetch.
  * A loopback port scanner's `GET /` never reaches it.
@@ -161,6 +161,10 @@ export class DominosClient {
     this.call('get_delivery_store', { address, postalCode });
   receipts = () => this.call('list_receipts');
   tracker = () => this.call('get_tracker');
+  quoteOrder = (input: object) => this.call('quote_order', input);
+  createCheckout = (input: object) => this.call('create_checkout', input);
+  getCheckout = (input: object) => this.call('get_checkout', input);
+  paySavedCard = (input: object) => this.call('pay_saved_card', input);
 }
 
 /** CLI-backed auth functions; TS helpers only seed or inspect synthetic records. */

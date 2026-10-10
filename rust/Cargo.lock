@@ -323,6 +323,7 @@ name = "dominos-mcp"
 version = "0.1.0"
 dependencies = [
  "family-store",
+ "getrandom 0.4.3",
  "mcp-runtime",
  "reqwest",
  "rmcp",

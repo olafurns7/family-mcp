@@ -29,4 +29,5 @@ fn every_scenario_matches_the_typescript_package() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(stdout.starts_with("parity ok"), "{stdout}");
+    println!("{stdout}");
 }

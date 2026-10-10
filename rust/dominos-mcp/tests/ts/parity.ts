@@ -110,6 +110,106 @@ try {
     ['get_delivery_store', { address: [], postalCode: 1, extra: true }],
     ['list_receipts', { card: 1 }],
     ['get_tracker', { extra: 1 }],
+    ['quote_order', {}],
+    ['quote_order', { fulfillment: { type: 'pickup', storeId: '1' } }],
+    ['quote_order', { fulfillment: { type: 'bad' } }],
+    ['quote_order', { fulfillment: [] }],
+    ['quote_order', { fulfillment: { type: 'pickup', storeId: '1', secret: 1 }, pizzas: [] }],
+    [
+      'quote_order',
+      {
+        fulfillment: {
+          type: 'delivery',
+          address: { ID: 0, Name: 1, PostalCode: null, PostalCodeName: [], extra: 1 },
+        },
+      },
+    ],
+    [
+      'quote_order',
+      {
+        fulfillment: { type: 'pickup', storeId: '1' },
+        pizzas: 'bad',
+        sides: [null],
+        beverages: [{}],
+        packages: [{}],
+      },
+    ],
+    [
+      'quote_order',
+      {
+        fulfillment: { type: 'pickup', storeId: '1' },
+        pizzas: [{ quantity: 0, sizeId: '', crustId: 'bad/id', sections: [], extra: 1 }],
+        extra: true,
+      },
+    ],
+    [
+      'quote_order',
+      {
+        fulfillment: { type: 'pickup', storeId: '1' },
+        pizzas: [
+          {
+            sizeId: 'LG',
+            crustId: 'HANDTOSS',
+            sections: [
+              {
+                pizzaId: 'TEST',
+                modifications: [
+                  { toppingId: 'BAD', quantity: 3 },
+                  { toppingId: 1, quantity: null, extra: 1 },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      'quote_order',
+      {
+        fulfillment: { type: 'pickup', storeId: '1' },
+        packages: [
+          { id: 'bundle', pizzas: [{}], sides: [{ id: 'side', extraId: null }], beverages: [{}] },
+        ],
+      },
+    ],
+    [
+      'quote_order',
+      {
+        fulfillment: { type: 'pickup', storeId: '1', instructions: 'x'.repeat(301) },
+        pizzas: [],
+        coupon: '',
+      },
+    ],
+    [
+      'quote_order',
+      {
+        fulfillment: { type: 'pickup', storeId: '1' },
+        sides: Array.from({ length: 21 }, () => ({ id: 'TEST' })),
+      },
+    ],
+    ['create_checkout', {}],
+    ['create_checkout', { quoteId: '../unsafe', expectedTotal: -1, extra: 1 }],
+    ['create_checkout', { quoteId: null, expectedTotal: 1.5 }],
+    [
+      'create_checkout',
+      { quoteId: '00000000-0000-0000-0000-000000000000', expectedTotal: 1_000_001 },
+    ],
+    ['get_checkout', { checkoutId: 42, extra: 1 }],
+    ['pay_saved_card', {}],
+    [
+      'pay_saved_card',
+      { checkoutId: 'bad', cardId: 'card_x', expectedTotal: 1e30, confirm: false },
+    ],
+    [
+      'pay_saved_card',
+      {
+        checkoutId: '10000000-0000-4000-8000-000000000000',
+        cardId: 1,
+        expectedTotal: null,
+        confirm: true,
+        extra: 1,
+      },
+    ],
   ];
   for (const [name, arguments_] of invalid) {
     const results = await Promise.all(
@@ -124,6 +224,7 @@ try {
   process.env.DOMINOS_RUST_BINARY = rust;
   cases += await (await import('./reads-parity.ts')).readParity();
   cases += await (await import('./auth-parity.ts')).authParity(rust);
+  cases += await (await import('./money-parity.ts')).moneyParity();
   const unsafe = join(env.XDG_CONFIG_HOME, 'dominos-mcp');
   mkdirSync(unsafe, { recursive: true, mode: 0o755 });
   assert.deepEqual(await run([rust], ['bad']), await run(ts, ['bad']));

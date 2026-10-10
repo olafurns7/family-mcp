@@ -14,6 +14,10 @@ pub type Fields = &'static [(&'static str, S)];
 #[derive(Clone, Copy)]
 pub enum S {
     Str,
+    Text(fn(&str) -> bool),
+    Int(f64),
+    OneOf(&'static [&'static str]),
+    Cart,
     Num,
     /// `z.number().int().positive()`: a positive safe integer.
     PositiveInt,
@@ -34,6 +38,18 @@ fn shape(schema: &S, value: Option<&Value>) -> Result<Option<Value>, ()> {
         (S::Null(_), Some(Value::Null)) => Value::Null,
         (S::Opt(inner) | S::Null(inner), value) => return shape(inner, value),
         (S::Str, Some(text @ Value::String(_))) => text.clone(),
+        (S::Text(check), Some(Value::String(text))) if check(text) => Value::String(text.clone()),
+        (S::OneOf(options), Some(Value::String(text))) if options.contains(&text.as_str()) => {
+            Value::String(text.clone())
+        }
+        (S::Int(max), Some(Value::Number(number)))
+            if number
+                .as_f64()
+                .is_some_and(|n| n.fract() == 0.0 && n >= 0.0 && n <= *max) =>
+        {
+            Value::Number(number.clone())
+        }
+        (S::Cart, Some(Value::Object(value))) => crate::input::cart(value).map_err(|_| ())?,
         (S::Num, Some(number @ Value::Number(_))) => number.clone(),
         (S::PositiveInt, Some(Value::Number(number)))
             if number.as_f64().is_some_and(|value| {
@@ -255,3 +271,210 @@ pub const TRACKER: S = S::Obj(&[&[
     ("IsTimedOrder", BOOL),
     ("EstimatedFinishTime", S::Opt(&S::Null(&STR))),
 ]]);
+
+const MONEY: S = S::Int(1_000_000.0);
+const NONEMPTY: S = S::Text(|s| !s.is_empty());
+const LOCAL: S = S::Text(crate::input::uuid);
+const QUOTE_FIELDS: Fields = &[
+    ("Total", MONEY),
+    ("OrderID", S::Opt(&S::Null(&REF))),
+    ("OrderGuidId", S::Opt(&S::Null(&STR))),
+    ("EstimatedDeliveryTime", S::Opt(&S::Null(&STR))),
+    ("Success", S::Opt(&BOOL)),
+];
+pub const QUOTE_RESPONSE: S = S::Obj(&[QUOTE_FIELDS]);
+pub const ORDER_RESPONSE: S = S::Obj(&[
+    QUOTE_FIELDS,
+    &[
+        (
+            "AdyenSessionId",
+            S::Text(|s| {
+                !s.is_empty()
+                    && s.chars().count() <= 80
+                    && s.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            }),
+        ),
+        ("AdyenSessionData", NONEMPTY),
+        ("AdyenClientId", NONEMPTY),
+        ("OrderGuidId", NONEMPTY),
+    ],
+]);
+const CARD: S = S::Obj(&[&[
+    ("id", STR),
+    ("type", S::OneOf(&["scheme"])),
+    ("brand", STR),
+    (
+        "lastFour",
+        S::Text(|s| s.len() == 4 && s.bytes().all(|b| b.is_ascii_digit())),
+    ),
+    ("expiryMonth", STR),
+    ("expiryYear", STR),
+    ("supportedShopperInteractions", S::Opt(&S::List(&STR))),
+]]);
+pub const SETUP_RESPONSE: S = S::Obj(&[&[
+    ("id", STR),
+    ("sessionData", NONEMPTY),
+    ("expiresAt", S::Text(datetime)),
+    (
+        "amount",
+        S::Obj(&[&[("currency", S::OneOf(&["ISK"])), ("value", S::Int(SAFE))]]),
+    ),
+    (
+        "paymentMethods",
+        S::Obj(&[&[("storedPaymentMethods", S::Opt(&S::List(&CARD)))]]),
+    ),
+]]);
+pub const PAYMENT_RESPONSE: S = S::Obj(&[&[
+    ("resultCode", STR),
+    ("sessionData", NONEMPTY),
+    ("sessionResult", S::Opt(&STR)),
+    (
+        "action",
+        S::Opt(&S::Obj(&[&[
+            ("type", STR),
+            ("url", S::Opt(&STR)),
+            ("method", S::Opt(&STR)),
+        ]])),
+    ),
+]]);
+pub const LATEST_CART: S = S::Obj(&[&[(
+    "OrderData",
+    S::Union(&[
+        S::Obj(&[&[("IsPayed", BOOL)]]),
+        S::OneOf(&[""]),
+        S::Null(&S::OneOf(&[])),
+    ]),
+)]]);
+pub const QUOTE: S = S::Obj(&[&[
+    ("id", LOCAL),
+    ("username", STR),
+    ("cart", S::Cart),
+    ("total", MONEY),
+    ("createdAt", NUM),
+    ("expiresAt", NUM),
+    ("checkoutId", S::Opt(&LOCAL)),
+]]);
+pub const CHECKOUT: S = S::Obj(&[&[
+    ("id", LOCAL),
+    ("quoteId", LOCAL),
+    ("username", STR),
+    ("total", MONEY),
+    ("cart", S::Cart),
+    (
+        "state",
+        S::OneOf(&[
+            "creating",
+            "ready",
+            "submitting",
+            "authorised",
+            "refused",
+            "pending",
+            "requires_action",
+            "unknown",
+            "amount_changed",
+        ]),
+    ),
+    ("expiresAt", NUM),
+    ("orderId", S::Null(&REF)),
+    ("orderGuid", S::Opt(&STR)),
+    ("sessionId", S::Opt(&STR)),
+    ("sessionData", S::Opt(&STR)),
+    ("clientKey", S::Opt(&STR)),
+    ("cards", S::List(&CARD)),
+    ("resultCode", S::Opt(&STR)),
+]]);
+/// zod's offset datetime: Gregorian date, seconds required, fractional seconds optional.
+fn datetime(s: &str) -> bool {
+    let b = s.as_bytes();
+    let digits = |at: usize, len: usize| {
+        b.get(at..at + len)
+            .filter(|v| v.iter().all(u8::is_ascii_digit))
+            .and_then(|v| std::str::from_utf8(v).ok()?.parse::<u32>().ok())
+    };
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        digits(0, 4),
+        digits(5, 2),
+        digits(8, 2),
+        digits(11, 2),
+        digits(14, 2),
+        digits(17, 2),
+    ) else {
+        return false;
+    };
+    if b.get(4) != Some(&b'-')
+        || b.get(7) != Some(&b'-')
+        || b.get(10) != Some(&b'T')
+        || b.get(13) != Some(&b':')
+        || b.get(16) != Some(&b':')
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return false;
+    }
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    };
+    if day == 0 || day > days {
+        return false;
+    }
+    let mut at = 19;
+    if b.get(at) == Some(&b'.') {
+        at += 1;
+        let start = at;
+        while b.get(at).is_some_and(u8::is_ascii_digit) {
+            at += 1;
+        }
+        if at == start {
+            return false;
+        }
+    }
+    if b.get(at) == Some(&b'Z') {
+        return at + 1 == b.len();
+    }
+    matches!(b.get(at), Some(b'+' | b'-'))
+        && b.get(at + 3) == Some(&b':')
+        && digits(at + 1, 2).is_some_and(|n| n <= 23)
+        && digits(at + 4, 2).is_some_and(|n| n <= 59)
+        && at + 6 == b.len()
+}
+#[cfg(test)]
+mod money_tests {
+    use super::*;
+    #[test]
+    fn payment_dates_and_local_identifiers_keep_the_reference_bounds() {
+        for valid in [
+            "2026-01-01T12:00:00Z",
+            "2000-02-29T23:59:59.123456+23:59",
+            "0000-02-29T00:00:00-00:00",
+        ] {
+            assert!(datetime(valid));
+            assert!(crate::js::date_parse(valid).is_some());
+        }
+        for invalid in [
+            "2026-02-29T00:00:00Z",
+            "2026-01-01T24:00:00Z",
+            "2026-01-01T00:00Z",
+            "2026-01-01T00:00:00",
+            "2026-01-01T00:00:00+24:00",
+            "2026-01-01T00:00:00.éZ",
+        ] {
+            assert!(!datetime(invalid), "{invalid}");
+        }
+        assert_eq!(crate::js::iso_string(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(
+            crate::js::iso_string(951_782_400_000),
+            "2000-02-29T00:00:00.000Z"
+        );
+    }
+}
