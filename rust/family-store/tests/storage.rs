@@ -26,8 +26,10 @@ const E4: &str = "Other users can write to a folder above the store.";
 const HARD_LINKS: &str =
     "This file has a second name (a hard link). Remove the other name and start again.";
 
+#[cfg(target_os = "macos")]
 const OWNED_ACL: &str = "Extra sharing permissions (an access control list, set in Finder’s Get Info) let other users in.";
 
+#[cfg(target_os = "macos")]
 const ANCESTOR_ACL: &str = "Extra sharing permissions (an access control list) on a folder above the store let other users change it. List them with ls -led and remove the entry that allows another user to write.";
 
 const BROKEN_LINK: &str = "A link in a folder above the store is broken, loops back on itself, or leads into a folder you cannot open.";
