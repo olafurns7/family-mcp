@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use mcp_runtime::{Server, Surface};
+use mcp_runtime::{Cancelled, Server, Surface};
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
@@ -118,6 +118,7 @@ impl Server for Inna {
         &self,
         name: &str,
         arguments: &JsonObject,
+        _cancelled: Cancelled,
     ) -> std::result::Result<Result<Value>, String> {
         let client = &self.client;
         let signal = Signal::default();

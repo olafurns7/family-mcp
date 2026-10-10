@@ -1,15 +1,16 @@
 //! The smallest server on the documented entry point: one tool, `hang`, that waits until the
-//! server closes. tests/signals.rs runs it to check that a signal ends the process while the
-//! host still holds stdin open.
+//! call is cancelled, and a `close` that waits for calls in flight. tests/signals.rs runs it to
+//! check when a call is cancelled and that a signal ends the process while the host still holds
+//! stdin open.
 
-use mcp_runtime::{Fail, Server, Surface};
+use mcp_runtime::{Cancelled, Fail, Server, Surface};
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
-use tokio::sync::Notify;
+use tokio::sync::RwLock;
 
 struct Hang {
     surface: Surface,
-    closed: Notify,
+    running: RwLock<()>,
 }
 
 impl Server for Hang {
@@ -27,15 +28,18 @@ impl Server for Hang {
         &self,
         _name: &str,
         arguments: &JsonObject,
+        cancelled: Cancelled,
     ) -> Result<Result<Value, Fail>, String> {
         mcp_runtime::input::empty(arguments)?;
+        let _running = self.running.read().await;
         eprintln!("HANG");
-        self.closed.notified().await;
+        cancelled.await;
+        eprintln!("CANCELLED");
         Ok(Ok(json!({})))
     }
 
     async fn close(&self) {
-        self.closed.notify_waiters();
+        let _ = self.running.write().await;
         eprintln!("CLOSE");
     }
 }
@@ -46,7 +50,7 @@ fn main() {
     );
     let server = Hang {
         surface,
-        closed: Notify::new(),
+        running: RwLock::new(()),
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
