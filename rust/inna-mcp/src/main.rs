@@ -1,8 +1,20 @@
 //! inna-mcp: the command line of packages/inna-mcp/src/cli.ts.
 
+mod absence;
+mod client;
+mod dates;
 mod error;
+mod html;
+mod input;
+mod jar;
+mod js;
+mod keep_alive;
 mod server;
+mod session;
+mod shapes;
+mod signal;
 mod store;
+mod upstream;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -188,13 +200,14 @@ fn route(args: Args) -> Result<Command> {
     }
 }
 
-/// Serve until stdin ends or SIGINT or SIGTERM arrives, then cancel and wait for operations.
-async fn serve(allow_absence_writes: bool) -> Result<()> {
-    mcp_runtime::serve_stdio(server::Inna {
-        allow_absence_writes,
-    })
-    .await
-    .map_err(|_| Fail::Unknown)
+/// Serve until stdin ends or SIGINT or SIGTERM arrives, then stop the keep-alive and wait for
+/// operations in flight. The session path is checked first, as the keep-alive's client is
+/// built before serving; TypeScript without the keep-alive would only refuse each request.
+async fn serve(allow_absence_writes: bool, keep_alive: bool) -> Result<()> {
+    let client = client::Client::from_environment(allow_absence_writes)?;
+    mcp_runtime::serve_stdio(server::Inna::new(client, keep_alive))
+        .await
+        .map_err(|_| Fail::Unknown)
 }
 
 async fn main_async() -> Result<ExitCode> {
@@ -223,11 +236,10 @@ async fn main_async() -> Result<ExitCode> {
     }
 
     match route(args)? {
-        // Keep-alive arrives with the HTTP client.
         Command::Serve {
             allow_absence_writes,
-            keep_alive: _,
-        } => serve(allow_absence_writes).await?,
+            keep_alive,
+        } => serve(allow_absence_writes, keep_alive).await?,
         // The sign-in and session commands arrive with the client and its store; until then
         // each fails closed.
         Command::Login { .. }

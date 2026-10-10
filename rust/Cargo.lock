@@ -846,11 +846,16 @@ dependencies = [
 name = "inna-mcp"
 version = "0.3.0"
 dependencies = [
+ "aws-lc-rs",
+ "browser-login",
  "family-store",
+ "html5gum",
  "mcp-runtime",
+ "reqwest",
  "rmcp",
  "serde_json",
  "tokio",
+ "url",
 ]
 
 [[package]]

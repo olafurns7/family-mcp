@@ -10,8 +10,14 @@ fn mentions(binary: &Path, text: &[u8]) -> bool {
     bytes.windows(text.len()).any(|window| window == text)
 }
 
-/// The test build's refusal to choose a store outside a scratch home.
-const SEAMS: [&[u8]; 1] = [b"the real store is never used"];
+/// The test build's refusal to choose a store outside a scratch home, its fake upstream, its
+/// clock, and its keep-alive trigger.
+const SEAMS: [&[u8]; 4] = [
+    b"the real store is never used",
+    b"INNA_TEST_ORIGIN",
+    b"INNA_TEST_NOW",
+    b"INNA_TEST_KEEP_ALIVE",
+];
 
 #[test]
 fn the_default_build_has_no_test_seams() {
