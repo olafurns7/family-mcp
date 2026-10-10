@@ -23,7 +23,7 @@ await test('release package constants stay pinned', () => {
   );
   assert.deepEqual(DOCUMENTATION_FILES, {
     'abler-mcp': ['docs/AGENTS.md', 'docs/PUBLISHING.md'],
-    'infomentor-mcp': ['docs/RELEASING.md'],
+    'infomentor-mcp': ['docs/CONNECTIVITY.md', 'docs/RELEASING.md'],
     'inna-mcp': ['docs/RELEASING.md'],
     'kronan-mcp': ['docs/RELEASING.md'],
     'dominos-mcp': ['docs/RELEASING.md'],

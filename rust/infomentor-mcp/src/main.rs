@@ -179,30 +179,39 @@ async fn serve(allow_setup_tools: bool, options: Options) -> Result<()> {
         .map_err(|_| Fail::Unknown)
 }
 
-/// SIGINT and SIGTERM as the TypeScript CLI's `process.once` listeners see them: the first runs
-/// `first`. That listener is then gone, so the next one ends the process at once, as the default
-/// action would, with the status a shell shows for it (128 + the signal number).
+/// SIGINT and SIGTERM as the TypeScript CLI's `process.once` listeners see them: one listener per
+/// kind, each running `first` (once in all: it only aborts) on its kind's first arrival. A kind's
+/// listener is then gone, so that kind's second arrival ends the process at once, as the default
+/// action would, with the status a shell shows for it (128 + the signal number). A SIGINT then a
+/// SIGTERM is two first arrivals and ends nothing.
 fn on_signals(first: impl FnOnce() + Send + 'static) -> Result<()> {
     let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| Fail::Unknown)?;
     let mut terminate = signal(SignalKind::terminate()).map_err(|_| Fail::Unknown)?;
 
     tokio::spawn(async move {
-        tokio::select! {
-            _ = interrupt.recv() => {}
-            _ = terminate.recv() => {}
+        let mut first = Some(first);
+        let (mut interrupted, mut terminated) = (false, false);
+
+        loop {
+            let (kind, seen) = tokio::select! {
+                _ = interrupt.recv() => (SignalKind::interrupt(), &mut interrupted),
+                _ = terminate.recv() => (SignalKind::terminate(), &mut terminated),
+            };
+
+            if std::mem::replace(seen, true) {
+                std::process::exit(128 + kind.as_raw_value());
+            }
+
+            if let Some(first) = first.take() {
+                first();
+            }
         }
-        first();
-        let kind = tokio::select! {
-            _ = interrupt.recv() => SignalKind::interrupt(),
-            _ = terminate.recv() => SignalKind::terminate(),
-        };
-        std::process::exit(128 + kind.as_raw_value());
     });
     Ok(())
 }
 
 /// A signal that the first SIGINT or SIGTERM aborts, so a command ends as cancelled instead of
-/// being killed; a second one ends the process.
+/// being killed; a second one of the same kind ends the process.
 fn cancel_on_signals() -> Result<Signal> {
     let controller = Controller::default();
     let signal = controller.signal();

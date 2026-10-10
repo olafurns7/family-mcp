@@ -1,6 +1,6 @@
 // SIGINT and SIGTERM for the binary's migrate and logout, which take no signal: the TypeScript CLI
-// listens with `process.once`, so the first signal changes nothing and the second one ends the
-// process, which keeps the plaintext session it had not yet moved. Run by tests/typescript.rs from
+// listens with one `process.once` per kind, so a kind's first signal changes nothing and its second
+// ends the process, which keeps the plaintext session it had not yet moved. Run by tests/typescript.rs from
 // packages/infomentor-mcp; TypeScript holds the plaintext session's lock, so the binary waits.
 import { expect, test } from 'bun:test';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
@@ -124,6 +124,18 @@ test('a second SIGTERM ends a logout waiting for the lock and keeps the plaintex
 test('one SIGINT changes nothing: migrate still moves the session once the lock frees', async () => {
   expect(await interrupted(['migrate'], ['SIGINT'], 500)).toEqual({
     running: [true],
+    endedWhileLocked: false,
+    exitCode: 0,
+    signalCode: null,
+    stderr: 'Moved the InfoMentor session into the encrypted store and removed its file.\n',
+    legacyKept: false,
+    record: true,
+  });
+}, 30_000);
+
+test('a SIGINT then a SIGTERM are two first signals: migrate still moves the session', async () => {
+  expect(await interrupted(['migrate'], ['SIGINT', 'SIGTERM'], 500)).toEqual({
+    running: [true, true],
     endedWhileLocked: false,
     exitCode: 0,
     signalCode: null,

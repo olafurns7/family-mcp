@@ -66,5 +66,5 @@ fn the_loopback_case_passes_against_this_binary() {
 
 #[test]
 fn the_signal_cases_pass_against_this_binary() {
-    bun_test("signals.test.ts", 3);
+    bun_test("signals.test.ts", 4);
 }
