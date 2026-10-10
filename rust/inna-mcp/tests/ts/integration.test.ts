@@ -17,9 +17,8 @@
 //   'a changed or missing school on the selected entry discards reads and prevents the POST'
 //   'one uncertain operation blocks new previews for every student'
 //   'all 16 tools round-trip through MCP for the sibling studentKey'
-// Rust: not yet here, until the CLI signs in and migrates (slice 3 of the port):
+// Rust: not yet here, until the CLI signs in with Google (slice 3 of the port):
 //   'Google browser sign-in saves a version 2 session and refuses a changed binding'
-//   'the CLI migrates a plaintext session, reports where it is saved, and repeats safely'
 // Rust: not here: these drive the TypeScript scheduler or SDK runtime directly, which the binary
 // does not share; src/keep_alive.rs and the stdio runtime's own tests cover the binary's, and
 // src/input.rs and src/html.rs test the pure functions:
@@ -37,6 +36,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import {
   mkdtemp,
   chmod,
+  mkdir,
   readFile,
   readdir,
   rm,
@@ -1543,6 +1543,53 @@ test('auth migrate moves a plaintext session once; later plaintext files are nev
   expect(cookies.join('\n')).not.toContain('synthetic-planted');
   expect(cookies.length).toBeGreaterThan(0);
   expect(await bytes(`${f.path}.absence.json`)).toBe(absence);
+});
+
+test('the CLI migrates a plaintext session, reports where it is saved, and repeats safely', async () => {
+  const f = await fixture();
+  const directory = join(f.directory, 'cli');
+  const path = join(directory, 'session.json');
+  await mkdir(directory);
+  await writeFile(path, await readStored(f.store), { mode: 0o600 });
+  await writeFile(`${path}.absence.json`, 'synthetic absence record', { mode: 0o600 });
+
+  async function run(...args: string[]) {
+    const child = Bun.spawn({
+      // Rust: the binary in place of the TypeScript CLI, with no upstream to reach.
+      cmd: [process.env.INNA_RUST_BINARY!, 'auth', ...args],
+      env: {
+        ...process.env,
+        INNA_TEST_ORIGIN: 'http://127.0.0.1:9',
+        INNA_SESSION_FILE: path,
+        ...storeEnvironment(join(directory, 'store')),
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    return {
+      exit: await child.exited,
+      stdout: await new Response(child.stdout).text(),
+      stderr: await new Response(child.stderr).text(),
+    };
+  }
+
+  expect(await run('migrate')).toEqual({
+    exit: 0,
+    stdout: 'Inna session moved to the encrypted store; the plaintext file was removed.\n',
+    stderr: '',
+  });
+  await assert.rejects(stat(path), /ENOENT/);
+  expect(await filesContaining(COOKIE_VALUES, directory)).toEqual([]);
+  expect(await readStored(storeAt(join(directory, 'store')))).toBe(await readStored(f.store));
+  expect((await run('migrate')).stdout).toBe('Already migrated.\n');
+  await writeFile(path, 'not a session', { mode: 0o600 });
+  expect((await run('migrate')).stdout).toBe(
+    'Already migrated. Removed the leftover plaintext session file.\n',
+  );
+  expect(await run('logout')).toMatchObject({ exit: 0, stderr: '' });
+  expect(await run('status')).toEqual({ exit: 0, stdout: 'No saved Inna session.\n', stderr: '' });
+  expect(await bytes(`${path}.absence.json`)).toBe('synthetic absence record');
 });
 
 test('a login or import before migration moves the plaintext session into the store', async () => {

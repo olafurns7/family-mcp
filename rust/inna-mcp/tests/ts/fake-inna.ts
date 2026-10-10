@@ -359,6 +359,9 @@ export async function startFake(current: () => { state: State; seen: Seen[] }) {
     if (url.pathname === '/Components/Students/Students.html')
       return send(200, '<html>Synthetic application</html>', { 'content-type': 'text/html' });
 
+    // Inna answers its API only with a session cookie.
+    if (url.pathname.startsWith('/api/') && !headers.cookie?.includes('SESSION=')) return send(401, '');
+
     if (url.pathname === '/api/UserData/GetLoggedInUser') {
       state.rotations += 1;
 

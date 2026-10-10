@@ -1,6 +1,7 @@
 //! inna-mcp: the command line of packages/inna-mcp/src/cli.ts.
 
 mod absence;
+mod auth;
 mod client;
 mod dates;
 mod error;
@@ -18,6 +19,7 @@ mod upstream;
 
 use std::io::Write;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use crate::error::{Fail, Result};
 
@@ -210,6 +212,69 @@ async fn serve(allow_absence_writes: bool, keep_alive: bool) -> Result<()> {
         .map_err(|_| Fail::Unknown)
 }
 
+/// `reportSaved`.
+fn report_saved(saved: &auth::SavedSession) {
+    if saved.replaced {
+        println!("The old Inna session store could not be read without its key and was replaced.");
+    }
+    println!("Signed in. {}", saved.storage);
+}
+
+/// The session commands other than sign-in: no signal is handled, so SIGINT and SIGTERM end the
+/// process as they end the TypeScript CLI.
+async fn session_command(command: Command) -> Result<()> {
+    let client = Arc::new(client::Client::from_environment(false)?);
+    let never = signal::Signal::default();
+
+    match command {
+        Command::Import {
+            source,
+            allow_account_change,
+        } => report_saved(
+            &client
+                .run(never, move |client, signal, cancel| {
+                    client.import_session(&source, allow_account_change, signal, cancel)
+                })
+                .await?,
+        ),
+        Command::Status => {
+            let status = client
+                .run(never, |client, signal, cancel| {
+                    client.status(signal, cancel, None)
+                })
+                .await?;
+
+            match status.get("storage").and_then(|storage| storage.as_str()) {
+                Some(storage) => println!("Inna session is authenticated. {storage}"),
+                None => println!("No saved Inna session."),
+            }
+        }
+        Command::Migrate => println!(
+            "{}",
+            match client
+                .run(never, |client, _, cancel| client.migrate(cancel))
+                .await?
+            {
+                auth::Migrated::Moved => {
+                    "Inna session moved to the encrypted store; the plaintext file was removed."
+                }
+                auth::Migrated::Already => "Already migrated.",
+                auth::Migrated::AlreadyRemovedLegacy => {
+                    "Already migrated. Removed the leftover plaintext session file."
+                }
+            }
+        ),
+        Command::Logout => {
+            client
+                .run(never, |client, _, cancel| client.logout(cancel))
+                .await?;
+            println!("Local Inna session removed. Absence operation evidence retained.");
+        }
+        Command::Serve { .. } | Command::Login { .. } => return Err(Fail::Unknown),
+    }
+    Ok(())
+}
+
 async fn main_async() -> Result<ExitCode> {
     let args = parse_args(
         std::env::args_os()
@@ -240,13 +305,9 @@ async fn main_async() -> Result<ExitCode> {
             allow_absence_writes,
             keep_alive,
         } => serve(allow_absence_writes, keep_alive).await?,
-        // The sign-in and session commands arrive with the client and its store; until then
-        // each fails closed.
-        Command::Login { .. }
-        | Command::Import { .. }
-        | Command::Status
-        | Command::Migrate
-        | Command::Logout => return Err(Fail::Unknown),
+        // Sign-in arrives with its own commits; until then it fails closed.
+        Command::Login { .. } => return Err(Fail::Unknown),
+        command => session_command(command).await?,
     }
     Ok(ExitCode::SUCCESS)
 }

@@ -2,7 +2,7 @@
 //! talks to nam.inna.is with its cookies, switches and verifies the student, and writes the
 //! cookie jar and any rate-limit pause back before the hold ends.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -121,7 +121,7 @@ impl User {
         }
     }
 
-    fn learned(&self) -> Learned {
+    pub fn learned(&self) -> Learned {
         Learned {
             binding: self.binding(),
             student_name: self.text("studentName").to_owned(),
@@ -180,7 +180,7 @@ pub struct Student {
 }
 
 /// `studentEntries`: `None` when Inna's access list is absent or cannot be read without guessing.
-fn student_entries(user: &User) -> Option<Vec<Student>> {
+pub fn student_entries(user: &User) -> Option<Vec<Student>> {
     let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_owned);
     let mut students: Vec<Student> = Vec::new();
 
@@ -234,7 +234,7 @@ fn default_key(saved: &Saved) -> String {
 
 /// `matchesEntry`: the context is the only selected student entry and agrees with it on user and
 /// school.
-fn matches_entry(user: &User, key: &str) -> bool {
+pub fn matches_entry(user: &User, key: &str) -> bool {
     let students = student_entries(user);
     let entry = students
         .iter()
@@ -447,7 +447,7 @@ impl<'a> Connection<'a> {
         shapes::parse(schema, &value).ok_or(Fail::Invalid)
     }
 
-    fn user(&mut self) -> Result<User> {
+    pub fn user(&mut self) -> Result<User> {
         User::parse(&self.request(USER_ENDPOINT, &[], None)?)
     }
 
@@ -675,6 +675,15 @@ impl Client {
         })
         .await
         .unwrap_or(Err(Fail::Unknown))
+    }
+
+    /// The legacy session path, beside which the absence record lives.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn net(&self) -> &Net {
+        &self.net
     }
 
     /// Wait for every operation in flight.

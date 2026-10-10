@@ -1,5 +1,6 @@
 //! The part of tough-cookie 6.0.2's `CookieJar` (with its `MemoryCookieStore`) the TypeScript
-//! client uses for nam.inna.is: `Cookie.parse`, `setCookie(cookie, ORIGIN)`, `getCookies(url)`,
+//! client uses for nam.inna.is and the electronic-ID sign-in uses for its hosts under inna.is and
+//! island.is: `Cookie.parse`, `setCookie(cookie, url)`, `getCookies(url)`,
 //! `getCookieString(url)`, and the saved jar as `JSON.stringify(await jar.serialize())` and
 //! `CookieJar.deserialize(text)`, so a session saved by either language reads in the other.
 //! Adapted from rust/infomentor-mcp/src/jar.rs, which its parity suite checks against Bun; here
@@ -12,9 +13,6 @@ use serde_json::{Map, Value, json};
 use url::Url;
 
 use crate::js;
-
-/// The registrable domain of every host the jar sees: its `getPublicSuffix`.
-const REGISTRABLE: &str = "inna.is";
 
 /// tough-cookie's `Cookie.cookiesCreated`: orders cookies created in the same millisecond.
 static CREATED: AtomicU64 = AtomicU64::new(0);
@@ -100,6 +98,34 @@ impl Default for Cookie {
 }
 
 impl Cookie {
+    /// `new Cookie({ key, value, path: '/', secure: true, httpOnly })` with an export's expiry
+    /// in seconds (`new Date(seconds * 1000)`) and SameSite: a cookie `sessionJar` imports.
+    pub fn exported(
+        key: &str,
+        value: &str,
+        http_only: bool,
+        expires: Option<f64>,
+        same_site: Option<&str>,
+    ) -> Self {
+        Self {
+            key: key.to_owned(),
+            value: value.to_owned(),
+            // TimeClip: whole milliseconds, and an invalid date beyond 8.64e15.
+            expires: expires.map_or(Time::Infinity, |seconds| {
+                let at = seconds * 1000.0;
+                Time::At(match at.abs() <= 8.64e15 {
+                    true => at.trunc() + 0.0,
+                    false => f64::NAN,
+                })
+            }),
+            path: Some("/".to_owned()),
+            secure: true,
+            http_only,
+            same_site: same_site.map(str::to_owned),
+            ..Self::default()
+        }
+    }
+
     pub fn key(&self) -> &str {
         &self.key
     }
@@ -463,12 +489,14 @@ fn domain_match(host: &str, domain: &str) -> bool {
                 .is_some_and(|rest| rest.ends_with('.')))
 }
 
-/// `permuteDomain(host)`: the registrable domain and each longer suffix of `host`.
+/// `permuteDomain(host)`: the registrable domain and each longer suffix of `host`. Every host the
+/// jar sees is under `is`, whose only public suffix is `is`, so the registrable domain is the last
+/// two labels.
 fn permute(host: &str) -> Vec<&str> {
     let mut domains: Vec<&str> = host
         .match_indices('.')
         .map(|(at, _)| &host[at + 1..])
-        .filter(|suffix| suffix.len() >= REGISTRABLE.len())
+        .filter(|suffix| suffix.contains('.'))
         .collect();
     domains.reverse();
     domains.push(host);
@@ -549,7 +577,7 @@ impl Jar {
 
         match &cookie.domain {
             Some(domain) => {
-                // cdomain(). A non-ASCII domain never matches nam.inna.is.
+                // cdomain(). A non-ASCII domain never matches an ASCII host.
                 let canonical = js::trim(domain);
                 let canonical = canonical.strip_prefix('.').unwrap_or(canonical);
 

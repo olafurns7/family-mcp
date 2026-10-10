@@ -458,8 +458,34 @@ impl Held<'_, '_> {
     }
 }
 
+/// `keyLost`: true when the store's key is missing; any other key failure, a retired store
+/// first, is an error.
+pub fn key_lost(store: &SecretStore) -> Result<bool> {
+    match store.check_key() {
+        Ok(()) => Ok(false),
+        Err(error) if error.code == StoreCode::StoreUnavailable => Ok(true),
+        Err(error) => Err(store_error(&error)),
+    }
+}
+
+/// `removeLegacy`: the legacy session file is a credential; remove it and its orphaned
+/// temporaries, never the absence record. True when it was there.
+pub fn remove_legacy(path: &Path) -> Result<bool> {
+    let failed = Fail::Safe(
+        "Cannot remove the old plaintext Inna session file. Any encrypted-store change already completed; remove that file by hand.",
+    );
+    let found = exists(path).map_err(|_| failed)?;
+
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != ErrorKind::NotFound => return Err(failed),
+        _ => {}
+    }
+    sweep_temp(path, DEFAULT_SWEEP_AGE).map_err(|_| failed)?;
+    Ok(found)
+}
+
 /// `readSaved`: the legacy plaintext file, or `None` when there is none.
-fn read_saved(path: &Path) -> Result<Option<Saved>> {
+pub fn read_saved(path: &Path) -> Result<Option<Saved>> {
     let bytes = match read_private_bytes(path, MAX_SESSION_BYTES) {
         Ok(bytes) => bytes,
         Err(error) if error.code == StoreCode::NotFound => return Ok(None),

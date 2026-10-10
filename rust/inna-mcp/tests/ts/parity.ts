@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
+import { cookieExportSchema, sessionJar } from '../../../../packages/inna-mcp/src/client.js';
 import { COOKIES, fresh, startFake, type Seen, type State } from './fake-inna.ts';
 
 const [rust, only] = process.argv.slice(2);
@@ -30,9 +31,10 @@ const fake = await startFake(() => current);
 
 type Step =
   | { cli: string[]; stdin?: string }
-  // `auth import` of the synthetic cookie export by the TypeScript CLI on both sides: the binary
-  // cannot import yet (a later slice of the port), and the store both read is the same format.
-  | { seed: true }
+  // Each side's `auth import` of the synthetic cookie export.
+  | { seed: true; args?: string[] }
+  // An older version's plaintext session file at this path under the home.
+  | { legacy: string }
   | { upstream: Partial<State> }
   | { clock: number }
   | { serve: [string, unknown][]; args?: string[]; surface?: boolean }
@@ -42,6 +44,17 @@ type Step =
 type Scenario = { name: string; env?: Record<string, string>; steps: Step[] };
 
 const storeFile = '.config/inna-mcp/session.enc';
+
+/** A saved session as an older version left it in plaintext, with the synthetic cookies. */
+const LEGACY = JSON.stringify({
+  version: 2,
+  jar: JSON.stringify(await (await sessionJar(cookieExportSchema.parse(JSON.parse(COOKIES)))).serialize()),
+  account: { userId: 1, studentId: '2', schoolId: '3' },
+  students: {},
+  pauseUntil: 0,
+});
+
+const cookieFile = (cookies: object[]) => JSON.stringify(cookies);
 
 const range = { dateFrom: '2040-01-02', dateTo: '2040-01-09' };
 
@@ -179,6 +192,99 @@ const scenarios: Scenario[] = [
   },
   { name: 'failures', steps: [{ seed: true }, ...FAILURES] },
   {
+    name: 'session-commands',
+    env: { INNA_SESSION_FILE: '<home>/legacy/session.json' },
+    steps: [
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'migrate'] },
+      { cli: ['auth', 'logout'] },
+      { legacy: 'legacy/session.json' },
+      { cli: ['auth', 'status'] },
+      { serve: [['inna_session_status', {}]] },
+      { cli: ['auth', 'migrate'] },
+      { cli: ['auth', 'migrate'] },
+      { cli: ['auth', 'status'] },
+      { file: 'legacy/session.json', text: 'not a session' },
+      { cli: ['auth', 'migrate'] },
+      { legacy: 'legacy/session.json' },
+      { cli: ['auth', 'logout'] },
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'migrate'] },
+      { legacy: 'legacy/session.json' },
+      { cli: ['auth', 'status'] },
+      { seed: true },
+      { cli: ['auth', 'status'] },
+      { upstream: { planted: { '/api/UserData/GetLoggedInUser': { status: 401 } } } },
+      { cli: ['auth', 'status'] },
+    ],
+  },
+  {
+    name: 'session-legacy-unreadable',
+    env: { INNA_SESSION_FILE: '<home>/legacy/session.json' },
+    steps: [
+      { file: 'legacy/session.json', text: '{"version":3}' },
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'migrate'] },
+      { file: 'legacy/session.json', text: LEGACY, permissions: 0o644 },
+      { cli: ['auth', 'status'] },
+      { cli: ['auth', 'migrate'] },
+      { cli: ['auth', 'logout'] },
+    ],
+  },
+  {
+    name: 'session-relative-path',
+    env: { INNA_SESSION_FILE: 'legacy/session.json' },
+    steps: [{ cli: ['auth', 'status'] }, { cli: ['auth', 'import', '<home>/cookies.json'] }, { cli: ['auth', 'logout'] }],
+  },
+  {
+    name: 'import-refusals',
+    steps: [
+      { file: 'cookies.json', text: COOKIES },
+      { cli: ['auth', 'import', 'cookies.json'] },
+      { cli: ['auth', 'import', '<home>/missing.json'] },
+      { cli: ['auth', 'import', '<home>'] },
+      ...[
+        ['broken', '{'],
+        ['empty', '[]'],
+        ['shape', '[{"name":"SESSION"}]'],
+        ['object', '{"cookies":[]}'],
+        ['domain', cookieFile([{ name: 'SESSION', value: 'v', domain: 'inna.is' }])],
+        ['path', cookieFile([{ name: 'XSRF-TOKEN', value: 'v', domain: 'nam.inna.is', path: '/api' }])],
+        ['others', cookieFile([{ name: 'other', value: 'v', domain: 'example.invalid', path: '/x' }])],
+        ['bom', `\ufeff${COOKIES}`],
+      ].flatMap(([name, text]) => [
+        { file: `${name}.json`, text: text! },
+        { cli: ['auth', 'import', `<home>/${name}.json`] },
+      ]),
+      { file: 'open.json', text: COOKIES, permissions: 0o644 },
+      { cli: ['auth', 'import', '<home>/open.json'] },
+      { cli: ['auth', 'status'] },
+    ],
+  },
+  {
+    name: 'import-accounts',
+    steps: [
+      { seed: true },
+      { serve: [['inna_get_overview', { studentKey: '5' }]] },
+      { upstream: { selected: '5' } },
+      { seed: true },
+      { upstream: { selected: '9' } },
+      { seed: true },
+      { upstream: { selected: '5' } },
+      { seed: true, args: ['--allow-account-change'] },
+      { cli: ['auth', 'status'] },
+      { upstream: { selected: '1' } },
+      { seed: true },
+      { upstream: { planted: { '/api/UserData/GetLoggedInUser': { status: 429, headers: { 'retry-after': '120' } } } } },
+      { seed: true, args: ['--allow-account-change'] },
+      { upstream: { planted: {} } },
+      { seed: true, args: ['--allow-account-change'] },
+      { clock: NOW + 3_600_000 },
+      { seed: true, args: ['--allow-account-change'] },
+      { serve: [['inna_list_students', {}]] },
+    ],
+  },
+  {
     name: 'store-file-open',
     steps: [{ file: storeFile, text: 'x', permissions: 0o644 }, { cli: ['auth', 'status'] }, { cli: ['auth', 'bogus'] }],
   },
@@ -292,18 +398,19 @@ async function run(side: 'ts' | 'rust', scenario: Scenario) {
   const steps: unknown[] = [];
   current = { state: fresh(), seen: [] };
   writeFileSync(clock, String(NOW));
+  // `<home>` in arguments and the environment names this side's home.
+  const place = (text: string) => text.replaceAll('<home>', home);
+  const env = Object.fromEntries(Object.entries(scenario.env ?? {}).map(([name, value]) => [name, place(value)]));
 
   for (const step of scenario.steps) {
-    if ('cli' in step) steps.push(await runCli(side, home, scenario.env ?? {}, step.cli, step.stdin));
+    if ('cli' in step) steps.push(await runCli(side, home, env, step.cli.map(place), step.stdin));
     else if ('seed' in step) {
       write(home, { file: 'cookies.json', text: COOKIES });
-      const seeded = await runCli('ts', home, scenario.env ?? {}, ['auth', 'import', join(home, 'cookies.json')]);
-
-      if (seeded.code !== 0) failures.push(`${scenario.name}: the seed import failed: ${seeded.stderr}`);
-      steps.push(seeded);
-    } else if ('upstream' in step) Object.assign(current.state, step.upstream);
+      steps.push(await runCli(side, home, env, ['auth', 'import', join(home, 'cookies.json'), ...(step.args ?? [])]));
+    } else if ('legacy' in step) write(home, { file: step.legacy, text: LEGACY });
+    else if ('upstream' in step) Object.assign(current.state, step.upstream);
     else if ('clock' in step) writeFileSync(clock, String(step.clock));
-    else if ('serve' in step) steps.push(await runServe(side, home, scenario.env ?? {}, step));
+    else if ('serve' in step) steps.push(await runServe(side, home, env, step));
     else if ('directory' in step) chmodSync(join(home, step.directory), step.permissions);
     else write(home, step);
   }
@@ -355,7 +462,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-if (!only && (coverage.cli < 61 || coverage.tools < 44 || coverage.results < 75 || coverage.requests < 300))
+if (!only && (coverage.cli < 106 || coverage.tools < 44 || coverage.results < 78 || coverage.requests < 328))
   failures.push(`coverage too low: ${JSON.stringify(coverage)}`);
 
 if (failures.length) {

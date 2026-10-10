@@ -4,9 +4,10 @@
 // the clock is a file the binary reads at each use (INNA_TEST_NOW), written before each call and
 // after each upstream answer. A client's reads are MCP tool calls to one `inna-mcp serve` for the
 // client's life, and its keep-alive is that serve's own, ticked by SIGUSR1 (INNA_TEST_KEEP_ALIVE).
-// Sign-in and session changes (import, saveVerifiedSession, checkStore, defaultUserId, migrate,
-// logout) and absence previews are still the TypeScript client's: they write the store and the
-// absence record the binary reads.
+// An import, a migration and a logout are the binary's `auth` commands, against the same upstream
+// and clock. `checkStore` and `defaultUserId` run only inside the binary's sign-in, and
+// `saveVerifiedSession` and absence previews are not the binary's yet, so those four are still
+// the TypeScript client's: they read and write the store and absence record the binary shares.
 import { afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -205,24 +206,55 @@ afterEach(async () => {
  * with the options' fetch, clock and store. Connect a client to `transport`; `close` stops the
  * binary and the upstream once the client has closed.
  */
-export async function serveStdio(options: ClientOptions = {}) {
+/**
+ * The options' fetch on a loopback upstream and their clock in a file, for the binary's runs:
+ * `env` is a run's environment, `tick` writes the clock, and `close` ends both with the case.
+ */
+async function harness(options: ClientOptions) {
   const clock = options.now && mkdtempSync(join(tmpdir(), 'inna-clock-'));
   const now = options.now;
   const tick = () => clock && now && writeFileSync(join(clock, 'now'), String(now()));
   tick();
   const served = options.fetch ? await upstream(options.fetch, tick) : undefined;
+  let closed = false;
+
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    open.delete(close);
+    await served?.close();
+
+    if (clock) rmSync(clock, { recursive: true, force: true });
+  };
+
+  open.add(close);
+
+  const env: Record<string, string> = {
+    ...(process.env as Record<string, string>),
+    ...(options.sessionFile ? { INNA_SESSION_FILE: options.sessionFile } : {}),
+    ...storeEnvironment(options.store),
+    ...(clock ? { INNA_TEST_NOW: join(clock, 'now') } : {}),
+    INNA_TEST_ORIGIN: served?.origin ?? NOWHERE,
+    INNA_TEST_KEEP_ALIVE: '1',
+  };
+
+  return { env, tick, close };
+}
+
+type Harness = Awaited<ReturnType<typeof harness>>;
+
+/**
+ * In place of `createServer(options)` over an InMemoryTransport: the binary's `serve` over stdio,
+ * with the options' fetch, clock and store. Connect a client to `transport`; `close` stops the
+ * binary once the client has closed, and the upstream unless a client shares it.
+ */
+export async function serveStdio(options: ClientOptions = {}, shared?: Harness) {
+  const run = shared ?? (await harness(options));
 
   const transport = new StdioClientTransport({
     command: rustBinary!,
     args: ['serve', ...(options.allowAbsenceWrites ? ['--allow-absence-writes'] : [])],
-    env: {
-      ...(process.env as Record<string, string>),
-      ...(options.sessionFile ? { INNA_SESSION_FILE: options.sessionFile } : {}),
-      ...storeEnvironment(options.store),
-      ...(clock ? { INNA_TEST_NOW: join(clock, 'now') } : {}),
-      INNA_TEST_ORIGIN: served?.origin ?? NOWHERE,
-      INNA_TEST_KEEP_ALIVE: '1',
-    },
+    env: run.env,
     stderr: 'pipe',
   });
 
@@ -240,15 +272,20 @@ export async function serveStdio(options: ClientOptions = {}) {
     } catch {
       // Already gone.
     }
-    await served?.close();
 
-    if (clock) rmSync(clock, { recursive: true, force: true });
+    if (!shared) await run.close();
   };
 
   open.add(close);
 
-  return { transport, tick, close };
+  return { transport, tick: run.tick, close };
 }
+
+const MIGRATED: Record<string, Awaited<ReturnType<TypeScriptClient['migrate']>>> = {
+  'Inna session moved to the encrypted store; the plaintext file was removed.\n': 'migrated',
+  'Already migrated.\n': 'already',
+  'Already migrated. Removed the leftover plaintext session file.\n': 'already-removed-legacy',
+};
 
 /**
  * `InnaClient(options)`: one `serve` for the client's life, started at its first read with the
@@ -256,9 +293,9 @@ export async function serveStdio(options: ClientOptions = {}) {
  */
 export class InnaClient {
   readonly path: string;
+  #harness: Promise<Harness> | undefined;
   #served: Promise<Served> | undefined;
   #typescript: TypeScriptClient;
-  #tick: () => void = () => {};
 
   constructor(private readonly options: ClientOptions = {}) {
     this.#typescript = new TypeScriptClient(options);
@@ -294,31 +331,70 @@ export class InnaClient {
     this.#call('inna_get_absences', input, signal);
   absenceStatus = (signal?: AbortSignal) => this.#call('inna_absence_status', {}, signal);
 
-  importSession = (source: string, allowAccountChange = false) =>
-    this.#typescript.importSession(source, allowAccountChange);
+  importSession = async (source: string, allowAccountChange = false) => {
+    const stdout = await this.#cli([
+      'auth',
+      'import',
+      source,
+      ...(allowAccountChange ? ['--allow-account-change'] : []),
+    ]);
+
+    return {
+      storage: /^Signed in\. (.*)\n$/m.exec(stdout)?.[1],
+      replaced: stdout.startsWith('The old Inna session store could not be read'),
+    };
+  };
+  migrate = async () => MIGRATED[await this.#cli(['auth', 'migrate'])];
+  logout = async () => {
+    await this.#cli(['auth', 'logout']);
+  };
   saveVerifiedSession = (...args: Parameters<TypeScriptClient['saveVerifiedSession']>) =>
     this.#typescript.saveVerifiedSession(...args);
   checkStore = () => this.#typescript.checkStore();
   defaultUserId = () => this.#typescript.defaultUserId();
-  migrate = () => this.#typescript.migrate();
-  logout = () => this.#typescript.logout();
   prepareAbsence = (...args: Parameters<TypeScriptClient['prepareAbsence']>) =>
     this.#typescript.prepareAbsence(...args);
 
   /** One tick of the binary's own keep-alive. The signal is the scheduler's; ticks end by themselves. */
   keepAlive = async (_signal?: AbortSignal): Promise<KeepAlive> => {
     const served = await this.#serve();
-    this.#tick();
+    (await this.#harness)?.tick();
     const status = new Promise<string>((resolve) => served.waiting.push(resolve));
     process.kill(served.transport.pid!, 'SIGUSR1');
 
     return { status: (await status) as KeepAlive['status'] };
   };
 
+  #run(): Promise<Harness> {
+    this.#harness ??= harness(this.options);
+
+    return this.#harness;
+  }
+
+  /** One `inna-mcp` command line; its stdout, or its stderr line as the failure. */
+  async #cli(args: string[]): Promise<string> {
+    const run = await this.#run();
+    run.tick();
+    const child = Bun.spawn([rustBinary!, ...args], {
+      env: run.env,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+
+    if (code !== 0) throw failure(stderr.replace(/\n$/, ''));
+
+    return stdout;
+  }
+
   #serve(): Promise<Served> {
     this.#served ??= (async () => {
-      const served = await serveStdio(this.options);
-      this.#tick = served.tick;
+      const served = await serveStdio(this.options, await this.#run());
       const client = new Client({ name: 'inna-rust-integration', version: '1.0.0' });
       const waiting: ((status: string) => void)[] = [];
       let buffered = '';
@@ -345,7 +421,7 @@ export class InnaClient {
   // oxlint-disable-next-line typescript/no-explicit-any -- Each method returns its tool's output.
   async #call(name: string, args: object, signal?: AbortSignal): Promise<any> {
     const { client } = await this.#serve();
-    this.#tick();
+    (await this.#harness)?.tick();
     // JSON leaves out undefined arguments, as the TypeScript client's defaults leave them unset.
     const call = client.callTool({
       name,
