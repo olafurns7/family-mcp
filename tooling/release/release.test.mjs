@@ -349,15 +349,21 @@ await test('Turbo release synchronization preserves root README pins', async () 
     await setVersion('inna-mcp', '2.3.4');
     await setVersion('abler-mcp', '1.2.4');
     synchronize();
-    // The Rust crate that provides abler-mcp follows the package version, in its manifest and lock.
-    assert.match(
-      await readFile(join(workspace, 'rust/abler-mcp/Cargo.toml'), 'utf8'),
-      /^version = "1\.2\.4"$/m,
-    );
-    assert.match(
-      await readFile(join(workspace, 'rust/Cargo.lock'), 'utf8'),
-      /^name = "abler-mcp"\nversion = "1\.2\.4"$/m,
-    );
+
+    /** A crate's version in its manifest and in the lock every crate shares. @param {string} crate */
+    const crateVersions = async (crate) => [
+      /^version = "([^"]+)"$/m.exec(
+        await readFile(join(workspace, 'rust', crate, 'Cargo.toml'), 'utf8'),
+      )?.[1],
+      new RegExp(`^\\[\\[package\\]\\]\\nname = "${crate}"\\nversion = "([^"]+)"$`, 'm').exec(
+        await readFile(join(workspace, 'rust/Cargo.lock'), 'utf8'),
+      )?.[1],
+    ];
+
+    // The Rust crates that provide abler-mcp and kronan-mcp follow their package versions, in
+    // their manifests and in the shared lock, although the package tasks run in parallel.
+    assert.deepEqual(await crateVersions('abler-mcp'), ['1.2.4', '1.2.4']);
+    assert.deepEqual(await crateVersions('kronan-mcp'), ['7.8.9', '7.8.9']);
     await writeFile(
       join(workspace, 'rust/abler-mcp/Cargo.toml'),
       (await readFile(join(workspace, 'rust/abler-mcp/Cargo.toml'), 'utf8')).replace(
@@ -366,16 +372,33 @@ await test('Turbo release synchronization preserves root README pins', async () 
       ),
     );
 
-    const check = [
-      fileURLToPath(new URL('./sync-version.mjs', import.meta.url)),
-      '--package',
-      join(workspace, 'packages/abler-mcp'),
-      '--check',
-    ];
+    /** sync-version --check for one package. @param {string} name */
+    const check = (name) =>
+      spawnSync(process.execPath, [
+        fileURLToPath(new URL('./sync-version.mjs', import.meta.url)),
+        '--package',
+        join(workspace, 'packages', name),
+        '--check',
+      ]).status;
 
-    assert.equal(spawnSync(process.execPath, check).status, 1);
+    assert.equal(check('abler-mcp'), 1);
     synchronize();
-    assert.equal(spawnSync(process.execPath, check).status, 0);
+    assert.equal(check('abler-mcp'), 0);
+
+    // A stale lock entry fails the check as well, until release:sync rewrites it.
+    const lock = join(workspace, 'rust/Cargo.lock');
+
+    const stale = (await readFile(lock, 'utf8')).replace(
+      'name = "kronan-mcp"\nversion = "7.8.9"',
+      'name = "kronan-mcp"\nversion = "7.8.8"',
+    );
+
+    assert.deepEqual(await crateVersions('kronan-mcp'), ['7.8.9', '7.8.9']);
+    await writeFile(lock, stale);
+    assert.equal(check('kronan-mcp'), 1);
+    synchronize();
+    assert.equal(check('kronan-mcp'), 0);
+    assert.deepEqual(await crateVersions('kronan-mcp'), ['7.8.9', '7.8.9']);
     let output = await readFile(rootReadme, 'utf8');
     assert.match(output, /abler-mcp@1\.2\.4\/packages\/abler-mcp\/install\.sh/);
     assert.match(output, /infomentor-mcp@4\.5\.6\/packages\/infomentor-mcp\/install\.sh/);
@@ -391,6 +414,8 @@ await test('Turbo release synchronization preserves root README pins', async () 
 
     await setVersion('kronan-mcp', '7.8.10');
     synchronize();
+    assert.deepEqual(await crateVersions('kronan-mcp'), ['7.8.10', '7.8.10']);
+    assert.deepEqual(await crateVersions('abler-mcp'), ['1.2.4', '1.2.4']);
     output = await readFile(rootReadme, 'utf8');
     assert.match(output, /abler-mcp@1\.2\.4\/packages\/abler-mcp\/install\.sh/);
     assert.match(output, /infomentor-mcp@4\.5\.7\/packages\/infomentor-mcp\/install\.sh/);

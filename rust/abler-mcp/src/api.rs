@@ -506,19 +506,9 @@ impl Client {
     }
 
     /// The parsed body, or null when it is unreadable, too large or not JSON.
-    fn read_json(&self, mut response: reqwest::Response) -> Value {
-        let body = self.wait(async {
-            let mut body = Vec::new();
-
-            while let Some(chunk) = response.chunk().await.ok()? {
-                if body.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
-                    return None;
-                }
-                body.extend_from_slice(&chunk);
-            }
-            Some(body)
-        });
-        body.flatten()
+    fn read_json(&self, response: reqwest::Response) -> Value {
+        self.wait(mcp_runtime::read_capped(response, MAX_RESPONSE_BODY_BYTES))
+            .and_then(std::result::Result::ok)
             .and_then(|body| js::parse(&body))
             .unwrap_or(Value::Null)
     }

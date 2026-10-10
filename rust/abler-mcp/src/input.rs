@@ -2,6 +2,8 @@
 //! defaults, and zod 4 issue messages, order and abort rules, so an invalid call gets the same
 //! text. The advertised JSON Schemas are the TypeScript server's own (`surface.json`).
 
+pub use mcp_runtime::input::empty;
+use mcp_runtime::input::{Parse, object, optional};
 use serde_json::{Map, Value};
 
 use crate::js;
@@ -52,95 +54,20 @@ pub struct Messages {
     pub page: Page,
 }
 
-struct Issue {
-    path: Vec<String>,
-    message: String,
-    /// zod's `continue`: a failed check keeps later checks and refinements running; a wrong type
-    /// does not.
-    continues: bool,
+/// Abler's fields, on top of the runtime's strings and arrays.
+trait Fields {
+    fn date(&mut self, value: Option<&Value>) -> Option<String>;
+
+    fn first(&mut self, value: Option<&Value>, max: u32) -> u32;
+
+    fn types(&mut self, value: Option<&Value>) -> Option<Vec<String>>;
+
+    fn ids(&mut self, value: Option<&Value>, max: usize) -> Option<Vec<String>>;
+
+    fn cursors(&mut self, value: Option<&Value>) -> Option<Vec<(String, String)>>;
 }
 
-/// The issues of one parse, at one path.
-struct Parse<'a> {
-    issues: &'a mut Vec<Issue>,
-    path: Vec<String>,
-}
-
-fn kind(value: Option<&Value>) -> &'static str {
-    match value {
-        None => "undefined",
-        Some(Value::Null) => "null",
-        Some(Value::Bool(_)) => "boolean",
-        Some(Value::Number(_)) => "number",
-        Some(Value::String(_)) => "string",
-        Some(Value::Array(_)) => "array",
-        Some(Value::Object(_)) => "object",
-    }
-}
-
-impl Parse<'_> {
-    fn at(&mut self, key: &str) -> Parse<'_> {
-        let mut path = self.path.clone();
-        path.push(key.to_owned());
-        Parse {
-            issues: self.issues,
-            path,
-        }
-    }
-
-    fn issue(&mut self, message: String, continues: bool) {
-        self.issues.push(Issue {
-            path: self.path.clone(),
-            message,
-            continues,
-        });
-    }
-
-    fn wrong_type(&mut self, expected: &str, value: Option<&Value>) {
-        self.issue(
-            format!(
-                "Invalid input: expected {expected}, received {}",
-                kind(value)
-            ),
-            false,
-        );
-    }
-
-    /// zod's length checks run on anything with a length, even after a wrong type. An object
-    /// with its own `length` property is not counted here (see the pilot report).
-    fn length(&mut self, value: Option<&Value>, (min, max): (usize, usize)) {
-        let (origin, unit, length) = match value {
-            Some(Value::String(text)) => ("string", "characters", js::length(text)),
-            Some(Value::Array(items)) => ("array", "items", items.len()),
-            _ => return,
-        };
-
-        if length < min {
-            self.issue(
-                format!("Too small: expected {origin} to have >={min} {unit}"),
-                true,
-            );
-        }
-
-        if length > max {
-            self.issue(
-                format!("Too big: expected {origin} to have <={max} {unit}"),
-                true,
-            );
-        }
-    }
-
-    /// `z.string().min(min).max(max)`.
-    fn string(&mut self, value: Option<&Value>, bounds: (usize, usize)) -> Option<String> {
-        let text = value.and_then(Value::as_str).map(str::to_owned);
-
-        if text.is_none() {
-            self.wrong_type("string", value);
-        }
-        self.length(value, bounds);
-        text
-    }
-
+impl Fields for Parse<'_> {
     /// `z.iso.date()`.
     fn date(&mut self, value: Option<&Value>) -> Option<String> {
         let Some(text) = value.and_then(Value::as_str) else {
@@ -183,28 +110,6 @@ impl Parse<'_> {
             self.issue(format!("Too big: expected number to be <={max}"), true);
         }
         number as u32
-    }
-
-    /// `z.array(element).min(min).max(max)`.
-    fn array<T>(
-        &mut self,
-        value: Option<&Value>,
-        bounds: (usize, usize),
-        mut element: impl FnMut(&mut Parse, &Value) -> Option<T>,
-    ) -> Option<Vec<T>> {
-        let parsed = match value {
-            Some(Value::Array(items)) => items
-                .iter()
-                .enumerate()
-                .map(|(index, item)| element(&mut self.at(&index.to_string()), item))
-                .collect(),
-            _ => {
-                self.wrong_type("array", value);
-                None
-            }
-        };
-        self.length(value, bounds);
-        parsed
     }
 
     fn types(&mut self, value: Option<&Value>) -> Option<Vec<String>> {
@@ -284,68 +189,6 @@ fn iso_date(text: &str) -> bool {
     (1..=days).contains(&day)
 }
 
-/// A strict object: properties in schema order, then unknown keys, then the refinement when
-/// nothing aborted. Returns the zod error text, as `path: message` joined with `, `.
-fn object<T>(
-    arguments: &Map<String, Value>,
-    shape: &[&str],
-    parse: impl FnOnce(&mut Parse, &Map<String, Value>) -> T,
-    refine: impl FnOnce(&T) -> Option<&'static str>,
-) -> Result<T, String> {
-    let mut issues = Vec::new();
-    let mut root = Parse {
-        issues: &mut issues,
-        path: Vec::new(),
-    };
-    let parsed = parse(&mut root, arguments);
-    let unknown: Vec<String> = js::order(arguments.clone())
-        .into_iter()
-        .map(|(key, _)| key)
-        .filter(|key| !shape.contains(&key.as_str()))
-        .map(|key| Value::String(key).to_string())
-        .collect();
-
-    if !unknown.is_empty() {
-        let plural = if unknown.len() > 1 { "s" } else { "" };
-        root.issue(
-            format!("Unrecognized key{plural}: {}", unknown.join(", ")),
-            true,
-        );
-    }
-
-    if issues.iter().all(|issue| issue.continues)
-        && let Some(message) = refine(&parsed)
-    {
-        issues.push(Issue {
-            path: Vec::new(),
-            message: message.to_owned(),
-            continues: true,
-        });
-    }
-
-    if issues.is_empty() {
-        return Ok(parsed);
-    }
-    Err(issues
-        .iter()
-        .map(|issue| match issue.path.is_empty() {
-            true => issue.message.clone(),
-            false => format!("{}: {}", issue.path.join("."), issue.message),
-        })
-        .collect::<Vec<_>>()
-        .join(", "))
-}
-
-fn optional<'a, T>(
-    parse: &mut Parse,
-    arguments: &'a Map<String, Value>,
-    key: &str,
-    field: impl FnOnce(&mut Parse, Option<&'a Value>) -> Option<T>,
-) -> Option<T> {
-    let value = arguments.get(key)?;
-    field(&mut parse.at(key), Some(value))
-}
-
 const IN_ORDER: &str = "from must be on or before to";
 
 fn in_order(from: &Option<String>, to: &Option<String>) -> Option<&'static str> {
@@ -355,10 +198,6 @@ fn in_order(from: &Option<String>, to: &Option<String>) -> Option<&'static str> 
         }
         _ => None,
     }
-}
-
-pub fn empty(arguments: &Map<String, Value>) -> Result<(), String> {
-    object(arguments, &[], |_, _| (), |_| None)
 }
 
 pub fn schedule(arguments: &Map<String, Value>) -> Result<Schedule, String> {

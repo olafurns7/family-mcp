@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["family-store", "abler-mcp"]
+members = ["family-store", "mcp-runtime", "abler-mcp", "kronan-mcp"]
 
 [workspace.package]
 edition = "2024"
