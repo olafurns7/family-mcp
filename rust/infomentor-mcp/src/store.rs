@@ -552,6 +552,11 @@ pub fn commit_change(
     Ok(())
 }
 
+/// `deleteCredentialsAdvice`: after a sign-in read from a file; `file` is the path the user gave.
+pub fn delete_credentials_advice(file: &str) -> String {
+    format!("Your InfoMentor sign-in is stored in the encrypted store. You can delete {file} now.")
+}
+
 /// `MigrateResult`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MigrateResult {

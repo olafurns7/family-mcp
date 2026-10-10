@@ -4,10 +4,9 @@
 // change is marked `Rust:`. `readSession`, `writeSession`, `withSessionLock` and the store
 // functions stay TypeScript: they set up, hold and inspect the files the two languages share.
 //
-// Rust: not here yet. 'private login and eleven MCP tools ...' and 'HTTP cancellation aborts
-// in-flight requests; closing a client drains reads' need the setup tools of slice 4. 'An oversized
-// Retry-After is capped with rotated cookies and honoured by another client' moves the TypeScript
-// process clock, which the binary does not share; parity.ts covers the capped pause.
+// Rust: not here: 'An oversized Retry-After is capped with rotated cookies and honoured by another
+// client' moves the TypeScript process clock, which the binary does not share; parity.ts covers
+// the capped pause.
 import assert from 'node:assert/strict';
 import {
   chmod,
@@ -24,7 +23,7 @@ import {
 import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { spyOn, test } from 'bun:test';
+import { test } from 'bun:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   LocalKeyFileProvider,
@@ -34,7 +33,13 @@ import {
   withSecretStore,
   type KeyProvider,
 } from '@family-mcp/session-store';
+import { Client } from '@modelcontextprotocol/client';
 import { CookieJar } from 'tough-cookie';
+import {
+  setupStatusSchema,
+  type SetupStatus,
+} from '../../../../packages/infomentor-mcp/src/client.js';
+import { collectionSchema } from '../../../../packages/infomentor-mcp/src/collection.js';
 import { withSessionLock } from '../../../../packages/infomentor-mcp/src/lock.js';
 import {
   captureSession,
@@ -58,7 +63,14 @@ import {
   recordOptions,
   useScratchStore,
 } from '../../../../packages/infomentor-mcp/test/scratch.js';
-import { importSession, InfoMentorClient, login, logout, migrate } from './rust-infomentor.js';
+import {
+  importSession,
+  InfoMentorClient,
+  login,
+  logout,
+  migrate,
+  serveStdio,
+} from './rust-infomentor.js';
 
 const store = useScratchStore();
 
@@ -393,6 +405,426 @@ async function savedSession(value = 'synthetic') {
   return captureSession(jar);
 }
 
+test('private login and eleven MCP tools select children and read school data without changing read state', async () => {
+  // The four setup tools are an opt-in; this test enables them to drive login and logout over MCP.
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-http-'));
+  const file = join(directory, 'private/session.json');
+
+  const environment = {
+    INFOMENTOR_USERNAME: process.env['INFOMENTOR_USERNAME'],
+    INFOMENTOR_PASSWORD: process.env['INFOMENTOR_PASSWORD'],
+    INFOMENTOR_CREDENTIALS_FILE: process.env['INFOMENTOR_CREDENTIALS_FILE'],
+  };
+
+  const routes = fixture();
+
+  // Rust: no listener spy; the binary has no listener code, and every request it makes reaches
+  // `routes`. Its server is `serve` over stdio in place of an in-process server and transport.
+  let server: Awaited<ReturnType<typeof serveStdio>> | undefined;
+  const client = new Client({ name: 'http-test', version: '1.0.0' });
+
+  try {
+    for (const name of Object.keys(environment)) delete process.env[name];
+
+    // By default the server registers only the seven read and collection tools, and a missing
+    // session points the user at the CLI.
+    const readOnlyServer = await serveStdio({ sessionFile: file, fetch: routes.fetch });
+    const readOnlyClient = new Client({ name: 'default-test', version: '1.0.0' });
+    await readOnlyClient.connect(readOnlyServer.transport);
+
+    try {
+      assert.deepEqual(
+        (await readOnlyClient.listTools()).tools.map((tool) => tool.name).toSorted(),
+        [
+          'infomentor_collect_updates',
+          'infomentor_get_message',
+          'infomentor_get_messages',
+          'infomentor_get_notifications',
+          'infomentor_get_overview',
+          'infomentor_select_child',
+          'infomentor_session_status',
+        ],
+      );
+
+      const missing = sessionStatusSchema.parse(
+        (await readOnlyClient.callTool({ name: 'infomentor_session_status', arguments: {} }))
+          .structuredContent,
+      );
+
+      assert.equal(missing.authenticated, false);
+      assert.match(missing.nextStep ?? '', /infomentor-mcp login/);
+
+      for (const name of ['infomentor_login', 'infomentor_logout']) {
+        const attempt = await readOnlyClient
+          .callTool({ name, arguments: {} })
+          .catch(() => ({ isError: true }));
+
+        assert.equal(attempt.isError, true);
+      }
+
+      assert.equal(routes.requests.length, 0);
+    } finally {
+      await readOnlyClient.close();
+      await readOnlyServer.close();
+    }
+
+    await assert.rejects(login({ sessionFile: file, timeoutMs: 30_000, fetch: routes.fetch }), {
+      code: 'INVALID_CONFIGURATION',
+    });
+    assert.equal(routes.requests.length, 0);
+    process.env['INFOMENTOR_USERNAME'] = credentials.username;
+    await assert.rejects(login({ sessionFile: file, timeoutMs: 30_000, fetch: routes.fetch }), {
+      code: 'INVALID_CONFIGURATION',
+    });
+    assert.equal(routes.requests.length, 0);
+    delete process.env['INFOMENTOR_USERNAME'];
+    // Rust: the binary's environment is fixed when it starts, so the host injects the sign-in
+    // before starting the server, as the server instructions require; the TypeScript server
+    // reads it at each login.
+    process.env['INFOMENTOR_USERNAME'] = credentials.username;
+    process.env['INFOMENTOR_PASSWORD'] = credentials.password;
+    server = await serveStdio({ sessionFile: file, allowSetupTools: true, fetch: routes.fetch });
+    await client.connect(server.transport);
+    const tools = (await client.listTools()).tools;
+    assert.equal(tools.length, 11);
+    assert.ok(tools.every((tool) => tool.outputSchema));
+    assert.ok(!tools.some((tool) => tool.name.includes('browser')));
+    const loginTool = tools.find((tool) => tool.name === 'infomentor_login');
+    assert.ok(loginTool);
+    assert.equal(loginTool.inputSchema.additionalProperties, false);
+    assert.ok(!('localForm' in (loginTool.inputSchema.properties ?? {})));
+
+    for (const localForm of [true, false]) {
+      const rejected = await client.callTool({
+        name: 'infomentor_login',
+        arguments: { localForm },
+      });
+
+      assert.equal(rejected.isError, true);
+      assert.match(JSON.stringify(rejected), /localForm/);
+      const status = await client.callTool({ name: 'infomentor_setup_status', arguments: {} });
+      assert.equal(setupStatusSchema.parse(status.structuredContent).state, 'idle');
+      assert.equal(routes.requests.length, 0);
+    }
+
+    const started = await client.callTool({
+      name: 'infomentor_login',
+      arguments: {},
+    });
+
+    assert.equal(setupStatusSchema.parse(started.structuredContent).state, 'running');
+    let state = 'running';
+
+    for (let step = 0; step < 3_000 && state === 'running'; step++) {
+      await delay(10);
+      const status = await client.callTool({ name: 'infomentor_setup_status', arguments: {} });
+      const progress = setupStatusSchema.parse(status.structuredContent);
+      assert.ok(!('loginUrl' in progress));
+      assert.equal(JSON.stringify(status).includes('loginUrl'), false);
+      assert.equal(JSON.stringify(status).includes(credentials.password), false);
+      state = progress.state;
+    }
+
+    assert.equal(state, 'succeeded');
+    const record = await readStored(store);
+    const stored = record.session;
+    assert.ok(stored);
+    assert.equal(stored.version, 2);
+    assert.ok(stored.cookies.some((cookie) => cookie.key === 'IMHome'));
+    assert.ok(stored.cookies.every((cookie) => cookie.value && cookie.key !== '.ASPXAUTH'));
+    // The injected sign-in is stored with the session, and nothing is left in plaintext.
+    assert.deepEqual(record.credentials, credentials);
+    await assert.rejects(stat(file), { code: 'ENOENT' });
+    assert.deepEqual(
+      await filesContaining([credentials.username, credentials.password], directory, store.home),
+      [],
+    );
+
+    if (process.platform !== 'win32') assert.equal((await stat(store.record)).mode & 0o777, 0o600);
+    const beforeOverview: number = routes.requests.length;
+    const result = await client.callTool({ name: 'infomentor_get_overview', arguments: {} });
+    const overview = overviewSchema.parse(result.structuredContent);
+    assert.deepEqual(overview.children, parent.account.pupils);
+    assert.deepEqual(overview.timetable, [entry]);
+    assert.match(overview.text, /Íslenska/);
+    assert.deepEqual(
+      routes.requests.slice(beforeOverview).map(({ url }) => url),
+      [PARENT_URL, PARENT_URL + 'timetable/timetable/appData'],
+    );
+
+    const messagesResult = await client.callTool({
+      name: 'infomentor_get_messages',
+      arguments: { folder: 'sent', search: 'Skólaferð & nesti', page: 2, pageSize: 1 },
+    });
+
+    const listed = messagesSchema.parse(messagesResult.structuredContent);
+    assert.deepEqual(listed.items, [message]);
+    assert.equal(listed.page, 2);
+    assert.equal(listed.more, true);
+
+    const detailResult = await client.callTool({
+      name: 'infomentor_get_message',
+      arguments: { id: 41 },
+    });
+
+    const detail = messageSchema.parse(detailResult.structuredContent).message;
+    assert.equal(detail.messageBodyPlainText, 'Bring lunch');
+    assert.equal(detail.isNew, true);
+    assert.ok(!('messageBody' in detail));
+
+    for (const [arguments_, expectedIds] of [
+      [{}, [1, 2, 3]],
+      [{ selectedChildOnly: true }, [1, 3]],
+      [{ includeCleared: true }, [1, 2, 3, 4]],
+    ] as const) {
+      const feed = await client.callTool({
+        name: 'infomentor_get_notifications',
+        arguments: arguments_,
+      });
+
+      assert.deepEqual(
+        notificationsSchema.parse(feed.structuredContent).notifications.map((item) => item.id),
+        expectedIds,
+      );
+    }
+
+    const beforeInvalid = routes.requests.length;
+    assert.equal(
+      (await client.callTool({ name: 'infomentor_get_message', arguments: { id: -1 } })).isError,
+      true,
+    );
+    assert.equal(
+      (await client.callTool({ name: 'infomentor_get_messages', arguments: { pageSize: 101 } }))
+        .isError,
+      true,
+    );
+    assert.equal(
+      (await client.callTool({ name: 'infomentor_select_child', arguments: { childId: '' } }))
+        .isError,
+      true,
+    );
+    assert.equal(routes.requests.length, beforeInvalid);
+
+    const switching = client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'child-2 & sibling' },
+    });
+
+    const queuedOverview = client.callTool({ name: 'infomentor_get_overview', arguments: {} });
+
+    for (const response of await Promise.all([switching, queuedOverview])) {
+      const switched = overviewSchema.parse(response.structuredContent);
+      assert.equal(switched.children.find((child) => child.selected)?.id, 'child-2 & sibling');
+      assert.deepEqual(switched.timetable, [siblingEntry]);
+      assert.ok(!JSON.stringify(response).includes('switchPupilUrl'));
+    }
+
+    const switchRequests = () => routes.requests.filter(({ url }) => url.includes('/SwitchPupil/'));
+
+    const noOp = await client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'child-2 & sibling' },
+    });
+
+    assert.notEqual(noOp.isError, true);
+    assert.equal(switchRequests().length, 1);
+
+    const siblingFeed = await client.callTool({
+      name: 'infomentor_get_notifications',
+      arguments: { selectedChildOnly: true },
+    });
+
+    assert.deepEqual(
+      notificationsSchema.parse(siblingFeed.structuredContent).notifications.map(({ id }) => id),
+      [2],
+    );
+
+    const siblingMessages = await client.callTool({
+      name: 'infomentor_get_messages',
+      arguments: { folder: 'sent', search: 'Skólaferð & nesti', page: 2, pageSize: 1 },
+    });
+
+    assert.deepEqual(messagesSchema.parse(siblingMessages.structuredContent).items, [message]);
+
+    const unknownChild = await client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'not-registered' },
+    });
+
+    assert.equal(unknownChild.isError, true);
+    assert.equal(unknownChild.structuredContent, undefined);
+    assert.equal(switchRequests().length, 1);
+
+    for (const url of [
+      'https://evil.test/Account/PupilSwitcher/SwitchPupil/101',
+      'https://im1.infomentor.is/Account/PupilSwitcher/SwitchPupil/101',
+      '/Message/message/DeleteMessage/101',
+      '/Account/PupilSwitcher/SwitchPupil/101?private=synthetic',
+    ]) {
+      routes.selection.overrideUrl = url;
+      const beforeRejectedUrl: number = routes.requests.length;
+
+      const refused = await client.callTool({
+        name: 'infomentor_select_child',
+        arguments: { childId: 'child-1' },
+      });
+
+      assert.equal(refused.isError, true);
+      assert.ok(!JSON.stringify(refused).includes(url));
+      assert.equal(switchRequests().length, 1);
+      assert.deepEqual(
+        routes.requests.slice(beforeRejectedUrl).map(({ url: requested }) => requested),
+        [PARENT_URL, PARENT_URL],
+      );
+    }
+
+    routes.selection.overrideUrl = '';
+    routes.selection.ignoreSwitch = true;
+
+    const unconfirmed = await client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'child-1' },
+    });
+
+    assert.equal(unconfirmed.isError, true);
+    assert.equal(routes.selection.id, 'child-2 & sibling');
+    routes.selection.ignoreSwitch = false;
+
+    const restored = await client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'child-1' },
+    });
+
+    assert.deepEqual(
+      overviewSchema.parse(restored.structuredContent).children,
+      parent.account.pupils,
+    );
+    assert.equal(
+      tools.find(({ name }) => name === 'infomentor_select_child')?.annotations?.readOnlyHint,
+      false,
+    );
+
+    routes.selection.failTimetable = true;
+
+    const partial = await client.callTool({
+      name: 'infomentor_select_child',
+      arguments: { childId: 'child-2 & sibling' },
+    });
+
+    assert.equal(partial.isError, true);
+    assert.match(JSON.stringify(partial), /Selection may have changed/);
+    assert.ok(!JSON.stringify(partial).includes('private-upstream-value'));
+    assert.equal(routes.selection.id, 'child-2 & sibling');
+    routes.selection.failTimetable = false;
+
+    // Another account's older plaintext session, before any store exists for it.
+    const restoreHome = await anotherHome(store);
+    const otherFile = join(directory, 'other/session.json');
+    await writeSession(await savedSession('other'), otherFile);
+    const otherClient = new InfoMentorClient({ sessionFile: otherFile, fetch: routes.fetch });
+
+    try {
+      const onlyChild = await otherClient.selectChild({ childId: 'only-child' });
+      assert.deepEqual(onlyChild.children, [
+        { id: 'only-child', name: 'Another account child', selected: true },
+      ]);
+      assert.equal(onlyChild.timetable?.[0]?.title, 'Another account timetable');
+      // Rust: a tool error carries only its text, and this text takes the code of its cause at
+      // run time, so the drop-in cannot restore INVALID_CONFIGURATION; the text is the same.
+      await assert.rejects(otherClient.selectChild({ childId: 'child-2 & sibling' }), {
+        message:
+          'InfoMentor could not load the selected child. Selection may have changed; refresh infomentor_get_overview before continuing.',
+      });
+      assert.equal((await otherClient.getOverview()).children[0]?.id, 'only-child');
+      assert.equal(routes.selection.id, 'child-2 & sibling');
+    } finally {
+      await otherClient.close();
+      restoreHome();
+    }
+
+    await client.callTool({ name: 'infomentor_select_child', arguments: { childId: 'child-1' } });
+
+    const malformed = await client.callTool({
+      name: 'infomentor_get_messages',
+      arguments: { search: 'malformed' },
+    });
+
+    assert.equal(malformed.isError, true);
+    assert.ok(!JSON.stringify(malformed).includes('private-upstream-value'));
+    assert.ok(
+      !routes.requests.some(({ url }) =>
+        /ViewedMessage|UpdateNotificationState|SendMessage|DeleteMessage/i.test(url),
+      ),
+    );
+    assert.ok(
+      tools
+        .filter((tool) =>
+          [
+            'infomentor_get_messages',
+            'infomentor_get_message',
+            'infomentor_get_notifications',
+          ].includes(tool.name),
+        )
+        .every((tool) => tool.annotations?.readOnlyHint),
+    );
+    const freshClient = new InfoMentorClient({ sessionFile: file, fetch: routes.fetch });
+
+    try {
+      assert.equal((await freshClient.getSessionStatus()).authenticated, true);
+    } finally {
+      await freshClient.close();
+    }
+
+    const baselineResult = await client.callTool({
+      name: 'infomentor_collect_updates',
+      arguments: {},
+    });
+
+    assert.equal(baselineResult.isError, undefined);
+    const baseline = collectionSchema.parse(baselineResult.structuredContent);
+    assert.equal(baseline.baseline, true);
+    assert.deepEqual(baseline.updates, []);
+    assert.equal(baseline.children.length, 2);
+
+    const unchanged = collectionSchema.parse(
+      (
+        await client.callTool({
+          name: 'infomentor_collect_updates',
+          arguments: { cursor: baseline.cursor },
+        })
+      ).structuredContent,
+    );
+
+    assert.equal(unchanged.cursor, baseline.cursor);
+    assert.deepEqual(unchanged.updates, []);
+    assert.equal(routes.selection.id, 'child-1');
+
+    await client.callTool({ name: 'infomentor_logout', arguments: {} });
+    assert.equal(
+      sessionStatusSchema.parse(
+        (await client.callTool({ name: 'infomentor_session_status', arguments: {} }))
+          .structuredContent,
+      ).authenticated,
+      false,
+    );
+    assert.equal(
+      routes.requests.filter((request) => request.body.includes('txtLykilord')).length,
+      1,
+    );
+  } finally {
+    await client.close();
+    await server?.close();
+    routes.restore();
+
+    for (const [name, value] of Object.entries(environment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('InfoMentor skips malformed feed items and preserves nullable and unknown values', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'infomentor-tolerant-feeds-'));
   const file = join(directory, 'session.json');
@@ -722,8 +1154,9 @@ test('cancelled login/import cannot replace the previous account, even after the
 
   try {
     for (const request of [{ credentialsFile }, { importFile: transfer }]) {
-      // Rust: the CLI's Ctrl-C in place of startLogin and cancelSetup, which port with the setup
-      // tools in slice 4.
+      // Rust: the CLI's Ctrl-C in place of startLogin and cancelSetup. A cancel tool call from the
+      // parent-read callback would race the parent response over stdio; parity.ts's setup-stalled
+      // scenario covers the cancel tool.
       const controller = new AbortController();
       // Cancelling from the final parent-read callback preserves the existing session; this does
       // not instrument the session-store adapter's own rename check.
@@ -911,6 +1344,25 @@ test('explicit login or import cannot silently replace a session verified for an
   await writeSession(await savedSession(), transfer);
   await writeFile(credentialsFile, JSON.stringify(credentials), { mode: 0o600 });
   const before = await readFile(file, 'utf8');
+  // Rust: `serve` over stdio in place of createServer over an in-process transport.
+  let server: Awaited<ReturnType<typeof serveStdio>> | undefined;
+  const client = new Client({ name: 'account-test', version: '1.0.0' });
+
+  // Rust: `on` names the client, for the configured-file server below.
+  const finished = async (on = client): Promise<SetupStatus> => {
+    let status = setupStatusSchema.parse(
+      (await on.callTool({ name: 'infomentor_setup_status', arguments: {} })).structuredContent,
+    );
+
+    for (let step = 0; step < 3_000 && status.state === 'running'; step++) {
+      await delay(10);
+      status = setupStatusSchema.parse(
+        (await on.callTool({ name: 'infomentor_setup_status', arguments: {} })).structuredContent,
+      );
+    }
+
+    return status;
+  };
 
   try {
     await assert.rejects(
@@ -924,17 +1376,25 @@ test('explicit login or import cannot silently replace a session verified for an
     );
     assert.equal(await readFile(file, 'utf8'), before);
 
-    // Rust: the CLI in place of the infomentor_login tool and its setup status, which port with
-    // the setup tools in slice 4; the CLI names the credentials file it read.
-    assert.equal(
-      await login({
-        sessionFile: file,
-        credentialsFile,
-        fetch: routes.fetch,
-        allowAccountChange: true,
-      }),
-      credentialsFile,
+    server = await serveStdio({ sessionFile: file, allowSetupTools: true, fetch: routes.fetch });
+    await client.connect(server.transport);
+    await client.callTool({ name: 'infomentor_login', arguments: { credentialsFile } });
+    const refused = await finished();
+    assert.equal(refused.state, 'failed');
+    assert.match(refused.message, /different InfoMentor account/);
+    assert.equal(await readFile(file, 'utf8'), before);
+
+    await client.callTool({
+      name: 'infomentor_login',
+      arguments: { credentialsFile, allowAccountChange: true },
+    });
+    const succeeded = await finished();
+    assert.equal(succeeded.state, 'succeeded');
+    assert.match(
+      succeeded.message,
+      new RegExp(`stored in the encrypted store\\. You can delete ${credentialsFile} now\\.$`),
     );
+    assert.ok(!succeeded.message.includes(credentials.password));
     await assert.rejects(stat(file), { code: 'ENOENT' });
     assert.equal((await readStored(store)).session?.accountId, 'parent-1');
     assert.deepEqual((await readStored(store)).credentials, credentials);
@@ -943,8 +1403,31 @@ test('explicit login or import cannot silently replace a session verified for an
     await login({ sessionFile: file, credentialsFile, fetch: routes.fetch });
     assert.equal((await readStored(store)).session?.accountId, 'parent-1');
 
-    // Rust: 'A sign-in from the server's configured file never echoes that path to the MCP
-    // caller' is a setup-tool step of slice 4.
+    // A sign-in from the server's configured file never echoes that path to the MCP caller.
+    process.env['INFOMENTOR_CREDENTIALS_FILE'] = credentialsFile;
+    // Rust: the binary's environment is fixed when it starts, so a second server starts with the
+    // configured file; the TypeScript server reads the variable at each login.
+    const configuredServer = await serveStdio({
+      sessionFile: file,
+      allowSetupTools: true,
+      fetch: routes.fetch,
+    });
+    const configuredClient = new Client({ name: 'configured-test', version: '1.0.0' });
+
+    try {
+      await configuredClient.connect(configuredServer.transport);
+      await configuredClient.callTool({ name: 'infomentor_login', arguments: {} });
+      const configured = await finished(configuredClient);
+      assert.equal(configured.state, 'succeeded');
+      assert.equal(
+        configured.message,
+        'Session saved in the encrypted store. Call infomentor_session_status to verify access.',
+      );
+    } finally {
+      delete process.env['INFOMENTOR_CREDENTIALS_FILE'];
+      await configuredClient.close();
+      await configuredServer.close();
+    }
 
     // A stored session of another account is protected the same way. An import keeps the stored
     // sign-in only for the same verified account.
@@ -988,6 +1471,8 @@ test('explicit login or import cannot silently replace a session verified for an
     await importSession(transfer, { sessionFile: file, fetch: routes.fetch });
     assert.equal((await readStored(store)).session?.accountId, 'parent-1');
   } finally {
+    await client.close();
+    await server?.close();
     routes.restore();
     await rm(directory, { recursive: true, force: true });
   }
@@ -1110,6 +1595,48 @@ test('a rate-limit pause is saved with the session and honoured by other process
     }
   } finally {
     await first.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('HTTP cancellation aborts in-flight requests; closing a client drains reads', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'infomentor-cancel-'));
+  const file = join(directory, 'session.json');
+  await writeSession(await savedSession(), file);
+  let active = 0;
+  const entered = Promise.withResolvers<void>();
+
+  const fetcher = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    active++;
+    entered.resolve();
+
+    try {
+      await delay(60_000, undefined, { signal: init?.signal ?? undefined });
+
+      return new Response('true');
+    } finally {
+      active--;
+    }
+  };
+
+  try {
+    const client = new InfoMentorClient({ sessionFile: file, fetch: fetcher });
+
+    try {
+      // Rust: once the binary's stdin closes its answer cannot arrive, so the MCP client reports
+      // the closed connection instead of CANCELLED. The binary still aborts the in-flight request,
+      // which the upstream sees as its connection closing.
+      const reading = assert.rejects(client.getOverview());
+      await entered.promise;
+      await client.close();
+      await reading;
+
+      for (let step = 0; step < 200 && active > 0; step++) await delay(10);
+      assert.equal(active, 0);
+    } finally {
+      await client.close();
+    }
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -315,11 +315,12 @@ export class InfoMentorClient {
   getNotifications = (input: object = {}) => this.#call('infomentor_get_notifications', input);
   collectUpdates = (input: object = {}) => this.#call('infomentor_collect_updates', input);
   getSessionStatus = () => this.#call('infomentor_session_status', {});
+  startLogin = (request: object = {}) => this.#call('infomentor_login', request);
+  getSetupStatus = () => this.#call('infomentor_setup_status', {});
+  cancelSetup = () => this.#call('infomentor_cancel_setup', {});
 
-  /** Rust: the CLI's `logout` until the logout tool ports with the setup tools. */
-  logout = async () => {
-    await this.close();
-    await logout(this.options.sessionFile!, this.options.keys);
+  logout = async (): Promise<void> => {
+    await this.#call('infomentor_logout', {});
   };
 
   close = async () => {
@@ -329,30 +330,18 @@ export class InfoMentorClient {
   };
 
   #connect(): Promise<Connection> {
+    // The TypeScript client has every method; its server registers the setup tools only on
+    // request, so this serve allows them.
     this.#connection ??= (async () => {
-      const served = this.options.fetch ? await upstream(this.options.fetch) : undefined;
-      const transport = new StdioClientTransport({
-        command: rustBinary!,
-        args: [
-          'serve',
-          ...sessionArgs(this.options),
-          ...(this.options.credentialsFile ? ['--credentials', this.options.credentialsFile] : []),
-        ],
-        env: {
-          ...(process.env as Record<string, string>),
-          ...keyEnvironment(this.options.keys),
-          INFOMENTOR_TEST_ORIGIN: served?.origin ?? NOWHERE,
-        },
-        stderr: 'pipe',
-      });
+      const served = await serveStdio({ ...this.options, allowSetupTools: true });
       const client = new Client({ name: 'infomentor-rust-integration', version: '1.0.0' });
-      await client.connect(transport);
+      await client.connect(served.transport);
 
       return {
         client,
         close: async () => {
           await client.close();
-          await served?.close();
+          await served.close();
         },
       };
     })();
@@ -370,4 +359,31 @@ export class InfoMentorClient {
 
     return result.structuredContent;
   }
+}
+
+/**
+ * In place of `createServer(options)` over an InMemoryTransport: the binary's `serve` over stdio,
+ * with the environment of this moment. Connect a client to `transport`; `close` stops the
+ * upstream once the client has closed.
+ */
+export async function serveStdio(options: SessionOptions & { allowSetupTools?: boolean } = {}) {
+  const served = options.fetch ? await upstream(options.fetch) : undefined;
+
+  const transport = new StdioClientTransport({
+    command: rustBinary!,
+    args: [
+      'serve',
+      ...sessionArgs(options),
+      ...(options.credentialsFile ? ['--credentials', options.credentialsFile] : []),
+      ...(options.allowSetupTools ? ['--allow-setup-tools'] : []),
+    ],
+    env: {
+      ...(process.env as Record<string, string>),
+      ...keyEnvironment(options.keys),
+      INFOMENTOR_TEST_ORIGIN: served?.origin ?? NOWHERE,
+    },
+    stderr: 'pipe',
+  });
+
+  return { transport, close: async () => served?.close() };
 }

@@ -225,9 +225,14 @@ async fn status(options: Options) -> Result<ExitCode> {
     }
 }
 
-/// `deleteCredentialsAdvice`: after a sign-in read from a file; `file` is the path the user gave.
-fn delete_credentials_advice(file: &str) -> String {
-    format!("Your InfoMentor sign-in is stored in the encrypted store. You can delete {file} now.")
+/// `logout`: through a client, as the TypeScript CLI does, so it cancels and waits like the tool.
+async fn logout(options: Options) -> Result<()> {
+    let client = Client::new(options).ok_or(Fail::Unknown)?;
+    let outcome = client.logout().await;
+    client.close().await;
+    outcome?;
+    eprintln!("Local InfoMentor session and stored sign-in removed.");
+    Ok(())
 }
 
 /// The session commands. Blocks.
@@ -258,7 +263,7 @@ fn command(name: &str, args: &Args, options: &Options, net: &Net, signal: &Signa
             if let Some(file) = file {
                 eprintln!(
                     "{}",
-                    delete_credentials_advice(args.credentials.as_deref().unwrap_or(&file))
+                    store::delete_credentials_advice(args.credentials.as_deref().unwrap_or(&file))
                 );
             }
             Ok(())
@@ -277,7 +282,7 @@ fn command(name: &str, args: &Args, options: &Options, net: &Net, signal: &Signa
                 );
 
                 if let Some(file) = args.credentials.as_deref().filter(|file| !file.is_empty()) {
-                    eprintln!("{}", delete_credentials_advice(file));
+                    eprintln!("{}", store::delete_credentials_advice(file));
                 }
                 return Ok(());
             }
@@ -297,14 +302,6 @@ fn command(name: &str, args: &Args, options: &Options, net: &Net, signal: &Signa
                     "Your sign-in was not stored. Run infomentor-mcp login --credentials FILE to store it."
                 );
             }
-            Ok(())
-        }
-        "logout" => {
-            store::logout(
-                &session_path(options.session_file.as_deref())?,
-                options.keys.clone(),
-            )?;
-            eprintln!("Local InfoMentor session and stored sign-in removed.");
             Ok(())
         }
         _ => Err(Fail::config("Unknown command. Run infomentor-mcp --help.")),
@@ -386,6 +383,10 @@ async fn main_async() -> Result<ExitCode> {
 
     if name == "status" {
         return status(options(&args)).await;
+    }
+
+    if name == "logout" {
+        return logout(options(&args)).await.map(|()| ExitCode::SUCCESS);
     }
     let options = options(&args);
     let net = Net::new().ok_or(Fail::Unknown)?;

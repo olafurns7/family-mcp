@@ -40,11 +40,6 @@ impl Controller {
     pub fn abort(&self) {
         self.0.send_replace(true);
     }
-
-    #[expect(dead_code, reason = "setup status uses it from slice 4")]
-    pub fn aborted(&self) -> bool {
-        *self.0.borrow()
-    }
 }
 
 impl Signal {

@@ -384,7 +384,11 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: handle });
 const origin = `http://127.0.0.1:${server.port}`;
 
 /** A tool call, with arguments built from earlier results when needed, or a change upstream. */
-type Call = [string, unknown] | ((state: State) => void);
+/** `'settle'` polls infomentor_setup_status until the setup ends and records that status. */
+type Call = [string, unknown] | ((state: State) => void) | 'settle';
+
+/** Absolute paths in tool arguments name files in each side's home as `<home>/...`. */
+const HOME = '<home>';
 
 /** A file in the scratch home: private text, text with this mode, or a symlink to a name. */
 type Fixture = string | { text: string; mode: number } | { link: string };
@@ -422,6 +426,8 @@ const EXPIRED = await seed('expired');
 const OTHER = await seed('other');
 
 const SESSION = ['serve', '--session', 'session.json'];
+
+const SETUP = ['serve', '--allow-setup-tools'];
 
 const CREDENTIALS = { INFOMENTOR_USERNAME: USERNAME, INFOMENTOR_PASSWORD: 'synthetic-password' };
 
@@ -1007,6 +1013,137 @@ const scenarios: Scenario[] = [
       { serve: [expire(), ['infomentor_get_overview', {}], ['infomentor_session_status', {}]] },
     ],
   },
+  {
+    name: 'setup-login',
+    env: CREDENTIALS,
+    steps: [
+      {
+        serve: [
+          ['infomentor_setup_status', {}],
+          ['infomentor_login', {}],
+          'settle',
+          ['infomentor_session_status', {}],
+          ['infomentor_get_overview', {}],
+          ['infomentor_logout', {}],
+          ['infomentor_setup_status', {}],
+          ['infomentor_session_status', {}],
+          ['infomentor_logout', {}],
+        ],
+        args: SETUP,
+      },
+      { cli: ['status'] },
+    ],
+  },
+  {
+    name: 'setup-credentials-file',
+    files: PRIVATE_SIGN_IN,
+    steps: [
+      {
+        serve: [
+          ['infomentor_login', { credentialsFile: `${HOME}/credentials.json`, timeoutSeconds: 60 }],
+          'settle',
+          ['infomentor_session_status', {}],
+        ],
+        args: SETUP,
+      },
+      {
+        serve: [['infomentor_login', {}], 'settle'],
+        args: [...SETUP, '--credentials', 'credentials.json'],
+      },
+    ],
+  },
+  {
+    name: 'setup-import',
+    env: CREDENTIALS,
+    files: { 'export.json': SYNTHETIC, 'other.json': OTHER },
+    steps: [
+      {
+        serve: [
+          ['infomentor_login', { importFile: `${HOME}/export.json` }],
+          'settle',
+          ['infomentor_login', { importFile: `${HOME}/other.json` }],
+          'settle',
+          ['infomentor_login', { importFile: `${HOME}/other.json`, allowAccountChange: true }],
+          'settle',
+          ['infomentor_login', { importFile: `${HOME}/missing.json` }],
+          'settle',
+          ['infomentor_session_status', {}],
+        ],
+        args: SETUP,
+      },
+    ],
+  },
+  {
+    name: 'setup-account-change',
+    env: CREDENTIALS,
+    steps: [
+      {
+        serve: [
+          ['infomentor_login', {}],
+          'settle',
+          (state) => {
+            state.issue = 'other';
+          },
+          ['infomentor_login', {}],
+          'settle',
+          ['infomentor_login', { allowAccountChange: true }],
+          'settle',
+          ['infomentor_get_overview', {}],
+        ],
+        args: SETUP,
+      },
+    ],
+  },
+  {
+    name: 'setup-invalid',
+    env: CREDENTIALS,
+    steps: [
+      {
+        serve: [
+          ['infomentor_login', { importFile: '/a', credentialsFile: '/b' }],
+          ['infomentor_login', { importFile: 'relative.json', timeoutSeconds: 0, z: 1 }],
+          ['infomentor_login', { allowAccountChange: 'yes', timeoutSeconds: 1.5 }],
+          ['infomentor_setup_status', { x: 1 }],
+          ['infomentor_cancel_setup', { x: 1 }],
+          ['infomentor_logout', { x: 1 }],
+          ['infomentor_cancel_setup', {}],
+        ],
+        args: SETUP,
+      },
+      {
+        serve: [
+          ['infomentor_login', {}],
+          ['infomentor_logout', {}],
+          ['infomentor_setup_status', {}],
+        ],
+      },
+    ],
+  },
+  {
+    name: 'setup-stalled',
+    env: CREDENTIALS,
+    seed: SYNTHETIC,
+    state: { login: 'stall' },
+    steps: [
+      {
+        serve: [
+          ['infomentor_login', {}],
+          ['infomentor_get_overview', {}],
+          ['infomentor_login', {}],
+          ['infomentor_cancel_setup', {}],
+          ['infomentor_setup_status', {}],
+          ['infomentor_session_status', {}],
+          ['infomentor_login', { timeoutSeconds: 1 }],
+          'settle',
+          ['infomentor_login', {}],
+          ['infomentor_logout', {}],
+          ['infomentor_setup_status', {}],
+          ['infomentor_session_status', {}],
+        ],
+        args: [...SETUP, '--session', 'session.json'],
+      },
+    ],
+  },
 ];
 
 function environment(home: string, extra: Record<string, string> = {}): Record<string, string> {
@@ -1092,11 +1229,26 @@ async function runServe(
       call(fake.state);
       continue;
     }
+
+    if (call === 'settle') {
+      let status: { structuredContent?: { state?: string } } | undefined;
+
+      for (let step = 0; step < 3_000; step++) {
+        status = await client.callTool({ name: 'infomentor_setup_status', arguments: {} });
+
+        if (status.structuredContent?.state !== 'running') break;
+        await Bun.sleep(10);
+      }
+      results.push(status);
+      continue;
+    }
     const [name, input] = call;
-    const parameters = (typeof input === 'function' ? { cursor: input(results) } : input) as Record<
-      string,
-      unknown
-    >;
+    const parameters = JSON.parse(
+      JSON.stringify(typeof input === 'function' ? { cursor: input(results) } : input).replaceAll(
+        HOME,
+        home,
+      ),
+    ) as Record<string, unknown>;
 
     try {
       const result = await client.callTool({ name, arguments: parameters });
@@ -1207,10 +1359,13 @@ async function run(side: 'ts' | 'rust', scenario: Scenario) {
 
   if (side === 'ts') requests += fake.seen.length;
 
+  // Each side's home appears in setup messages that name a credentials file.
+  const homeless = JSON.parse(
+    JSON.stringify({ steps, requests: fake.seen, session: session(home) }).replaceAll(home, HOME),
+  ) as unknown;
+
   return masker()({
-    steps,
-    requests: fake.seen,
-    session: session(home),
+    ...(homeless as object),
     files: listing(home)
       .map((entry) => entry.replace(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/, '<cursor>'))
       .sort(),
@@ -1411,8 +1566,8 @@ if (
   !only &&
   (JSON.stringify(surfaces) !== '[7,11,7,7,11,7]' ||
     commands < cliCases.length ||
-    served < 45 ||
-    requests < 600)
+    served < 75 ||
+    requests < 750)
 )
   failures.push(`coverage too low: ${JSON.stringify(counts)}`);
 

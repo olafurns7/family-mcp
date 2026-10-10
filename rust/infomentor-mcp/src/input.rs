@@ -32,6 +32,15 @@ pub struct CollectRequest {
     pub max_message_pages: i64,
 }
 
+/// `loginRequestSchema`, defaults applied.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoginRequest {
+    pub import_file: Option<String>,
+    pub credentials_file: Option<String>,
+    pub allow_account_change: Option<bool>,
+    pub timeout_seconds: i64,
+}
+
 /// The lower bound of a number: `.min(n)` or `.positive()`.
 #[derive(Clone, Copy)]
 enum Min {
@@ -214,6 +223,46 @@ pub fn collect(arguments: &Map<String, Value>) -> Result<CollectRequest, String>
     )
 }
 
+/// `z.string().refine(isAbsolute, ...)`: POSIX `path.isAbsolute`.
+fn absolute(parse: &mut Parse, value: Option<&Value>) -> Option<String> {
+    let text = parse.string(value, (0, usize::MAX));
+
+    if text.as_deref().is_some_and(|text| !text.starts_with('/')) {
+        parse.issue("Use an absolute path on the MCP host.".to_owned(), true);
+    }
+    text
+}
+
+/// `loginRequestSchema`.
+pub fn login(arguments: &Map<String, Value>) -> Result<LoginRequest, String> {
+    object(
+        arguments,
+        &[
+            "importFile",
+            "credentialsFile",
+            "allowAccountChange",
+            "timeoutSeconds",
+        ],
+        |parse, args| LoginRequest {
+            import_file: optional(parse, args, "importFile", absolute),
+            credentials_file: optional(parse, args, "credentialsFile", absolute),
+            allow_account_change: optional(parse, args, "allowAccountChange", |p, v| match v {
+                Some(Value::Bool(flag)) => Some(*flag),
+                _ => {
+                    p.wrong_type("boolean", v);
+                    None
+                }
+            }),
+            timeout_seconds: parse.at("timeoutSeconds").int_or(
+                args.get("timeoutSeconds"),
+                (1, 3600),
+                300,
+            ),
+        },
+        |_| None,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -261,6 +310,64 @@ mod tests {
         assert_eq!(
             select_child(&args(json!({"childId": ""}))).unwrap_err(),
             "childId: Too small: expected string to have >=1 characters"
+        );
+    }
+
+    #[test]
+    fn login_requests_get_the_zod_texts() {
+        // Texts from zod 4's safeParse of loginRequestSchema.
+        for (input, text) in [
+            (
+                json!({"importFile": "rel"}),
+                "importFile: Use an absolute path on the MCP host.",
+            ),
+            (
+                json!({"importFile": ""}),
+                "importFile: Use an absolute path on the MCP host.",
+            ),
+            (
+                json!({"importFile": 5}),
+                "importFile: Invalid input: expected string, received number",
+            ),
+            (
+                json!({"credentialsFile": "x", "importFile": "y"}),
+                "importFile: Use an absolute path on the MCP host., credentialsFile: Use an absolute path on the MCP host.",
+            ),
+            (
+                json!({"allowAccountChange": "yes"}),
+                "allowAccountChange: Invalid input: expected boolean, received string",
+            ),
+            (
+                json!({"timeoutSeconds": 0}),
+                "timeoutSeconds: Too small: expected number to be >=1",
+            ),
+            (
+                json!({"timeoutSeconds": 1.5}),
+                "timeoutSeconds: Invalid input: expected int, received number",
+            ),
+            (
+                json!({"timeoutSeconds": 3601}),
+                "timeoutSeconds: Too big: expected number to be <=3600",
+            ),
+            (
+                json!({"z": 1, "importFile": "r", "timeoutSeconds": 0}),
+                "importFile: Use an absolute path on the MCP host., timeoutSeconds: Too small: expected number to be >=1, Unrecognized key: \"z\"",
+            ),
+            (
+                json!({"importFile": null}),
+                "importFile: Invalid input: expected string, received null",
+            ),
+        ] {
+            assert_eq!(login(&args(input)).unwrap_err(), text);
+        }
+        assert_eq!(
+            login(&args(json!({"importFile": "/a", "credentialsFile": "/b"}))),
+            Ok(LoginRequest {
+                import_file: Some("/a".to_owned()),
+                credentials_file: Some("/b".to_owned()),
+                allow_account_change: None,
+                timeout_seconds: 300,
+            })
         );
     }
 

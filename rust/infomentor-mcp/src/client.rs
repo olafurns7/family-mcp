@@ -2,27 +2,28 @@
 //! MCP connection. Each read holds the store lock, proves the session on the parent page, and
 //! writes changed cookies back before the next read.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use family_store::{Cancel, KeyProvider};
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 use crate::collection::{Source, collect_updates};
 use crate::error::{Code, Fail, Result};
 use crate::http::{Http, Parent};
-use crate::input::{CollectRequest, MessagesRequest, NotificationsRequest};
+use crate::input::{CollectRequest, LoginRequest, MessagesRequest, NotificationsRequest};
 use crate::js;
 use crate::login::{
-    create_authenticated_http, has_configured_credentials, resolve_credentials, session_from_http,
+    self, create_authenticated_http, has_configured_credentials, resolve_credentials,
+    session_from_http,
 };
 use crate::session::{SavedSession, session_path};
 use crate::shapes::{self, Feed, MessagesPage};
 use crate::signal::{Controller, Signal};
-use crate::store::{Held, with_session};
+use crate::store::{self, Held, with_session};
 use crate::upstream::Net;
 
 const COLLECTION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -32,7 +33,7 @@ const RENEWAL_TIMEOUT: Duration = Duration::from_secs(60);
 const OVERVIEW_MAX_UNITS: usize = 40_000;
 
 /// `SessionOptions`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Options {
     /// `--session`, resolved.
     pub session_file: Option<PathBuf>,
@@ -57,6 +58,31 @@ struct Active {
     serialized: String,
 }
 
+/// `SetupStatus`, its fields in the order the TypeScript client sets them.
+#[derive(Clone)]
+struct SetupStatus {
+    operation: Option<&'static str>,
+    state: &'static str,
+    message: String,
+}
+
+impl SetupStatus {
+    fn to_json(&self) -> Value {
+        match self.operation {
+            Some(operation) => {
+                json!({"operation": operation, "state": self.state, "message": self.message})
+            }
+            None => json!({"state": self.state, "message": self.message}),
+        }
+    }
+}
+
+/// A running login or import: what cancels it, and what reports its end.
+struct Setup {
+    controller: Controller,
+    done: watch::Receiver<bool>,
+}
+
 pub struct Client {
     options: Options,
     net: Net,
@@ -64,8 +90,9 @@ pub struct Client {
     active: Arc<Mutex<Option<Active>>>,
     lifetime: Controller,
     closed: AtomicBool,
-    /// A login or import is running.
-    setup: AtomicBool,
+    /// The running login or import. It runs outside the queue; reads refuse while it runs.
+    setup: std::sync::Mutex<Option<Setup>>,
+    status: std::sync::Mutex<SetupStatus>,
     logging_out: AtomicBool,
 }
 
@@ -314,7 +341,12 @@ impl Client {
             active: Arc::default(),
             lifetime: Controller::default(),
             closed: AtomicBool::new(false),
-            setup: AtomicBool::new(false),
+            setup: std::sync::Mutex::default(),
+            status: std::sync::Mutex::new(SetupStatus {
+                operation: None,
+                state: "idle",
+                message: "No setup operation has started.".to_owned(),
+            }),
             logging_out: AtomicBool::new(false),
         })
     }
@@ -351,7 +383,7 @@ impl Client {
             ));
         }
 
-        if self.setup.load(Ordering::SeqCst) || self.logging_out.load(Ordering::SeqCst) {
+        if self.setting_up() || self.logging_out.load(Ordering::SeqCst) {
             return Err(Fail::new(
                 Code::OperationInProgress,
                 "Account setup is in progress. Check infomentor_setup_status before reading school data.",
@@ -561,15 +593,214 @@ impl Client {
         }
     }
 
-    /// Stop every operation: queued and running reads end with a cancellation.
+    fn setting_up(&self) -> bool {
+        self.setup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
+    fn set_status(&self, status: SetupStatus) {
+        *self.status.lock().unwrap_or_else(PoisonError::into_inner) = status;
+    }
+
+    /// `getSetupStatus`.
+    pub fn setup_status(&self) -> Value {
+        self.status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .to_json()
+    }
+
+    /// `startLogin`: start a login or import and return at once; its result becomes the setup
+    /// status.
+    pub fn start_login(self: &Arc<Self>, request: LoginRequest) -> Result<Value> {
+        if request.import_file.is_some() && request.credentials_file.is_some() {
+            return Err(Fail::config("Choose session import or login, not both."));
+        }
+
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(Fail::new(
+                Code::Cancelled,
+                "This InfoMentor client has been closed.",
+            ));
+        }
+        let mut setup = self.setup.lock().unwrap_or_else(PoisonError::into_inner);
+
+        if setup.is_some() || self.logging_out.load(Ordering::SeqCst) {
+            return Err(Fail::new(
+                Code::OperationInProgress,
+                "Another setup operation is active. Check its status or cancel it first.",
+            ));
+        }
+        let operation = match request.import_file {
+            Some(_) => "import",
+            None => "login",
+        };
+        self.set_status(SetupStatus {
+            operation: Some(operation),
+            state: "running",
+            message: "Setup started. Check infomentor_setup_status for progress.".to_owned(),
+        });
+        let controller = Controller::default();
+        let signal = controller.signal();
+        let (finished, done) = watch::channel(false);
+        let client = self.clone();
+
+        tokio::spawn(async move {
+            let outcome = client.run_setup(request, &signal).await;
+            let (state, message) = match outcome {
+                Ok(advice) => (
+                    "succeeded",
+                    std::iter::once(
+                        "Session saved in the encrypted store. Call infomentor_session_status to verify access."
+                            .to_owned(),
+                    )
+                    .chain(advice.map(|file| store::delete_credentials_advice(&file)))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                ),
+                Err(_) if signal.aborted() => (
+                    "cancelled",
+                    "Setup cancelled. The previously saved session was kept.".to_owned(),
+                ),
+                Err(Fail::Im { message, .. }) => ("failed", message.to_owned()),
+                Err(_) => (
+                    "failed",
+                    "Setup failed. Check the network and session-file permissions.".to_owned(),
+                ),
+            };
+            client.set_status(SetupStatus {
+                operation: Some(operation),
+                state,
+                message,
+            });
+            *client.setup.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            finished.send_replace(true);
+        });
+        *setup = Some(Setup { controller, done });
+        drop(setup);
+        Ok(self.setup_status())
+    }
+
+    /// The setup itself, after the operations queued before it. Returns the credentials file to
+    /// advise deleting: only one this call named, never the server's configured path.
+    async fn run_setup(
+        self: &Arc<Self>,
+        request: LoginRequest,
+        signal: &Signal,
+    ) -> Result<Option<String>> {
+        {
+            let mut active = self.active.lock().await;
+            signal.check()?;
+            *active = None;
+        }
+        let client = self.clone();
+        let signal = signal.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let allow = request.allow_account_change.unwrap_or(false);
+
+            if let Some(file) = &request.import_file {
+                login::import_session(
+                    &client.net,
+                    &client.options,
+                    Path::new(file),
+                    &signal,
+                    allow,
+                )?;
+                return Ok(None);
+            }
+            let named = request.credentials_file.is_some();
+            let options = Options {
+                credentials_file: request
+                    .credentials_file
+                    .map(PathBuf::from)
+                    .or_else(|| client.options.credentials_file.clone()),
+                ..client.options.clone()
+            };
+            let file = login::login(
+                &client.net,
+                &options,
+                &signal,
+                allow,
+                request.timeout_seconds as f64 * 1000.0,
+            )?;
+            Ok(file.filter(|_| named))
+        })
+        .await
+        .unwrap_or(Err(Fail::Unknown))
+    }
+
+    /// `cancelSetup`: abort the running setup, wait for it to end, and report the status.
+    pub async fn cancel_setup(&self) -> Value {
+        let done = self
+            .setup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|setup| {
+                setup.controller.abort();
+                setup.done.clone()
+            });
+
+        if let Some(mut done) = done {
+            // A dropped sender means the task ended without reporting; it has ended either way.
+            let _ = done.wait_for(|finished| *finished).await;
+        }
+        self.setup_status()
+    }
+
+    /// `logout`: cancel any setup, wait for queued operations, then remove the local session, the
+    /// stored sign-in and the collection cursors.
+    pub async fn logout(&self) -> Result<()> {
+        if self.logging_out.swap(true, Ordering::SeqCst) {
+            return Err(Fail::new(
+                Code::OperationInProgress,
+                "Logout is already in progress.",
+            ));
+        }
+        let outcome = async {
+            self.cancel_setup().await;
+            *self.active.lock().await = None;
+            let file = session_path(self.options.session_file.as_deref())?;
+            let keys = self.options.keys.clone();
+            tokio::task::spawn_blocking(move || store::logout(&file, keys))
+                .await
+                .unwrap_or(Err(Fail::Unknown))?;
+            self.set_status(SetupStatus {
+                operation: None,
+                state: "idle",
+                message: "Local session and stored sign-in removed. Call infomentor_login to sign in again."
+                    .to_owned(),
+            });
+            Ok(())
+        }
+        .await;
+        self.logging_out.store(false, Ordering::SeqCst);
+        outcome
+    }
+
+    /// Stop every operation: queued and running reads, and a running setup, end with a
+    /// cancellation.
     pub fn abort(&self) {
         self.closed.store(true, Ordering::SeqCst);
         self.lifetime.abort();
+
+        if let Some(setup) = self
+            .setup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            setup.controller.abort();
+        }
     }
 
-    /// `close`: abort, then wait for the running operation to end.
+    /// `close`: abort, then wait for the setup and the running operation to end.
     pub async fn close(&self) {
         self.abort();
+        self.cancel_setup().await;
         *self.active.lock().await = None;
     }
 }

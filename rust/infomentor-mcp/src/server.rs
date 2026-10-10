@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use mcp_runtime::{Server, Surface};
 use rmcp::model::JsonObject;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::client::Client;
 use crate::error::{Fail, Result};
@@ -97,9 +97,26 @@ impl Server for InfoMentor {
                 let request = input::collect(arguments)?;
                 client.collect(request, signal).await
             }
-            _ => Err(Fail::config(
-                "This InfoMentor tool is not available in this build yet.",
-            )),
+            "infomentor_login" => {
+                let request = input::login(arguments)?;
+                client.start_login(request)
+            }
+            "infomentor_setup_status" => {
+                input::empty(arguments)?;
+                Ok(client.setup_status())
+            }
+            "infomentor_cancel_setup" => {
+                input::empty(arguments)?;
+                Ok(client.cancel_setup().await)
+            }
+            "infomentor_logout" => {
+                input::empty(arguments)?;
+                client.logout().await.map(|()| {
+                    json!({"authenticated": false, "nextStep": "Call infomentor_login to sign in again."})
+                })
+            }
+            // The runtime lists and accepts only the surface's tools.
+            _ => Err(Fail::Unknown),
         })
     }
 
