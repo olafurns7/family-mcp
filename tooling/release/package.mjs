@@ -20,7 +20,7 @@ export const PACKAGE_NAMES = /** @type {const} */ ([
 /** Package documentation files that pin the release version alongside README.md. */
 export const DOCUMENTATION_FILES = /** @type {const} */ ({
   'abler-mcp': ['docs/AGENTS.md', 'docs/PUBLISHING.md'],
-  'infomentor-mcp': ['docs/RELEASING.md'],
+  'infomentor-mcp': ['docs/CONNECTIVITY.md', 'docs/RELEASING.md'],
   'inna-mcp': ['docs/RELEASING.md'],
   'kronan-mcp': ['docs/RELEASING.md'],
   'dominos-mcp': ['docs/RELEASING.md'],

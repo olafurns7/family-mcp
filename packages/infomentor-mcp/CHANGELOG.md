@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.0
+
+- The native binary is now built from Rust. It serves the same tools, inputs,
+  results, CLI commands, messages and exit codes as the TypeScript sources.
+- The session and the sign-in a login used are kept in one encrypted record in
+  the file store, with its key in a separate private file: on macOS in
+  `~/Library/Application Support/family-mcp`, which is excluded from Time
+  Machine; on Linux in `~/.config/infomentor-mcp`, with the key in
+  `~/.local/share/family-mcp/keys`. Automatic renewal tries that stored sign-in
+  first, so the credentials file can be deleted after login; logout removes
+  both. `infomentor-mcp status` shows how the session is saved.
+- Every start checks the store's location and permissions. A refusal names the
+  path and, for most problems, the command that fixes it.
+- A session saved by 0.8.0 or earlier keeps working from its plaintext file.
+  Stop running servers of the older version, then run
+  `infomentor-mcp auth migrate` once (add `--credentials FILE` to store the
+  sign-in too) to move it into the encrypted store and remove the file. `login`
+  and `login --import` move it as well. Collection snapshots stay in
+  `<session file>.collections`. Commands also accept an `auth` prefix.
+- Sessions saved with earlier test builds that kept the store key in the macOS
+  Keychain are not migrated: remove the files the refusal names, then run
+  `infomentor-mcp login` again.
+- The installer options `--with-direct-route`, `--without-direct-route`,
+  `--with-warp` and `--without-warp` work as before.
+
 ## 0.8.0
 
 - Added Linux installer option `--with-direct-route` for hosts where the normal
