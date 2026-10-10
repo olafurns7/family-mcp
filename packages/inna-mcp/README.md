@@ -240,7 +240,8 @@ renewal; cookie values and failures never count as proof of session lifetime.
 
 The renewal age limit is thirty minutes, measured in memory with a monotonic
 clock. Before a school request uses an unknown or older session, it must verify
-it first. Restarting the server makes the renewal age unknown. Skipped or failed
+it first. Restarting the server makes the renewal age unknown, so the first idle
+verification runs after one minute, including with `--no-keep-alive`. Skipped or failed
 ticks retry after one minute; rate-limit pauses still prohibit requests. A
 network, service or store failure can prevent renewal, so the server fails school
 calls closed until verification succeeds. Transient failures retain the session;
@@ -248,15 +249,18 @@ a sign-in refusal gives the existing re-sign-in message and pauses idle requests
 until the saved credentials change. The background server also reports a fixed,
 credential-free message when renewal is blocked past the bound.
 
-A read answered with 401 reloads the saved session, uses changed cookies or makes
-one verification request, then retries that read once. A second refusal fails
+A read answered with 401 reloads the saved session and makes one verification
+request, then retries that read once. A second refusal fails
 closed. The absence submission POST is never retried: a failed response keeps
-its outcome uncertain, as before.
+its outcome uncertain, as before. A student switch answered with 401 also recovers
+once, then reports the existing switch-refused text.
 
 `inna-mcp serve --no-keep-alive` now disables only the optional ten-minute touches.
 Mandatory renewal still runs every twenty minutes while serving, including when
 no tools arrive. Both schedules stop when the connection closes. Outside `serve`,
-nothing renews the session automatically.
+nothing renews the session automatically. A host that starts the server per
+conversation leaves the session idle between conversations; there, schedule
+`inna-mcp auth status` (for example from cron) for the same effect.
 
 These timing and retry guarantees were checked offline with synthetic short-lived
 sessions. Whether real Inna extends its session on these requests, and its actual

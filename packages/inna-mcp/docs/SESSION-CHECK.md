@@ -35,7 +35,7 @@ stamp("authenticated_start", initial)
 if not initial:
     sys.exit(1)
 
-server = subprocess.Popen([binary, "serve"], stdin=subprocess.PIPE,
+server = subprocess.Popen([binary, "serve", *sys.argv[2:]], stdin=subprocess.PIPE,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 idle = False
 try:
@@ -65,6 +65,13 @@ final = authenticated()
 stamp("authenticated_end", final)
 sys.exit(0 if idle and server.returncode == 0 and final else 1)
 PY
+```
+
+For the mandatory-only check, replace the invocation line above with this one,
+keeping the same Python body and closing `PY` delimiter:
+
+```sh
+python3 - packages/inna-mcp/release/native/inna-mcp --no-keep-alive <<'PY'
 ```
 
 Passing demonstrates that this real session stayed usable across this idle window.
