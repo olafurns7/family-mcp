@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["family-store", "mcp-runtime", "browser-login", "abler-mcp"]
+members = ["family-store", "mcp-runtime", "browser-login", "abler-mcp", "inna-mcp"]
 
 [workspace.package]
 edition = "2024"

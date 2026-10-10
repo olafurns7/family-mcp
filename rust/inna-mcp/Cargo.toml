@@ -1,0 +1,24 @@
+[package]
+name = "inna-mcp"
+# Kept equal to packages/inna-mcp/package.json; a test compares them.
+version = "0.3.0"
+description = "Unofficial Inna school MCP with electronic-ID login, private sessions, and confirmed absence requests"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Test seam only: INNA_TEST_ORIGIN redirects requests for Inna's and the sign-in hosts to a local
+# fake upstream. Off by default, so a release build only ever talks to the real hosts.
+test-origin = []
+
+[dependencies]
+family-store = { path = "../family-store" }
+mcp-runtime = { path = "../mcp-runtime" }
+rmcp = { version = "=3.5.1", default-features = false, features = ["server", "transport-io"] }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+tokio = { version = "=1.53.2", features = ["rt", "io-std", "macros", "signal", "sync", "time"] }
