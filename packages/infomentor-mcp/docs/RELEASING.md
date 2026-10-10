@@ -17,8 +17,15 @@ Native binaries are the only distribution.
 curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/infomentor-mcp@0.8.0/packages/infomentor-mcp/install.sh | sh
 ```
 
+The executable is compiled from the Rust crate `rust/infomentor-mcp`
+(`familyMcp.release.rust` in `package.json`). `release:sync` also sets the crate
+version in `rust/infomentor-mcp/Cargo.toml` and `rust/Cargo.lock`, and
+`release:check` fails while they differ. Before tagging, run the Rust checks in
+the package README and
+`bunx turbo run build:binary test:binary test:installer --filter=infomentor-mcp --force`.
+
 Archives contain the executable, README, LICENSE, and generated third-party
-notices. The installer verifies the checksum and version before replacing the
+notices, which list every statically linked crate. The installer verifies the checksum and version before replacing the
 command; previous version directories remain. Never include sessions,
 credentials, environment files, browser captures, or fixtures in release assets.
 

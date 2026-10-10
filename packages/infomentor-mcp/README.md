@@ -569,8 +569,8 @@ message, rather than silently treated as authenticated.
 
 ## Development and release
 
-Use the pinned **Bun 1.4.2** for package management, tests, and executable builds.
-Consumers run the standalone Bun executable.
+Use the pinned **Bun 1.4.2** for package management and tests. The release
+executable is a native Rust binary; consumers need neither Bun nor Node.
 
 From the monorepo root:
 
@@ -583,11 +583,25 @@ bunx turbo run test:binary test:installer --filter=infomentor-mcp --force
 
 `bun test` runs the HTTP/login, collection, session-lock, and loopback fixtures.
 Every tool declares an output schema and returns validated `structuredContent`.
-The executable is built with
-[Bun's single-file compiler](https://bun.com/docs/bundler/executables). It does
-not automatically load `.env` or `bunfig.toml` from the working directory.
-Archives include third-party license notices. Bun's license is pinned in
-[`tooling/release/Bun.txt`](../../tooling/release/Bun.txt) from its `bun-v1.4.2` tag.
+
+The release executable is built from the Rust crate in `rust/infomentor-mcp`
+(`familyMcp.release.rust`), which serves the same tools, texts, CLI, encrypted
+store, and plaintext migration as the TypeScript sources here. From `rust/`:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+FAMILY_MCP_BUN="$(command -v bun)" cargo test --all-features --locked
+```
+
+The Rust tests run this package's integration, startup, and loopback cases against
+the binary, compare it with the TypeScript CLI and MCP server on the same synthetic
+inputs, and check that either implementation reads the store and migrates the
+plaintext session the other writes. Only the `test-origin` build that tests use
+sends requests to a loopback fake; the release build sends them only to the
+HTTPS InfoMentor hosts described under compatibility limits. The executable does
+not load `.env` or `bunfig.toml` from the working directory. Archives include
+the license notices of every statically linked crate.
 
 See [the verified HTTP flow](docs/HTTP-AUTH.md), [connectivity investigation](docs/CONNECTIVITY.md), [review notes](docs/REVIEW.md),
 and [release instructions](docs/RELEASING.md).
@@ -610,8 +624,9 @@ package does not execute remote scripts or expose raw upstream errors/tokens.
 
 Requests and form actions are limited to HTTPS hosts under `infomentor.is`.
 Password submission is restricted to the observed `im1.infomentor.is` origin.
-Cookies follow domain, path, expiry, and secure rules through `tough-cookie`.
-The library is a small standards-based cookie jar, not a browser dependency.
+Cookies follow domain, path, expiry, and secure rules through `tough-cookie` in
+the TypeScript sources; the release binary ports the part of its cookie jar they
+use. Neither is a browser dependency.
 
 WARP is optional; the standard installation uses the host's existing connection.
 The host must be able to establish verified HTTPS connections to `im1.infomentor.is` and
