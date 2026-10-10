@@ -1,7 +1,8 @@
 //! `auth set` on a terminal: the hidden prompt of this binary and of the TypeScript CLI, typed
 //! the same keystrokes on a pseudo-terminal, read the same token (sent to a local fake `/me/`),
 //! print the same text, exit the same way and leave the terminal mode as they found it, also when
-//! SIGTERM or SIGINT ends them in the middle of the prompt.
+//! SIGTERM or SIGINT ends them in the middle of the prompt. A terminal that hangs up has no mode
+//! left on Linux, so there that one case checks the hang-up instead (see `typed`).
 //! `FAMILY_MCP_BUN` must name a Bun 1.4.2 executable: this test fails without it and is never
 //! skipped. It needs the `test-origin` feature, without which the binary would talk to Krónan.
 #![cfg(feature = "test-origin")]
@@ -18,9 +19,9 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rustix::io::{FdFlags, fcntl_setfd};
+use rustix::io::{Errno, FdFlags, fcntl_setfd};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
-use rustix::termios::{LocalModes, tcgetattr};
+use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
 
 /// A fake Krónan answering every request with an account, recording each Authorization header.
 fn upstream() -> (String, Arc<Mutex<Vec<String>>>) {
@@ -92,7 +93,8 @@ struct Outcome {
     stdout: String,
     stderr: String,
     sent: Vec<String>,
-    restored: bool,
+    /// Whether the terminal ended in the mode it started in; `None` when it hung up on Linux.
+    restored: Option<bool>,
 }
 
 /// Run `auth set` on a fresh terminal, type `keys` once it is in raw mode, then end it as `end`
@@ -100,6 +102,11 @@ struct Outcome {
 fn typed(command: &mut Command, keys: &[u8], end: End) -> Outcome {
     let (origin, seen) = upstream();
     let (controller, terminal) = terminal();
+    // Start from a mode no fresh terminal has, so a mode the kernel reset to its defaults never
+    // passes for one the prompt restored. Neither prompt changes ECHOCTL.
+    let mut marked = tcgetattr(&terminal).unwrap();
+    marked.local_modes.toggle(LocalModes::ECHOCTL);
+    tcsetattr(&terminal, OptionalActions::Now, &marked).unwrap();
     let before = tcgetattr(&terminal).unwrap();
     let child = command
         .env("KRONAN_TEST_ORIGIN", &origin)
@@ -142,9 +149,19 @@ fn typed(command: &mut Command, keys: &[u8], end: End) -> Outcome {
     let output = child.wait_with_output().unwrap();
     // The kernel may set PENDIN when a terminal returns to canonical mode (macOS always does,
     // until the next read); it is not part of the mode the prompt saved.
-    let after = tcgetattr(&terminal).unwrap();
-    let restored = after.local_modes - LocalModes::PENDIN == before.local_modes
-        && after.input_modes == before.input_modes;
+    let restored = match tcgetattr(&terminal) {
+        Ok(after) => Some(
+            after.local_modes - LocalModes::PENDIN == before.local_modes
+                && after.input_modes == before.input_modes,
+        ),
+        // When the controlling side's last descriptor closes, Linux hangs the terminal up: it
+        // resets the mode to the pty driver's defaults, and every terminal call on any of its
+        // descriptors, the child's included, fails with EIO. No descriptor is left that could show
+        // a restored mode, so on Linux this case checks the hang-up itself. macOS keeps the mode
+        // the prompt left, and there it is checked.
+        Err(Errno::IO) if cfg!(target_os = "linux") && matches!(end, End::HangUp) => None,
+        Err(error) => panic!("{end:?}: cannot read the terminal mode: {error}"),
+    };
 
     Outcome {
         code: output.status.code(),
@@ -197,7 +214,8 @@ fn the_hidden_prompt_reads_keystrokes_like_the_typescript_cli() {
             typed(&mut command, keys, end)
         };
         let ts = run("ts");
-        assert!(ts.restored, "{keys:?}: {ts:?}");
+        let hung_up = cfg!(target_os = "linux") && matches!(end, End::HangUp);
+        assert_eq!(ts.restored, (!hung_up).then_some(true), "{keys:?}: {ts:?}");
         let mut rust = run("rust");
 
         // Bun dies of the signal; the binary keeps its handler installed, so it exits with the
