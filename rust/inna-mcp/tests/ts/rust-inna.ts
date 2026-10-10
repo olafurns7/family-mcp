@@ -445,8 +445,8 @@ export class InnaClient {
       name,
       arguments: JSON.parse(JSON.stringify(args)) as Record<string, unknown>,
     });
-    // An aborted call rejects with its reason, as the TypeScript client's would; the binary's own
-    // request runs on until its deadline.
+    // An aborted call rejects with its reason, as the TypeScript client's would. The binary is not
+    // told, so its request runs on until its deadline; parity.ts covers the host's cancel.
     const aborted = signal
       ? new Promise<never>((_, reject) => {
           if (signal.aborted) reject(signal.reason);

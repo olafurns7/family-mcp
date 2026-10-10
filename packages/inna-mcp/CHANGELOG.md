@@ -26,11 +26,13 @@
   Keychain are not migrated: remove the files the refusal names, then run
   `inna-mcp auth login` again.
 - When `auth login` is ended at the hidden phone prompt on a terminal by
-  SIGTERM, or by a second Ctrl-C, it restores the terminal and exits with
-  status 143 or 130. Before, the process was killed by the signal, and a second
-  Ctrl-C left the terminal without echo. The hidden prompt takes typed characters, Backspace, Ctrl-U,
-  Enter, Ctrl-C and Ctrl-D on an empty line; arrow keys and other cursor
-  movement are ignored.
+  SIGTERM, or by a second SIGINT (the first cancels the sign-in once the line
+  ends), it restores the terminal and exits with status 143 or 130. Before, the
+  process was killed by the signal, and a second SIGINT left the terminal
+  without echo. At the prompt Ctrl-C is a key, not a signal: it cancels the
+  sign-in. The hidden prompt takes typed characters, Backspace, Ctrl-U, Enter,
+  Ctrl-C and Ctrl-D on an empty line; arrow keys and other cursor movement are
+  ignored.
 - Pressing Ctrl-C (or sending SIGTERM) while `inna-mcp auth login --google` is
   still starting the browser now gives the browser one more chance to answer
   (up to about 2 s more). If it answers, inna-mcp closes it through its private
@@ -38,8 +40,6 @@
   that answers but ignores `Browser.close` is signalled after up to 5 s more.
   The temporary profile is still removed and nothing is saved. Messages and
   exit codes are unchanged.
-- A tool call that the MCP host cancels is no longer aborted. It runs to its
-  end, each Inna request still limited to 30 seconds, and saves its cookies.
 
 ## 0.3.0
 
