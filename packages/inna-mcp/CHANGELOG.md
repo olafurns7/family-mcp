@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.4.0
+
+- The native binary is now built from Rust. Tools, inputs, results, CLI
+  commands, messages and exit codes are unchanged except as noted below, as are
+  electronic-ID and Google sign-in, cookie import, the keep-alive, student
+  switching, and the absence preview, submission and record. It was checked
+  offline against the TypeScript sources and synthetic Inna, electronic-ID and
+  browser fakes; it has not yet been run against Inna.
+- The session is kept in one encrypted record in the file store, with its key
+  in a separate private file: on macOS in
+  `~/Library/Application Support/family-mcp`, which is excluded from Time
+  Machine; on Linux in `~/.config/inna-mcp`, with the key in
+  `~/.local/share/family-mcp/keys`. `inna-mcp auth status` and
+  `inna_session_status` show how the session is saved.
+- Every start checks the store's location and permissions. A refusal names the
+  path and, for most problems, the command that fixes it.
+- A session saved by 0.3.0 or earlier keeps working from its plaintext file.
+  Stop running servers of the older version, then run `inna-mcp auth migrate`
+  once to move it into the encrypted store and remove the file; a login or
+  import moves it as well. The absence record stays at
+  `<session file>.absence.json`, is never changed by login, import, migrate or
+  logout, and keeps blocking as before.
+- Sessions saved with earlier test builds that kept the store key in the macOS
+  Keychain are not migrated: remove the files the refusal names, then run
+  `inna-mcp auth login` again.
+- When `auth login` is ended at the hidden phone prompt on a terminal by
+  SIGTERM, or by a second Ctrl-C, it restores the terminal and exits with
+  status 143 or 130. Before, the process was killed by the signal, and a second
+  Ctrl-C left the terminal without echo. The hidden prompt takes typed characters, Backspace, Ctrl-U,
+  Enter, Ctrl-C and Ctrl-D on an empty line; arrow keys and other cursor
+  movement are ignored.
+- Pressing Ctrl-C (or sending SIGTERM) while `inna-mcp auth login --google` is
+  still starting the browser now gives the browser one more chance to answer
+  (up to about 2 s more). If it answers, inna-mcp closes it through its private
+  debugging pipe (`Browser.close`) before falling back to SIGTERM. A browser
+  that answers but ignores `Browser.close` is signalled after up to 5 s more.
+  The temporary profile is still removed and nothing is saved. Messages and
+  exit codes are unchanged.
+- A tool call that the MCP host cancels is no longer aborted. It runs to its
+  end, each Inna request still limited to 30 seconds, and saves its cookies.
+
 ## 0.3.0
 
 - `inna-mcp auth login --google` signs in with Google in one command. It opens

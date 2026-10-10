@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1
+
+- An InfoMentor page with very many attributes in one HTML tag no longer slows
+  every call. Every school read and login parses InfoMentor's pages, and the
+  check for repeated attributes in a tag took time that grew with the square of
+  their number; it now grows linearly.
+
 ## 0.9.0
 
 - The native binary is now built from Rust. It serves the same tools, inputs,

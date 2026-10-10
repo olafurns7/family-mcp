@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abler-mcp"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "browser-login",
  "family-store",
@@ -825,7 +825,7 @@ dependencies = [
 
 [[package]]
 name = "infomentor-mcp"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "aws-lc-rs",
  "family-store",
@@ -844,7 +844,7 @@ dependencies = [
 
 [[package]]
 name = "inna-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aws-lc-rs",
  "browser-login",
