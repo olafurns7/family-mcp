@@ -1311,10 +1311,10 @@ mod tests {
     #[test]
     fn a_cancel_while_the_browser_starts_closes_it_even_with_keep_browser() {
         let directory = scratch("keep-cancel");
-        // Answer Browser.getVersion only after 400 ms, then exit at the next command.
+        // Answer Browser.getVersion only after 400 ms, then record the next command and exit.
         let browser = script(
             &directory,
-            "echo $$ > \"$(dirname \"$0\")/pid\"\nhead -c 39 <&3 >/dev/null\nsleep 0.4\nprintf '{\"id\":1,\"result\":{\"product\":\"x\"}}\\0' >&4\nhead -c 1 <&3 >/dev/null\nexit 0",
+            "echo $$ > \"$(dirname \"$0\")/pid\"\nhead -c 39 <&3 >/dev/null\nsleep 0.4\nprintf '{\"id\":1,\"result\":{\"product\":\"x\"}}\\0' >&4\nhead -c 34 <&3 > \"$(dirname \"$0\")/next\"\nexit 0",
         );
         let profiles = || -> Vec<PathBuf> {
             fs::read_dir(tmpdir())
@@ -1353,6 +1353,11 @@ mod tests {
 
         assert!(matches!(outcome, Err(Error::Cancelled)), "{outcome:?}");
         assert!(!site.kept.load(Ordering::SeqCst));
+        // It answered, so it was asked to close over the pipe before any signal.
+        assert_eq!(
+            fs::read_to_string(directory.join("next")).unwrap(),
+            "{\"id\":2,\"method\":\"Browser.close\"}\0"
+        );
         let pid = fs::read_to_string(directory.join("pid")).unwrap();
         let pid = Pid::from_raw(pid.trim().parse().unwrap()).unwrap();
         assert!(!process_is_running(pid));
