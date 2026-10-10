@@ -11,6 +11,24 @@
   family-store, with session and quote/checkout records readable by both ports.
   Existing plaintext sessions keep their legacy refresh path until
   `dominos-mcp auth migrate`; new sign-ins save encrypted sessions.
+- Each newly saved session is kept in one encrypted record, with its key in a
+  separate private file. On macOS the record is
+  `~/Library/Application Support/family-mcp/dominos-mcp/session.enc` and the key
+  is `~/Library/Application Support/family-mcp/keys/dominos-mcp.default.key`;
+  these store folders are excluded from Time Machine. On Linux the record is
+  `~/.config/dominos-mcp/session.enc` and the key is
+  `~/.local/share/family-mcp/keys/dominos-mcp.default.key`, using
+  `$XDG_CONFIG_HOME` and `$XDG_DATA_HOME` when set. `dominos-mcp auth status`
+  shows how the session is saved.
+- Every start checks the store's location and permissions; help and version
+  do not touch the store. A refusal names the path and, for most problems,
+  the command that fixes it.
+- Sessions saved with earlier test builds that kept the store key in the macOS
+  Keychain are not migrated: remove the files the refusal names, then run
+  dominos-mcp auth login again.
+- When `auth login` is ended by SIGINT or SIGTERM while it waits at a hidden
+  phone or SMS-code prompt, it restores the terminal and exits with status
+  130 or 143. In the TypeScript CLI, the process was ended by the signal.
 - Saves checkout and payment intent before sending. Offline tests cover
   concurrent confirmations, mismatched amounts, lost responses, failed
   persistence, process termination and restart without replaying a payment.
