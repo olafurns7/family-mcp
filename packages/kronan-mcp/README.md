@@ -14,7 +14,7 @@ Krónan account**. The read tools were verified on 2026-09-15 and 2026-09-16; se
 Install the native executable:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.2.0/packages/kronan-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.3.0/packages/kronan-mcp/install.sh | sh
 ```
 
 In Krónan, sign in with Auðkenni and create an access token from the settings
@@ -410,6 +410,22 @@ The package `check` validates the generated installer, OpenAPI type drift,
 lint, formatting, and TypeScript. Run `bun run release:sync` from the root
 after changing the version; it regenerates `install.sh` and the pinned URLs.
 
+The release executable is built from the Rust crate in `rust/kronan-mcp`
+(`familyMcp.release.rust`), which serves the same tools, texts, token store, and
+order-attempt record as the TypeScript sources here. From `rust/`:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+FAMILY_MCP_BUN="$(command -v bun)" cargo test --all-features --locked
+```
+
+The Rust tests run this package's integration and startup cases against the
+binary, compare it with the TypeScript CLI on the same synthetic inputs, and
+check that either implementation reads the token store and order-attempt record
+the other writes. Only the `test-origin` build that tests use sends requests to a
+loopback fake; the release build sends them to `https://api.kronan.is` only.
+
 Krónan's OpenAPI document is vendored at `api/openapi.json`, and
 `api/kronan-api.d.ts` is generated from it with
 [openapi-typescript](https://openapi-ts.dev). `test/api-types.test.ts` asserts
@@ -424,7 +440,7 @@ upstream change, refresh the vendored document from
 type failures.
 
 Tests use synthetic tokens, injected fetch responses, and a loopback HTTP
-server. They never contact a live Krónan host. The server uses native
+server. They never contact a live Krónan host. The TypeScript server uses native
 `fetch`, strict Zod input/output schemas, the shared
 `@family-mcp/mcp-runtime`, and the encrypted token record and private-file
 handling from `@family-mcp/session-store`.

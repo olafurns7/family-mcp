@@ -54,14 +54,27 @@ const crate = pkg.familyMcp.release.rust;
 if (crate) {
   // The Rust executable prints its crate version, and `cargo build --locked` needs the lock to agree.
   const rust = resolve(pkg.root, '../../rust');
+  const manifest = join(rust, crate, 'Cargo.toml');
+  const pattern = /^(version = ")[^"]+(")$/m;
+  const text = await readFile(manifest, 'utf8');
+  assert.match(text, pattern, `No crate version in ${relative(pkg.root, manifest)}`);
+  outputs.set(manifest, text.replace(pattern, `$1${pkg.version}$2`));
 
-  for (const [file, pattern] of /** @type {const} */ ([
-    [join(rust, crate, 'Cargo.toml'), /^(version = ")[^"]+(")$/m],
-    [join(rust, 'Cargo.lock'), new RegExp(`^(name = "${crate}"\\nversion = ")[^"]+(")$`, 'm')],
-  ])) {
-    const text = await readFile(file, 'utf8');
-    assert.match(text, pattern, `No crate version in ${relative(pkg.root, file)}`);
-    outputs.set(file, text.replace(pattern, `$1${pkg.version}$2`));
+  // Every crate shares rust/Cargo.lock, so release:sync:root writes its entries once before the
+  // package tasks run in parallel; here the entry is only checked.
+  if (values.check) {
+    const lock = join(rust, 'Cargo.lock');
+
+    const entry = new RegExp(
+      `^\\[\\[package\\]\\]\\nname = "${crate}"\\nversion = "([^"]+)"$`,
+      'm',
+    );
+
+    assert.equal(
+      entry.exec(await readFile(lock, 'utf8'))?.[1],
+      pkg.version,
+      `Run release:sync for ${pkg.name}: ${relative(pkg.root, lock)}`,
+    );
   }
 }
 

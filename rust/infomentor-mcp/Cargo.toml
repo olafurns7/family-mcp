@@ -1,0 +1,46 @@
+[package]
+name = "infomentor-mcp"
+# Kept equal to packages/infomentor-mcp/package.json; a test compares them.
+version = "0.9.0"
+description = "Local MCP server for Icelandic InfoMentor parent accounts with direct HTTP login"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Test seam only: INFOMENTOR_TEST_ORIGIN sends requests (never cookies or the URLs the code sees)
+# to a local fake upstream. Off by default, so a release build always talks to InfoMentor itself.
+test-origin = []
+
+[dependencies]
+# SHA-256 for collection fingerprints, as node:crypto computes them; the same crate and features
+# rustls already builds.
+aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
+family-store = { path = "../family-store" }
+# Collection cursors, as crypto.randomUUID.
+getrandom = "=0.4.3"
+# The WHATWG HTML tokenizer under html.rs's htmlparser2 parser rules; no dependencies without
+# its default `jetscii` feature.
+html5gum = { version = "=0.8.4", default-features = false }
+# String.prototype.localeCompare for collection ordering (ICU root collation, as Bun's).
+icu_collator = { version = "=2.3.1", default-features = false, features = ["compiled_data"] }
+mcp-runtime = { path = "../mcp-runtime" }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"] }
+rmcp = { version = "=3.5.1", default-features = false, features = ["server", "transport-io"] }
+# `utimes` on a reused collection cursor, as node:fs does; already in the lock through
+# family-store.
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs"] }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+tokio = { version = "=1.53.2", features = ["rt", "io-std", "macros", "signal", "sync", "time"] }
+# WHATWG URL parsing, as JavaScript's URL; already in the lock through reqwest.
+url = "=2.5.8"
+# Wipes the password when credentials are dropped; already in the lock through family-store.
+zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+# Its unit tests open scratch stores in their own process, with the store test seam on.
+family-store = { path = "../family-store", features = ["test-seam"] }

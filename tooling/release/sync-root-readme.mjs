@@ -30,12 +30,45 @@ for (const pkg of packages) {
   );
 }
 
-if (values.check)
+// Every crate shares rust/Cargo.lock, so its entries are written here, once, before the package
+// release:sync tasks run in parallel. Each crate follows its package.json version.
+const crates = packages.filter((pkg) => pkg.familyMcp.release.rust);
+
+const lockFile = join(root, 'rust', 'Cargo.lock');
+
+const lockBefore = crates.length ? await readFile(lockFile, 'utf8') : '';
+
+let lock = lockBefore;
+
+for (const pkg of crates) {
+  const crate = pkg.familyMcp.release.rust;
+
+  const entry = new RegExp(
+    `^(\\[\\[package\\]\\]\\nname = "${crate}"\\nversion = ")[^"]+(")$`,
+    'm',
+  );
+
+  assert.match(lock, entry, `No ${crate} entry in rust/Cargo.lock`);
+  lock = lock.replace(entry, `$1${pkg.version}$2`);
+}
+
+if (values.check) {
   assert.equal(
     await readFile(file, 'utf8'),
     output,
     'Run release:sync to update root README pins.',
   );
-else await writeFile(file, output);
+  assert.equal(
+    lockBefore,
+    lock,
+    'Run release:sync to update the crate versions in rust/Cargo.lock.',
+  );
+} else {
+  await writeFile(file, output);
 
-console.log(`root README pins ${values.check ? 'checked' : 'synchronized'}.`);
+  if (crates.length) await writeFile(lockFile, lock);
+}
+
+console.log(
+  `root README pins and crate lock versions ${values.check ? 'checked' : 'synchronized'}.`,
+);
