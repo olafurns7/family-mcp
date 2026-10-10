@@ -1,6 +1,11 @@
+mod catalog;
+mod client;
 mod error;
+mod input;
+mod js;
 mod origin;
 mod server;
+mod shapes;
 mod store;
 
 use crate::error::{Fail, Result};
@@ -83,7 +88,7 @@ async fn main_async(args: Args) -> Result<ExitCode> {
     }
     let positionals: Vec<&str> = args.positionals.iter().map(String::as_str).collect();
     if positionals.is_empty() || positionals == ["serve"] {
-        let server = server::Dominos::new();
+        let server = server::Dominos::new()?;
         mcp_runtime::serve_stdio(server)
             .await
             .map_err(|_| Fail::Unknown)?;

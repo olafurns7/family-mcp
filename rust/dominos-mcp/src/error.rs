@@ -3,6 +3,7 @@
 pub enum Fail {
     Safe(&'static str),
     Unknown,
+    Http(u16),
 }
 pub type Result<T> = std::result::Result<T, Fail>;
 impl mcp_runtime::Failure for Fail {
@@ -12,6 +13,9 @@ impl mcp_runtime::Failure for Fail {
     fn safe(self) -> Option<&'static str> {
         match self {
             Self::Safe(text) => Some(text),
+            Self::Http(_) => Some(
+                "Domino’s or its payment provider rejected the request. No automatic retry was made.",
+            ),
             Self::Unknown => None,
         }
     }

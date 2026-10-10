@@ -1,18 +1,23 @@
-use crate::error::Fail;
+use crate::{
+    client::Client,
+    error::{Fail, Result},
+    input,
+};
 use mcp_runtime::{Server, Surface};
 use rmcp::model::JsonObject;
 use serde_json::Value;
+use std::sync::Arc;
 
 pub struct Dominos {
     surface: Surface,
-    _origins: [String; 3],
+    client: Arc<Client>,
 }
 impl Dominos {
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
             surface: Surface::parse(include_str!("surface.json")),
-            _origins: crate::origin::origins(),
-        }
+            client: Arc::new(Client::new()?),
+        })
     }
 }
 impl Server for Dominos {
@@ -24,12 +29,17 @@ impl Server for Dominos {
     }
     async fn call(
         &self,
-        _name: &str,
+        name: &str,
         arguments: &JsonObject,
     ) -> std::result::Result<std::result::Result<Value, Fail>, String> {
-        mcp_runtime::input::empty(arguments)?;
-        Ok(Err(Fail::Safe(
-            "The operation failed. Check the server logs for details.",
-        )))
+        let input = input::parse(name, arguments)?;
+        // TS server.ts callbacks use only the client's lifecycle signal; host cancel is ignored.
+        Ok(self.client.run(name.to_owned(), input).await)
+    }
+    fn stdin_ended(&self) {
+        self.client.abort();
+    }
+    async fn close(&self) {
+        self.client.close().await;
     }
 }
