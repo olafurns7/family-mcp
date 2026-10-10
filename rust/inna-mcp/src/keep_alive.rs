@@ -19,6 +19,8 @@ pub const INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 pub struct KeepAlive {
     stopped: Controller,
+    /// Ticks now; only tests and a test build's SIGUSR1 use it.
+    #[cfg(any(test, feature = "test-origin"))]
     fire: Arc<Notify>,
 }
 
@@ -57,7 +59,11 @@ impl KeepAlive {
                 });
             }
         });
-        Self { stopped, fire }
+        Self {
+            stopped,
+            #[cfg(any(test, feature = "test-origin"))]
+            fire,
+        }
     }
 
     /// Tick now, as the timer would.
