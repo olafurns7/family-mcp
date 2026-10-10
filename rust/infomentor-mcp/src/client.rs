@@ -16,13 +16,18 @@ use crate::error::{Code, Fail, Result};
 use crate::http::{Http, Parent};
 use crate::input::{CollectRequest, MessagesRequest, NotificationsRequest};
 use crate::js;
-use crate::session::{SavedSession, capture, session_path};
+use crate::login::{
+    create_authenticated_http, has_configured_credentials, resolve_credentials, session_from_http,
+};
+use crate::session::{SavedSession, session_path};
 use crate::shapes::{self, Feed, MessagesPage};
 use crate::signal::{Controller, Signal};
 use crate::store::{Held, with_session};
 use crate::upstream::Net;
 
 const COLLECTION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+const RENEWAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 const OVERVIEW_MAX_UNITS: usize = 40_000;
 
@@ -32,7 +37,6 @@ pub struct Options {
     /// `--session`, resolved.
     pub session_file: Option<PathBuf>,
     /// `--credentials`, resolved.
-    #[expect(dead_code, reason = "login uses it from slice 3")]
     pub credentials_file: Option<PathBuf>,
     /// The store's keys; `None` uses the default provider.
     pub keys: Option<Arc<dyn KeyProvider>>,
@@ -63,26 +67,6 @@ pub struct Client {
     /// A login or import is running.
     setup: AtomicBool,
     logging_out: AtomicBool,
-}
-
-/// `sessionFromHttp`: the jar's cookies, the verified account and selected child, and an active
-/// rate-limit pause.
-pub fn session_from_http(http: &Http) -> Result<SavedSession> {
-    let mut session = capture(&http.jar)?;
-
-    if let Some(parent) = &http.parent {
-        session.account_id = Some(parent.account_id.clone());
-        let mut selected = parent.pupils.iter().filter(|pupil| pupil.selected);
-
-        if let (Some(only), None) = (selected.next(), selected.next()) {
-            session.selected_child_id = Some(only.id.clone());
-        }
-    }
-
-    if http.rate_limited_until() > js::now_ms() {
-        session.rate_limited_until = Some(js::iso_string(http.rate_limited_until()));
-    }
-    Ok(session)
 }
 
 /// `saveActive`: persist the session when a request changed it, never for another account.
@@ -119,6 +103,55 @@ fn save_active(
     held.save(&current)?;
     active.serialized = current.to_json().to_string();
     Ok(current)
+}
+
+/// One read's signal and store cancel flag.
+#[derive(Clone, Copy)]
+struct Step<'a> {
+    signal: &'a Signal,
+    cancel: &'a Cancel,
+}
+
+impl Step<'_> {
+    /// Prove the session on the parent page, which the read then reuses, save it, and read.
+    fn verified<T>(
+        self,
+        active: &mut Active,
+        saved: &mut SavedSession,
+        held: &mut Held,
+        read: &mut impl FnMut(&mut Http, &Context) -> Result<T>,
+    ) -> Result<T> {
+        let parent = active.http.read_parent(self.signal, None)?;
+
+        if saved
+            .account_id
+            .as_ref()
+            .is_some_and(|account| *account != parent.account_id)
+        {
+            return Err(Fail::new(
+                Code::InvalidSession,
+                "The saved session no longer matches its verified account. Sign in explicitly before continuing.",
+            ));
+        }
+        *saved = save_active(active, saved, held)?;
+        self.run(active, held, read)
+    }
+
+    fn run<T>(
+        self,
+        active: &mut Active,
+        held: &Held,
+        read: &mut impl FnMut(&mut Http, &Context) -> Result<T>,
+    ) -> Result<T> {
+        let context = Context {
+            signal: self.signal,
+            cancel: self.cancel,
+            storage: held.storage,
+        };
+        let output = read(&mut active.http, &context)?;
+        self.signal.check()?;
+        Ok(output)
+    }
 }
 
 fn timetable(http: &mut Http, signal: &Signal) -> Result<Feed> {
@@ -291,7 +324,7 @@ impl Client {
     async fn read<T: Send + 'static>(
         self: &Arc<Self>,
         signal: Signal,
-        read: impl FnOnce(&mut Http, &Context) -> Result<T> + Send + 'static,
+        read: impl FnMut(&mut Http, &Context) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let signal = signal.any(&self.lifetime.signal());
         // A local queue preserves call order; the store lock also excludes other MCP processes.
@@ -307,7 +340,7 @@ impl Client {
         &self,
         active: &mut Option<Active>,
         signal: &Signal,
-        read: impl FnOnce(&mut Http, &Context) -> Result<T>,
+        mut read: impl FnMut(&mut Http, &Context) -> Result<T>,
     ) -> Result<T> {
         signal.check()?;
 
@@ -337,49 +370,87 @@ impl Client {
             {
                 *active = None;
             }
-            let active = active.get_or_insert_with(|| Active {
+            let current = active.get_or_insert_with(|| Active {
                 http: Http::new(saved.jar(), saved.cooldown(), self.net.clone()),
                 serialized,
             });
-            let mut preserve = false;
-            let attempt = || -> Result<T> {
-                // A verified parent page proves authentication and is reused by the read below.
-                let parent = active.http.read_parent(signal, None)?;
-
-                if saved
-                    .account_id
-                    .as_ref()
-                    .is_some_and(|account| *account != parent.account_id)
-                {
-                    return Err(Fail::new(
-                        Code::InvalidSession,
-                        "The saved session no longer matches its verified account. Sign in explicitly before continuing.",
-                    ));
-                }
-                saved = save_active(active, &saved, held)?;
-                let context = Context {
-                    signal,
-                    cancel: &bridge.cancel,
-                    storage: held.storage,
-                };
-                let output = read(&mut active.http, &context)?;
-                signal.check()?;
-                Ok(output)
+            let step = Step {
+                signal,
+                cancel: &bridge.cancel,
             };
-            let outcome = attempt();
 
-            if outcome
-                .as_ref()
-                .is_err_and(|fail| fail.is(Code::LoginRequired))
-            {
-                preserve = true;
+            match step.verified(current, &mut saved, held, &mut read) {
+                Err(fail) if fail.is(Code::LoginRequired) => {
+                    self.renew(active, saved, held, step, &mut read, fail)
+                }
+                outcome => {
+                    if !signal.aborted() {
+                        save_active(current, &saved, held)?;
+                    }
+                    outcome
+                }
             }
-
-            if !preserve && !signal.aborted() {
-                save_active(active, &saved, held)?;
-            }
-            outcome
         })
+    }
+
+    /// The renewal after a confirmed authentication expiry: one submission of the stored sign-in,
+    /// or else the configured one, for the same account, then the read replayed once. Until the
+    /// renewed session is saved, nothing replaces the expired one, so a failure keeps it.
+    fn renew<T>(
+        &self,
+        active: &mut Option<Active>,
+        mut saved: SavedSession,
+        held: &mut Held,
+        step: Step,
+        read: &mut impl FnMut(&mut Http, &Context) -> Result<T>,
+        expired: Fail,
+    ) -> Result<T> {
+        if held.credentials.is_none() && !has_configured_credentials(&self.options) {
+            return Err(expired);
+        }
+        let verified = active
+            .as_ref()
+            .and_then(|active| active.http.parent.as_ref())
+            .map(|parent| parent.account_id.clone());
+        let Some(account_id) = saved.account_id.clone().or(verified) else {
+            return Err(Fail::new(
+                Code::LoginRequired,
+                "This older session expired before its account could be verified. Call infomentor_login once to enable automatic authentication refresh.",
+            ));
+        };
+        // The stored sign-in comes first; one submission, never a second source after a rejection.
+        let (credentials, _) =
+            resolve_credentials(&self.options, step.signal, held.credentials.as_ref())?;
+        let mut candidate = create_authenticated_http(
+            &self.net,
+            step.signal,
+            credentials,
+            &Signal::timeout(RENEWAL_TIMEOUT),
+        )?;
+
+        if candidate.parent.as_ref().map(|parent| &parent.account_id) != Some(&account_id) {
+            return Err(Fail::new(
+                Code::LoginRequired,
+                "The stored or configured credentials belong to a different InfoMentor account. The previous session was kept. Correct the private credentials or explicitly sign in to change accounts.",
+            ));
+        }
+
+        if let Some(child) = &saved.selected_child_id {
+            candidate.read_parent(step.signal, Some(child))?;
+        }
+        let mut renewed = Active {
+            http: candidate,
+            serialized: String::new(),
+        };
+        saved = save_active(&mut renewed, &saved, held)?;
+        let current = active.insert(renewed);
+        // Only confirmed authentication expiry replays a read, once. Other failures propagate.
+        let outcome = step.run(current, held, read);
+
+        if !step.signal.aborted() {
+            save_active(current, &saved, held)?;
+        }
+        outcome
     }
 
     pub async fn overview(self: &Arc<Self>, signal: Signal) -> Result<Value> {

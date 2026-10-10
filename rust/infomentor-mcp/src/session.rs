@@ -13,7 +13,6 @@ use crate::js;
 use crate::shapes::{self, S};
 use crate::store::SESSION_MAX_BYTES;
 
-#[expect(dead_code, reason = "login uses it from slice 3")]
 pub const LOGIN_URL: &str = "https://im1.infomentor.is/production/mentor/";
 
 pub const PARENT_URL: &str = "https://minn.infomentor.is/";

@@ -364,7 +364,6 @@ fn parse(html: &str, handler: &mut dyn Handler) {
 
 /// `Form`: `fields` keeps the hidden inputs in document order, as `URLSearchParams` does.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "login uses it from slice 3"))]
 pub struct Form {
     pub id: String,
     pub action: String,
@@ -373,14 +372,12 @@ pub struct Form {
 }
 
 impl Form {
-    #[expect(dead_code, reason = "login uses it from slice 3")]
     pub fn has(&self, name: &str) -> bool {
         self.fields.iter().any(|(field, _)| field == name)
     }
 
     /// `URLSearchParams.set`: the first field of that name takes the value, later ones go; a new
     /// name is appended.
-    #[cfg_attr(not(test), expect(dead_code, reason = "login uses it from slice 3"))]
     pub fn set(&mut self, name: &str, value: &str) {
         let mut seen = false;
         self.fields.retain_mut(|(field, current)| {
@@ -402,7 +399,6 @@ impl Form {
     }
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "login uses it from slice 3"))]
 fn attribute<'a>(attributes: &'a [(String, String)], name: &str) -> Option<&'a str> {
     attributes
         .iter()
@@ -411,7 +407,6 @@ fn attribute<'a>(attributes: &'a [(String, String)], name: &str) -> Option<&'a s
 }
 
 /// `parseForms`: each form with its enabled hidden inputs.
-#[cfg_attr(not(test), expect(dead_code, reason = "login uses it from slice 3"))]
 pub fn parse_forms(html: &str) -> Vec<Form> {
     #[derive(Default)]
     struct Forms {

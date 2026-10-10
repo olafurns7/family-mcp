@@ -9,7 +9,6 @@ pub enum Code {
     InvalidConfiguration,
     UnexpectedPage,
     NetworkError,
-    #[expect(dead_code, reason = "login uses it from slice 3")]
     LoginTimeout,
     Cancelled,
     ChallengeRequired,

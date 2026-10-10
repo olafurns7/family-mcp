@@ -8,15 +8,18 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use family_store::{
-    Cancel, Code as StoreCode, DEFAULT_SWEEP_AGE, Error as StoreError, KeyProvider,
-    SecretRecordOptions, SecretStore, default_key_provider, default_secret_record_path,
-    retired_store_paths, startup_check, sweep_temp, with_secret_store,
+    Cancel, Code as StoreCode, DEFAULT_SWEEP_AGE, DEFAULT_WAIT, Error as StoreError, KeyProvider,
+    LockOptions, SecretRecordOptions, SecretStore, default_key_provider,
+    default_secret_record_path, read_private_file, retired_store_paths, startup_check, sweep_temp,
+    with_file_lock, with_secret_store,
 };
 use serde_json::{Map, Value, json};
+use zeroize::Zeroizing;
 
-use crate::error::{Code, Fail, LOGIN_REQUIRED, Result};
+use crate::error::{CANCELLED, Code, Fail, LOGIN_REQUIRED, Result};
 use crate::js;
 use crate::session::{SavedSession, read_session, write_session};
+use crate::signal::Signal;
 
 const APP: &str = "infomentor-mcp";
 
@@ -42,34 +45,61 @@ const TOO_LARGE: Fail = Fail::new(
     "The InfoMentor session is larger than the store allows. Run infomentor-mcp login again.",
 );
 
-/// `Credentials`: a sign-in. Never printed.
+/// The largest credentials file read.
+const CREDENTIALS_MAX_BYTES: usize = 16_384;
+
+/// `Credentials`: a sign-in. Never printed (no `Debug`); the password is wiped when dropped.
 #[derive(Clone, PartialEq)]
 pub struct Credentials {
     pub username: String,
-    pub password: String,
+    pub password: Zeroizing<String>,
 }
 
 impl Credentials {
-    /// `credentialsSchema` (strict): both present, within their bounds, and nothing else.
-    pub fn parse(value: &Value) -> Option<Self> {
-        let object = value.as_object()?;
-        let field = |name: &str, max: usize| {
-            object
-                .get(name)?
-                .as_str()
-                .filter(|text| (1..=max).contains(&js::length(text)))
-                .map(str::to_owned)
-        };
-        (object.len() == 2).then_some(())?;
-        Some(Self {
-            username: field("username", USERNAME_MAX)?,
-            password: field("password", PASSWORD_MAX)?,
+    /// `credentialsSchema` without the strictness: both within their bounds (code points).
+    pub fn new(username: &str, password: &str) -> Option<Self> {
+        let valid = |text: &str, max: usize| (1..=max).contains(&js::length(text));
+        (valid(username, USERNAME_MAX) && valid(password, PASSWORD_MAX)).then(|| Self {
+            username: username.to_owned(),
+            password: Zeroizing::new(password.to_owned()),
         })
     }
 
-    fn to_json(&self) -> Value {
-        json!({ "username": self.username, "password": self.password })
+    /// `credentialsSchema` (strict): both present, within their bounds, and nothing else.
+    pub fn parse(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        (object.len() == 2).then_some(())?;
+        Self::new(
+            object.get("username")?.as_str()?,
+            object.get("password")?.as_str()?,
+        )
     }
+
+    fn to_json(&self) -> Value {
+        json!({ "username": self.username, "password": self.password.as_str() })
+    }
+}
+
+/// `readCredentials`: the file must be a regular, owner-only file owned by this user; symlinked
+/// secret mounts are refused.
+pub fn read_credentials(path: &Path, signal: &Signal) -> Result<Credentials> {
+    let unreadable = Fail::config(
+        "Cannot read valid credentials. Supply a private JSON file containing username and password.",
+    );
+    signal.check()?;
+    let text = read_private_file(path, CREDENTIALS_MAX_BYTES).map_err(|error| {
+        match (signal.aborted(), error.code) {
+            (true, _) => CANCELLED,
+            (false, StoreCode::UnsafeFile | StoreCode::TooLarge) => Fail::config(
+                "Use a private credentials JSON file (a regular file owned by you, chmod 600, not a symlink) containing username and password.",
+            ),
+            (false, _) => unreadable,
+        }
+    })?;
+    let text = Zeroizing::new(text);
+    let credentials = js::parse(&text).as_ref().and_then(Credentials::parse);
+    signal.check()?;
+    credentials.ok_or(unreadable)
 }
 
 /// `StoredRecord`: the session in use (none after logout) and the sign-in that renews it.
@@ -317,6 +347,268 @@ fn reject_collisions(record: &SecretRecordOptions, legacy: &Path) -> Result<()> 
     Ok(())
 }
 
+/// `withSessionLock`'s messages for the legacy file's own lock.
+fn lock_error(error: &StoreError) -> Fail {
+    let busy = |message| Fail::new(Code::OperationInProgress, message);
+
+    match error.code {
+        StoreCode::UnsafeFile => {
+            Fail::config("The InfoMentor session file has hard links, which are unsupported.")
+        }
+        StoreCode::Busy => busy(
+            "Another process is using this InfoMentor session and did not finish within the wait limit. Retry after its operation finishes.",
+        ),
+        StoreCode::LockLost => busy(
+            "Another process took over the InfoMentor session lock during this operation. Retry it.",
+        ),
+        _ => Fail::config("Cannot lock the session file. Check the session directory permissions."),
+    }
+}
+
+/// `withSessionLock`: coordinates cooperating processes on one host using the same session file.
+fn with_session_lock<T>(
+    legacy: &Path,
+    cancel: &Cancel,
+    work: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    if cancel.is_cancelled() {
+        return Err(CANCELLED);
+    }
+    let options = LockOptions {
+        cancel: cancel.clone(),
+        wait: DEFAULT_WAIT,
+    };
+    let locked = with_file_lock(legacy, &options, || -> std::result::Result<T, Failed> {
+        // Temporaries orphaned by a hard crash hold cookies; the lock holder removes old ones.
+        sweep_temp(legacy, DEFAULT_SWEEP_AGE)?;
+        Ok(work()?)
+    });
+
+    match locked {
+        Ok(value) => Ok(value),
+        Err(Failed::Fail(fail)) => Err(fail),
+        Err(Failed::Store(_)) if cancel.is_cancelled() => Err(CANCELLED),
+        Err(Failed::Store(error)) => Err(lock_error(&error)),
+    }
+}
+
+/// `changeSession`: login, import, migrate and logout hold the legacy file's lock and then the
+/// store's for the whole authority decision, legacy read, store commit and legacy removal.
+/// Clients take only the store's lock, so the order never inverts.
+pub fn change_session<T>(
+    legacy: &Path,
+    keys: Option<Arc<dyn KeyProvider>>,
+    cancel: &Cancel,
+    work: impl FnOnce(&mut SecretStore, &SecretRecordOptions) -> Result<T>,
+) -> Result<T> {
+    let record = session_record(keys, cancel.clone())?;
+    reject_collisions(&record, legacy)?;
+
+    with_session_lock(legacy, cancel, || {
+        with_secret_store(&record, |store| -> std::result::Result<T, Failed> {
+            Ok(work(store, &record)?)
+        })
+        .map_err(|failed| match failed {
+            Failed::Fail(fail) => fail,
+            Failed::Store(error) => store_error(&error),
+        })
+    })
+}
+
+/// Create the key when it is missing; only an explicit login or import may reset a lost key's
+/// store.
+fn prepare_key(store: &mut SecretStore, record: &SecretRecordOptions, reset: bool) -> Result<()> {
+    match store.check_key() {
+        Ok(()) => Ok(()),
+        Err(error) if error.code != StoreCode::StoreUnavailable => Err(error.into()),
+        Err(error) => {
+            if store_decides(store, &record.path)? {
+                if !reset {
+                    return Err(error.into());
+                }
+                store.reset()?;
+            }
+            store.create_key()?;
+            Ok(())
+        }
+    }
+}
+
+/// `rm(path, { force: true })`.
+fn remove_forced(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+/// `rm(path, { recursive: true, force: true })`: a link is removed, never followed.
+fn remove_tree(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+        Ok(info) if info.is_dir() => match fs::remove_dir_all(path) {
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            other => other,
+        },
+        Ok(_) => remove_forced(path),
+    }
+}
+
+/// `removeLegacy`: the legacy file is a credential; remove it and orphaned temporaries beside it,
+/// and on logout the collection cursors too (`<legacy>.collections`, which `reject_collisions`
+/// keeps apart from the store). True if the file was there.
+fn remove_legacy(path: &Path, collections: bool) -> Result<bool> {
+    let removed = (|| {
+        let found = exists(path).ok()?;
+        remove_forced(path).ok()?;
+
+        // Snapshots hold fingerprints and identifiers of the account; they leave with the session.
+        if collections {
+            remove_tree(&crate::collection::collections_directory(path)).ok()?;
+        }
+        sweep_temp(path, DEFAULT_SWEEP_AGE).ok()?;
+        Some(found)
+    })();
+    removed.ok_or(match collections {
+        true => Fail::config(
+            "Cannot remove the plaintext InfoMentor session file or its collection cursors. Any encrypted-store change already completed; remove them by hand.",
+        ),
+        false => Fail::config(
+            "Cannot remove the plaintext InfoMentor session file. Any encrypted-store change already completed; remove it by hand.",
+        ),
+    })
+}
+
+/// What an explicit login or import must not silently replace.
+pub enum Prior {
+    /// Nothing identifies an account: none, logged out, or an older browser snapshot.
+    Nothing,
+    /// The saved session cannot be read safely.
+    Unknown,
+    Session(SavedSession),
+}
+
+/// `Previous`: the saved session and, when the store decides, its record.
+pub struct Previous {
+    pub session: Prior,
+    pub record: Option<Record>,
+}
+
+/// `prepareChange`: prepare the key and read what is saved before any request, so an unusable
+/// store refuses before a credential is submitted. A lost key's store is reset here: an explicit
+/// login or import is the only recovery.
+pub fn prepare_change(
+    store: &mut SecretStore,
+    record: &SecretRecordOptions,
+    legacy: &Path,
+) -> Result<Previous> {
+    prepare_key(store, record, true)?;
+
+    if store_decides(store, &record.path)? {
+        return Ok(match store.read()?.as_deref().map(parse_record) {
+            None => Previous {
+                session: Prior::Nothing,
+                record: None,
+            },
+            Some(None) => Previous {
+                session: Prior::Unknown,
+                record: None,
+            },
+            Some(Some(value)) => Previous {
+                session: value.session.clone().map_or(Prior::Nothing, Prior::Session),
+                record: Some(value),
+            },
+        });
+    }
+    let session = match read_private_file(legacy, SESSION_MAX_BYTES) {
+        Err(error) if error.code == StoreCode::NotFound => Prior::Nothing,
+        Err(_) => Prior::Unknown,
+        // `z.union([z.object({ version: z.literal(1) }).passthrough(), savedSessionSchema])`.
+        Ok(text) => match js::parse(&text) {
+            Some(value) if value.get("version").and_then(Value::as_f64) == Some(1.0) => {
+                Prior::Nothing
+            }
+            Some(value) => SavedSession::parse(&value).map_or(Prior::Unknown, Prior::Session),
+            None => Prior::Unknown,
+        },
+    };
+    Ok(Previous {
+        session,
+        record: None,
+    })
+}
+
+/// `commitChange`: the new session with its sign-in in one write, then the plaintext file goes.
+pub fn commit_change(
+    store: &mut SecretStore,
+    legacy: &Path,
+    value: &Record,
+    on_committed: impl FnOnce(),
+) -> Result<()> {
+    store.write(&encode_record(value)?)?;
+    on_committed();
+    remove_legacy(legacy, false)?;
+    Ok(())
+}
+
+/// `MigrateResult`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MigrateResult {
+    Migrated,
+    Already,
+    AlreadyRemovedLegacy,
+}
+
+/// `migrate`: move the legacy session, and the sign-in from `credentials_file` when given, into
+/// the store, then remove the plaintext session file. Collection cursors stay where they are. A
+/// store with a marker but no record (an interrupted first write or reset) takes the migration.
+pub fn migrate(
+    legacy: &Path,
+    credentials_file: Option<&Path>,
+    keys: Option<Arc<dyn KeyProvider>>,
+) -> Result<MigrateResult> {
+    change_session(legacy, keys, &Cancel::default(), |store, record| {
+        if store_decides(store, &record.path)? && stored_record(store)?.is_some() {
+            return Ok(match remove_legacy(legacy, false)? {
+                true => MigrateResult::AlreadyRemovedLegacy,
+                false => MigrateResult::Already,
+            });
+        }
+        let credentials = match credentials_file {
+            Some(file) => Some(read_credentials(&resolve(file), &Signal::default())?),
+            None => None,
+        };
+        let session = read_session(legacy)?;
+        prepare_key(store, record, false)?;
+        // The write reads the record back before it commits; only then does the plaintext go.
+        commit_change(
+            store,
+            legacy,
+            &Record {
+                session: Some(session),
+                credentials,
+            },
+            || {},
+        )?;
+        Ok(MigrateResult::Migrated)
+    })
+}
+
+/// `logout`: a logged-out record when the store decides, and the plaintext files and cursors go.
+pub fn logout(legacy: &Path, keys: Option<Arc<dyn KeyProvider>>) -> Result<()> {
+    change_session(legacy, keys, &Cancel::default(), |store, record| {
+        if store_decides(store, &record.path)? {
+            store.write(&encode_record(&Record {
+                session: None,
+                credentials: None,
+            })?)?;
+        }
+        remove_legacy(legacy, true)?;
+        Ok(())
+    })
+}
+
 /// Where a held session persists a changed session.
 enum Target<'h, 'o> {
     Legacy(&'h Path),
@@ -330,7 +622,6 @@ enum Target<'h, 'o> {
 pub struct Held<'h, 'o> {
     pub session: SavedSession,
     /// The stored sign-in for renewal; `None` before migration or when none was stored.
-    #[expect(dead_code, reason = "login uses it from slice 3")]
     pub credentials: Option<Credentials>,
     /// Where the session lives and whether a sign-in is stored; never a path or a value.
     pub storage: &'static str,
@@ -480,6 +771,50 @@ mod tests {
         }
         let long = "x".repeat(PASSWORD_MAX + 1);
         assert!(Credentials::parse(&json!({"username": "u", "password": long})).is_none());
+    }
+
+    #[test]
+    fn the_largest_record_fits_the_bound() {
+        // The largest session an older version could save, with the longest sign-in, whose
+        // control characters JSON spells in six bytes each.
+        let mut session = SavedSession {
+            saved_at: "2026-09-11T09:00:00.000Z".to_owned(),
+            cookies: vec![json!({"key": "IMHome", "value": ""})],
+            account_id: Some("parent-1".to_owned()),
+            selected_child_id: None,
+            rate_limited_until: None,
+        };
+        let fill = SESSION_MAX_BYTES - session.to_json().to_string().len();
+        session.cookies[0]["value"] = json!("x".repeat(fill));
+        let mut worst = Record {
+            session: Some(session),
+            credentials: Credentials::new(
+                &"\u{1}".repeat(USERNAME_MAX),
+                &"\u{1}".repeat(PASSWORD_MAX),
+            ),
+        };
+        assert_eq!(encode_record(&worst).unwrap().len(), RECORD_MAX_BYTES);
+
+        let session = worst.session.as_mut().unwrap();
+        session.cookies[0]["value"] = json!("x".repeat(fill + 1));
+        assert_eq!(encode_record(&worst).unwrap_err(), TOO_LARGE);
+    }
+
+    #[test]
+    fn store_failures_get_fixed_messages() {
+        let message = |code| match store_error(&StoreError::new(code, "Synthetic.")) {
+            Fail::Im { message, .. } => message,
+            Fail::Invalid | Fail::Unknown => "unknown",
+        };
+        assert_eq!(
+            message(StoreCode::UnsafeFile),
+            "Cannot use the InfoMentor session store. Run infomentor-mcp status in a terminal; it shows what is wrong and where. Do not delete the store first."
+        );
+        assert_eq!(
+            message(StoreCode::StoreUnavailable),
+            "The InfoMentor store key is missing. Run infomentor-mcp login to sign in again."
+        );
+        assert_eq!(message(StoreCode::InvalidArgument), "unknown");
     }
 
     #[test]

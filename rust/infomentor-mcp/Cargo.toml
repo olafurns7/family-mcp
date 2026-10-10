@@ -38,6 +38,8 @@ serde_json = { version = "=1.0.151", features = ["preserve_order"] }
 tokio = { version = "=1.53.2", features = ["rt", "io-std", "macros", "signal", "sync", "time"] }
 # WHATWG URL parsing, as JavaScript's URL; already in the lock through reqwest.
 url = "=2.5.8"
+# Wipes the password when credentials are dropped; already in the lock through family-store.
+zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 # Its unit tests open scratch stores in their own process, with the store test seam on.

@@ -2,7 +2,17 @@
 // once against the TypeScript CLI (with rewrite.ts preloaded) and once against the Rust binary
 // (built with `test-origin`), each in its own scratch home and against the same local fake
 // upstream, and compares outputs and exit codes. Prints mismatches and exits 1 on any.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -56,6 +66,16 @@ type State = {
     | '429-date'
     | '429-bare';
   rotated: boolean;
+  /** How the login form answers. */
+  login: 'ok' | 'stall' | 'unsupported-form' | 'cross-origin-action' | 'bad-relay';
+  /** The password InfoMentor accepts for USERNAME. */
+  password: string;
+  /** The `IMHome` value the next sign-in gets: `other` is another account. */
+  issue: string;
+  /** An `IMHome` value InfoMentor no longer accepts. */
+  revoked: string;
+  /** A credential submission succeeded, so the login page serves the hidden-form relay. */
+  relay: boolean;
 };
 
 const initial = (): State => ({
@@ -67,6 +87,11 @@ const initial = (): State => ({
   body: 'Bring lunch',
   parent: 'ok',
   rotated: false,
+  login: 'ok',
+  password: 'synthetic-password',
+  issue: 'synthetic',
+  revoked: '',
+  relay: false,
 });
 
 const fake = { seen: [] as Seen[], state: initial() };
@@ -122,10 +147,10 @@ const redirect = (location: string, cookie?: string, status = 302): Response =>
     headers: cookie ? { Location: location, 'Set-Cookie': cookie } : { Location: location },
   });
 
-function parentPage(state: State): Response {
+function parentPage(state: State, account = 'parent-1'): Response {
   const model = {
     account: {
-      currentUser: { id: 'parent-1' },
+      currentUser: { id: account },
       pupils: pupils.map((pupil, index) => ({
         ...pupil,
         selected: pupil.id === state.selected,
@@ -140,6 +165,23 @@ function parentPage(state: State): Response {
     `<html><head><title>InfoMentor</title></head><body><script>var x = "</div>";</script><script>IMHome.home.homeData = ${JSON.stringify(model)}; IMHome.home.init(IMHome.home.homeData);</script></body></html>`,
     { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
   );
+}
+
+const USERNAME = 'synthetic-user';
+
+const loginHtml = (state: State): string =>
+  state.login === 'unsupported-form'
+    ? '<form method="POST" action="./"><input type="hidden" name="__VIEWSTATE" value="x"></form>'
+    : `<form method="POST" action="${state.login === 'cross-origin-action' ? 'https://minn.infomentor.is/production/mentor/' : './'}"><input type="hidden" name="__VIEWSTATE" value="fresh&amp;state"><input type="hidden" name="__EVENTVALIDATION" value="fresh-validation"><input type="hidden" name="__VIEWSTATEGENERATOR" value="generator"></form>`;
+
+const relayHtml = (state: State): string =>
+  `<form id="openid_message" method="${state.login === 'bad-relay' ? 'get' : 'post'}" action="https://im1.infomentor.is/Production/Mentor/"><input type="hidden" name="oauth_token" value="synthetic&amp;token"></form>`;
+
+/** The `IMHome` cookie InfoMentor accepts in `cookies`, if any. */
+function accepted(state: State, cookies: string): string | undefined {
+  const value = /(?:^|; )IMHome=([^;]*)/.exec(cookies)?.[1];
+
+  return value && value !== 'expired' && value !== state.revoked ? value : undefined;
 }
 
 /** The fake upstream: `<origin>/<host><path>` stands for `https://<host><path>`. */
@@ -164,13 +206,64 @@ async function handle(request: Request): Promise<Response> {
   const cookies = request.headers.get('cookie') ?? '';
   const fields = new URLSearchParams(body);
 
+  if (host === 'im1.infomentor.is') {
+    if (path === '/production/mentor/' && request.method === 'GET')
+      return new Response(loginHtml(state), {
+        headers: { 'Set-Cookie': 'preflight=synthetic; Secure; HttpOnly; Path=/' },
+      });
+
+    if (path === '/production/mentor/' && request.method === 'POST') {
+      if (state.login === 'stall') {
+        await Bun.sleep(3000);
+
+        return new Response('late');
+      }
+
+      if (
+        fields.get('login_ascx$txtNotandanafn') === USERNAME &&
+        fields.get('login_ascx$txtLykilord') === state.password
+      ) {
+        state.relay = true;
+
+        return redirect(`${PARENT}authentication/authentication/login`);
+      }
+
+      return new Response(loginHtml(state));
+    }
+
+    if (path === '/Production/Mentor/' && fields.get('oauth_token') === 'synthetic&token')
+      return new Response(null, {
+        status: 303,
+        headers: {
+          Location: `${PARENT}Authentication/Authentication/LoginCallback?token=synthetic`,
+          'Set-Cookie': '.ASPXAUTH=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure',
+        },
+      });
+
+    return new Response('Not found', { status: 404 });
+  }
+
   if (host !== 'minn.infomentor.is') return new Response('Not found', { status: 404 });
 
-  if (/^\/authentication\/authentication\/login$/i.test(path))
-    return new Response('<form method="post"><input type="hidden" name="a" value="b"></form>');
+  if (/^\/authentication\/authentication\/login$/i.test(path)) {
+    if (state.relay) {
+      state.relay = false;
 
-  if (!/(?:^|; )IMHome=(?:synthetic|rotated)(?:;|$)/.test(cookies))
-    return redirect(`${PARENT}authentication/authentication/login`);
+      return new Response(relayHtml(state));
+    }
+
+    return new Response('<form method="post"><input type="hidden" name="a" value="b"></form>');
+  }
+
+  if (path === '/Authentication/Authentication/LoginCallback')
+    return redirect(PARENT, `IMHome=${state.issue}; Secure; HttpOnly; Path=/`);
+
+  const account = accepted(state, cookies);
+
+  if (path === '/authentication/authentication/isauthenticated/')
+    return Response.json(account !== undefined);
+
+  if (!account) return redirect(`${PARENT}authentication/authentication/login`);
 
   if (path === '/' && request.method === 'GET') {
     switch (state.parent) {
@@ -178,7 +271,7 @@ async function handle(request: Request): Promise<Response> {
         if (state.rotated) break;
         state.rotated = true;
 
-        return new Response(parentPage(state).body, {
+        return new Response(parentPage(state, 'parent-1').body, {
           headers: {
             'Set-Cookie':
               'IMHome=rotated; Secure; HttpOnly; Path=/; Expires=Wed, 01 Jan 2031 00:00:00 GMT',
@@ -213,7 +306,7 @@ async function handle(request: Request): Promise<Response> {
         break;
     }
 
-    return parentPage(state);
+    return parentPage(state, account === 'other' ? 'parent-2' : 'parent-1');
   }
 
   const switched = /^\/Account\/PupilSwitcher\/SwitchPupil\/(101|102)$/.exec(path);
@@ -293,7 +386,15 @@ const origin = `http://127.0.0.1:${server.port}`;
 /** A tool call, with arguments built from earlier results when needed, or a change upstream. */
 type Call = [string, unknown] | ((state: State) => void);
 
-type Step = { cli: string[] } | { serve: Call[]; args?: string[]; surface?: boolean };
+/** A file in the scratch home: private text, text with this mode, or a symlink to a name. */
+type Fixture = string | { text: string; mode: number } | { link: string };
+
+type Step =
+  /** `interrupt`: SIGINT once the credential submission reached the fake. */
+  | { cli: string[]; interrupt?: boolean }
+  | { serve: Call[]; args?: string[]; surface?: boolean }
+  | { change: (state: State) => void }
+  | { write: Record<string, Fixture> };
 
 type Scenario = {
   name: string;
@@ -301,6 +402,7 @@ type Scenario = {
   state?: Partial<State>;
   /** The legacy session file both sides start from, in each home as session.json. */
   seed?: string;
+  files?: Record<string, Fixture>;
   steps: Step[];
 };
 
@@ -317,7 +419,24 @@ const SYNTHETIC = await seed('synthetic');
 
 const EXPIRED = await seed('expired');
 
+const OTHER = await seed('other');
+
 const SESSION = ['serve', '--session', 'session.json'];
+
+const CREDENTIALS = { INFOMENTOR_USERNAME: USERNAME, INFOMENTOR_PASSWORD: 'synthetic-password' };
+
+const SIGN_IN = JSON.stringify({ username: USERNAME, password: 'synthetic-password' });
+
+const PRIVATE_SIGN_IN = { 'credentials.json': SIGN_IN };
+
+/** InfoMentor no longer accepts the signed-in cookie; the next sign-in gets `issue`. */
+const expire =
+  (issue = 'renewed') =>
+  (state: State): void => {
+    state.revoked = 'synthetic';
+    state.issue = issue;
+    state.selected = 'child-1';
+  };
 
 /** The cursor an earlier collection returned, `back` results ago. */
 const cursor =
@@ -598,6 +717,296 @@ const scenarios: Scenario[] = [
       },
     ],
   },
+
+  {
+    name: 'login-env',
+    env: CREDENTIALS,
+    steps: [
+      { cli: ['login'] },
+      { cli: ['status'] },
+      {
+        serve: [
+          ['infomentor_get_overview', {}],
+          ['infomentor_collect_updates', {}],
+        ],
+      },
+      { cli: ['auth', 'login', '--timeout', '60'] },
+      { cli: ['logout'] },
+      { cli: ['status'] },
+      { serve: [['infomentor_session_status', {}]] },
+      { cli: ['logout'] },
+    ],
+  },
+  {
+    name: 'login-replaces-legacy',
+    seed: SYNTHETIC,
+    env: CREDENTIALS,
+    steps: [
+      { cli: ['login', '--session', 'session.json'] },
+      { cli: ['status', '--session', 'session.json'] },
+    ],
+  },
+  {
+    name: 'login-credentials-file',
+    files: {
+      ...PRIVATE_SIGN_IN,
+      'open.json': { text: SIGN_IN, mode: 0o644 },
+      'link.json': { link: 'credentials.json' },
+      'partial.json': JSON.stringify({ username: USERNAME }),
+      'extra.json': JSON.stringify({ username: USERNAME, password: 'x', note: 1 }),
+      'long.json': JSON.stringify({ username: USERNAME, password: 'p'.repeat(4097) }),
+      'large.json': 'x'.repeat(16_385),
+    },
+    steps: [
+      ...[
+        'open.json',
+        'link.json',
+        'partial.json',
+        'extra.json',
+        'long.json',
+        'large.json',
+        'missing.json',
+      ].map((file) => ({ cli: ['login', '--credentials', file] })),
+      { cli: ['status'] },
+      { cli: ['login', '--credentials', 'credentials.json'] },
+      { cli: ['status'] },
+    ],
+  },
+  {
+    name: 'login-credentials-env-file',
+    env: {
+      INFOMENTOR_CREDENTIALS_FILE: 'credentials.json',
+      ...CREDENTIALS,
+      INFOMENTOR_PASSWORD: 'unused',
+    },
+    files: PRIVATE_SIGN_IN,
+    steps: [{ cli: ['login'] }, { cli: ['status'] }],
+  },
+  {
+    name: 'login-rejected',
+    env: { ...CREDENTIALS, INFOMENTOR_PASSWORD: 'wrong' },
+    seed: SYNTHETIC,
+    steps: [
+      { cli: ['login', '--session', 'session.json'] },
+      { cli: ['status', '--session', 'session.json'] },
+    ],
+  },
+  {
+    name: 'login-partial-env',
+    env: { INFOMENTOR_USERNAME: USERNAME },
+    steps: [{ cli: ['login'] }],
+  },
+  {
+    name: 'login-empty-env',
+    env: { INFOMENTOR_USERNAME: '', INFOMENTOR_PASSWORD: '' },
+    steps: [{ cli: ['login'] }],
+  },
+  { name: 'login-no-credentials', steps: [{ cli: ['login'] }] },
+  ...(['unsupported-form', 'cross-origin-action', 'bad-relay'] as const).map((login): Scenario => ({
+    name: `login-${login}`,
+    env: CREDENTIALS,
+    state: { login },
+    steps: [{ cli: ['login'] }, { cli: ['status'] }],
+  })),
+  {
+    name: 'login-timeout',
+    env: CREDENTIALS,
+    seed: SYNTHETIC,
+    state: { login: 'stall' },
+    steps: [
+      { cli: ['login', '--session', 'session.json', '--timeout', '1'] },
+      { cli: ['status', '--session', 'session.json'] },
+    ],
+  },
+  {
+    name: 'login-interrupted',
+    env: CREDENTIALS,
+    seed: SYNTHETIC,
+    state: { login: 'stall' },
+    steps: [
+      { cli: ['login', '--session', 'session.json'], interrupt: true },
+      { cli: ['status', '--session', 'session.json'] },
+    ],
+  },
+  {
+    name: 'account-change',
+    env: CREDENTIALS,
+    steps: [
+      { cli: ['login'] },
+      {
+        change: (state) => {
+          state.issue = 'other';
+        },
+      },
+      { cli: ['login'] },
+      { cli: ['status'] },
+      { cli: ['login', '--allow-account-change'] },
+      { serve: [['infomentor_get_overview', {}]] },
+    ],
+  },
+  {
+    name: 'import',
+    env: CREDENTIALS,
+    files: {
+      'export.json': SYNTHETIC,
+      'expired.json': EXPIRED,
+      'other.json': OTHER,
+      'open-export.json': { text: SYNTHETIC, mode: 0o644 },
+      'link-export.json': { link: 'export.json' },
+    },
+    steps: [
+      { cli: ['login', '--import', 'open-export.json'] },
+      { cli: ['login', '--import', 'link-export.json'] },
+      { cli: ['login', '--import', 'expired.json'] },
+      { cli: ['login', '--import', 'missing.json'] },
+      { cli: ['login'] },
+      { cli: ['login', '--import', 'export.json'] },
+      { cli: ['status'] },
+      { cli: ['login', '--import', 'other.json'] },
+      { cli: ['auth', 'login', '--import', 'other.json', '--allow-account-change'] },
+      { cli: ['status'] },
+    ],
+  },
+  {
+    name: 'unreadable-saved-session',
+    env: CREDENTIALS,
+    seed: '{"broken":',
+    steps: [
+      { cli: ['login', '--session', 'session.json'] },
+      { cli: ['login', '--session', 'session.json', '--allow-account-change'] },
+      { cli: ['status', '--session', 'session.json'] },
+    ],
+  },
+  {
+    name: 'migrate',
+    seed: SYNTHETIC,
+    files: PRIVATE_SIGN_IN,
+    steps: [
+      { cli: ['migrate', '--session', 'session.json'] },
+      { cli: ['status', '--session', 'session.json'] },
+      { cli: ['migrate', '--session', 'session.json'] },
+      { write: { 'session.json': SYNTHETIC } },
+      {
+        cli: ['auth', 'migrate', '--session', 'session.json', '--credentials', 'credentials.json'],
+      },
+      { cli: ['status', '--session', 'session.json'] },
+    ],
+  },
+  {
+    name: 'migrate-credentials',
+    seed: SYNTHETIC,
+    files: { ...PRIVATE_SIGN_IN, 'open.json': { text: SIGN_IN, mode: 0o644 } },
+    steps: [
+      { cli: ['migrate', '--session', 'session.json', '--credentials', 'open.json'] },
+      { cli: ['migrate', '--session', 'session.json', '--credentials', 'credentials.json'] },
+      { cli: ['status', '--session', 'session.json'] },
+    ],
+  },
+  {
+    name: 'migrate-nothing',
+    steps: [{ cli: ['migrate'] }, { cli: ['migrate', '--session', 'session.json'] }],
+  },
+  {
+    name: 'migrate-unsafe',
+    seed: '{}',
+    steps: [
+      { write: { 'session.json': { text: SYNTHETIC, mode: 0o644 } } },
+      { cli: ['migrate', '--session', 'session.json'] },
+    ],
+  },
+  {
+    name: 'logout-legacy',
+    seed: SYNTHETIC,
+    steps: [
+      { serve: [['infomentor_collect_updates', {}]], args: SESSION },
+      { cli: ['logout', '--session', 'session.json'] },
+      { cli: ['status', '--session', 'session.json'] },
+    ],
+  },
+  {
+    name: 'renewal-stored',
+    files: PRIVATE_SIGN_IN,
+    steps: [
+      { cli: ['login', '--credentials', 'credentials.json'] },
+      {
+        serve: [
+          ['infomentor_select_child', { childId: 'child-2 & sibling' }],
+          expire(),
+          ['infomentor_get_overview', {}],
+          ['infomentor_session_status', {}],
+          ['infomentor_get_notifications', {}],
+        ],
+      },
+      { cli: ['status'] },
+    ],
+  },
+  {
+    name: 'renewal-legacy-env',
+    seed: SYNTHETIC,
+    env: CREDENTIALS,
+    steps: [
+      {
+        serve: [['infomentor_get_overview', {}], expire(), ['infomentor_get_overview', {}]],
+        args: SESSION,
+      },
+      { cli: ['status', '--session', 'session.json'] },
+    ],
+  },
+  {
+    name: 'renewal-older-session',
+    seed: EXPIRED,
+    env: CREDENTIALS,
+    steps: [
+      {
+        serve: [
+          ['infomentor_get_overview', {}],
+          ['infomentor_session_status', {}],
+        ],
+        args: SESSION,
+      },
+    ],
+  },
+  {
+    name: 'renewal-other-account',
+    files: PRIVATE_SIGN_IN,
+    steps: [
+      { cli: ['login', '--credentials', 'credentials.json'] },
+      {
+        serve: [
+          expire('other'),
+          ['infomentor_get_overview', {}],
+          ['infomentor_session_status', {}],
+        ],
+      },
+      { cli: ['status'] },
+    ],
+  },
+  {
+    name: 'renewal-rejected',
+    files: PRIVATE_SIGN_IN,
+    steps: [
+      { cli: ['login', '--credentials', 'credentials.json'] },
+      {
+        serve: [
+          (state) => {
+            expire()(state);
+            state.password = 'changed';
+          },
+          ['infomentor_get_overview', {}],
+          ['infomentor_get_overview', {}],
+        ],
+      },
+      { cli: ['status'] },
+    ],
+  },
+  {
+    name: 'renewal-without-sign-in',
+    files: { 'export.json': SYNTHETIC },
+    steps: [
+      { cli: ['login', '--import', 'export.json'] },
+      { serve: [expire(), ['infomentor_get_overview', {}], ['infomentor_session_status', {}]] },
+    ],
+  },
 ];
 
 function environment(home: string, extra: Record<string, string> = {}): Record<string, string> {
@@ -624,6 +1033,7 @@ async function runCli(
   home: string,
   env: Record<string, string>,
   args: string[],
+  interrupt = false,
 ) {
   const child = Bun.spawn(command(side, args), {
     cwd: home,
@@ -632,6 +1042,13 @@ async function runCli(
     stdout: 'pipe',
     stderr: 'pipe',
   });
+
+  if (interrupt)
+    void (async () => {
+      while (!fake.seen.some((request) => request.body.includes('txtLykilord')))
+        await Bun.sleep(20);
+      child.kill('SIGINT');
+    })();
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -695,6 +1112,31 @@ async function runServe(
   return results;
 }
 
+function place(home: string, files: Record<string, Fixture>): void {
+  for (const [name, file] of Object.entries(files)) {
+    const path = join(home, name);
+    rmSync(path, { force: true });
+
+    if (typeof file === 'string') writeFileSync(path, file, { mode: 0o600 });
+    else if ('link' in file) symlinkSync(file.link, path);
+    else writeFileSync(path, file.text, { mode: file.mode });
+  }
+}
+
+/** Every path a scenario left in its home, with its type and mode; contents are encrypted or
+ * compared elsewhere, and random cursor names are masked by the caller. */
+function listing(home: string, directory = ''): string[] {
+  return readdirSync(join(home, directory))
+    .sort()
+    .flatMap((name) => {
+      const path = join(directory, name);
+      const stat = lstatSync(join(home, path));
+      const entry = `${path} ${stat.isSymbolicLink() ? 'link' : stat.isDirectory() ? 'dir' : 'file'} ${(stat.mode & 0o777).toString(8)}`;
+
+      return stat.isDirectory() ? [entry, ...listing(home, path)] : [entry];
+    });
+}
+
 /** The session file a scenario left, or null. */
 function session(home: string): unknown {
   const path = join(home, 'session.json');
@@ -752,16 +1194,27 @@ async function run(side: 'ts' | 'rust', scenario: Scenario) {
   reset(scenario.state);
 
   if (scenario.seed) writeFileSync(join(home, 'session.json'), scenario.seed, { mode: 0o600 });
+  place(home, scenario.files ?? {});
   const steps: unknown[] = [];
 
   for (const step of scenario.steps) {
-    if ('cli' in step) steps.push(await runCli(side, home, scenario.env ?? {}, step.cli));
+    if ('change' in step) step.change(fake.state);
+    else if ('write' in step) place(home, step.write);
+    else if ('cli' in step)
+      steps.push(await runCli(side, home, scenario.env ?? {}, step.cli, step.interrupt));
     else steps.push(await runServe(side, home, scenario.env ?? {}, step));
   }
 
   if (side === 'ts') requests += fake.seen.length;
 
-  return masker()({ steps, requests: fake.seen, session: session(home) });
+  return masker()({
+    steps,
+    requests: fake.seen,
+    session: session(home),
+    files: listing(home)
+      .map((entry) => entry.replace(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/, '<cursor>'))
+      .sort(),
+  });
 }
 
 const failures: string[] = [];
@@ -865,6 +1318,72 @@ async function interop(): Promise<void> {
       JSON.stringify(accepted.structuredContent?.updates) === '[]',
     accepted,
   );
+
+  // The encrypted store: each side reads, renews and logs out what the other signed in.
+  const store = join(scratch, 'interop-store');
+  mkdirSync(store, { recursive: true, mode: 0o700 });
+  const cliIn = (side: 'ts' | 'rust', args: string[], env: Record<string, string> = {}) =>
+    runCli(side, store, env, args);
+  const readIn = async (side: 'ts' | 'rust') =>
+    (
+      (await runServe(side, store, {}, { serve: [['infomentor_get_overview', {}]] })) as Result[]
+    )[0]!;
+  const renewedSince = (from: number) =>
+    fake.seen.length > from &&
+    fake.seen.slice(from).every((request) => !request.headers.cookie?.includes('IMHome=synthetic'));
+
+  for (const [first, second] of [
+    ['ts', 'rust'],
+    ['rust', 'ts'],
+  ] as const) {
+    reset();
+    const signedIn = await cliIn(first, ['login'], CREDENTIALS);
+    check(`${first} login`, signedIn.code === 0, signedIn);
+    const status = await cliIn(second, ['status']);
+    check(
+      `${second} reads the record ${first} wrote`,
+      status.code === 0 && status.stderr.includes('sign-in is stored there'),
+      status,
+    );
+    expire()(fake.state);
+    const renewal = await readIn(second);
+    check(`${second} renews with the sign-in ${first} stored`, !renewal.isError, renewal);
+    const from = fake.seen.length;
+    const renewed = await cliIn(first, ['status']);
+    check(`${first} uses the session ${second} renewed`, renewed.code === 0 && renewedSince(from), {
+      renewed,
+      requests: fake.seen.slice(from),
+    });
+    const loggedOut = await cliIn(second, ['logout']);
+    const after = await cliIn(first, ['status']);
+    check(`${first} sees the logout ${second} wrote`, loggedOut.code === 0 && after.code === 1, {
+      loggedOut,
+      after,
+    });
+  }
+
+  // A plaintext session that one side migrated, read by the other.
+  const migrated = join(scratch, 'interop-migrate');
+  mkdirSync(migrated, { recursive: true, mode: 0o700 });
+  reset();
+  writeFileSync(join(migrated, 'session.json'), SYNTHETIC, { mode: 0o600 });
+  writeFileSync(join(migrated, 'credentials.json'), SIGN_IN, { mode: 0o600 });
+  const moved = await runCli('rust', migrated, {}, [
+    'migrate',
+    '--session',
+    'session.json',
+    '--credentials',
+    'credentials.json',
+  ]);
+  const read = await runCli('ts', migrated, {}, ['status', '--session', 'session.json']);
+  check(
+    'typescript reads the session and sign-in rust migrated',
+    moved.code === 0 &&
+      !existsSync(join(migrated, 'session.json')) &&
+      read.code === 0 &&
+      read.stderr.includes('sign-in is stored there'),
+    { moved, read },
+  );
 }
 
 try {
@@ -873,6 +1392,9 @@ try {
   for (const scenario of scenarios) {
     if (only && scenario.name !== only) continue;
     const ts = await run('ts', scenario);
+
+    // PARITY_DUMP=1 shows what the TypeScript side did, to check a scenario is not vacuous.
+    if (process.env.PARITY_DUMP) console.error(JSON.stringify(ts, null, 1));
     commands += scenario.steps.filter((step) => 'cli' in step).length;
     compare(scenario.name, ts, await run('rust', scenario));
   }
@@ -889,8 +1411,8 @@ if (
   !only &&
   (JSON.stringify(surfaces) !== '[7,11,7,7,11,7]' ||
     commands < cliCases.length ||
-    served < 30 ||
-    requests < 100)
+    served < 45 ||
+    requests < 600)
 )
   failures.push(`coverage too low: ${JSON.stringify(counts)}`);
 

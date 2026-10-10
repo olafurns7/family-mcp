@@ -387,7 +387,6 @@ impl Http {
     }
 
     /// `isAuthenticated`: InfoMentor's own check, an empty form post.
-    #[expect(dead_code, reason = "login uses it from slice 3")]
     pub fn is_authenticated(&mut self, signal: &Signal) -> Result<bool> {
         let page = self.request(
             &format!("{PARENT_URL}authentication/authentication/isauthenticated/"),
@@ -411,7 +410,6 @@ impl Http {
     }
 
     /// `requireAuthentication`.
-    #[expect(dead_code, reason = "login uses it from slice 3")]
     pub fn require_authentication(&mut self, signal: &Signal) -> Result<()> {
         match self.is_authenticated(signal)? {
             true => Ok(()),

@@ -47,5 +47,13 @@ fn bun_test(file: &str, passed: usize) {
 
 #[test]
 fn the_startup_cases_pass_against_this_binary() {
-    bun_test("startup.test.ts", 1);
+    bun_test(
+        "startup.test.ts",
+        if cfg!(target_os = "macos") { 2 } else { 1 },
+    );
+}
+
+#[test]
+fn the_integration_cases_pass_against_this_binary() {
+    bun_test("integration.test.ts", 16);
 }

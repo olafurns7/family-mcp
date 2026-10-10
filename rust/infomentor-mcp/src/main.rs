@@ -8,6 +8,7 @@ mod http;
 mod input;
 mod jar;
 mod js;
+mod login;
 mod server;
 mod session;
 mod shapes;
@@ -24,7 +25,10 @@ use tokio::task::JoinHandle;
 
 use crate::client::{Client, Options};
 use crate::error::{Fail, Result};
+use crate::session::session_path;
 use crate::signal::{Controller, Signal};
+use crate::store::MigrateResult;
+use crate::upstream::Net;
 
 const HELP: &str = "Usage: infomentor-mcp [auth] [command] [options]
 
@@ -64,8 +68,6 @@ in ~/.local/share/family-mcp/keys on Linux.";
 /// What the CLI prints for a failure without a reviewed message.
 const FAILED: &str =
     "InfoMentor operation failed. Check the network and session-store permissions.";
-
-const NOT_YET: Fail = Fail::config("This InfoMentor command is not available in this build yet.");
 
 #[derive(Default)]
 struct Args {
@@ -223,17 +225,88 @@ async fn status(options: Options) -> Result<ExitCode> {
     }
 }
 
+/// `deleteCredentialsAdvice`: after a sign-in read from a file; `file` is the path the user gave.
+fn delete_credentials_advice(file: &str) -> String {
+    format!("Your InfoMentor sign-in is stored in the encrypted store. You can delete {file} now.")
+}
+
 /// The session commands. Blocks.
-fn command(command: &str, args: &Args) -> Result<()> {
-    match command {
+fn command(name: &str, args: &Args, options: &Options, net: &Net, signal: &Signal) -> Result<()> {
+    match name {
         "login" => {
-            if given(&args.import) {
-                return Err(NOT_YET);
+            if let Some(file) = args.import.as_deref().filter(|file| !file.is_empty()) {
+                login::import_session(
+                    net,
+                    options,
+                    Path::new(file),
+                    signal,
+                    args.allow_account_change,
+                )?;
+                eprintln!("Session imported and verified.");
+                return Ok(());
             }
-            parse_timeout(args.timeout.as_deref())?;
-            Err(NOT_YET)
+            let seconds = parse_timeout(args.timeout.as_deref())?;
+            let file = login::login(
+                net,
+                options,
+                signal,
+                args.allow_account_change,
+                seconds * 1000.0,
+            )?;
+            eprintln!("Signed in. Session saved in the encrypted store.");
+
+            if let Some(file) = file {
+                eprintln!(
+                    "{}",
+                    delete_credentials_advice(args.credentials.as_deref().unwrap_or(&file))
+                );
+            }
+            Ok(())
         }
-        "migrate" | "logout" => Err(NOT_YET),
+        "migrate" => {
+            let legacy = session_path(options.session_file.as_deref())?;
+            let migrated = store::migrate(
+                &legacy,
+                options.credentials_file.as_deref(),
+                options.keys.clone(),
+            )?;
+
+            if migrated == MigrateResult::Migrated {
+                eprintln!(
+                    "Moved the InfoMentor session into the encrypted store and removed its file."
+                );
+
+                if let Some(file) = args.credentials.as_deref().filter(|file| !file.is_empty()) {
+                    eprintln!("{}", delete_credentials_advice(file));
+                }
+                return Ok(());
+            }
+            eprintln!(
+                "{}",
+                match migrated {
+                    MigrateResult::Already =>
+                        "The InfoMentor session is already in the encrypted store.",
+                    _ => {
+                        "The InfoMentor session is already in the encrypted store; removed the leftover plaintext file."
+                    }
+                }
+            );
+
+            if given(&args.credentials) {
+                eprintln!(
+                    "Your sign-in was not stored. Run infomentor-mcp login --credentials FILE to store it."
+                );
+            }
+            Ok(())
+        }
+        "logout" => {
+            store::logout(
+                &session_path(options.session_file.as_deref())?,
+                options.keys.clone(),
+            )?;
+            eprintln!("Local InfoMentor session and stored sign-in removed.");
+            Ok(())
+        }
         _ => Err(Fail::config("Unknown command. Run infomentor-mcp --help.")),
     }
 }
@@ -314,10 +387,15 @@ async fn main_async() -> Result<ExitCode> {
     if name == "status" {
         return status(options(&args)).await;
     }
-    tokio::task::spawn_blocking(move || command(&name, &args))
-        .await
-        .unwrap_or(Err(Fail::Unknown))
-        .map(|()| ExitCode::SUCCESS)
+    let options = options(&args);
+    let net = Net::new().ok_or(Fail::Unknown)?;
+    let (signal, listener) = cancel_on_signals()?;
+    let outcome =
+        tokio::task::spawn_blocking(move || command(&name, &args, &options, &net, &signal))
+            .await
+            .unwrap_or(Err(Fail::Unknown));
+    listener.abort();
+    outcome.map(|()| ExitCode::SUCCESS)
 }
 
 fn main() -> ExitCode {
