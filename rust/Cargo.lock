@@ -319,6 +319,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dominos-mcp"
+version = "0.1.0"
+dependencies = [
+ "family-store",
+ "mcp-runtime",
+ "reqwest",
+ "rmcp",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
