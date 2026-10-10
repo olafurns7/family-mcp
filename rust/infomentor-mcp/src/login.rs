@@ -76,7 +76,7 @@ pub fn resolve_credentials(
 
     if let Some(file) = configured_file(options) {
         return Ok((
-            read_credentials(&resolve(Path::new(&file)), signal)?,
+            read_credentials(&resolve(Path::new(&file))?, signal)?,
             Some(file),
         ));
     }
@@ -316,7 +316,7 @@ pub fn import_session(
         options.keys.clone(),
         &bridge.cancel,
         |store, record| {
-            let imported = read_session(&resolve(file))?;
+            let imported = read_session(&resolve(file)?)?;
             let previous = prepare_change(store, record, &legacy)?;
             let mut http = http_from_session(&imported, net);
             http.require_authentication(signal)?;

@@ -21,7 +21,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::task::JoinHandle;
 
 use crate::client::{Client, Options};
 use crate::error::{Fail, Result};
@@ -157,18 +156,19 @@ fn given(value: &Option<String>) -> bool {
 }
 
 /// The client options of `--session` and `--credentials`, resolved as `path.resolve` does.
-fn options(args: &Args) -> Options {
+fn options(args: &Args) -> Result<Options> {
     let resolved = |value: &Option<String>| {
         value
             .as_deref()
             .filter(|value| !value.is_empty())
             .map(|value| store::resolve(Path::new(value)))
+            .transpose()
     };
-    Options {
-        session_file: resolved(&args.session),
-        credentials_file: resolved(&args.credentials),
+    Ok(Options {
+        session_file: resolved(&args.session)?,
+        credentials_file: resolved(&args.credentials)?,
         keys: None,
-    }
+    })
 }
 
 /// Serve until stdin ends or SIGINT or SIGTERM arrives, then cancel and wait for operations.
@@ -179,29 +179,43 @@ async fn serve(allow_setup_tools: bool, options: Options) -> Result<()> {
         .map_err(|_| Fail::Unknown)
 }
 
-/// A signal that SIGINT or SIGTERM aborts, so a command ends as cancelled instead of being killed.
-/// Aborting the returned task stops listening.
-fn cancel_on_signals() -> Result<(Signal, JoinHandle<()>)> {
-    let controller = Controller::default();
-    let signal = controller.signal();
-    let mut terminate = self::signal(SignalKind::terminate()).map_err(|_| Fail::Unknown)?;
-    let listener = tokio::spawn(async move {
+/// SIGINT and SIGTERM as the TypeScript CLI's `process.once` listeners see them: the first runs
+/// `first`. That listener is then gone, so the next one ends the process at once, as the default
+/// action would, with the status a shell shows for it (128 + the signal number).
+fn on_signals(first: impl FnOnce() + Send + 'static) -> Result<()> {
+    let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| Fail::Unknown)?;
+    let mut terminate = signal(SignalKind::terminate()).map_err(|_| Fail::Unknown)?;
+
+    tokio::spawn(async move {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
+            _ = interrupt.recv() => {}
             _ = terminate.recv() => {}
         }
-        controller.abort();
+        first();
+        let kind = tokio::select! {
+            _ = interrupt.recv() => SignalKind::interrupt(),
+            _ = terminate.recv() => SignalKind::terminate(),
+        };
+        std::process::exit(128 + kind.as_raw_value());
     });
-    Ok((signal, listener))
+    Ok(())
+}
+
+/// A signal that the first SIGINT or SIGTERM aborts, so a command ends as cancelled instead of
+/// being killed; a second one ends the process.
+fn cancel_on_signals() -> Result<Signal> {
+    let controller = Controller::default();
+    let signal = controller.signal();
+    on_signals(move || controller.abort())?;
+    Ok(signal)
 }
 
 /// `status`: verify the saved session; a missing or expired one exits 1 with the next step.
 async fn status(options: Options) -> Result<ExitCode> {
-    let (signal, listener) = cancel_on_signals()?;
+    let signal = cancel_on_signals()?;
     let client = Arc::new(Client::new(options).ok_or(Fail::Unknown)?);
     let status = client.session_status(signal).await;
     client.close().await;
-    listener.abort();
     let status = status?;
 
     match status["authenticated"].as_bool() {
@@ -227,6 +241,8 @@ async fn status(options: Options) -> Result<ExitCode> {
 
 /// `logout`: through a client, as the TypeScript CLI does, so it cancels and waits like the tool.
 async fn logout(options: Options) -> Result<()> {
+    // Logout takes no signal, so the first SIGINT or SIGTERM changes nothing, as in TypeScript.
+    on_signals(|| {})?;
     let client = Client::new(options).ok_or(Fail::Unknown)?;
     let outcome = client.logout().await;
     client.close().await;
@@ -376,27 +392,26 @@ async fn main_async() -> Result<ExitCode> {
     }
 
     if name == "serve" {
-        return serve(args.allow_setup_tools, options(&args))
+        return serve(args.allow_setup_tools, options(&args)?)
             .await
             .map(|()| ExitCode::SUCCESS);
     }
 
     if name == "status" {
-        return status(options(&args)).await;
+        return status(options(&args)?).await;
     }
 
     if name == "logout" {
-        return logout(options(&args)).await.map(|()| ExitCode::SUCCESS);
+        return logout(options(&args)?).await.map(|()| ExitCode::SUCCESS);
     }
-    let options = options(&args);
+    let options = options(&args)?;
     let net = Net::new().ok_or(Fail::Unknown)?;
-    let (signal, listener) = cancel_on_signals()?;
-    let outcome =
-        tokio::task::spawn_blocking(move || command(&name, &args, &options, &net, &signal))
-            .await
-            .unwrap_or(Err(Fail::Unknown));
-    listener.abort();
-    outcome.map(|()| ExitCode::SUCCESS)
+    // Migrate takes no signal either, so its first SIGINT or SIGTERM changes nothing.
+    let signal = cancel_on_signals()?;
+    tokio::task::spawn_blocking(move || command(&name, &args, &options, &net, &signal))
+        .await
+        .unwrap_or(Err(Fail::Unknown))
+        .map(|()| ExitCode::SUCCESS)
 }
 
 fn main() -> ExitCode {

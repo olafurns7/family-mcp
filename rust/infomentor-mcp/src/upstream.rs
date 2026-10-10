@@ -20,9 +20,26 @@ pub fn test_origin() -> &'static str {
     ORIGIN.get_or_init(|| {
         std::env::var("INFOMENTOR_TEST_ORIGIN")
             .ok()
-            .filter(|origin| origin.starts_with("http://127.0.0.1:"))
+            .and_then(|origin| local_origin(&origin))
             .expect("INFOMENTOR_TEST_ORIGIN must be local.")
     })
+}
+
+/// `http://127.0.0.1:<port>` exactly, parsed rather than matched, so no user info, path or other
+/// host can follow the prefix.
+#[cfg(feature = "test-origin")]
+fn local_origin(origin: &str) -> Option<String> {
+    let url = Url::parse(origin).ok()?;
+    let local = url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none();
+    url.port()
+        .filter(|_| local)
+        .map(|port| format!("http://127.0.0.1:{port}"))
 }
 
 /// The address a request for `url` is sent to. A test build sends it to
@@ -116,5 +133,36 @@ impl Net {
         max_bytes: usize,
     ) -> Option<Result<Vec<u8>, BodyError>> {
         self.wait(signal, read_capped(response.body, max_bytes))
+    }
+}
+
+#[cfg(all(test, feature = "test-origin"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_test_origin_is_only_a_loopback_port() {
+        for origin in ["http://127.0.0.1:1234", "http://127.0.0.1:1234/"] {
+            assert_eq!(
+                local_origin(origin).as_deref(),
+                Some("http://127.0.0.1:1234")
+            );
+        }
+
+        for origin in [
+            "http://127.0.0.1:1@example.invalid",
+            "http://user@127.0.0.1:1234",
+            "http://127.0.0.1",
+            "http://127.0.0.1:80",
+            "https://127.0.0.1:1234",
+            "http://127.0.0.1:1234/path",
+            "http://127.0.0.1:1234/?query",
+            "http://127.0.0.1:1234/#fragment",
+            "http://127.0.0.1.example.invalid:1234",
+            "http://localhost:1234",
+            "127.0.0.1:1234",
+        ] {
+            assert_eq!(local_origin(origin), None, "{origin}");
+        }
     }
 }

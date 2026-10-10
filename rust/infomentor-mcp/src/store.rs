@@ -257,9 +257,16 @@ fn store_decides(store: &SecretStore, record: &Path) -> Result<bool> {
     Ok(store.exists()? || exists(record)?)
 }
 
-/// Node's `path.resolve`: absolute, with `.` and `..` resolved lexically.
-pub fn resolve(path: &Path) -> PathBuf {
-    let joined = std::env::current_dir().unwrap_or_default().join(path);
+/// Node's `path.resolve`: absolute, with `.` and `..` resolved lexically. A relative path needs the
+/// working directory; without one it fails, as `process.cwd()` throws, instead of resolving from
+/// `/`.
+pub fn resolve(path: &Path) -> Result<PathBuf> {
+    let joined = match path.is_absolute() {
+        true => path.to_owned(),
+        false => std::env::current_dir()
+            .map_err(|_| Fail::Unknown)?
+            .join(path),
+    };
     let mut resolved = PathBuf::from("/");
 
     for component in joined.components() {
@@ -271,12 +278,12 @@ pub fn resolve(path: &Path) -> PathBuf {
             Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
         }
     }
-    resolved
+    Ok(resolved)
 }
 
 /// Resolve symbolic links in the longest existing prefix, so aliases compare equal.
 fn canonical(path: &Path) -> Result<PathBuf> {
-    let mut existing = resolve(path);
+    let mut existing = resolve(path)?;
     let mut rest = Vec::new();
 
     loop {
@@ -581,7 +588,7 @@ pub fn migrate(
             });
         }
         let credentials = match credentials_file {
-            Some(file) => Some(read_credentials(&resolve(file), &Signal::default())?),
+            Some(file) => Some(read_credentials(&resolve(file)?, &Signal::default())?),
             None => None,
         };
         let session = read_session(legacy)?;

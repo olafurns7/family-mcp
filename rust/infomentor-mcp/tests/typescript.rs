@@ -1,6 +1,7 @@
 //! The TypeScript package's own cases against this binary: tests/ts holds copies of
 //! packages/infomentor-mcp/test suites, changed only to start this binary (tests/ts/rust-*.ts
-//! drop-ins) and marked `Rust:` where they differ. `FAMILY_MCP_BUN` must name a Bun 1.4.2
+//! drop-ins) and marked `Rust:` where they differ, and signals.test.ts, the CLI's signal handling
+//! while TypeScript holds a lock. `FAMILY_MCP_BUN` must name a Bun 1.4.2
 //! executable: these tests fail without it and are never skipped. They need the `test-origin`
 //! feature, without which the binary would talk to InfoMentor itself.
 #![cfg(feature = "test-origin")]
@@ -61,4 +62,9 @@ fn the_integration_cases_pass_against_this_binary() {
 #[test]
 fn the_loopback_case_passes_against_this_binary() {
     bun_test("loopback.test.ts", 1);
+}
+
+#[test]
+fn the_signal_cases_pass_against_this_binary() {
+    bun_test("signals.test.ts", 3);
 }

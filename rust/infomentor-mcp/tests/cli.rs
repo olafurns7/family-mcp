@@ -79,6 +79,8 @@ fn the_test_build_refuses_to_start_without_a_local_upstream() {
         None,
         Some("https://minn.infomentor.is"),
         Some("http://localhost:9"),
+        // The prefix of a local origin, then user info: the host is example.invalid.
+        Some("http://127.0.0.1:1@example.invalid"),
     ] {
         let output = home.run(origin, &["status"]);
         assert!(!output.status.success(), "{origin:?}");
@@ -136,5 +138,51 @@ fn requests_go_through_the_proxy_in_http_proxy() {
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         "InfoMentor returned an error. Try again later.\n"
+    );
+}
+
+#[test]
+fn a_relative_path_without_a_working_directory_fails_safely() {
+    let home = Home::new();
+    let gone = home.0.join("gone");
+    DirBuilder::new().mode(0o700).create(&gone).unwrap();
+
+    // The shell enters `gone` and removes it, so the binary starts without a working directory.
+    let run = |session: &str| {
+        let script = r#"cd "$1" && rmdir "$1" && exec "$2" status --session "$3""#;
+        // The binary's own environment, given to the shell that starts it.
+        let binary = home.command(Some("http://127.0.0.1:9"), &[]);
+        let output = Command::new("/bin/sh")
+            .args(["-c", script, "sh"])
+            .arg(&gone)
+            .arg(binary.get_program())
+            .arg(session)
+            .env_clear()
+            .envs(
+                binary
+                    .get_envs()
+                    .filter_map(|(key, value)| Some((key, value?))),
+            )
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        DirBuilder::new().mode(0o700).create(&gone).unwrap();
+        output
+    };
+
+    // Resolved from `/` it would name /session.json; it fails as `process.cwd()` throws instead.
+    let relative = run("session.json");
+    assert_eq!(relative.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&relative.stderr),
+        "InfoMentor operation failed. Check the network and session-store permissions.\n"
+    );
+
+    // An absolute path needs no working directory, as with `path.resolve`.
+    let absolute = run(home.0.join("session.json").to_str().unwrap());
+    assert_eq!(absolute.status.code(), Some(1));
+    assert!(
+        !String::from_utf8_lossy(&absolute.stderr).contains("operation failed"),
+        "{absolute:?}"
     );
 }
