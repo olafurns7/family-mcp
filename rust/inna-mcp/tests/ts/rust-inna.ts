@@ -5,9 +5,10 @@
 // after each upstream answer. A client's reads are MCP tool calls to one `inna-mcp serve` for the
 // client's life, and its keep-alive is that serve's own, ticked by SIGUSR1 (INNA_TEST_KEEP_ALIVE).
 // An import, a migration and a logout are the binary's `auth` commands, against the same upstream
-// and clock. `checkStore` and `defaultUserId` run only inside the binary's sign-in, and
-// `saveVerifiedSession` and absence previews are not the binary's yet, so those four are still
-// the TypeScript client's: they read and write the store and absence record the binary shares.
+// and clock. `checkStore`, `defaultUserId` and `saveVerifiedSession` have no command of their
+// own (the binary's import and both sign-ins run them), and absence previews are not the binary's
+// yet, so those four are still the TypeScript client's: they read and write the store and
+// absence record the binary shares.
 import { afterEach } from 'bun:test';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
