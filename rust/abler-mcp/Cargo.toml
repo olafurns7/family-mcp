@@ -1,7 +1,7 @@
 [package]
 name = "abler-mcp"
 # Kept equal to packages/abler-mcp/package.json; a test compares them.
-version = "0.7.0"
+version = "0.7.1"
 description = "Unofficial, read-only Abler schedules and messages MCP server"
 edition.workspace = true
 rust-version.workspace = true
@@ -17,11 +17,8 @@ workspace = true
 test-origin = []
 
 [dependencies]
-# Marks inherited descriptors close-on-exec before the browser starts; safe Rust has no other way
-# to name a descriptor it does not own.
-close_fds = "=0.3.2"
+browser-login = { path = "../browser-login" }
 family-store = { path = "../family-store" }
-getrandom = "=0.4.3"
 # Only to recognise a response head too large to read: `Error::is_parse` plus that kind's fixed
 # text, because `Error::is_parse_too_large` needs hyper's `server` feature.
 hyper = { version = "=1.12.0", default-features = false }

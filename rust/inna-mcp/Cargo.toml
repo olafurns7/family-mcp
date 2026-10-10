@@ -1,0 +1,42 @@
+[package]
+name = "inna-mcp"
+# Kept equal to packages/inna-mcp/package.json; a test compares them.
+version = "0.4.0"
+description = "Unofficial Inna school MCP with electronic-ID login, private sessions, and confirmed absence requests"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Test seam only: INNA_TEST_ORIGIN redirects requests for Inna's and the sign-in hosts to a local
+# fake upstream. Off by default, so a release build only ever talks to the real hosts.
+test-origin = []
+
+[dependencies]
+# SHA-256 for the saved credentials' fingerprint, as node:crypto computes it; the same crate and
+# features rustls already builds.
+aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
+browser-login = { path = "../browser-login" }
+family-store = { path = "../family-store" }
+# The WHATWG HTML tokenizer under html.rs's htmlparser2 parser rules; no dependencies without
+# its default `jetscii` feature.
+html5gum = { version = "=0.8.4", default-features = false }
+mcp-runtime = { path = "../mcp-runtime" }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"] }
+# Raw terminal mode for the hidden phone prompt (`termios` only adds rustix's own module).
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "termios"] }
+rmcp = { version = "=3.5.1", default-features = false, features = ["server", "transport-io"] }
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+tokio = { version = "=1.53.2", features = ["rt", "io-std", "macros", "signal", "sync", "time"] }
+# WHATWG URL parsing, as JavaScript's URL; already in the lock through reqwest.
+url = "=2.5.8"
+
+[dev-dependencies]
+# Its unit tests open scratch stores in their own process, with the store test seam on.
+family-store = { path = "../family-store", features = ["test-seam"] }
+# A pseudo-terminal for the hidden-prompt test.
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "pty", "termios"] }

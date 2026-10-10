@@ -13,7 +13,7 @@
 //! examples/stdio.rs follow this pattern; tests/signals.rs checks it.
 //!
 //! ```no_run
-//! use mcp_runtime::{Fail, Server, Surface};
+//! use mcp_runtime::{Cancelled, Fail, Server, Surface};
 //! use rmcp::model::JsonObject;
 //! use serde_json::{Value, json};
 //!
@@ -30,7 +30,12 @@
 //!         &self.0
 //!     }
 //!
-//!     async fn call(&self, _name: &str, arguments: &JsonObject) -> Result<Result<Value, Fail>, String> {
+//!     async fn call(
+//!         &self,
+//!         _name: &str,
+//!         arguments: &JsonObject,
+//!         _cancelled: Cancelled,
+//!     ) -> Result<Result<Value, Fail>, String> {
 //!         mcp_runtime::input::empty(arguments)?;
 //!         Ok(Ok(json!({ "ok": true })))
 //!     }
@@ -58,5 +63,7 @@ mod stdio;
 
 pub use body::{BodyError, read_capped};
 pub use fail::{Fail, Failure, UNKNOWN_ERROR, ZOD_ERROR, cli_text, tool_text};
-pub use server::{Handler, Server, Surface, invalid_arguments, tool_result, unknown_tool};
+pub use server::{
+    Cancelled, Handler, Server, Surface, invalid_arguments, tool_result, unknown_tool,
+};
 pub use stdio::serve_stdio;
