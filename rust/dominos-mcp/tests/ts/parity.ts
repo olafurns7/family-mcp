@@ -195,6 +195,7 @@ try {
       { quoteId: '00000000-0000-0000-0000-000000000000', expectedTotal: 1_000_001 },
     ],
     ['get_checkout', { checkoutId: 42, extra: 1 }],
+    ['get_checkout', { checkoutId: 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF' }],
     ['pay_saved_card', {}],
     [
       'pay_saved_card',

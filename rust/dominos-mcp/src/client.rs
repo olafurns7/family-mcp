@@ -84,7 +84,7 @@ impl Client {
                 .await
                 .map_err(|_| Fail::Safe(REQUEST_FAILED))?;
             // Bun's redirect:'error' refuses a redirect before looking at its body.
-            if response.status().is_redirection() {
+            if [301, 302, 303, 307, 308].contains(&response.status().as_u16()) {
                 return Err(Fail::Safe(REQUEST_FAILED));
             }
             if !response.status().is_success() {

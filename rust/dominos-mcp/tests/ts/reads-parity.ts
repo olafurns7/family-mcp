@@ -75,6 +75,8 @@ export async function readParity() {
     assert.deepEqual(calls[1], calls[0]);
     for (const mode of [
       'http',
+      'not-modified',
+      'refresh-not-modified',
       'transport',
       'json',
       'schema',
@@ -84,7 +86,17 @@ export async function readParity() {
       'menu-incomplete',
       'menu-invalid',
     ]) {
-      const request = async () => {
+      const refresh = mode === 'refresh-not-modified';
+      const current = refresh ? await setup(true) : fixture;
+      const tokenPaths: string[] = [];
+      const request = async (url: string) => {
+        if (refresh) {
+          const path = new URL(url).pathname;
+          tokenPaths.push(path);
+          assert.equal(path, '/api/token');
+          return new Response(null, { status: 304 });
+        }
+        if (mode === 'not-modified') return new Response(null, { status: 304 });
         if (mode === 'http') return new Response('secret-error-body', { status: 429 });
         if (mode === 'transport') throw new Error('secret-transport-cause');
         if (mode === 'json') return new Response('secret-invalid-json');
@@ -111,26 +123,42 @@ export async function readParity() {
         return fetch(`${fake.origin}${prefix}${parsed.pathname}${parsed.search}`, options);
       };
       const clients = [
-        new Reference(fixture.path, referenceRequest),
-        new Rust(fixture.path, request),
+        new Reference(current.path, referenceRequest),
+        new Rust(current.path, request),
       ];
       try {
         const results = [];
         for (const client of clients) {
           try {
             results.push(
-              await (mode.startsWith('menu-') ? client.searchMenu({}) : client.stores()),
+              await (refresh
+                ? client.status()
+                : mode.startsWith('menu-')
+                  ? client.searchMenu({})
+                  : client.stores()),
             );
           } catch (error) {
             results.push((error as Error).message);
           }
         }
         assert.deepEqual(results[1], results[0], mode);
+        if (refresh || mode === 'not-modified')
+          assert.equal(
+            results[0],
+            refresh
+              ? 'Domino’s rejected the sign-in code or refresh token. Sign in again.'
+              : 'Domino’s or its payment provider rejected the request. No automatic retry was made.',
+          );
+        if (refresh) assert.deepEqual(tokenPaths, ['/api/token', '/api/token']);
         assert.ok(!JSON.stringify(results).includes('secret-'));
         count++;
       } finally {
         await Promise.all(clients.map((client) => client.close()));
         await fake.close();
+        if (refresh) {
+          await current.client.close();
+          await current.home.cleanup();
+        }
       }
     }
   } finally {

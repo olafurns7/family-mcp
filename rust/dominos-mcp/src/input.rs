@@ -138,7 +138,7 @@ pub fn uuid(text: &str) -> bool {
         })
         && ((b'1'..=b'8').contains(&bytes[14]) && b"89aAbB".contains(&bytes[19])
             || text == "00000000-0000-0000-0000-000000000000"
-            || text.eq_ignore_ascii_case("ffffffff-ffff-ffff-ffff-ffffffffffff"))
+            || text == "ffffffff-ffff-ffff-ffff-ffffffffffff")
 }
 fn local_id(p: &mut Parse, value: Option<&Value>) -> Option<String> {
     let text = p.string(value, (0, usize::MAX));
