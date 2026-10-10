@@ -13,7 +13,7 @@ use crate::client::Client;
 use crate::error::{Fail, Result};
 use crate::input;
 use crate::keep_alive::{INTERVAL, KeepAlive};
-use crate::signal::Signal;
+use crate::signal::Controller;
 
 /// The tools `createServer` registers only with `allowAbsenceWrites`.
 const WRITE_TOOLS: [&str; 2] = ["inna_prepare_absence", "inna_submit_absence"];
@@ -40,6 +40,9 @@ fn surface(allow_absence_writes: bool) -> &'static Surface {
 pub struct Inna {
     client: Arc<Client>,
     keep_alive: Option<KeepAlive>,
+    /// Aborts every call in flight once the server closes, as the TypeScript SDK's close aborts
+    /// each handler's signal.
+    closing: Controller,
 }
 
 impl Inna {
@@ -65,7 +68,11 @@ impl Inna {
         if let Some(keep_alive) = &keep_alive {
             test_ticks(keep_alive);
         }
-        Self { client, keep_alive }
+        Self {
+            client,
+            keep_alive,
+            closing: Controller::default(),
+        }
     }
 
     fn stop_keep_alive(&self) {
@@ -112,16 +119,22 @@ impl Server for Inna {
         surface(self.client.allow_absence_writes)
     }
 
-    // The runtime passes no per-request cancellation; a call runs to its end, as the TypeScript
-    // tool callbacks do once started.
+    /// Each call's signal is TypeScript's `ctx.mcpReq.signal`: it aborts when the host cancels the
+    /// call or the server closes, which stops the lock wait, every request and a write in flight.
     async fn call(
         &self,
         name: &str,
         arguments: &JsonObject,
-        _cancelled: Cancelled,
+        cancelled: Cancelled,
     ) -> std::result::Result<Result<Value>, String> {
         let client = &self.client;
-        let signal = Signal::default();
+        // The task owns the controller: a dropped one would never abort the signal.
+        let host = Controller::default();
+        let signal = host.signal().any(&self.closing.signal());
+        tokio::spawn(async move {
+            cancelled.await;
+            host.abort();
+        });
 
         Ok(match name {
             "inna_session_status" => {
@@ -237,15 +250,19 @@ impl Server for Inna {
         })
     }
 
-    /// TypeScript closes on stdin's end, which stops the keep-alive.
+    /// TypeScript closes on stdin's end: the keep-alive stops and calls in flight are aborted at
+    /// once. rmcp would cancel them only after waiting up to 5 s for their answers.
     fn stdin_ended(&self) {
         self.stop_keep_alive();
+        self.closing.abort();
     }
 
-    /// The keep-alive stops and its tick in flight is aborted; requests in flight run to their
-    /// end and write back their cookies, as the TypeScript process stays alive for them.
+    /// On SIGINT or SIGTERM, or after stdin's end: the keep-alive stops and its tick in flight is
+    /// aborted, calls in flight are aborted, and each writes back its cookies before the process
+    /// exits, as the TypeScript process stays alive for them.
     async fn close(&self) {
         self.stop_keep_alive();
+        self.closing.abort();
         self.client.idle().await;
     }
 }

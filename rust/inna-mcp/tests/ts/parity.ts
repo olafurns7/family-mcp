@@ -41,6 +41,10 @@ type Step =
   | { upstream: Partial<State> }
   | { clock: number }
   | { serve: [string, unknown][]; args?: string[]; surface?: boolean; swap?: boolean }
+  // One call, cancelled once Inna has seen a request to `when`: by the host
+  // (`notifications/cancelled`), by the end of the server's stdin, or by a signal to it. `writes`:
+  // the absence writes Inna must have received by the end of the step.
+  | { cancel: [string, unknown]; by: 'host' | 'stdin' | 'SIGINT' | 'SIGTERM'; when: string; writes: number; args?: string[] }
   | { file: string; text: string; permissions?: number }
   | { directory: string; permissions: number };
 
@@ -515,6 +519,84 @@ const scenarios: Scenario[] = [
     ],
   },
   {
+    // The host cancels a submit while its overlap check waits on Inna: nothing is sent, and the
+    // preview stays prepared.
+    name: 'absence-cancel-submit',
+    steps: [
+      { seed: true },
+      { upstream: clear() },
+      { serve: [['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+      { upstream: { delays: { '/api/RegisterAbsence/GetLeaves': 1500 } } },
+      { cancel: submit(), by: 'host', when: '/api/RegisterAbsence/GetLeaves', writes: 0, args: WRITES },
+      { upstream: { delays: {} } },
+      { serve: [['inna_absence_status', {}]], args: WRITES },
+    ],
+  },
+  {
+    // The host cancels a prepare while its history read waits on Inna: no preview is written.
+    name: 'absence-cancel-prepare',
+    steps: [
+      { seed: true },
+      { upstream: { ...clear(), delays: { '/api/RegisterAbsence/GetLeaves': 1500 } } },
+      { cancel: ['inna_prepare_absence', sick('2040-01-02')], by: 'host', when: '/api/RegisterAbsence/GetLeaves', writes: 0, args: WRITES },
+      { upstream: { delays: {} } },
+      { serve: [['inna_absence_status', {}]], args: WRITES },
+    ],
+  },
+  {
+    // The host cancels a submit while Inna holds its write: the outcome is unknown.
+    name: 'absence-cancel-post',
+    steps: [
+      { seed: true },
+      { upstream: clear() },
+      { serve: [['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+      { upstream: { delays: { '/api/RegisterAbsence/AddNewLeave': 1500 } } },
+      { cancel: submit(), by: 'host', when: '/api/RegisterAbsence/AddNewLeave', writes: 1, args: WRITES },
+      { upstream: { delays: {} } },
+      { serve: [['inna_absence_status', {}], submit()], args: WRITES },
+    ],
+  },
+  {
+    // The server's stdin ends while a submit's overlap check waits on Inna: the call is aborted at
+    // once, so nothing is sent.
+    name: 'absence-close-submit',
+    steps: [
+      { seed: true },
+      { upstream: clear() },
+      { serve: [['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+      { upstream: { delays: { '/api/RegisterAbsence/GetLeaves': 1500 } } },
+      { cancel: submit(), by: 'stdin', when: '/api/RegisterAbsence/GetLeaves', writes: 0, args: WRITES },
+      { upstream: { delays: {} } },
+      { serve: [['inna_absence_status', {}]], args: WRITES },
+    ],
+  },
+  {
+    // SIGINT while a submit's overlap check waits on Inna: nothing is sent.
+    name: 'absence-sigint-submit',
+    steps: [
+      { seed: true },
+      { upstream: clear() },
+      { serve: [['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+      { upstream: { delays: { '/api/RegisterAbsence/GetLeaves': 1500 } } },
+      { cancel: submit(), by: 'SIGINT', when: '/api/RegisterAbsence/GetLeaves', writes: 0, args: WRITES },
+      { upstream: { delays: {} } },
+      { serve: [['inna_absence_status', {}]], args: WRITES },
+    ],
+  },
+  {
+    // SIGTERM while a submit's overlap check waits on Inna: nothing is sent.
+    name: 'absence-sigterm-submit',
+    steps: [
+      { seed: true },
+      { upstream: clear() },
+      { serve: [['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+      { upstream: { delays: { '/api/RegisterAbsence/GetLeaves': 1500 } } },
+      { cancel: submit(), by: 'SIGTERM', when: '/api/RegisterAbsence/GetLeaves', writes: 0, args: WRITES },
+      { upstream: { delays: {} } },
+      { serve: [['inna_absence_status', {}]], args: WRITES },
+    ],
+  },
+  {
     // A store that passes the startup check but holds a damaged record or marker: `auth login`
     // refuses it before it asks for the phone number.
     name: 'login-store-unusable',
@@ -638,6 +720,75 @@ async function runServe(
   return results;
 }
 
+/** Resolves once the fake has seen a request to `path` after the first `from` requests. */
+async function seenPath(path: string, from: number): Promise<void> {
+  const deadline = Date.now() + 20_000;
+
+  while (!current.seen.slice(from).some((request) => new URL(request.url).pathname === path)) {
+    if (Date.now() > deadline) throw new Error(`Inna never saw ${path}`);
+
+    await Bun.sleep(10);
+  }
+}
+
+/** A call cancelled while Inna holds the request to `when`; then long enough for that request to
+ * answer and anything sent after it to arrive. The host's cancel gives the client's error; the
+ * others how the server exited (stdout is not compared: whether a cancelled call still answers
+ * is the protocol's business). */
+async function runCancel(
+  side: 'ts' | 'rust',
+  home: string,
+  env: Record<string, string>,
+  step: { cancel: [string, unknown]; by: 'host' | 'stdin' | 'SIGINT' | 'SIGTERM'; when: string; writes: number; args?: string[] },
+) {
+  const [executable, ...args] = command(side, ['serve', ...(step.args ?? [])]);
+  const settle = (current.state.delays[step.when] ?? 0) + 1000;
+  const from = current.seen.length;
+  const [name, input] = step.cancel;
+
+  if (step.by === 'host') {
+    const transport = new StdioClientTransport({ command: executable!, args, cwd: home, env: environment(home, env), stderr: 'pipe' });
+    const client = new Client({ name: 'inna-parity', version: '1.0.0' });
+    await client.connect(transport);
+    const controller = new AbortController();
+    const call = client.callTool({ name, arguments: placed(input) }, { signal: controller.signal });
+    await seenPath(step.when, from);
+    controller.abort();
+    const outcome = await call.then(
+      (result) => ({ result: hiddenOperation(result) }),
+      (error: unknown) => ({ rejected: error instanceof Error ? error.name : String(error) }),
+    );
+    await Bun.sleep(settle);
+    await client.close();
+
+    return outcome;
+  }
+
+  const child = Bun.spawn([executable!, ...args], { cwd: home, env: environment(home, env), stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
+  const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  const frames = [
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'inna-parity', version: '1.0.0' } } },
+    { jsonrpc: '2.0', method: 'notifications/initialized' },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: placed(input) } },
+  ];
+  child.stdin.write(frames.map((frame) => `${JSON.stringify(frame)}\n`).join(''));
+  child.stdin.flush();
+  await seenPath(step.when, from);
+
+  if (step.by === 'stdin') child.stdin.end();
+  else child.kill(step.by);
+
+  const exited = await Promise.race([child.exited, Bun.sleep(settle + 5000).then(() => 'running' as const)]);
+
+  if (exited === 'running') child.kill('SIGKILL');
+  else await Bun.sleep(settle);
+
+  if (step.by !== 'stdin') child.stdin.end();
+  await output;
+
+  return { exited, signal: child.signalCode };
+}
+
 /** Every file and folder under the home with its permissions; contents stay unread. */
 function files(home: string, directory = home): unknown[] {
   return readdirSync(directory)
@@ -684,6 +835,12 @@ async function run(side: 'ts' | 'rust', scenario: Scenario) {
     else if ('upstream' in step) Object.assign(current.state, step.upstream);
     else if ('clock' in step) writeFileSync(clock, String(step.clock));
     else if ('serve' in step) steps.push(await runServe(side, home, env, step));
+    else if ('cancel' in step) {
+      steps.push(await runCancel(side, home, env, step));
+      const writes = current.seen.filter((request) => request.url.endsWith('/api/RegisterAbsence/AddNewLeave')).length;
+
+      if (writes !== step.writes) failures.push(`${scenario.name} (${side}): ${writes} absence writes, not ${step.writes}`);
+    }
     else if ('directory' in step) chmodSync(join(home, step.directory), step.permissions);
     else write(home, step);
   }
@@ -737,7 +894,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-if (!only && (coverage.cli < 144 || coverage.tools < 44 || coverage.results < 108 || coverage.requests < 499))
+if (!only && (coverage.cli < 150 || coverage.tools < 44 || coverage.results < 119 || coverage.requests < 558))
   failures.push(`coverage too low: ${JSON.stringify(coverage)}`);
 
 if (failures.length) {

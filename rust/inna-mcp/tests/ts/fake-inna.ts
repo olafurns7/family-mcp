@@ -15,6 +15,8 @@ export type State = {
   switchLocation: string;
   /** Failures by path, used in place of the answer. */
   planted: Record<string, Planted>;
+  /** Milliseconds by path to wait, once the request is recorded, before answering it. */
+  delays: Record<string, number>;
   rotations: number;
 };
 
@@ -24,6 +26,7 @@ export const fresh = (): State => ({
   ignoreSwitch: false,
   switchLocation: 'http://nam.inna.is/Components/Students/Students.html',
   planted: {},
+  delays: {},
   rotations: 0,
 });
 
@@ -339,6 +342,9 @@ export async function startFake(current: () => { state: State; seen: Seen[] }) {
       response.end(body);
     };
     const planted = state.planted[url.pathname];
+    const delay = state.delays[url.pathname];
+
+    if (delay) await Bun.sleep(delay);
 
     if (host !== 'nam.inna.is') return send(404, '');
 
