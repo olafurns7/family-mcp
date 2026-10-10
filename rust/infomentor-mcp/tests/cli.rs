@@ -1,9 +1,11 @@
-//! Behavior parity.rs cannot compare with the TypeScript package: the version, and the test
-//! build's refusal of a non-local upstream.
+//! Behavior parity.rs cannot compare with the TypeScript package: the version, the test build's
+//! refusal of a non-local upstream, and the proxy variables Bun's fetch honours.
 #![cfg(feature = "test-origin")]
 
 use std::fs::{self, DirBuilder};
-use std::os::unix::fs::DirBuilderExt;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -88,4 +90,51 @@ fn the_test_build_refuses_to_start_without_a_local_upstream() {
     }
     // Nothing was created: the refusal comes before the store is touched.
     assert_eq!(fs::read_dir(&home.0).unwrap().count(), 0);
+}
+
+#[test]
+fn requests_go_through_the_proxy_in_http_proxy() {
+    let home = Home::new();
+    let session = home.0.join("session.json");
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&session)
+        .unwrap()
+        .write_all(br#"{"version":2,"savedAt":"2026-09-01T00:00:00.000Z","cookies":[{"key":"IMHome","value":"synthetic","domain":"minn.infomentor.is","path":"/","secure":true,"httpOnly":true,"hostOnly":true,"creation":"2026-09-01T00:00:00.000Z","lastAccessed":"2026-09-01T00:00:00.000Z"}]}"#)
+        .unwrap();
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = proxy.local_addr().unwrap();
+    let seen = std::thread::spawn(move || {
+        let (stream, _) = proxy.accept().unwrap();
+        let mut request = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        request.read_line(&mut line).unwrap();
+        (&stream)
+            .write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        line
+    });
+    // The test origin is a closed port: only the proxy can answer.
+    let output = home
+        .command(
+            Some("http://127.0.0.1:9"),
+            &["status", "--session", "session.json"],
+        )
+        .current_dir(&home.0)
+        .env("HTTP_PROXY", format!("http://{address}"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        seen.join().unwrap(),
+        "GET http://127.0.0.1:9/minn.infomentor.is/ HTTP/1.1\r\n"
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "InfoMentor returned an error. Try again later.\n"
+    );
 }

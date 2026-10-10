@@ -1,14 +1,30 @@
 //! infomentor-mcp: the command line of packages/infomentor-mcp/src/cli.ts.
 
+mod client;
+mod collection;
 mod error;
+mod html;
+mod http;
+mod input;
+mod jar;
 mod js;
 mod server;
+mod session;
+mod shapes;
+mod signal;
 mod store;
 mod upstream;
 
+use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::task::JoinHandle;
+
+use crate::client::{Client, Options};
 use crate::error::{Fail, Result};
+use crate::signal::{Controller, Signal};
 
 const HELP: &str = "Usage: infomentor-mcp [auth] [command] [options]
 
@@ -49,7 +65,7 @@ in ~/.local/share/family-mcp/keys on Linux.";
 const FAILED: &str =
     "InfoMentor operation failed. Check the network and session-store permissions.";
 
-const NOT_YET: Fail = Fail::Safe("This InfoMentor command is not available in this build yet.");
+const NOT_YET: Fail = Fail::config("This InfoMentor command is not available in this build yet.");
 
 #[derive(Default)]
 struct Args {
@@ -126,7 +142,7 @@ fn parse_timeout(value: Option<&str>) -> Result<f64> {
     let seconds = js::number(value.unwrap_or("300"));
 
     if seconds.fract() != 0.0 || !(1.0..=3600.0).contains(&seconds) {
-        return Err(Fail::Safe(
+        return Err(Fail::config(
             "Timeout must be between 0 and 3600 seconds, excluding 0.",
         ));
     }
@@ -138,11 +154,73 @@ fn given(value: &Option<String>) -> bool {
     value.as_deref().is_some_and(|value| !value.is_empty())
 }
 
+/// The client options of `--session` and `--credentials`, resolved as `path.resolve` does.
+fn options(args: &Args) -> Options {
+    let resolved = |value: &Option<String>| {
+        value
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(|value| store::resolve(Path::new(value)))
+    };
+    Options {
+        session_file: resolved(&args.session),
+        credentials_file: resolved(&args.credentials),
+        keys: None,
+    }
+}
+
 /// Serve until stdin ends or SIGINT or SIGTERM arrives, then cancel and wait for operations.
-async fn serve(allow_setup_tools: bool) -> Result<()> {
-    mcp_runtime::serve_stdio(server::InfoMentor::new(allow_setup_tools))
+async fn serve(allow_setup_tools: bool, options: Options) -> Result<()> {
+    let client = Client::new(options).ok_or(Fail::Unknown)?;
+    mcp_runtime::serve_stdio(server::InfoMentor::new(allow_setup_tools, client))
         .await
         .map_err(|_| Fail::Unknown)
+}
+
+/// A signal that SIGINT or SIGTERM aborts, so a command ends as cancelled instead of being killed.
+/// Aborting the returned task stops listening.
+fn cancel_on_signals() -> Result<(Signal, JoinHandle<()>)> {
+    let controller = Controller::default();
+    let signal = controller.signal();
+    let mut terminate = self::signal(SignalKind::terminate()).map_err(|_| Fail::Unknown)?;
+    let listener = tokio::spawn(async move {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+        controller.abort();
+    });
+    Ok((signal, listener))
+}
+
+/// `status`: verify the saved session; a missing or expired one exits 1 with the next step.
+async fn status(options: Options) -> Result<ExitCode> {
+    let (signal, listener) = cancel_on_signals()?;
+    let client = Arc::new(Client::new(options).ok_or(Fail::Unknown)?);
+    let status = client.session_status(signal).await;
+    client.close().await;
+    listener.abort();
+    let status = status?;
+
+    match status["authenticated"].as_bool() {
+        Some(true) => {
+            let storage = status["storage"].as_str().unwrap_or_default();
+            eprintln!(
+                "{}",
+                format!("InfoMentor session is active. {storage}").trim()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        _ => {
+            eprintln!(
+                "{}",
+                status["nextStep"]
+                    .as_str()
+                    .unwrap_or("Sign in with infomentor_login.")
+            );
+            Ok(ExitCode::FAILURE)
+        }
+    }
 }
 
 /// The session commands. Blocks.
@@ -155,8 +233,8 @@ fn command(command: &str, args: &Args) -> Result<()> {
             parse_timeout(args.timeout.as_deref())?;
             Err(NOT_YET)
         }
-        "migrate" | "status" | "logout" => Err(NOT_YET),
-        _ => Err(Fail::Safe("Unknown command. Run infomentor-mcp --help.")),
+        "migrate" | "logout" => Err(NOT_YET),
+        _ => Err(Fail::config("Unknown command. Run infomentor-mcp --help.")),
     }
 }
 
@@ -170,7 +248,7 @@ async fn main_async() -> Result<ExitCode> {
         let local_form = raw
             .iter()
             .any(|arg| arg == "--local-form" || arg.starts_with("--local-form="));
-        return Err(Fail::Safe(match local_form {
+        return Err(Fail::config(match local_form {
             true => {
                 "--local-form has been removed. Use --credentials with a private JSON file or privately inject INFOMENTOR_USERNAME and INFOMENTOR_PASSWORD."
             }
@@ -208,7 +286,7 @@ async fn main_async() -> Result<ExitCode> {
     let words = &args.positionals[usize::from(auth)..];
 
     if words.len() > 1 || (auth && words.is_empty()) {
-        return Err(Fail::Safe(
+        return Err(Fail::config(
             "Unexpected arguments. Run infomentor-mcp --help.",
         ));
     }
@@ -216,21 +294,25 @@ async fn main_async() -> Result<ExitCode> {
 
     if name != "login" && (given(&args.import) || given(&args.timeout) || args.allow_account_change)
     {
-        return Err(Fail::Safe("Login options only apply to login."));
+        return Err(Fail::config("Login options only apply to login."));
     }
 
     if name != "serve" && args.allow_setup_tools {
-        return Err(Fail::Safe("Server options only apply to serve."));
+        return Err(Fail::config("Server options only apply to serve."));
     }
 
     if given(&args.import) && given(&args.credentials) {
-        return Err(Fail::Safe("Choose session import or login, not both."));
+        return Err(Fail::config("Choose session import or login, not both."));
     }
 
     if name == "serve" {
-        return serve(args.allow_setup_tools)
+        return serve(args.allow_setup_tools, options(&args))
             .await
             .map(|()| ExitCode::SUCCESS);
+    }
+
+    if name == "status" {
+        return status(options(&args)).await;
     }
     tokio::task::spawn_blocking(move || command(&name, &args))
         .await
@@ -257,7 +339,13 @@ fn main() -> ExitCode {
         Err(fail) => {
             // Only reviewed diagnostics cross the terminal boundary; library messages may hold secrets.
             eprintln!("{}", mcp_runtime::cli_text(fail, FAILED));
-            ExitCode::FAILURE
+            #[cfg(feature = "test-origin")]
+            error::record(fail);
+
+            match fail.is(error::Code::Cancelled) {
+                true => ExitCode::from(130),
+                false => ExitCode::FAILURE,
+            }
         }
     }
 }

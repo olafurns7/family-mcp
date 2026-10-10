@@ -2,11 +2,16 @@
 //! server's advertised tools (src/surface.json, generated with the setup tools and checked by a
 //! test), so names, descriptions, schemas and annotations match exactly.
 
+use std::sync::Arc;
+
 use mcp_runtime::{Server, Surface};
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
+use crate::client::Client;
 use crate::error::{Fail, Result};
+use crate::input;
+use crate::signal::Signal;
 
 /// The tools registered only with `--allow-setup-tools`: a prompt-injected agent must not be able
 /// to log the parent out or replace the account.
@@ -31,12 +36,14 @@ fn surface(allow_setup_tools: bool) -> Surface {
 
 pub struct InfoMentor {
     surface: Surface,
+    client: Arc<Client>,
 }
 
 impl InfoMentor {
-    pub fn new(allow_setup_tools: bool) -> Self {
+    pub fn new(allow_setup_tools: bool, client: Client) -> Self {
         Self {
             surface: surface(allow_setup_tools),
+            client: Arc::new(client),
         }
     }
 }
@@ -52,14 +59,56 @@ impl Server for InfoMentor {
         &self.surface
     }
 
+    // The runtime passes no per-request cancellation; a call ends with the client's lifetime.
     async fn call(
         &self,
-        _name: &str,
-        _arguments: &JsonObject,
+        name: &str,
+        arguments: &JsonObject,
     ) -> std::result::Result<Result<Value>, String> {
-        Ok(Err(Fail::Safe(
-            "This InfoMentor tool is not available in this build yet.",
-        )))
+        let client = &self.client;
+        let signal = Signal::default();
+
+        Ok(match name {
+            "infomentor_session_status" => {
+                input::empty(arguments)?;
+                client.session_status(signal).await
+            }
+            "infomentor_get_overview" => {
+                input::empty(arguments)?;
+                client.overview(signal).await
+            }
+            "infomentor_select_child" => {
+                let child_id = input::select_child(arguments)?;
+                client.select_child(child_id, signal).await
+            }
+            "infomentor_get_messages" => {
+                let request = input::messages(arguments)?;
+                client.messages(request, signal).await
+            }
+            "infomentor_get_message" => {
+                let id = input::message(arguments)?;
+                client.message(id, signal).await
+            }
+            "infomentor_get_notifications" => {
+                let request = input::notifications(arguments)?;
+                client.notifications(request, signal).await
+            }
+            "infomentor_collect_updates" => {
+                let request = input::collect(arguments)?;
+                client.collect(request, signal).await
+            }
+            _ => Err(Fail::config(
+                "This InfoMentor tool is not available in this build yet.",
+            )),
+        })
+    }
+
+    fn stdin_ended(&self) {
+        self.client.abort();
+    }
+
+    async fn close(&self) {
+        self.client.close().await;
     }
 }
 

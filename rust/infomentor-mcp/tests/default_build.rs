@@ -12,7 +12,7 @@ fn mentions(binary: &Path, variable: &[u8]) -> bool {
         .any(|window| window == variable)
 }
 
-const VARIABLES: [&[u8]; 1] = [b"INFOMENTOR_TEST_ORIGIN"];
+const VARIABLES: [&[u8]; 2] = [b"INFOMENTOR_TEST_ORIGIN", b"INFOMENTOR_TEST_FAILURES"];
 
 #[test]
 fn the_default_build_ignores_the_test_variables() {

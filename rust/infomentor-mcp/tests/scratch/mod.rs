@@ -21,6 +21,11 @@ impl Scratch {
             .env("XDG_CONFIG_HOME", self.0.join("config"))
             .env("XDG_DATA_HOME", self.0.join("data"))
             .env("TMPDIR", &self.0);
+
+        // A developer's proxy must not carry loopback traffic to the fake upstreams.
+        for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] {
+            command.env_remove(name).env_remove(name.to_lowercase());
+        }
     }
 }
 
