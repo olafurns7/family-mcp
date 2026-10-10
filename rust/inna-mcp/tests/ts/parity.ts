@@ -453,6 +453,68 @@ const scenarios: Scenario[] = [
     ],
   },
   {
+    // Both refinements failing, alone and with field, key and length issues; the reason limit
+    // counts code points.
+    name: 'absence-refinements',
+    steps: [
+      {
+        serve: [
+          ['inna_prepare_absence', sick('2040-01-03', { dateTo: '2040-01-02' })],
+          ['inna_prepare_absence', sick('2040-01-03', { dateTo: '2040-01-02', reason: ' ' })],
+          ['inna_prepare_absence', sick('2040-01-03', { dateTo: '2040-01-02', q: 1 })],
+          ['inna_prepare_absence', sick('2040-01-03', { dateTo: '2040-01-02', studentKey: '5x' })],
+          ['inna_prepare_absence', leave('2040-01-03', '2040-01-02', { reason: 'x'.repeat(2001) })],
+          ['inna_prepare_absence', sick('2040-01-03', { dateTo: '2040-01-02', reason: String.fromCodePoint(0x1f600).repeat(2000) })],
+          ['inna_prepare_absence', sick('2040-01-03', { dateTo: '2040-01-02', reason: String.fromCodePoint(0x1f600).repeat(2001) })],
+        ],
+        args: WRITES,
+      },
+    ],
+  },
+  {
+    // A 429 on the write: the outcome is unknown, the pause is saved and honoured without a
+    // request, and the write is never sent again.
+    name: 'absence-429-post',
+    steps: [
+      { seed: true },
+      { upstream: clear({ status: 429, headers: { 'retry-after': '120' }, body: '' }) },
+      { serve: [['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+      { serve: [submit(), ['inna_absence_status', {}], submit(), ['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+      { clock: NOW + 120_001 },
+      { upstream: clear() },
+      { serve: [['inna_absence_status', {}], submit(), ['inna_prepare_absence', sick('2040-01-02')]], args: WRITES },
+    ],
+  },
+  {
+    // A 429 on prepare's history read writes no preview, and the pause holds until it ends.
+    name: 'absence-429-prepare',
+    steps: [
+      { seed: true },
+      { upstream: { planted: { ...clear().planted, '/api/RegisterAbsence/GetLeaves': { status: 429, headers: { 'retry-after': '120' }, body: '' } } } },
+      { serve: [['inna_prepare_absence', leave('2040-02-01', '2040-02-02')]], args: WRITES },
+      { upstream: clear() },
+      { serve: [['inna_prepare_absence', leave('2040-02-01', '2040-02-02')], ['inna_absence_status', {}]], args: WRITES },
+      { clock: NOW + 120_001 },
+      { serve: [['inna_prepare_absence', leave('2040-02-01', '2040-02-02')]], args: WRITES },
+    ],
+  },
+  {
+    // A 429 on submit's re-check sends no write and keeps the preview, which is submitted once the
+    // pause ends.
+    name: 'absence-429-submit-checks',
+    steps: [
+      { seed: true },
+      { upstream: clear() },
+      { serve: [['inna_prepare_absence', leave('2040-02-01', '2040-02-02')]], args: WRITES },
+      { upstream: { planted: { ...clear().planted, '/api/RegisterAbsence/GetLeaves': { status: 429, headers: { 'retry-after': '60' }, body: '' } } } },
+      { serve: [submit()], args: WRITES },
+      { upstream: clear() },
+      { serve: [submit()], args: WRITES },
+      { clock: NOW + 60_001 },
+      { serve: [submit(), ['inna_absence_status', {}]], args: WRITES },
+    ],
+  },
+  {
     // A store that passes the startup check but holds a damaged record or marker: `auth login`
     // refuses it before it asks for the phone number.
     name: 'login-store-unusable',
@@ -675,7 +737,7 @@ try {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-if (!only && (coverage.cli < 137 || coverage.tools < 44 || coverage.results < 102 || coverage.requests < 463))
+if (!only && (coverage.cli < 144 || coverage.tools < 44 || coverage.results < 108 || coverage.requests < 499))
   failures.push(`coverage too low: ${JSON.stringify(coverage)}`);
 
 if (failures.length) {
