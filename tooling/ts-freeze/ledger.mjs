@@ -11,8 +11,15 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const root = process.cwd();
+
 const LEDGER = 'docs/analysis/ts-retire-ledger.md';
 
+/** @typedef {{ suite: string, site: string, name: string, variants: string[] }} Case */
+
+/**
+ * @param {string} directory
+ * @returns {string[]}
+ */
 function walk(directory) {
   return readdirSync(join(root, directory), { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
@@ -23,18 +30,26 @@ function walk(directory) {
   });
 }
 
-const packages = readdirSync(join(root, 'packages')).sort();
+const packages = readdirSync(join(root, 'packages')).toSorted();
+
 const crates = readdirSync(join(root, 'rust'), { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && entry.name !== 'target')
   .map((entry) => entry.name)
-  .sort();
+  .toSorted();
 
 const STRING = /^\s*(?:'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`|"((?:[^"\\]|\\.)*)")/;
+
 const TEST =
   /^(\s*)(?:\((process\.platform [^?]+)\? test : \(\) => undefined\)|test|it)((?:\.[A-Za-z]+(?:\([^)]*\))?)*)\(/;
+
 const GUARD = /^if \((process\.platform [^)]+)\)$/;
 
-/** The test() sites of a Bun test file, with the first argument as the name. */
+/**
+ * The test() sites of a Bun test file, with the first argument as the name.
+ * @param {string} suite
+ * @param {string} file
+ * @returns {Case[]}
+ */
 function bunCases(suite, file) {
   const lines = readFileSync(join(root, file), 'utf8').split('\n');
 
@@ -45,26 +60,36 @@ function bunCases(suite, file) {
     let rest = line.slice(match[0].length);
     let next = index + 1;
 
-    while (!rest.trim() && next < lines.length) rest = lines[next++];
+    while (!rest.trim() && next < lines.length) rest = lines[next++] ?? '';
     const name = STRING.exec(rest);
     assert.ok(name, `${file}:${index + 1}: no literal test name`);
+    /** @type {string[]} */
     const variants = [];
     const guard = GUARD.exec(lines[index - 1] ?? '');
 
     if (match[2]) variants.push(`only if ${match[2].trim()}`);
     else if (guard) variants.push(`only if ${guard[1]}`);
 
-    if (match[3].includes('skipIf')) variants.push(`skipIf${match[3].replace(/^\.skipIf/, '')}`);
-    else if (match[3]) variants.push(match[3].slice(1));
+    const modifier = match[3] ?? '';
+
+    if (modifier.includes('skipIf')) variants.push(`skipIf${modifier.replace(/^\.skipIf/, '')}`);
+    else if (modifier) variants.push(modifier.slice(1));
 
     // Any other indented test() is inside a loop or helper: each iteration is a run-time case.
     if (match[1] && !guard) variants.push('loop site');
 
-    return [{ suite, site: `${file}:${index + 1}`, name: name[1] ?? name[2] ?? name[3], variants }];
+    return [
+      { suite, site: `${file}:${index + 1}`, name: name[1] ?? name[2] ?? name[3] ?? '', variants },
+    ];
   });
 }
 
-/** The scenario names of a parity.ts `scenarios` array (entries two or four spaces deep). */
+/**
+ * The scenario names of a parity.ts `scenarios` array (entries two or four spaces deep).
+ * @param {string} suite
+ * @param {string} file
+ * @returns {Case[]}
+ */
 function parityScenarios(suite, file) {
   const lines = readFileSync(join(root, file), 'utf8').split('\n');
   const start = lines.findIndex((line) => /^const scenarios\b/.test(line));
@@ -76,9 +101,9 @@ function parityScenarios(suite, file) {
     const match = /^(?: {2}\{ | {4}| {6}\.\.\.[^{]*\{ )name: (.*)$/.exec(line);
 
     if (!match) return [];
-    const name = STRING.exec(match[1]);
+    const name = STRING.exec(match[1] ?? '');
     assert.ok(name, `${file}:${start + offset + 1}: no literal scenario name`);
-    const value = name[1] ?? name[2] ?? name[3];
+    const value = name[1] ?? name[2] ?? name[3] ?? '';
 
     return [
       {
@@ -94,31 +119,45 @@ function parityScenarios(suite, file) {
 /**
  * Domino's parity has no named scenarios: argument lists, the tool surface, an invalid-input list
  * and three sub-harnesses, counted at run time. One case per list or sub-harness scenario.
+ * @param {string} suite
+ * @returns {Case[]}
  */
 function dominosParity(suite) {
   const directory = 'rust/dominos-mcp/tests/ts';
+  /** @type {Case[]} */
   const cases = [];
   const parity = readFileSync(join(root, directory, 'parity.ts'), 'utf8').split('\n');
-  const at = (pattern) => parity.findIndex((line) => pattern.test(line)) + 1;
+  const at = (/** @type {RegExp} */ pattern) => parity.findIndex((line) => pattern.test(line)) + 1;
 
-  for (const [name, pattern] of [
+  for (const [name, pattern] of /** @type {const} */ ([
     ['cli argument list', /for \(const args of \[/],
     ['tool surface and instructions', /surfaces\.push\(/],
     ['invalid tool input list', /const invalid: /],
     ['unsafe config folder refusal', /const unsafe = /],
-  ])
+  ]))
     cases.push({ suite, site: `${directory}/parity.ts:${at(pattern)}`, name, variants: [] });
 
   for (const file of ['reads-parity.ts', 'auth-parity.ts', 'money-parity.ts']) {
     const lines = readFileSync(join(root, directory, file), 'utf8').split('\n');
+
     const named = lines.flatMap((line, index) => {
       const match = /^\s*\{ name: '([^']+)'/.exec(line) ?? /^\s{4,}name: '([^']+)'/.exec(line);
 
-      return match ? [{ suite, site: `${directory}/${file}:${index + 1}`, name: match[1] }] : [];
+      return match
+        ? [
+            {
+              suite,
+              site: `${directory}/${file}:${index + 1}`,
+              name: match[1] ?? '',
+              variants: [],
+            },
+          ]
+        : [];
     });
-    const entry = lines.findIndex((line) => /^export async function/.test(line)) + 1;
 
-    if (named.length) cases.push(...named.map((scenario) => ({ ...scenario, variants: [] })));
+    const entry = lines.findIndex((line) => line.startsWith('export async function')) + 1;
+
+    if (named.length) cases.push(...named);
     else
       cases.push({
         suite,
@@ -131,7 +170,12 @@ function dominosParity(suite) {
   return cases;
 }
 
-/** `#[test]` functions of a Rust test file that drives Bun, ignored helpers included. */
+/**
+ * `#[test]` functions of a Rust test file that drives Bun, ignored helpers included.
+ * @param {string} suite
+ * @param {string} file
+ * @returns {Case[]}
+ */
 function rustCases(suite, file) {
   const lines = readFileSync(join(root, file), 'utf8').split('\n');
   const feature = /#!\[cfg\(feature = "([^"]+)"\)\]/.exec(lines.join('\n'));
@@ -141,29 +185,27 @@ function rustCases(suite, file) {
     let next = index + 1;
     const variants = feature ? [`feature ${feature[1]}`] : [];
 
-    while (!/^\s*fn /.test(lines[next])) {
-      if (lines[next].includes('#[ignore')) variants.push('ignored helper');
+    while (!/^\s*fn /.test(lines[next] ?? 'fn ')) {
+      if (lines[next]?.includes('#[ignore')) variants.push('ignored helper');
       next++;
     }
 
-    return [
-      {
-        suite,
-        site: `${file}:${next + 1}`,
-        name: /fn (\w+)/.exec(lines[next])[1],
-        variants,
-      },
-    ];
+    const name = /fn (\w+)/.exec(lines[next] ?? '');
+    assert.ok(name, `${file}:${next + 1}: no fn after #[test]`);
+
+    return [{ suite, site: `${file}:${next + 1}`, name: name[1] ?? '', variants }];
   });
 }
 
+/** @returns {Case[]} */
 function enumerate() {
+  /** @type {Case[]} */
   const cases = [];
 
   for (const name of packages) {
     const files = walk(`packages/${name}`)
       .filter((path) => /\/test\/.*\.test\.ts$/.test(path))
-      .sort();
+      .toSorted();
 
     for (const file of files) cases.push(...bunCases(`package ${name}`, file));
   }
@@ -178,7 +220,7 @@ function enumerate() {
       continue;
     }
 
-    for (const file of entries.filter((path) => /\/ts\/.*\.test\.ts$/.test(path)).sort())
+    for (const file of entries.filter((path) => /\/ts\/.*\.test\.ts$/.test(path)).toSorted())
       cases.push(...bunCases(`drop-in ${crate}`, file));
 
     if (crate === 'dominos-mcp') cases.push(...dominosParity(`parity ${crate}`));
@@ -187,7 +229,7 @@ function enumerate() {
 
     for (const file of entries
       .filter((path) => /^[^/]+\/[^/]+\/tests\/[^/]+\.rs$/.test(path))
-      .sort())
+      .toSorted())
       if (readFileSync(join(root, file), 'utf8').includes('FAMILY_MCP_BUN'))
         cases.push(...rustCases(`bun runner ${crate}`, file));
   }
@@ -195,7 +237,10 @@ function enumerate() {
   return cases;
 }
 
-/** Test-tree files with no test() site: harnesses, fakes and helpers the cases import. */
+/**
+ * Test-tree files with no test() site: harnesses, fakes and helpers the cases import.
+ * @returns {string[]}
+ */
 function harnesses() {
   return [
     ...packages.flatMap((name) => walk(`packages/${name}`).filter((path) => /\/test\//.test(path))),
@@ -207,27 +252,36 @@ function harnesses() {
       }
     }),
   ]
-    .filter((path) => !path.endsWith('.test.ts'))
-    .map((path) => relative(root, join(root, path)))
-    .sort();
+    .flatMap((path) => (path.endsWith('.test.ts') ? [] : [relative(root, join(root, path))]))
+    .toSorted();
 }
 
-const key = (entry) => `${entry.site.replace(/:\d+$/, '')}\t${entry.name}`;
+const key = (/** @type {{ site: string, name: string }} */ entry) =>
+  `${entry.site.replace(/:\d+$/, '')}\t${entry.name}`;
 
+/** @returns {{ suite: string, site: string, name: string, cells: string[] }[]} */
 function ledgerRows() {
   const text = readFileSync(join(root, LEDGER), 'utf8');
+  /** @type {{ suite: string, site: string, name: string, cells: string[] }[]} */
   const rows = [];
 
   for (const line of text.split('\n')) {
     if (!line.startsWith('| ')) continue;
+
     const cells = line
       .slice(2, -2)
       .split(/(?<!\\) \| /)
       .map((cell) => cell.replaceAll('\\|', '|').trim());
+
     const site = /^`([^`]+:\d+)`$/.exec(cells[1] ?? '');
 
     if (!site) continue;
-    rows.push({ suite: cells[0], site: site[1], name: cells[2].replace(/^`|`$/g, ''), cells });
+    rows.push({
+      suite: cells[0] ?? '',
+      site: site[1] ?? '',
+      name: (cells[2] ?? '').replace(/^`|`$/g, ''),
+      cells,
+    });
   }
 
   return rows;
@@ -240,12 +294,15 @@ if (command === 'list') {
     process.stdout.write(
       `${entry.suite}\t${entry.site}\t${entry.name}\t${entry.variants.join('; ')}\n`,
     );
+
   for (const file of harnesses()) process.stdout.write(`harness\t${file}\t\t\n`);
 } else if (command === 'check') {
   const cases = enumerate();
   const rows = ledgerRows();
   const expected = new Map(cases.map((entry) => [key(entry), entry]));
+  /** @type {Set<string>} */
   const seen = new Set();
+  /** @type {string[]} */
   const problems = [];
 
   for (const row of rows) {
@@ -261,6 +318,7 @@ if (command === 'list') {
     if (row.cells.length < 7 || row.cells.slice(4, 7).some((cell) => !cell || cell === 'TODO'))
       problems.push(`incomplete row: ${row.site} ${row.name}`);
   }
+
   for (const [id, entry] of expected)
     if (!seen.has(id)) problems.push(`case with no row: ${entry.site} ${entry.name}`);
 
@@ -273,6 +331,7 @@ if (command === 'list') {
     process.stderr.write(`${problems.join('\n')}\n`);
     process.exit(1);
   }
+
   process.stdout.write(`ledger ok: ${rows.length} cases, ${harnesses().length} harness files\n`);
 } else {
   process.stderr.write('Usage: node tooling/ts-freeze/ledger.mjs list|check\n');
