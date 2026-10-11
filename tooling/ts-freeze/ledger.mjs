@@ -242,9 +242,16 @@ function tokenize(source, file) {
  * @returns {number}
  */
 function closing(tokens, open) {
-  const pairs = { '(': ')', '[': ']', '{': '}' };
+  const pairs = new Map([
+    ['(', ')'],
+    ['[', ']'],
+    ['{', '}'],
+  ]);
+
   const first = tokens[open]?.text ?? '';
-  const closer = pairs[/** @type {'(' | '[' | '{'} */ (first)];
+  const closer = pairs.get(first);
+
+  if (!closer) throw new RangeError(`not an opener: ${first}`);
   let depth = 0;
 
   for (let index = open; index < tokens.length; index++) {
