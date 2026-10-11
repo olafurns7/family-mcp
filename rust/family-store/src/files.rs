@@ -322,3 +322,51 @@ pub(crate) fn sync_directory(directory: &Path) {
         let _ = handle.sync_all();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cancel_observed_at_the_commit_point_keeps_the_previous_file_and_no_temporary() {
+        let directory =
+            std::env::temp_dir().join(format!("family-store-commit-{}", uuid().unwrap()));
+        ensure_private_dir(&directory, false).unwrap();
+        let file = directory.join("session.json");
+        write_private_file(&file, b"previous", &Cancel::default()).unwrap();
+        let cancel = Cancel::default();
+        cancel.cancel();
+        assert_eq!(
+            write_private_file(&file, b"never", &cancel)
+                .unwrap_err()
+                .code,
+            Code::Cancelled
+        );
+
+        // `replace` checks only before the rename: the temporary is fully written and flushed,
+        // and the cancel is observed immediately before the commit point.
+        let temporary = suffixed(&file, &format!(".{}.tmp", uuid().unwrap()));
+        let committed = replace(&file, &temporary, b"never", &cancel);
+        assert_eq!(committed.unwrap_err().code, Code::Cancelled);
+        assert_eq!(fs::read(&temporary).unwrap(), b"never");
+        assert_eq!(read_private_file(&file, 64).unwrap(), "previous");
+
+        // The cleanup a cancelled commit relies on: a replacement that fails after its temporary
+        // was written (here the rename, onto a folder that is not empty) leaves no temporary.
+        fs::remove_file(&temporary).unwrap();
+        let occupied = directory.join("occupied");
+        fs::create_dir(&occupied).unwrap();
+        fs::write(occupied.join("inside"), "").unwrap();
+        assert!(write_private_file(&occupied, b"never", &Cancel::default()).is_err());
+        fs::remove_file(occupied.join("inside")).unwrap();
+        fs::remove_dir(&occupied).unwrap();
+        let names: Vec<_> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["session.json"]);
+        assert_eq!(read_private_file(&file, 64).unwrap(), "previous");
+        fs::remove_file(&file).unwrap();
+        fs::remove_dir(&directory).unwrap();
+    }
+}
