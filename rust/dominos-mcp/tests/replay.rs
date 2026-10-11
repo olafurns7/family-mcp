@@ -1,6 +1,7 @@
 //! The frozen TypeScript outcomes of every tests/ts/parity.ts case (with reads-parity.ts,
-//! auth-parity.ts and every money-parity.ts scenario), replayed through this binary step by step
-//! (fixtures/parity, PROVENANCE.md there). Each case runs in one or more fresh homes. A fake
+//! auth-parity.ts and every money-parity.ts scenario) and of the drop-in cases the ledger names
+//! `dominos/contract/*`, replayed through this binary step by step (fixtures/parity and
+//! fixtures/contract, PROVENANCE.md in each). Each case runs in one or more fresh homes. A fake
 //! Domino’s serves the recorded responses in order and requires each request to equal the
 //! recorded one (method, path and query, the four headers, body), so every step checks the full
 //! request list, its count and its order, not only the output. Each CLI run compares its exit code,
@@ -86,6 +87,14 @@ const CASES: [&str; 60] = [
     "local-record-oversized",
 ];
 
+/// The drop-in cases the ledger names `dominos/contract/*`, one file each.
+const CONTRACTS: [&str; 4] = [
+    "no-session-commands",
+    "auth-errors-hide-credentials",
+    "offer-slots",
+    "public-menu-and-mcp-reads",
+];
+
 fn frozen(set: &str, name: &str) -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -143,6 +152,16 @@ fn replay_home(name: &str, number: usize, spec: &Value, coverage: &mut Coverage)
         } else if let Some(args) = step["cli"].as_array() {
             coverage.cli += 1;
             let args: Vec<&str> = args.iter().map(|arg| arg.as_str().unwrap()).collect();
+            // A contract step's own environment; `<home>` in a value is this home.
+            let mut extra = extra.clone();
+
+            if let Some(own) = step.get("env") {
+                for (key, value) in own.as_object().unwrap() {
+                    let value = value.as_str().unwrap();
+                    let value = value.replace("<home>", &home.0.display().to_string());
+                    extra.push((key.clone(), value));
+                }
+            }
             script.expect(&step["exchanges"]);
             let run = cli(&home, &origin, &extra, &args, step["stdin"].as_str());
             script.finish(&format!("{at} {args:?}"));
@@ -285,6 +304,21 @@ fn every_frozen_parity_scenario_replays() {
             coverage.structured
         ),
         (71, 34, 124, 46),
+        "{coverage:?}"
+    );
+}
+
+#[test]
+fn every_frozen_contract_case_replays() {
+    let coverage = replay("contract", &CONTRACTS);
+    assert_eq!(
+        (
+            coverage.homes,
+            coverage.cli,
+            coverage.tools,
+            coverage.structured
+        ),
+        (8, 5, 9, 3),
         "{coverage:?}"
     );
 }

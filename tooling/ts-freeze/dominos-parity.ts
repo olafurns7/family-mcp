@@ -48,12 +48,13 @@ import {
   saveSession,
   type Session,
 } from '../../packages/dominos-mcp/src/auth.ts';
+import { parseMenu } from '../../packages/dominos-mcp/src/catalog.ts';
 import { cartInput } from '../../packages/dominos-mcp/src/schemas.ts';
 
 const [output, set = 'parity'] = process.argv.slice(2);
 
-if (output === undefined || set !== 'parity')
-  throw new RangeError('Usage: dominos-parity.ts OUTPUT_DIRECTORY [parity]');
+if (output === undefined || (set !== 'parity' && set !== 'contract'))
+  throw new RangeError('Usage: dominos-parity.ts OUTPUT_DIRECTORY [parity|contract]');
 
 if (existsSync(output) && readdirSync(output).length)
   throw new RangeError('The output directory must be empty or absent.');
@@ -1003,7 +1004,7 @@ type Step =
   | { mode: string }
   | { file: string; text: string }
   | { dir: string; mode: number }
-  | { cli: string[]; stdin?: string }
+  | { cli: string[]; stdin?: string; env?: Record<string, string> }
   | { serve: [string, object][]; surface?: boolean };
 
 /** One scratch home: its own environment (`<home>` in a value is the home) and steps. */
@@ -1032,6 +1033,8 @@ function handler(mode: string): Fetch {
       return money(scenario, new Provider());
     }
 
+    case 'contract':
+      return contractFetch(name);
     default:
       return () => {
         throw new Error('No request is expected.');
@@ -1121,6 +1124,207 @@ const cases: Case[] = [
   {
     name: 'unsafe-config-folder-refusal',
     homes: [{ env: {}, steps: [{ dir: 'config/dominos-mcp', mode: 0o755 }, { cli: ['bad'] }] }],
+  },
+];
+
+// ---- the contract cases the ledger names `dominos/contract/*` (41d6f98) ----
+// Each drop-in case becomes the CLI runs and tool calls its binary-backed functions made; its
+// scripted fetch is a fake mode of its own (`contractFetch`).
+
+// tests/ts/catalog.test.ts:29: the menu with a second pizza and a two-pizza offer.
+const offerMenu = parseMenu(html);
+
+offerMenu.menuPizzas.push({ ...pizza, id: 'SECOND' });
+
+offerMenu.packages.push({
+  ...availability,
+  id: 'BUNDLE',
+  name: 'Two pizzas',
+  description: '',
+  price: 4000,
+  availableForPickup: true,
+  availableForDelivery: true,
+  payOnlineOnly: true,
+  items: [
+    {
+      id: 'pizza-slot',
+      type: 0,
+      quantity: 2,
+      sizeId: 'LG',
+      sizeList: ['LG'],
+      pizzaType: 'HANDTOSS',
+      isOptional: false,
+      items: [
+        { id: 'TEST', name: 'First' },
+        { id: 'SECOND', name: 'Second' },
+      ],
+    },
+  ],
+});
+
+/** catalog.test.ts's input, then each change it made before the next `orderItems`. */
+function offerInputs(): object[] {
+  const input = cartInput.parse({
+    fulfillment: cart.fulfillment,
+    packages: [
+      {
+        id: 'BUNDLE',
+        pizzas: [
+          {
+            sizeId: 'LG',
+            crustId: 'HANDTOSS',
+            sections: [{ pizzaId: 'TEST' }],
+            packageItemId: 'pizza-slot',
+          },
+          {
+            sizeId: 'LG',
+            crustId: 'HANDTOSS',
+            sections: [{ pizzaId: 'SECOND' }],
+            packageItemId: 'pizza-slot',
+          },
+        ],
+      },
+    ],
+  });
+
+  const inputs: object[] = [structuredClone(input)];
+  const first = input.packages[0]?.pizzas[0];
+
+  if (!first) throw new RangeError('No first pizza.');
+  first.quantity = 2;
+  inputs.push(structuredClone(input));
+  first.quantity = 1;
+  first.crustId = 'WRONG';
+  inputs.push(structuredClone(input));
+  first.crustId = 'HANDTOSS';
+  first.sizeId = 'SM';
+  inputs.push(structuredClone(input));
+  first.sizeId = 'LG';
+  first.sections = [{ pizzaId: 'UNKNOWN', modifications: [] }];
+  inputs.push(structuredClone(input));
+
+  return inputs;
+}
+
+function contractFetch(name: string): Fetch {
+  const provider = new Provider();
+
+  switch (name) {
+    // reads.test.ts:10 and the drop-in's fixture client: the fixture provider.
+    case 'provider':
+      return provider.request;
+    // reads.test.ts:10 `parseMenu('ReactDOM.hydrate({menu: malicious()})')` throws.
+    case 'menu-call':
+      return async (url, options) =>
+        new URL(url).hostname === 'www.dominos.is'
+          ? new Response('ReactDOM.hydrate({menu: malicious()})')
+          : provider.request(url, options);
+    // catalog.test.ts:29 `orderItems`.
+    case 'offer':
+      return async (url, options) => {
+        if (new URL(url).hostname === 'www.dominos.is')
+          return new Response(`ReactDOM.hydrate(${JSON.stringify({ menu: offerMenu })})`);
+
+        if (new URL(url).pathname === '/api/orders')
+          return Response.json({ Total: 4000, Success: true });
+
+        return provider.request(url, options);
+      };
+
+    // auth.test.ts:70: the drop-in `login` answers its code request, the token request is 400.
+    case 'login-rejected':
+      return async (url) =>
+        url.includes('/sendPin')
+          ? new Response('')
+          : new Response('secret-synthetic-response', { status: 400 });
+    // auth.test.ts:70 `requestCode`: every request fails.
+    case 'transport':
+      return async () => {
+        throw new Error('secret-synthetic-token');
+      };
+
+    // auth-integration.test.ts:181 `sessionStorage`: the drop-in answers the verification.
+    case 'verify':
+      return async () => Response.json({ id: 1, name: null, phoneNumber: '', email: null });
+    default:
+      throw new RangeError(`No contract fetch ${name}.`);
+  }
+}
+
+const contracts: Case[] = [
+  {
+    // auth-integration.test.ts:181: `sessionStorage`, `migrate` and `logout` without a session.
+    name: 'no-session-commands',
+    homes: [
+      {
+        env: SESSION,
+        steps: [
+          { mode: 'contract:verify' },
+          { cli: ['auth', 'status'] },
+          { cli: ['auth', 'migrate'] },
+          { cli: ['auth', 'logout'] },
+        ],
+      },
+    ],
+  },
+  {
+    // auth.test.ts:70: a rejected sign-in, then a code request that fails in transport.
+    name: 'auth-errors-hide-credentials',
+    homes: [
+      {
+        env: {},
+        steps: [
+          { mode: 'contract:login-rejected' },
+          {
+            cli: ['auth', 'login'],
+            stdin: '5550123\n123456\n',
+            env: { DOMINOS_SESSION_FILE: '<home>/session.json' },
+          },
+          { mode: 'contract:transport' },
+          {
+            cli: ['auth', 'login'],
+            stdin: '5550123\n',
+            env: { DOMINOS_SESSION_FILE: '<home>/config/dominos-code.json' },
+          },
+        ],
+      },
+    ],
+  },
+  {
+    // catalog.test.ts:29: each `orderItems` in its own fixture home.
+    name: 'offer-slots',
+    homes: offerInputs().map((input) => ({
+      env: SESSION,
+      steps: [
+        { seed: { expired: false } },
+        { mode: 'contract:offer' },
+        { serve: [['quote_order', input]] },
+      ],
+    })),
+  },
+  {
+    // reads.test.ts:10: one connection lists the tools, reads the profile and the menu, and
+    // refuses an unknown input; then the menu `parseMenu` refuses.
+    name: 'public-menu-and-mcp-reads',
+    homes: [
+      {
+        env: SESSION,
+        steps: [
+          { seed: { expired: false } },
+          { mode: 'contract:provider' },
+          {
+            serve: [
+              ['get_profile', {}],
+              ['search_menu', { query: 'synthetic' }],
+              ['quote_order', { ...cart, IsFinal: true }],
+            ],
+            surface: true,
+          },
+          { mode: 'contract:menu-call' },
+          { serve: [['search_menu', {}]] },
+        ],
+      },
+    ],
   },
 ];
 
@@ -1236,7 +1440,7 @@ async function runCli(
   home: string,
   names: Names,
   env: Record<string, string>,
-  step: { cli: string[]; stdin?: string },
+  step: { cli: string[]; stdin?: string; env?: Record<string, string> },
 ) {
   const start = fake.exchanges.length;
 
@@ -1244,7 +1448,7 @@ async function runCli(
     [process.execPath, '--preload', rewrite, wrapper, JSON.stringify(step.cli)],
     {
       cwd: home,
-      env: environment(home, env),
+      env: environment(home, { ...env, ...step.env }),
       stdin: step.stdin === undefined ? 'ignore' : new Blob([step.stdin]),
       stdout: 'pipe',
       stderr: 'pipe',
@@ -1507,12 +1711,12 @@ function pack(text: string): string {
 mkdirSync(output, { recursive: true });
 
 try {
-  for (const item of cases) {
+  for (const item of set === 'parity' ? cases : contracts) {
     const homes: string[] = [];
 
     for (const [index, spec] of item.homes.entries())
       homes.push(await runHome(join(scratch, `${item.name}-${index}`), spec));
-    const text = `{"id":${JSON.stringify(`dominos/parity/${item.name}`)},"homes":[\n${homes.join(',\n')}\n]}`;
+    const text = `{"id":${JSON.stringify(`dominos/${set}/${item.name}`)},"homes":[\n${homes.join(',\n')}\n]}`;
 
     if (text.includes(origin) || text.includes(scratch))
       throw new RangeError(`${item.name}: a recorded value names the fake or the scratch.`);
