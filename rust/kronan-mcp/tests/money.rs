@@ -902,3 +902,82 @@ fn clear_attempts_lists_the_record_and_clears_it_only_after_an_explicit_yes() {
     // Only the one order call reached Krónan.
     assert_eq!(posts(&upstream.sent()), ["POST /checkout/complete/"]);
 }
+
+#[test]
+fn a_frozen_typescript_order_attempt_blocks_and_lists_in_the_binary() {
+    // What the TypeScript client's `claimAttempt` recorded for an accepted pickup reservation.
+    let home = Home::new("frozen-attempt");
+    support::plant(&home, "attempt-pickup-accepted");
+    let recorded = fs::read_to_string(home.path(JOURNAL)).unwrap();
+    let attempt = journal(&home).unwrap()[0].clone();
+    let upstream = scripted(|_| None);
+    let listed = support::cli(
+        &home,
+        &upstream.origin,
+        &[],
+        &["orders", "clear-attempts"],
+        Some("n\n"),
+    );
+    assert_eq!(listed.code, Some(0), "{}", listed.stderr);
+    let line = format!(
+        "  {}  reserve_pickup_slot  accepted  checkout checkout-token  total 990 ISK  order order-token\n",
+        attempt["createdAt"].as_str().unwrap()
+    );
+    assert!(listed.stdout.contains(&line), "{}", listed.stdout);
+    // Listed and kept byte for byte; nothing reached Krónan.
+    assert_eq!(fs::read_to_string(home.path(JOURNAL)).unwrap(), recorded);
+    assert_eq!(upstream.sent(), Vec::<String>::new());
+}
+
+#[test]
+fn an_order_attempt_recorded_by_one_process_blocks_the_next_processs_order_calls() {
+    let home = home("next-process");
+    let upstream = scripted(|request| (request.method == "POST").then(Reply::dropped));
+
+    // This binary's own money call, whose request may have reached Krónan: an unknown outcome,
+    // recorded with the fingerprint the TypeScript client computes for the same checkout.
+    let complete = with(&approval(), json!({"slotId": 501, "returnBags": false}));
+    let placed = call(&home, &upstream, "complete_checkout", complete).unwrap();
+    assert_eq!(placed["outcome"], "unknown");
+    let print = support::store_state("attempt-complete-accepted")["print"].clone();
+    let recorded = journal(&home).unwrap();
+    assert_eq!(recorded.len(), 1);
+
+    for (key, value) in [
+        ("tool", json!("complete_checkout")),
+        ("checkoutToken", json!(CHECKOUT_TOKEN)),
+        ("fingerprint", print),
+        ("total", json!(CHECKOUT_TOTAL)),
+        ("state", json!("unknown")),
+        ("orderToken", Value::Null),
+    ] {
+        assert_eq!(recorded[0][key], value, "{key}");
+    }
+
+    // The next process's order call for that checkout is blocked before anything is sent.
+    let before = upstream.count();
+    let message = call(
+        &home,
+        &upstream,
+        "reserve_pickup_slot",
+        with(&approval(), json!({"slotId": 601, "returnBags": false})),
+    )
+    .unwrap_err();
+    assert!(message.contains("still unresolved"), "{message}");
+    assert_eq!(upstream.count(), before);
+
+    // An accepted completion the TypeScript client recorded for the same checkout stops the binary.
+    fs::remove_file(home.path(JOURNAL)).unwrap();
+    support::plant(&home, "attempt-complete-accepted");
+    let frozen = fs::read_to_string(home.path(JOURNAL)).unwrap();
+    let message = call(
+        &home,
+        &upstream,
+        "add_checkout_to_order",
+        with(&approval(), json!({"expectedOrderToken": ORDER_TOKEN})),
+    )
+    .unwrap_err();
+    assert!(message.contains("already accepted"), "{message}");
+    assert_eq!(posts(&upstream.sent()), ["POST /checkout/complete/"]);
+    assert_eq!(fs::read_to_string(home.path(JOURNAL)).unwrap(), frozen);
+}

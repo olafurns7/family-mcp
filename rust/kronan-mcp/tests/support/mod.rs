@@ -298,6 +298,41 @@ pub fn fixture(path: &str) -> Reply {
         .unwrap_or_else(|| panic!("no frozen answer for {path}"))
 }
 
+/// A frozen TypeScript store state (fixtures/store, PROVENANCE.md there).
+pub fn store_state(name: &str) -> Value {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/store")
+        .join(format!("{name}.json"));
+    let state: Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+    assert_eq!(state["id"], format!("kronan/store/{name}"));
+    state
+}
+
+/// Writes every file of the frozen state `name` into `home`, with its mode.
+pub fn plant(home: &Home, name: &str) {
+    for file in store_state(name)["files"].as_array().unwrap() {
+        let path = home.path(file["path"].as_str().unwrap());
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path.parent().unwrap())
+            .unwrap();
+        let bytes = match file["text"].as_str() {
+            Some(text) => text.as_bytes().to_vec(),
+            None => {
+                let hex = file["hex"].as_str().unwrap();
+                (0..hex.len())
+                    .step_by(2)
+                    .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+                    .collect()
+            }
+        };
+        fs::write(&path, bytes).unwrap();
+        let mode = u32::from_str_radix(file["mode"].as_str().unwrap(), 8).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+}
+
 /// The JSON body of `fixture(path)`.
 pub fn fixture_json(path: &str) -> Value {
     serde_json::from_slice(&fixture(path).body).unwrap()
