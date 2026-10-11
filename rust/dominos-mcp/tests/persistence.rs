@@ -147,3 +147,46 @@ fn a_frozen_typescript_session_is_verified_and_logged_out_by_the_binary() {
     assert_eq!(fixture.upstream.sent(), ["GET /api/user/newuser"]);
     fixture.provider.check();
 }
+
+/// auth-integration.test.ts `worst(token)`: the longest JSON a schema-valid session can have, as
+/// JavaScript writes it.
+fn worst(token_length: usize, username_length: usize) -> String {
+    format!(
+        "{{\"version\":1,\"accessToken\":\"{token}\",\"refreshToken\":\"{token}\",\"username\":\"{name}\",\"expiresAt\":-1.7976931348623157e+308}}",
+        token = "\\\"".repeat(token_length),
+        name = "\\u0001".repeat(username_length),
+    )
+}
+
+// auth-integration.test.ts:123. The largest schema-valid session fits the store: the binary
+// migrates it from the plaintext file and reads it back whole; one byte more is refused untouched.
+#[test]
+fn the_largest_schema_valid_session_fits_the_store() {
+    // Only the plaintext file: the store has neither record nor marker yet.
+    let fixture = Fixture::setup(false, true, |_, _| None);
+    let (home, path) = (&fixture.home, fixture.home.session());
+    let largest = worst(32768, 256);
+    assert_eq!(largest.len(), support::SESSION_MAX_BYTES);
+
+    for (name, oversized) in [
+        ("token", worst(32769, 256)),
+        ("username", worst(32768, 257)),
+    ] {
+        home.write("session.json", &oversized);
+        assert_eq!(
+            migrate(home, &path),
+            Err("Cannot read the Domino’s session. Use a private regular file owned by you, or sign in again.".to_owned()),
+            "{name}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), oversized, "{name}");
+        assert!(!home.record().exists(), "{name}");
+        assert!(!home.marker().exists(), "{name}");
+    }
+    // As saveSession wrote it: the JSON and a newline, one byte over the session bound.
+    home.write("session.json", &format!("{largest}\n"));
+    assert_eq!(migrate(home, &path), Ok("migrated"));
+    assert!(!path.exists());
+    let expected: Value = serde_json::from_str(&largest).unwrap();
+    assert_eq!(home.current(), expected);
+    assert_eq!(fixture.upstream.count(), 0);
+}
