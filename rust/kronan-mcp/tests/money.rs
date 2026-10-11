@@ -463,6 +463,9 @@ fn an_unreadable_token_refuses_the_money_call_before_any_record_or_send() {
     }
 }
 
+/// Tool calls with their arguments.
+type Writes<'a> = &'a [(&'a str, Value)];
+
 #[test]
 fn other_writes_are_sent_once_and_report_an_unconfirmed_change() {
     let home = home("writes");
@@ -507,7 +510,7 @@ fn other_writes_are_sent_once_and_report_an_unconfirmed_change() {
     ];
     let order_pattern: &[&str] =
         &["did not confirm this order change; it may have been applied. Read get_order"];
-    let mut expectations: Vec<(u16, &[&str], &[(&str, Value)])> = vec![
+    let mut expectations: Vec<(u16, &[&str], Writes)> = vec![
         (
             0,
             &["did not confirm this change", "may have been applied"],
