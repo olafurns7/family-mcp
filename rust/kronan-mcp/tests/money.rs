@@ -421,6 +421,47 @@ fn a_failed_gate_read_refuses_the_money_call_without_sending() {
     only_the_token(&home);
 }
 
+#[test]
+fn a_record_written_by_another_holder_during_the_gate_stops_the_real_client_before_its_post() {
+    let home = home("gate-write");
+    let other = json!({
+        "id": "other-holder",
+        "tool": "reserve_pickup_slot",
+        "checkoutToken": LIST_TOKEN,
+        "fingerprint": "other-lines",
+        "total": 1,
+        "state": "unknown",
+        "orderToken": null,
+        "createdAt": "2026-09-25T00:00:00.000Z",
+        "updatedAt": "2026-09-25T00:00:00.000Z",
+    });
+    let text = json!({"version": 1, "attempts": [other]}).to_string();
+    let journal_path = home.path(JOURNAL);
+    let written = text.clone();
+    // Another holder records an unresolved attempt for a different checkout while this gate reads.
+    let upstream = scripted(move |request| {
+        if request.path == "/api/v1/checkout/" {
+            fs::write(&journal_path, &written).unwrap();
+            fs::set_permissions(&journal_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        None
+    });
+    let arguments = with(&approval(), json!({"slotId": 501, "returnBags": false}));
+    let message = call(&home, &upstream, "complete_checkout", arguments).unwrap_err();
+
+    assert_eq!(
+        message,
+        "Another Krónan order call ran at the same time and changed the local order-attempt record. Nothing was sent to Krónan. Read get_active_order before anything else."
+    );
+    assert_eq!(upstream.sent(), ["GET /checkout/"]);
+    assert_eq!(journal(&home), Some(vec![other]));
+    assert_eq!(fs::read_to_string(home.path(JOURNAL)).unwrap(), text);
+    assert_eq!(
+        left(&home),
+        ["session.json", "session.json.order-attempts.json"]
+    );
+}
+
 // The binary reads the saved token once, in the gate, and sends the order call with it (api.rs
 // `place`), an intended difference from api.ts that the drop-in case pins.
 #[test]
