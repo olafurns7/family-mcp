@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 use support::provider::cart;
-use support::{Fixture, Mcp, PATIENCE, Reply, payment};
+use support::{Fixture, Home, Mcp, PATIENCE, Reply, payment};
 
 const QUOTE: [&str; 4] = [
     "GET /website/panta/pizzur",
@@ -689,5 +689,79 @@ fn frozen_typescript_quote_and_checkout_records_continue_without_a_second_send()
     )
     .unwrap();
     assert_eq!(after, before, "the paid record is left byte for byte");
+    fixture.provider.check();
+}
+
+/// Another process that shares this session file but not this home's store: its own
+/// `XDG_CONFIG_HOME` and `XDG_DATA_HOME` (another MCP host's environment), so its session lock is
+/// another store's lock.
+fn call_elsewhere(
+    fixture: &Fixture,
+    home: &Home,
+    name: &str,
+    arguments: Value,
+) -> Result<Value, String> {
+    let (mut mcp, _) = Mcp::start(home, &fixture.upstream.origin, &fixture.home.with_session());
+    let answer = mcp.call(name, arguments);
+    let (code, stderr) = mcp.close();
+    assert_eq!(code, Some(0), "{name}: {stderr}");
+    answer.outcome()
+}
+
+// Not a TypeScript case. Processes whose config homes differ hold different session locks but share
+// the journal beside DOMINOS_SESSION_FILE; there only the checkout's own lock allows one payment.
+#[test]
+fn processes_with_different_stores_sharing_a_session_file_pay_a_checkout_once() {
+    const PROCESSES: usize = 4;
+    // Each process refreshes the expired plaintext session first. The token answers are held
+    // until every process has asked or another one waits for the checkout's lock, so without
+    // that lock all of them read the ready checkout at once.
+    let armed = Arc::new(Mutex::new(false));
+    let arrived = Arc::new(Mutex::new(0usize));
+    let folder: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let (hold, count, journal) = (armed.clone(), arrived.clone(), folder.clone());
+    let fixture = Arc::new(Fixture::setup(false, true, move |_, request| {
+        if request.path == "/api/token" && *hold.lock().unwrap() {
+            *count.lock().unwrap() += 1;
+            let home = journal.lock().unwrap().clone().unwrap();
+            until("every process asked or one waits for the checkout", || {
+                *count.lock().unwrap() == PROCESSES || waiter(&home)
+            });
+        }
+        None
+    }));
+    *folder.lock().unwrap() = Some(fixture.home.0.clone());
+    let quote = fixture.quote();
+    let checkout = fixture.create(&quote).unwrap();
+    // The plaintext session expires again, so every process starts with a refresh.
+    fixture.home.legacy(true, "synthetic");
+    *armed.lock().unwrap() = true;
+    let mut since = fixture.upstream.count();
+    let calls: Vec<_> = (0..PROCESSES)
+        .map(|_| {
+            let (fixture, checkout) = (fixture.clone(), checkout.clone());
+            std::thread::spawn(move || {
+                let home = Home::new("elsewhere");
+                call_elsewhere(&fixture, &home, "pay_saved_card", payment(&checkout))
+            })
+        })
+        .collect();
+
+    let states: Vec<Value> = calls
+        .into_iter()
+        .map(|call| call.join().unwrap().unwrap()["state"].clone())
+        .collect();
+    assert_eq!(fixture.provider.state().payments, 1, "{states:?}");
+    assert_eq!(states, vec![json!("authorised"); PROCESSES]);
+    // The first process to hold the checkout refreshed the shared file; the others read it fresh.
+    assert_eq!(fixture.sent(&mut since), lines(&["POST /api/token", PAY]));
+    assert_eq!(
+        fixture.journal(&checkout["checkoutId"])["state"],
+        "authorised"
+    );
+    assert_eq!(
+        fixture.left(),
+        fixture.records(&[&quote["quoteId"], &checkout["checkoutId"]])
+    );
     fixture.provider.check();
 }
