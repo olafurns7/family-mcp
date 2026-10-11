@@ -1,11 +1,12 @@
 //! The lock cases of packages/session-store/test/lock.test.ts that tests/files_lock.rs does not
 //! already make: waiting, a waiter's temporary under a holder's sweep, a replaced owner, and work
-//! that never runs on a hard-linked target.
+//! that never runs on a hard-linked target, and concurrent recoveries of one dead owner.
 
 mod common;
 
 use std::fs;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use common::*;
@@ -237,4 +238,103 @@ fn hard_linked_targets_are_refused_before_any_work() {
         .collect();
     left.sort();
     assert_eq!(left, ["alias.json", "session.json"]);
+}
+
+#[test]
+fn concurrent_dead_owner_recoveries_let_exactly_one_in_and_keep_its_owner() {
+    let scratch = Scratch::new();
+    let file = scratch.join("session.json");
+    let lock = scratch.join("session.json.lock");
+    let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+    let dead = child.id();
+    child.wait().unwrap();
+    // One round seldom lands a second recovery between another's read and its removal; forty do.
+    for _ in 0..40 {
+        fs::create_dir(&lock).unwrap();
+        fs::write(
+            lock.join(format!("{dead}-0b0e5cbb-7d1c-4d7a-9d0e-3f2a6c1b8e4f")),
+            "",
+        )
+        .unwrap();
+
+        let start = Arc::new(Barrier::new(12));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let (release, released) = mpsc::channel::<()>();
+        let released = Arc::new(Mutex::new(released));
+        let (outcome, outcomes) = mpsc::channel();
+        let attempts: Vec<_> = (0..12)
+            .map(|_| {
+                let (file, lock, start, entered, released, outcome) = (
+                    file.clone(),
+                    lock.clone(),
+                    start.clone(),
+                    entered.clone(),
+                    released.clone(),
+                    outcome.clone(),
+                );
+                std::thread::spawn(move || {
+                    start.wait();
+                    let result = with_file_lock(&file, &waiting(Duration::ZERO), || {
+                        entered.fetch_add(1, Ordering::SeqCst);
+                        // The winner's owner is the only one, and no other recovery removed it.
+                        let owners: Vec<_> = fs::read_dir(&lock)
+                            .unwrap()
+                            .map(|entry| entry.unwrap().path())
+                            .collect();
+                        assert_eq!(owners.len(), 1);
+                        assert_eq!(mode(&lock), 0o700);
+                        assert_eq!(mode(&owners[0]), 0o600);
+                        released.lock().unwrap().recv().unwrap();
+                        assert_eq!(
+                            code(with_file_lock(&file, &waiting(Duration::ZERO), || Ok::<
+                                _,
+                                Error,
+                            >(
+                                ()
+                            ))),
+                            Some(Code::Busy)
+                        );
+                        Ok::<_, Error>("collected")
+                    });
+                    outcome.send(result).unwrap();
+                })
+            })
+            .collect();
+
+        // Every attempt but the one that entered gives up as BUSY while it holds the lock.
+        for _ in 0..11 {
+            let result = outcomes.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert_eq!(code(result), Some(Code::Busy));
+        }
+        assert_eq!(entered.load(Ordering::SeqCst), 1);
+        release.send(()).unwrap();
+        assert_eq!(
+            outcomes
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap(),
+            "collected"
+        );
+        for attempt in attempts {
+            attempt.join().unwrap();
+        }
+        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
+    }
+
+    // Work's own error passes through unchanged even when the caller cancelled meanwhile.
+    let cancel = Cancel::default();
+    let options = LockOptions {
+        cancel: cancel.clone(),
+        wait: Duration::ZERO,
+    };
+    let failed = with_file_lock(&file, &options, || {
+        cancel.cancel();
+        Err::<(), _>(Error::new(Code::NotFound, "could not confirm restoration"))
+    })
+    .unwrap_err();
+    assert_eq!(
+        (failed.code, failed.message),
+        (Code::NotFound, "could not confirm restoration")
+    );
+    assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
 }

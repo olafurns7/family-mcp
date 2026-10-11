@@ -1,5 +1,5 @@
 //! The private-file cases of packages/session-store/test/files.test.ts that
-//! tests/files_lock.rs does not already make.
+//! tests/files_lock.rs does not already make, and the sweep of what is not this file's own temporary.
 
 mod common;
 
@@ -7,7 +7,12 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 use common::*;
-use family_store::{Cancel, Code, ensure_private_dir, read_private_file, write_private_file};
+use std::time::{Duration, SystemTime};
+
+use family_store::{
+    Cancel, Code, DEFAULT_SWEEP_AGE, ensure_private_dir, read_private_file, sweep_temp,
+    write_private_file,
+};
 
 #[test]
 fn private_files_are_written_atomically_owner_only_and_read_back() {
@@ -81,4 +86,73 @@ fn private_directories_are_created_0700_and_tightened_only_on_request() {
     fs::write(scratch.join("file"), "").unwrap();
     assert!(ensure_private_dir(&scratch.join("file"), false).is_err());
     assert!(fs::metadata(scratch.join("file")).unwrap().is_file());
+}
+
+#[test]
+fn sweeps_leave_planted_directories_pending_files_and_lock_temporaries_alone() {
+    let scratch = Scratch::new();
+    let file = scratch.join("session.json");
+    write(&file, "live");
+    let id = |n: u32| format!("0b0e5cbb-7d1c-4d7a-9d0e-{n:012x}");
+    let stale = scratch.join(&format!("session.json.{}.tmp", id(1)));
+    let fresh = scratch.join(&format!("session.json.{}.tmp", id(2)));
+    let pending = scratch.join(&format!("session.json.{}.pending", id(3)));
+    let lock_temporary = scratch.join(&format!(
+        "session.json.lock.{}-{}.tmp",
+        std::process::id(),
+        id(4)
+    ));
+    let loose = scratch.join("session.json.0123.tmp");
+    let unrelated = scratch.join(&format!("other.json.{}.tmp", id(5)));
+    // Someone else's data under a temporary's exact name is a directory, never a sweep target.
+    let planted = scratch.join(&format!("session.json.{}.tmp", id(6)));
+    for path in [&stale, &fresh, &pending, &loose, &unrelated] {
+        write(path, "");
+    }
+    fs::create_dir(&lock_temporary).unwrap();
+    write(&lock_temporary.join("owner"), "");
+    write(&planted.join("checkouts/quote.json"), "kept");
+    let old = SystemTime::now() - Duration::from_secs(600);
+
+    for path in [
+        &stale,
+        &pending,
+        &lock_temporary,
+        &loose,
+        &unrelated,
+        &planted,
+    ] {
+        fs::File::open(path).unwrap().set_modified(old).unwrap();
+    }
+    let listed = || {
+        let mut names: Vec<_> = fs::read_dir(&scratch.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        names.sort();
+        names
+    };
+    let mut kept = vec![
+        file.clone(),
+        fresh.clone(),
+        pending.clone(),
+        lock_temporary.clone(),
+        loose.clone(),
+        unrelated.clone(),
+        planted.clone(),
+    ];
+    kept.sort();
+
+    assert_eq!(sweep_temp(&file, DEFAULT_SWEEP_AGE).unwrap(), 1);
+    assert_eq!(listed(), kept);
+    assert_eq!(sweep_temp(&file, DEFAULT_SWEEP_AGE).unwrap(), 0);
+    fs::File::open(&fresh).unwrap().set_modified(old).unwrap();
+    assert_eq!(sweep_temp(&file, Duration::ZERO).unwrap(), 1);
+    kept.retain(|path| path != &fresh);
+    assert_eq!(listed(), kept);
+    assert_eq!(text(&planted.join("checkouts/quote.json")), "kept");
+    assert_eq!(
+        sweep_temp(&scratch.join("absent/session.json"), Duration::ZERO).unwrap(),
+        0
+    );
 }
