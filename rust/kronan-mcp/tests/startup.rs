@@ -72,6 +72,8 @@ fn an_earlier_builds_macos_store_keeps_deciding() {
             ("HOME", home.0.to_str().unwrap()),
             ("KRONAN_TOKEN_FILE", legacy.to_str().unwrap()),
             ("KRONAN_TEST_ORIGIN", NOWHERE),
+            // The binary accepts the seam-off layout only under its temporary directory.
+            ("TMPDIR", std::env::temp_dir().to_str().unwrap()),
         ])
         .stdin(std::process::Stdio::null())
         .output()

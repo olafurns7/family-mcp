@@ -100,8 +100,14 @@ fn upstream(mode: Arc<Mutex<Mode>>, seen: Arc<Seen>) -> String {
                     let chunk = vec![0u8; 1024 * 1024];
                     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
 
-                    while stream.write_all(&chunk).is_ok() {
+                    // A chunk counts once it is started, as a stream pull does: a client that
+                    // read past 4 MiB has seen bytes of the fifth.
+                    loop {
                         seen.chunks.fetch_add(1, Ordering::SeqCst);
+
+                        if stream.write_all(&chunk).is_err() {
+                            break;
+                        }
                     }
                     seen.cancelled.store(true, Ordering::SeqCst);
                     Ok(())
