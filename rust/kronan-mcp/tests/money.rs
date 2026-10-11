@@ -544,3 +544,361 @@ fn other_writes_are_sent_once_and_report_an_unconfirmed_change() {
     assert_eq!(journal(&home), None);
     only_the_token(&home);
 }
+
+/// A POST the fake holds until released, reporting when it arrived.
+struct Held {
+    released: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    arrived: std::sync::mpsc::Receiver<()>,
+}
+
+impl Held {
+    /// A fake that holds each POST until `release`, then answers with `then`, and the fixture
+    /// otherwise.
+    fn upstream(then: Reply) -> (Upstream, Self) {
+        let released = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let (arrive, arrived) = std::sync::mpsc::channel();
+        let (gate, arrive) = (released.clone(), Mutex::new(arrive));
+        let upstream = scripted(move |request| {
+            if request.method != "POST" {
+                return None;
+            }
+            let _ = arrive.lock().unwrap().send(());
+            let (open, signal) = &*gate;
+            let mut open = open.lock().unwrap();
+
+            while !*open {
+                open = signal.wait(open).unwrap();
+            }
+            Some(then.clone())
+        });
+        (upstream, Self { released, arrived })
+    }
+
+    fn release(&self) {
+        *self.released.0.lock().unwrap() = true;
+        self.released.1.notify_all();
+    }
+}
+
+/// Waits (bounded) until another process waits for the order-attempt lock: its lock temporary is
+/// published beside the record.
+fn lock_waiter(home: &Home) {
+    let deadline = std::time::Instant::now() + support::PATIENCE;
+
+    while !left(home)
+        .iter()
+        .any(|name| name.starts_with("session.json.order-attempts.json.lock-tmp."))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no call waited for the lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// integration.test.ts `describeSettled`: an outcome, or the first clause of a refusal.
+fn settled(result: &Result<Value, String>) -> String {
+    match result {
+        Ok(placed) => placed["outcome"].as_str().unwrap().to_owned(),
+        Err(message) => format!(
+            "rejected: {}",
+            message.split(['.', '(']).next().unwrap().trim()
+        ),
+    }
+}
+
+#[test]
+fn concurrent_calls_for_one_approval_send_exactly_one_charge_bearing_request() {
+    let call_in =
+        |home: &Arc<Home>, upstream: &Arc<Upstream>, tool: &'static str, arguments: Value| {
+            let (home, upstream) = (home.clone(), upstream.clone());
+            std::thread::spawn(move || call(&home, &upstream, tool, with(&approval(), arguments)))
+        };
+    let complete = json!({"slotId": 501, "addressId": 11, "returnBags": false});
+
+    // Same tool in two processes: the second waits for the lock, then finds the accepted attempt.
+    let home = Arc::new(home("concurrent"));
+    let (upstream, held) = Held::upstream(fixture("/api/v1/checkout/complete/"));
+    let upstream = Arc::new(upstream);
+    let first = call_in(&home, &upstream, "complete_checkout", complete.clone());
+    let second = call_in(&home, &upstream, "complete_checkout", complete.clone());
+    held.arrived.recv_timeout(support::PATIENCE).unwrap();
+    lock_waiter(&home);
+    held.release();
+    let mut outcomes = [first.join().unwrap(), second.join().unwrap()]
+        .iter()
+        .map(settled)
+        .collect::<Vec<_>>();
+    outcomes.sort();
+    assert_eq!(
+        outcomes,
+        [
+            "accepted",
+            "rejected: Krónan already accepted this order call for this exact checkout"
+        ]
+    );
+    assert_eq!(posts(&upstream.sent()), ["POST /checkout/complete/"]);
+    let attempts = journal(&home).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0]["state"], "accepted");
+    assert_eq!(
+        left(&home),
+        ["session.json", "session.json.order-attempts.json"]
+    );
+
+    // Across tools, with the first outcome unknown: the waiting call is blocked, not sent.
+    let home = Arc::new(self::home("concurrent-cross"));
+    let (upstream, held) = Held::upstream(Reply::dropped());
+    let upstream = Arc::new(upstream);
+    let first = call_in(&home, &upstream, "complete_checkout", complete);
+    held.arrived.recv_timeout(support::PATIENCE).unwrap();
+    let second = call_in(
+        &home,
+        &upstream,
+        "reserve_pickup_slot",
+        json!({"slotId": 601, "returnBags": false}),
+    );
+    lock_waiter(&home);
+    held.release();
+    let mut outcomes = [first.join().unwrap(), second.join().unwrap()]
+        .iter()
+        .map(settled)
+        .collect::<Vec<_>>();
+    outcomes.sort();
+    assert_eq!(
+        outcomes,
+        [
+            "rejected: An earlier order call for this checkout is still unresolved",
+            "unknown"
+        ]
+    );
+    assert_eq!(posts(&upstream.sent()), ["POST /checkout/complete/"]);
+    let attempts = journal(&home).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0]["tool"], "complete_checkout");
+    assert_eq!(attempts[0]["state"], "unknown");
+}
+
+#[test]
+fn an_unknown_or_submitting_attempt_blocks_every_money_tool_for_that_checkout() {
+    let home = home("blocks");
+    let upstream = scripted(|request| (request.method == "POST").then(Reply::dropped));
+    let first = call(
+        &home,
+        &upstream,
+        "complete_checkout",
+        with(&approval(), json!({"slotId": 501, "returnBags": false})),
+    )
+    .unwrap();
+    assert_eq!(first["outcome"], "unknown");
+    assert_eq!(posts(&upstream.sent()).len(), 1);
+    let recorded = journal(&home).unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["tool"], "complete_checkout");
+    assert_eq!(recorded[0]["state"], "unknown");
+    assert_eq!(recorded[0]["checkoutToken"], CHECKOUT_TOKEN);
+    let mode = fs::metadata(home.path(JOURNAL))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    for (tool, _, arguments) in placements() {
+        let before = upstream.count();
+        let message = call(&home, &upstream, tool, with(&approval(), arguments)).unwrap_err();
+        assert!(
+            matches(&message, &["still unresolved", "not permission to retry"]),
+            "{tool}: {message}"
+        );
+        assert!(message.contains(NOTHING_SENT), "{message}");
+        // Blocked before the gate read: nothing at all reaches Krónan.
+        assert_eq!(upstream.sent()[before..], [] as [String; 0], "{tool}");
+    }
+
+    // A crash between saving intent and the response leaves `submitting`; it blocks the same way.
+    let mut submitting = recorded[0].clone();
+    submitting["tool"] = json!("reserve_pickup_slot");
+    submitting["state"] = json!("submitting");
+    home.write(
+        JOURNAL,
+        &json!({"version": 1, "attempts": [submitting]}).to_string(),
+        None,
+    );
+    let before = upstream.count();
+    let message = call(
+        &home,
+        &upstream,
+        "reserve_delivery_slot",
+        with(
+            &approval(),
+            json!({"slotId": 501, "addressId": 11, "returnBags": false}),
+        ),
+    )
+    .unwrap_err();
+    assert!(message.contains("still unresolved"), "{message}");
+    assert_eq!(upstream.count(), before);
+
+    // An unreadable record fails closed, and is left for `orders clear-attempts`.
+    let unreadable = r#"{"version":1,"attempts":[{"state":"accepted"}]}"#;
+    home.write(JOURNAL, unreadable, None);
+    let message = call(
+        &home,
+        &upstream,
+        "complete_checkout",
+        with(&approval(), json!({"slotId": 501, "returnBags": false})),
+    )
+    .unwrap_err();
+    assert!(
+        message.contains("record is unreadable or unsafe. Nothing was sent"),
+        "{message}"
+    );
+    assert_eq!(upstream.count(), before);
+    assert_eq!(fs::read_to_string(home.path(JOURNAL)).unwrap(), unreadable);
+}
+
+#[test]
+fn an_accepted_attempt_blocks_a_repeat_but_allows_complete_after_reserve() {
+    let home = home("accepted");
+    let upstream = scripted(|_| None);
+    let complete = with(
+        &approval(),
+        json!({"slotId": 501, "addressId": 11, "returnBags": false}),
+    );
+    let reserved = call(&home, &upstream, "reserve_delivery_slot", complete.clone()).unwrap();
+    assert_eq!(reserved["outcome"], "accepted");
+    // The live reserve/complete sequence is unverified, so an accepted reserve must not block it.
+    let completed = call(&home, &upstream, "complete_checkout", complete.clone()).unwrap();
+    assert_eq!(completed["outcome"], "accepted");
+    assert_eq!(
+        posts(&upstream.sent()),
+        ["POST /slots/delivery/reserve/", "POST /checkout/complete/"]
+    );
+
+    for (tool, arguments) in [
+        ("complete_checkout", complete.clone()),
+        ("reserve_delivery_slot", complete.clone()),
+        (
+            "reserve_pickup_slot",
+            with(&approval(), json!({"slotId": 601, "returnBags": false})),
+        ),
+        (
+            "add_checkout_to_order",
+            with(&approval(), json!({"expectedOrderToken": ORDER_TOKEN})),
+        ),
+    ] {
+        let before = upstream.count();
+        let message = call(&home, &upstream, tool, arguments).unwrap_err();
+        assert!(
+            message.contains("already accepted this order call"),
+            "{tool}: {message}"
+        );
+        assert!(message.contains(NOTHING_SENT), "{message}");
+        assert_eq!(
+            posts(&upstream.sent()[before..]),
+            Vec::<String>::new(),
+            "{tool}"
+        );
+    }
+    let states: Vec<_> = journal(&home)
+        .unwrap()
+        .iter()
+        .map(|attempt| (attempt["tool"].clone(), attempt["state"].clone()))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            (json!("reserve_delivery_slot"), json!("accepted")),
+            (json!("complete_checkout"), json!("accepted"))
+        ]
+    );
+
+    // A changed checkout (different lines and total) is a new approval and may be sent.
+    let home = self::home("changed");
+    let current = Arc::new(Mutex::new(checkout()));
+    let state = current.clone();
+    let changed = scripted(move |request| {
+        (request.path == "/api/v1/checkout/")
+            .then(|| Reply::json(200, &state.lock().unwrap().clone()))
+    });
+    let placed = call(&home, &changed, "complete_checkout", complete.clone()).unwrap();
+    assert_eq!(placed["outcome"], "accepted");
+    let mut more = checkout();
+    more["lines"][0]["quantity"] = json!(2);
+    more["total"] = json!(1988);
+    *current.lock().unwrap() = more;
+    let arguments = with(&complete, json!({"expectedTotal": 1988}));
+    let placed = call(&home, &changed, "complete_checkout", arguments).unwrap();
+    assert_eq!(placed["outcome"], "accepted");
+    assert_eq!(posts(&changed.sent()).len(), 2);
+    assert_eq!(journal(&home).unwrap().len(), 2);
+}
+
+#[test]
+fn clear_attempts_lists_the_record_and_clears_it_only_after_an_explicit_yes() {
+    let home = home("clear");
+    let upstream = scripted(|request| (request.method == "POST").then(Reply::dropped));
+    let clear = |stdin: Option<&str>| {
+        support::cli(
+            &home,
+            &upstream.origin,
+            &[],
+            &["orders", "clear-attempts"],
+            stdin,
+        )
+    };
+
+    let empty = clear(None);
+    assert_eq!(empty.code, Some(0));
+    assert!(
+        empty.stdout.contains("No recorded order attempts"),
+        "{}",
+        empty.stdout
+    );
+
+    let placed = call(
+        &home,
+        &upstream,
+        "complete_checkout",
+        with(&approval(), json!({"slotId": 501, "returnBags": false})),
+    )
+    .unwrap();
+    assert_eq!(placed["outcome"], "unknown");
+    let recorded = fs::read_to_string(home.path(JOURNAL)).unwrap();
+
+    for input in ["n\n", "\n", "", "yes please\n"] {
+        let kept = clear(Some(input));
+        assert_eq!(kept.code, Some(0), "{input:?}");
+        assert!(
+            kept.stdout.contains("complete_checkout  unknown"),
+            "{}",
+            kept.stdout
+        );
+        assert!(kept.stdout.contains("Kept the recorded order attempts."));
+        assert!(kept.stderr.contains("[y/N]"), "{}", kept.stderr);
+        assert_eq!(fs::read_to_string(home.path(JOURNAL)).unwrap(), recorded);
+    }
+
+    let cleared = clear(Some("y\n"));
+    assert_eq!(cleared.code, Some(0));
+    assert!(
+        cleared
+            .stdout
+            .contains("Cleared the recorded order attempts.")
+    );
+    assert!(!format!("{}{}", cleared.stdout, cleared.stderr).contains(TOKEN));
+    assert_eq!(journal(&home), None);
+
+    // An unreadable record can be inspected and cleared the same way.
+    home.write(JOURNAL, "not json", None);
+    let invalid = clear(Some("Y\n"));
+    assert!(
+        invalid.stdout.contains("unreadable or unsafe"),
+        "{}",
+        invalid.stdout
+    );
+    assert_eq!(journal(&home), None);
+    only_the_token(&home);
+    // Only the one order call reached Krónan.
+    assert_eq!(posts(&upstream.sent()), ["POST /checkout/complete/"]);
+}
