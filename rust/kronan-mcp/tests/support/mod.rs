@@ -22,6 +22,8 @@ use family_store::{
 };
 use serde_json::{Map, Value, json};
 
+pub mod auth;
+
 pub const BINARY: &str = env!("CARGO_BIN_EXE_kronan-mcp");
 
 /// How long one answer, one exit or one request may take before a test fails instead of hanging.
