@@ -241,6 +241,66 @@ impl Reply {
             body: Vec::new(),
         }
     }
+
+    /// A text body with no content type, as `new Response(text, { status })`.
+    pub fn text(status: u16, body: &str) -> Self {
+        Self {
+            status,
+            headers: Vec::new(),
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    /// No answer: the connection closes once the request was read, as a drop-in's failed fetch
+    /// (a network error or a timeout) destroys its socket.
+    pub fn dropped() -> Self {
+        Self::empty(0)
+    }
+}
+
+/// tests/ts/fixtures.ts `fixtureResponse(path)`: what the TypeScript freeze served for `path`
+/// (query ignored), from the frozen published-paths contract case.
+pub fn fixture(path: &str) -> Reply {
+    static ANSWERS: std::sync::OnceLock<Vec<(String, Reply)>> = std::sync::OnceLock::new();
+    let answers = ANSWERS.get_or_init(|| {
+        let file = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/contract/published-paths-and-bodies.json");
+        let frozen: Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+        let mut answers = Vec::new();
+
+        for step in frozen["steps"].as_array().unwrap() {
+            for result in step["results"].as_array().into_iter().flatten() {
+                for exchange in result["exchanges"].as_array().unwrap() {
+                    let path = exchange["request"]["path"].as_str().unwrap();
+                    let path = path.split('?').next().unwrap().to_owned();
+                    let response = &exchange["response"];
+                    let reply = Reply {
+                        status: response["status"].as_u64().unwrap() as u16,
+                        headers: response["headers"]
+                            .as_object()
+                            .unwrap()
+                            .iter()
+                            .map(|(name, value)| (name.clone(), value.as_str().unwrap().to_owned()))
+                            .collect(),
+                        body: response["body"].as_str().unwrap().as_bytes().to_vec(),
+                    };
+                    answers.push((path, reply));
+                }
+            }
+        }
+        answers
+    });
+    let path = path.split('?').next().unwrap();
+    answers
+        .iter()
+        .find(|(frozen, _)| frozen == path)
+        .map(|(_, reply)| reply.clone())
+        .unwrap_or_else(|| panic!("no frozen answer for {path}"))
+}
+
+/// The JSON body of `fixture(path)`.
+pub fn fixture_json(path: &str) -> Value {
+    serde_json::from_slice(&fixture(path).body).unwrap()
 }
 
 type Handler = Box<dyn Fn(&Request) -> Reply + Send + Sync>;
@@ -273,6 +333,17 @@ impl Upstream {
     /// Every request so far, in arrival order.
     pub fn seen(&self) -> Vec<Request> {
         self.seen.lock().unwrap().clone()
+    }
+
+    /// The integration cases' `sent`: `METHOD /path` per request, without `/api/v1` or the query.
+    pub fn sent(&self) -> Vec<String> {
+        self.seen()
+            .iter()
+            .map(|request| {
+                let path = request.path.split('?').next().unwrap();
+                format!("{} {}", request.method, path.trim_start_matches("/api/v1"))
+            })
+            .collect()
     }
 
     pub fn count(&self) -> usize {
@@ -337,6 +408,11 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, handler: &Handler) {
     };
     seen.lock().unwrap().push(request.clone());
     let reply = handler(&request);
+
+    if reply.status == 0 {
+        let _ = reader.get_mut().shutdown(std::net::Shutdown::Both);
+        return;
+    }
     let mut out = format!("HTTP/1.1 {} Status\r\nConnection: close\r\n", reply.status);
 
     for (name, value) in &reply.headers {
