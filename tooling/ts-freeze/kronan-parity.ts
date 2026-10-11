@@ -1,10 +1,16 @@
 // Freezes what the TypeScript Krónan CLI and server do in every scenario of
-// rust/kronan-mcp/tests/ts/parity.ts, for rust/kronan-mcp/tests/replay.rs. Run once from the
-// repository root with Bun 1.4.2 at the commit named in the provenance:
+// rust/kronan-mcp/tests/ts/parity.ts, and in the contract cases of
+// rust/kronan-mcp/tests/ts/integration.test.ts the ledger names `kronan/contract/*`, for
+// rust/kronan-mcp/tests/replay.rs. Run once per set from the repository root with Bun 1.4.2 at the
+// commit named in the provenance:
 //
 //   BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 FAMILY_MCP_STORE_TEST_SEAM=1 \
 //     bun tooling/ts-freeze/kronan-parity.ts rust/kronan-mcp/tests/fixtures/parity
+//   BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 FAMILY_MCP_STORE_TEST_SEAM=1 \
+//     bun tooling/ts-freeze/kronan-parity.ts rust/kronan-mcp/tests/fixtures/contract contract
 //
+// A contract case becomes a scenario of the same steps: each client method or schema check is the
+// tool call the case's drop-in makes, and its scripted fetch is a fake mode of its own (`routes`).
 // The scenarios, the fake upstream and its modes, and the store, file and normalization helpers
 // are parity.ts's, copied without change between the `parity.ts` markers below. What differs is
 // what is kept: parity.ts compared the TypeScript side with the binary; this runs the TypeScript
@@ -20,12 +26,15 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 
 import {
   SessionStoreError,
@@ -46,9 +55,10 @@ import {
   recipe,
 } from '../../rust/kronan-mcp/tests/ts/fixtures.ts';
 
-const [output] = process.argv.slice(2);
+const [output, set = 'parity'] = process.argv.slice(2);
 
-if (output === undefined) throw new RangeError('Usage: kronan-parity.ts OUTPUT_DIRECTORY');
+if (output === undefined || (set !== 'parity' && set !== 'contract'))
+  throw new RangeError('Usage: kronan-parity.ts OUTPUT_DIRECTORY [parity|contract]');
 
 if (existsSync(output) && readdirSync(output).length)
   throw new RangeError('The output directory must be empty or absent.');
@@ -326,7 +336,7 @@ const server = Bun.serve({
       if (value !== null) headers[name] = value;
     }
 
-    const response = handle(request, body);
+    const response = routes(fake.mode, url.pathname) ?? handle(request, body);
     const kept: Record<string, string> = {};
 
     for (const [name, value] of response.headers) kept[name] = placeholder(value);
@@ -1073,6 +1083,448 @@ function write(home: string, step: { file: string; text: string; permissions?: n
 }
 // ---- end of parity.ts ----
 
+/** A contract case's scripted fetch, as a fake mode: `respond:<status>:<body>` or a named one. */
+function routes(mode: string, pathname: string): Response | undefined {
+  const respond = /^respond:(\d{3}):(token|null|upstream|account)$/.exec(mode);
+
+  if (respond) {
+    const status = Number(respond[1]);
+
+    switch (respond[2]) {
+      case 'token':
+        return new Response(TOKEN, { status });
+      case 'upstream':
+        return Response.json({ type: 'user', upstreamOnly: TOKEN }, { status });
+      case 'account':
+        return Response.json({ type: 'user', name: 'Account' }, { status });
+      default:
+        return new Response(null, { status });
+    }
+  }
+
+  switch (mode) {
+    case 'offset-first':
+      return Response.json({
+        count: 60,
+        next: 'https://api.kronan.is/api/v1/recipes/?limit=50&offset=50',
+        previous: null,
+        results: [recipe, recipe],
+      });
+    case 'offset-last':
+      return Response.json({ count: 2, next: null, previous: null, results: [recipe] });
+    case 'nested':
+      return nested(pathname);
+    case 'flat':
+      return Response.json({ ...product, nutrition: { energy: '100 kcal', fat: 2.5, salt: null } });
+    case 'cli-ok':
+      return Response.json({ type: 'user', name: 'Test' });
+    case 'cli-401':
+      return new Response('synthetic-token rejected', { status: 401 });
+    default:
+      return undefined;
+  }
+}
+
+const NESTED_MARKER = 'nested-upstream-marker-7c1f';
+
+/** integration.test.ts:2039's fetch. */
+function nested(pathname: string): Response {
+  if (pathname === '/api/v1/products/SKU-1/')
+    return Response.json({ ...product, nutrition: { energy: { marker: NESTED_MARKER } } });
+
+  if (pathname === '/api/v1/products/batch/')
+    return Response.json({
+      results: [{ ...product, nutrition: { list: [NESTED_MARKER] } }],
+      missingSkus: [],
+    });
+
+  if (pathname === '/api/v1/categories/_dairy/products/')
+    return fixtureResponse('/api/v1/categories/dairy/products/');
+
+  if (pathname === '/api/v1/recipes/-recipe/' || pathname === '/api/v1/recipes/mj%C3%B3lk/')
+    return fixtureResponse('/api/v1/recipes/oat-cakes/');
+
+  return new Response(null, { status: 404 });
+}
+
+/**
+ * Contract steps beyond parity.ts's: a CLI run with its own environment (`<home>` in a value is
+ * the scenario's home), a file removed if present, a symbolic link, and a snapshot of every path
+ * under the home.
+ */
+type ContractStep =
+  | Step
+  | { cli: string[]; stdin?: string; env: Record<string, string> }
+  | { remove: string }
+  | { link: string; target: string }
+  | { snapshot: true };
+
+type Contract = { name: string; env?: Record<string, string>; steps: ContractStep[] };
+
+const unexpected = <T extends object>(input: T) => ({ ...input, unexpected: TOKEN });
+
+/** integration.test.ts:681's cases, in order: each the tool call its client method makes. */
+const published: [string, unknown][] = [
+  ['auth_status', {}],
+  ['search_products', { query: 'milk' }],
+  ['get_product', { sku: 'SKU-1' }],
+  ['get_product', { barcode: '12345678' }],
+  ['lookup_products', { skus: ['SKU-1', 'SKU-2'] }],
+  ['list_categories', {}],
+  ['list_category_products', { slug: 'dairy', page: 2 }],
+  ['list_product_tags', {}],
+  ['list_products_by_tag', { slug: 'vegan', page: 3 }],
+  ['list_products_on_sale', { page: 4 }],
+  ['list_favorite_products', { page: 5 }],
+  ['list_orders', { year: 2025, month: 8, type: 'delivery' }],
+  ['get_order', { token: ORDER_TOKEN }],
+  ['get_active_order', {}],
+  [
+    'summarize_order_lines',
+    { fromYear: 2025, fromMonth: 1, toYear: 2025, toMonth: 6, skus: ['SKU-1', 'SKU-2'] },
+  ],
+  ['summarize_order_lines', { nameContains: 'milk' }],
+  ['list_purchase_stats', { limit: 7, offset: 3, sort: 'most_quantity', includeIgnored: true }],
+  ['get_shopping_note', {}],
+  ['list_archived_shopping_note_lines', {}],
+  ['list_product_lists', {}],
+  ['get_product_list', { token: LIST_TOKEN }],
+  ['list_recipes', {}],
+  ['search_recipes', { query: 'oats', tags: [1] }],
+  ['get_recipe', { slug: 'oat-cakes' }],
+  ['list_favorite_recipes', {}],
+  ['list_addresses', {}],
+  ['get_delivery_slots', { addressId: 11 }],
+  ['get_pickup_slots', { chain: 'pikkolo' }],
+  ['get_checkout', {}],
+  ['add_shopping_note_lines', { lines: [{ text: 'Eggs', quantity: 12 }, { sku: 'SKU-1' }] }],
+  ['change_shopping_note_line', { token: NOTE_LINE_TOKEN, quantity: 3 }],
+  ['toggle_shopping_note_line_complete', { token: NOTE_LINE_TOKEN }],
+  ['delete_shopping_note_line', { token: NOTE_LINE_TOKEN }],
+  ['clear_shopping_note', { confirm: true }],
+  ['preview_checkout_lines', { lines: [{ sku: 'SKU-1', quantity: 2 }, { sku: 'SKU-2' }] }],
+  [
+    'set_checkout_lines',
+    { lines: [{ sku: 'SKU-1', quantity: 2, substitution: false }], replace: true },
+  ],
+  ['set_checkout_lines', { lines: [{ sku: 'SKU-1' }], replace: false }],
+  ['reserve_delivery_slot', { ...approval, slotId: 501, addressId: 11, returnBags: true }],
+  ['reserve_pickup_slot', { ...approval, slotId: 601, returnBags: false }],
+  ['complete_checkout', { ...approval, slotId: 501, addressId: 11, returnBags: false }],
+  ['complete_checkout', { ...approval, slotId: 601, returnBags: true }],
+  ['add_checkout_to_order', { ...approval, expectedOrderToken: ORDER_TOKEN }],
+  ['delete_order_lines', { orderToken: ORDER_TOKEN, lineIds: [1, 2], confirm: true }],
+  [
+    'lower_order_line_quantities',
+    { orderToken: ORDER_TOKEN, lineIds: [1], quantity: 0, confirm: true },
+  ],
+  ['toggle_order_line_substitution', { orderToken: ORDER_TOKEN, lineIds: [1] }],
+];
+
+/** integration.test.ts:1959's `toolArguments`, in order. */
+const roundTrip: [string, unknown][] = [
+  ['auth_status', {}],
+  ['search_products', { query: 'milk' }],
+  ['get_product', { sku: 'SKU-1' }],
+  ['lookup_products', { skus: ['SKU-1'] }],
+  ['list_categories', {}],
+  ['list_category_products', { slug: 'dairy' }],
+  ['list_product_tags', {}],
+  ['list_products_by_tag', { slug: 'vegan' }],
+  ['list_products_on_sale', {}],
+  ['list_favorite_products', {}],
+  ['list_orders', {}],
+  ['get_order', { token: ORDER_TOKEN }],
+  ['get_active_order', {}],
+  ['summarize_order_lines', { skus: ['SKU-1'] }],
+  ['list_purchase_stats', {}],
+  ['get_shopping_note', {}],
+  ['list_archived_shopping_note_lines', {}],
+  ['list_product_lists', {}],
+  ['get_product_list', { token: LIST_TOKEN }],
+  ['list_recipes', {}],
+  ['search_recipes', {}],
+  ['get_recipe', { slug: 'oat-cakes' }],
+  ['list_favorite_recipes', {}],
+  ['list_addresses', {}],
+  ['get_delivery_slots', { addressId: 11 }],
+  ['get_pickup_slots', {}],
+  ['get_checkout', {}],
+  ['add_shopping_note_lines', { lines: [{ text: 'Eggs' }] }],
+  ['change_shopping_note_line', { token: NOTE_LINE_TOKEN, text: 'Free-range eggs' }],
+  ['toggle_shopping_note_line_complete', { token: NOTE_LINE_TOKEN }],
+  ['delete_shopping_note_line', { token: NOTE_LINE_TOKEN }],
+  ['clear_shopping_note', { confirm: true }],
+  ['preview_checkout_lines', { lines: [{ sku: 'SKU-1', quantity: 2 }] }],
+  ['set_checkout_lines', { lines: [{ sku: 'SKU-1' }], replace: false }],
+  ['reserve_delivery_slot', { ...approval, slotId: 501, addressId: 11, returnBags: false }],
+  ['reserve_pickup_slot', { ...approval, slotId: 601, returnBags: false }],
+  ['complete_checkout', { ...approval, slotId: 501, addressId: 11, returnBags: false }],
+  ['add_checkout_to_order', { ...approval, expectedOrderToken: ORDER_TOKEN }],
+  ['delete_order_lines', { orderToken: ORDER_TOKEN, lineIds: [1], confirm: true }],
+  [
+    'lower_order_line_quantities',
+    { orderToken: ORDER_TOKEN, lineIds: [1], quantity: 0, confirm: true },
+  ],
+  ['toggle_order_line_substitution', { orderToken: ORDER_TOKEN, lineIds: [1] }],
+];
+
+const MONEY_TOOLS = new Set([
+  'reserve_delivery_slot',
+  'reserve_pickup_slot',
+  'complete_checkout',
+  'add_checkout_to_order',
+]);
+
+/**
+ * integration.test.ts:1959 on one server, removing the order-attempt record before every call. Only
+ * a money call writes that record, so each money call gets a server of its own after a removal and
+ * the other calls share one; the first server also lists the tools.
+ */
+function roundTripSteps(): ContractStep[] {
+  let calls: [string, unknown][] = [];
+  const steps: ContractStep[] = [{ serve: calls, surface: true }];
+
+  for (const call of roundTrip) {
+    if (!MONEY_TOOLS.has(call[0])) {
+      calls.push(call);
+      continue;
+    }
+
+    calls = [];
+    steps.push({ remove: ATTEMPTS }, { serve: [call] }, { serve: calls });
+  }
+
+  calls.push(['search_products', { query: 'milk', unexpected: TOKEN }]);
+
+  return steps.filter((step) => !('serve' in step) || step.serve.length || step.surface);
+}
+
+/** A CLI run with its own legacy token file and configuration directory, as `runCli` gives one. */
+function cliIn(name: string, args: string[], stdin?: string): ContractStep {
+  const env = { KRONAN_TOKEN_FILE: `<home>/${name}`, XDG_CONFIG_HOME: `<home>/config-${name}` };
+
+  return stdin === undefined ? { cli: args, env } : { cli: args, stdin, env };
+}
+
+const contracts: Contract[] = [
+  {
+    name: 'offset-pages',
+    steps: [
+      LEGACY,
+      { mode: 'offset-first' },
+      { serve: [['list_recipes', { limit: 100, offset: 10 }]] },
+      { mode: 'offset-last' },
+      { serve: [['list_favorite_recipes', { offset: 1 }]] },
+    ],
+  },
+  {
+    name: 'oversized-token-input',
+    steps: [
+      { file: 'huge.json', text: JSON.stringify({ version: 1, token: 'x'.repeat(20_000) }) },
+      cliIn('huge.json', ['auth', 'status']),
+      cliIn('saved.json', ['auth', 'set', '-'], 'y'.repeat(20_000)),
+      { snapshot: true },
+    ],
+  },
+  {
+    name: 'published-paths-and-bodies',
+    steps: [
+      LEGACY,
+      { mode: 'ok' },
+      ...published.flatMap((call): ContractStep[] => [{ remove: ATTEMPTS }, { serve: [call] }]),
+    ],
+  },
+  {
+    name: 'write-inputs',
+    steps: [
+      {
+        serve: [
+          ['set_checkout_lines', { lines: [{ sku: 'SKU-1' }] }],
+          ['change_shopping_note_line', { token: NOTE_LINE_TOKEN }],
+          ['add_shopping_note_lines', { lines: [{ text: 'Eggs', sku: 'SKU-1' }] }],
+          ['add_shopping_note_lines', { lines: [{ quantity: 1 }] }],
+          ['add_shopping_note_lines', { lines: [] }],
+          [
+            'add_shopping_note_lines',
+            { lines: Array.from({ length: 31 }, () => ({ text: 'Eggs' })) },
+          ],
+          ['toggle_shopping_note_line_complete', { token: 'not-a-token' }],
+          ['clear_shopping_note', {}],
+          ['delete_order_lines', { orderToken: ORDER_TOKEN, lineIds: [1], confirm: false }],
+          ['lower_order_line_quantities', { orderToken: ORDER_TOKEN, lineIds: [1], quantity: 1 }],
+          ['complete_checkout', { ...approval, slotId: 1, returnBags: false, expectedTotal: -1 }],
+          ['reserve_pickup_slot', { ...approval, slotId: 1 }],
+        ],
+      },
+    ],
+  },
+  {
+    name: 'safe-errors-and-strict-inputs',
+    steps: [
+      LEGACY,
+      ...(['401', '403', '429'] as const).flatMap((status): ContractStep[] => [
+        { mode: `respond:${status}:token` },
+        { serve: [['auth_status', {}]] },
+      ]),
+      { mode: 'respond:404:token' },
+      {
+        serve: [
+          ['get_product', { sku: 'SKU-1' }],
+          ['get_order', { token: ORDER_TOKEN }],
+          ['list_category_products', { slug: 'dairy' }],
+          ['list_products_by_tag', { slug: 'vegan' }],
+          ['get_product_list', { token: LIST_TOKEN }],
+          ['get_recipe', { slug: 'oat-cakes' }],
+        ],
+      },
+      { mode: 'respond:404:null' },
+      { serve: [['get_active_order', {}]] },
+      ...(['500:token', '200:token', '200:upstream'] as const).flatMap((answer): ContractStep[] => [
+        { mode: `respond:${answer}` },
+        { serve: [['auth_status', {}]] },
+      ]),
+      { mode: 'respond:200:account' },
+      {
+        serve: [
+          ['get_product', {}],
+          ['get_product', { sku: 'SKU-1', barcode: '12345678' }],
+          ['list_orders', { year: 2025 }],
+          ['summarize_order_lines', { fromYear: 2025, nameContains: 'milk' }],
+          ['summarize_order_lines', { nameContains: 'milk', skus: ['SKU-1'] }],
+          ['summarize_order_lines', {}],
+        ],
+      },
+      {
+        serve: [
+          ['list_categories', unexpected({})],
+          ['search_products', unexpected({ query: 'milk' })],
+          ['get_product', unexpected({ sku: 'SKU-1' })],
+          ['lookup_products', unexpected({ skus: ['SKU-1'] })],
+          ['list_category_products', unexpected({ slug: 'dairy' })],
+          ['list_products_by_tag', unexpected({ slug: 'vegan' })],
+          ['list_products_on_sale', unexpected({})],
+          ['list_orders', unexpected({})],
+          ['get_order', unexpected({ token: ORDER_TOKEN })],
+          ['summarize_order_lines', unexpected({ nameContains: 'milk' })],
+          ['list_purchase_stats', unexpected({})],
+          ['list_recipes', unexpected({})],
+          ['get_product_list', unexpected({ token: LIST_TOKEN })],
+          ['search_recipes', unexpected({})],
+          ['get_recipe', unexpected({ slug: 'oat-cakes' })],
+          ['add_shopping_note_lines', unexpected({ lines: [{ text: 'Eggs' }] })],
+          ['change_shopping_note_line', unexpected({ token: NOTE_LINE_TOKEN, text: 'Eggs' })],
+          ['toggle_shopping_note_line_complete', unexpected({ token: NOTE_LINE_TOKEN })],
+          ['clear_shopping_note', unexpected({ confirm: true })],
+          ['preview_checkout_lines', unexpected({ lines: [{ sku: 'SKU-1' }] })],
+          ['set_checkout_lines', unexpected({ lines: [{ sku: 'SKU-1' }], replace: false })],
+          [
+            'reserve_delivery_slot',
+            unexpected({ ...approval, slotId: 1, addressId: 1, returnBags: false }),
+          ],
+          ['reserve_pickup_slot', unexpected({ ...approval, slotId: 1, returnBags: false })],
+          ['complete_checkout', unexpected({ ...approval, slotId: 1, returnBags: false })],
+          ['add_checkout_to_order', unexpected({ ...approval, expectedOrderToken: ORDER_TOKEN })],
+          [
+            'delete_order_lines',
+            unexpected({ orderToken: ORDER_TOKEN, lineIds: [1], confirm: true }),
+          ],
+          [
+            'lower_order_line_quantities',
+            unexpected({ orderToken: ORDER_TOKEN, lineIds: [1], quantity: 0, confirm: true }),
+          ],
+          ['toggle_order_line_substitution', unexpected({ orderToken: ORDER_TOKEN, lineIds: [1] })],
+        ],
+      },
+    ],
+  },
+  { name: 'tool-annotations-and-results', steps: [LEGACY, { mode: 'ok' }, ...roundTripSteps()] },
+  {
+    name: 'nested-nutrition-and-encoded-slugs',
+    steps: [
+      LEGACY,
+      { mode: 'nested' },
+      {
+        serve: [
+          ['get_product', { sku: 'SKU-1' }],
+          ['lookup_products', { skus: ['SKU-1'] }],
+        ],
+      },
+      { mode: 'flat' },
+      { serve: [['get_product', { sku: 'SKU-1' }]] },
+      { mode: 'nested' },
+      {
+        serve: [
+          ['list_category_products', { slug: '_dairy' }],
+          ['get_recipe', { slug: '-recipe' }],
+          ['get_recipe', { slug: 'mjólk' }],
+          ['list_category_products', { slug: 'a/b' }],
+          ['get_recipe', { slug: '../x' }],
+          ...['.', '..'].flatMap((segment): [string, unknown][] => [
+            ['get_recipe', { slug: segment }],
+            ['list_category_products', { slug: segment }],
+            ['get_product', { sku: segment }],
+            ['lookup_products', { skus: [segment] }],
+          ]),
+          ['get_product', { sku: 'a.b' }],
+        ],
+      },
+    ],
+  },
+  {
+    name: 'stdio-missing-token',
+    env: { KRONAN_TOKEN_FILE: 'missing.json' },
+    steps: [{ serve: [['auth_status', {}]] }],
+  },
+  {
+    name: 'cli-offline-commands',
+    steps: [
+      { file: 'token.txt', text: `  ${TOKEN} \n` },
+      { mode: 'cli-ok' },
+      cliIn('saved.json', ['auth', 'set', 'token.txt']),
+      cliIn('saved.json', ['auth', 'status']),
+      cliIn('stdin.json', ['auth', 'set', '-'], `${TOKEN}\n`),
+      cliIn('stdin.json', ['auth', 'status']),
+      { snapshot: true },
+      { mode: 'cli-401' },
+      cliIn('rejected.json', ['auth', 'set', 'token.txt']),
+      { mode: 'cli-ok' },
+      { file: 'shared-token.txt', text: `${TOKEN}\n`, permissions: 0o644 },
+      { link: 'linked-token.txt', target: 'token.txt' },
+      cliIn('unsafe.json', ['auth', 'set', 'shared-token.txt']),
+      cliIn('unsafe.json', ['auth', 'set', 'linked-token.txt']),
+      cliIn('unsafe.json', ['auth', 'set', 'absent-token.txt']),
+      { snapshot: true },
+      { file: 'token.txt', text: 'short\n' },
+      cliIn('invalid.json', ['auth', 'set', 'token.txt']),
+      cliIn('missing.json', ['auth', 'status']),
+      { file: 'saved.json', text: `${JSON.stringify({ version: 1, token: TOKEN })}\n` },
+      cliIn('saved.json', ['auth', 'logout']),
+      cliIn('saved.json', ['auth', 'status']),
+      cliIn('saved.json', ['--version']),
+      cliIn('saved.json', ['--help']),
+      cliIn('saved.json', ['not-a-command']),
+    ],
+  },
+];
+
+/**
+ * Every path under `home`, sorted, with its permission bits; a directory ends in `/`, a symbolic
+ * link names its target instead.
+ */
+function tree(home: string): string[] {
+  return readdirSync(home, { recursive: true, withFileTypes: true })
+    .map((entry) => {
+      const path = relative(home, join(entry.parentPath, entry.name));
+
+      if (entry.isSymbolicLink()) return `${path} -> ${readlinkSync(join(home, path))}`;
+      const mode = (statSync(join(home, path)).mode & 0o777).toString(8);
+
+      return entry.isDirectory() ? `${path}/ ${mode}` : `${path} ${mode}`;
+    })
+    .toSorted();
+}
+
 /** parity.ts `stored`: what the store holds, the record as its decrypted text. */
 async function stored(
   home: string,
@@ -1267,7 +1719,7 @@ async function runServe(
  * The scenario as fixture text: its steps one per line (a `serve` step's calls one per line), the
  * number of requests, the stored record and the files left.
  */
-async function run(scenario: Scenario): Promise<{ text: string; requests: number }> {
+async function run(scenario: Contract): Promise<{ text: string; requests: number }> {
   const home = join(scratch, scenario.name);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   fake.mode = 'ok';
@@ -1276,8 +1728,24 @@ async function run(scenario: Scenario): Promise<{ text: string; requests: number
   const env = scenario.env ?? {};
 
   for (const step of scenario.steps) {
-    if ('cli' in step) steps.push(await runCli(home, env, step.cli, step.stdin));
+    if ('cli' in step && 'env' in step) {
+      const own = Object.fromEntries(
+        Object.entries(step.env).map(([key, value]) => [key, value.replaceAll('<home>', home)]),
+      );
+
+      const outcome = await runCli(home, { ...env, ...own }, step.cli, step.stdin);
+
+      // The step's own environment as written, after its arguments.
+      steps.push(`{"env":${JSON.stringify(step.env)},${outcome.slice(1)}`);
+    } else if ('cli' in step) steps.push(await runCli(home, env, step.cli, step.stdin));
     else if ('serve' in step) steps.push(await runServe(home, env, step.serve, step.surface));
+    else if ('remove' in step) {
+      rmSync(join(home, step.remove), { force: true });
+      steps.push(JSON.stringify(step));
+    } else if ('link' in step) {
+      symlinkSync(step.target, join(home, step.link));
+      steps.push(JSON.stringify(step));
+    } else if ('snapshot' in step) steps.push(JSON.stringify({ snapshot: tree(home) }));
     else if ('mode' in step) {
       fake.mode = step.mode;
       steps.push(JSON.stringify(step));
@@ -1290,9 +1758,14 @@ async function run(scenario: Scenario): Promise<{ text: string; requests: number
     }
   }
 
-  const head = { id: `kronan/parity/${scenario.name}`, env: scenario.env ?? {} };
+  const head = { id: `kronan/${set}/${scenario.name}`, env: scenario.env ?? {} };
   const tail = { requests: fake.exchanges.length, store: await stored(home), files: files(home) };
-  const text = `${JSON.stringify(head).slice(0, -1)},"steps":[\n${steps.join(',\n')}\n],${JSON.stringify(tail).slice(1)}`;
+  let trailer = JSON.stringify(tail).slice(1, -1);
+
+  // A contract case also checks every path its CLI runs left under the home.
+  if (set === 'contract') trailer += `,"tree":${JSON.stringify(tree(home))}`;
+
+  const text = `${JSON.stringify(head).slice(0, -1)},"steps":[\n${steps.join(',\n')}\n],${trailer}}`;
 
   return { text, requests: fake.exchanges.length };
 }
@@ -1313,7 +1786,7 @@ function pack(text: string): string {
 mkdirSync(output, { recursive: true });
 
 try {
-  for (const scenario of scenarios) {
+  for (const scenario of set === 'parity' ? scenarios : contracts) {
     const { text, requests } = await run(scenario);
 
     if (text.includes(origin) || text.includes(scratch))

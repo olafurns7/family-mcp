@@ -158,6 +158,33 @@ impl Home {
             .collect()
     }
 
+    /// The freeze's `tree`: every path under the home, sorted, with its permission bits; a
+    /// directory ends in `/`, a symbolic link names its target instead.
+    pub fn tree(&self) -> Value {
+        fn walk(root: &Path, directory: &Path, paths: &mut Vec<String>) {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                let relative = path.strip_prefix(root).unwrap().display().to_string();
+                let info = fs::symlink_metadata(&path).unwrap();
+                let mode = format!("{:o}", info.permissions().mode() & 0o777);
+
+                if info.file_type().is_symlink() {
+                    let target = fs::read_link(&path).unwrap();
+                    paths.push(format!("{relative} -> {}", target.display()));
+                } else if info.is_dir() {
+                    paths.push(format!("{relative}/ {mode}"));
+                    walk(root, &path, paths);
+                } else {
+                    paths.push(format!("{relative} {mode}"));
+                }
+            }
+        }
+        let mut paths = Vec::new();
+        walk(&self.0, &self.0, &mut paths);
+        paths.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+        json!(paths)
+    }
+
     /// parity.ts `local`: printed paths name `<home>`.
     pub fn local(&self, text: &str) -> String {
         let real = fs::canonicalize(&self.0).unwrap().display().to_string();

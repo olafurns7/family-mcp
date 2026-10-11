@@ -1,5 +1,6 @@
-//! The frozen TypeScript outcomes of every tests/ts/parity.ts scenario, replayed through this
-//! binary step by step (fixtures/parity, PROVENANCE.md there). A fake Krónan serves the recorded
+//! The frozen TypeScript outcomes of every tests/ts/parity.ts scenario, and of the contract cases
+//! of tests/ts/integration.test.ts, replayed through this binary step by step (fixtures/parity and
+//! fixtures/contract, PROVENANCE.md in each). A fake Krónan serves the recorded
 //! responses in order and requires each request to equal the recorded one (method, path and query,
 //! the four headers, body), so every step checks the full request list, its count and its order,
 //! not only the output. Each CLI run compares its exit code, stdout and stderr; each MCP request
@@ -43,9 +44,23 @@ const SCENARIOS: [&str; 22] = [
     "token-file",
 ];
 
-fn frozen(name: &str) -> Value {
+/// The integration.test.ts cases the ledger names `kronan/contract/*`, one file each.
+const CONTRACTS: [&str; 9] = [
+    "offset-pages",
+    "oversized-token-input",
+    "published-paths-and-bodies",
+    "write-inputs",
+    "safe-errors-and-strict-inputs",
+    "tool-annotations-and-results",
+    "nested-nutrition-and-encoded-slugs",
+    "stdio-missing-token",
+    "cli-offline-commands",
+];
+
+fn frozen(set: &str, name: &str) -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/parity")
+        .join("tests/fixtures")
+        .join(set)
         .join(format!("{name}.json"));
     unpack(serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap())
 }
@@ -59,9 +74,9 @@ struct Coverage {
 }
 
 /// Replay `name`'s steps, failing at the first difference.
-fn replay(name: &str, coverage: &mut Coverage) {
-    let scenario = frozen(name);
-    assert_eq!(scenario["id"], format!("kronan/parity/{name}"));
+fn replay(set: &str, name: &str, coverage: &mut Coverage) {
+    let scenario = frozen(set, name);
+    assert_eq!(scenario["id"], format!("kronan/{set}/{name}"));
     let home = Home::new(name);
     let script = Script::default();
     let upstream = script.upstream();
@@ -80,6 +95,16 @@ fn replay(name: &str, coverage: &mut Coverage) {
         if let Some(args) = step["cli"].as_array() {
             coverage.cli += 1;
             let args: Vec<&str> = args.iter().map(|arg| arg.as_str().unwrap()).collect();
+            // A contract step's own environment; `<home>` in a value is this home.
+            let mut extra = extra.clone();
+
+            if let Some(own) = step.get("env") {
+                for (key, value) in own.as_object().unwrap() {
+                    let value = value.as_str().unwrap();
+                    let value = value.replace("<home>", &home.0.display().to_string());
+                    extra.push((key.clone(), value));
+                }
+            }
             script.expect(&step["exchanges"], &origin);
             let run = cli(&home, &origin, &extra, &args, step["stdin"].as_str());
             script.finish(&format!("{at} {args:?}"));
@@ -132,6 +157,15 @@ fn replay(name: &str, coverage: &mut Coverage) {
             // The recorded exchanges already carry what the fake's mode answered.
         } else if let Some(token) = step.get("save") {
             home.save(token.as_str());
+        } else if let Some(file) = step["remove"].as_str() {
+            match fs::remove_file(home.path(file)) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => panic!("{error}"),
+                _ => {}
+            }
+        } else if let Some(link) = step["link"].as_str() {
+            std::os::unix::fs::symlink(step["target"].as_str().unwrap(), home.path(link)).unwrap();
+        } else if let Some(paths) = step.get("snapshot") {
+            assert_eq!(&home.tree(), paths, "{at}: paths under the home");
         } else {
             let mode = step["permissions"].as_u64().map(|mode| mode as u32);
             home.write(
@@ -149,6 +183,26 @@ fn replay(name: &str, coverage: &mut Coverage) {
     assert_eq!(upstream.count(), served, "{name}: requests");
     assert_eq!(home.stored(), scenario["store"], "{name}: store");
     assert_eq!(home.files(), scenario["files"], "{name}: files");
+
+    if let Some(paths) = scenario.get("tree") {
+        assert_eq!(&home.tree(), paths, "{name}: paths under the home");
+    }
+}
+
+/// The `.json` files in `fixtures/<set>`, which must be exactly `names`.
+fn fixtures_are(set: &str, names: &[&str]) {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(set);
+    let mut files: Vec<String> = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    files.sort();
+    let mut expected: Vec<String> = names.iter().map(|name| format!("{name}.json")).collect();
+    expected.sort();
+    assert_eq!(files, expected);
 }
 
 /// A frozen JSON-RPC answer without its envelope: `{result}` or `{error}`.
@@ -167,28 +221,31 @@ fn same(got: &Value, frozen: &Value, at: &str) {
 
 #[test]
 fn every_frozen_parity_scenario_replays_through_the_binary() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parity");
-    let mut files: Vec<String> = fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.ends_with(".json"))
-        .collect();
-    files.sort();
-    let mut expected: Vec<String> = SCENARIOS
-        .iter()
-        .map(|name| format!("{name}.json"))
-        .collect();
-    expected.sort();
     // Every fixture is replayed, and none is missing.
-    assert_eq!(files, expected);
+    fixtures_are("parity", &SCENARIOS);
     let mut coverage = Coverage::default();
 
     for name in SCENARIOS {
-        replay(name, &mut coverage);
+        replay("parity", name, &mut coverage);
     }
     // parity.ts's own floor, so the replay is never vacuous.
     assert!(
         coverage.cli >= 95 && coverage.tools >= 460 && coverage.structured >= 80,
+        "{coverage:?}"
+    );
+}
+
+#[test]
+fn every_frozen_contract_case_replays_through_the_binary() {
+    fixtures_are("contract", &CONTRACTS);
+    let mut coverage = Coverage::default();
+
+    for name in CONTRACTS {
+        replay("contract", name, &mut coverage);
+    }
+    // What the freeze recorded, so a fixture emptied by mistake fails here.
+    assert!(
+        coverage.cli >= 17 && coverage.tools >= 166 && coverage.structured >= 93,
         "{coverage:?}"
     );
 }
