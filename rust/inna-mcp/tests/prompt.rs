@@ -4,8 +4,10 @@
 //! the terminal mode as they found it, also when signals arrive in the middle of the prompt: the
 //! first SIGINT cancels the sign-in once the line ends, a second one ends the process, and
 //! SIGTERM ends it at once; only the binary also restores the terminal after a second SIGINT
-//! (`raw_left`). A terminal that hangs up has no mode left on Linux, so there that one
-//! case checks the hang-up instead (see `typed`). Adapted from rust/kronan-mcp/tests/prompt.rs.
+//! (`raw_left`). A terminal that hangs up has no mode left on Linux, and there each side may
+//! meet the hang-up as a failed read or as the input's end, so that one case checks each side
+//! against both outcomes instead (see `typed` and the case loop). Adapted from
+//! rust/kronan-mcp/tests/prompt.rs.
 //! `FAMILY_MCP_BUN` must name a Bun 1.4.2 executable: this test fails without it and is never
 //! skipped. It needs the `test-origin` feature, without which the binary would talk to Inna.
 #![cfg(feature = "test-origin")]
@@ -235,22 +237,41 @@ fn the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli() {
             typed(&mut command, case)
         };
         let ts = run("ts");
-        let hung_up = cfg!(target_os = "linux") && case.hang_up;
 
-        // A hang-up fails the read on Linux (EIO), which readline reports as an error; macOS
-        // ends the input instead, which cancels. The binary must follow each.
-        if case.hang_up {
-            let after_prompt = match hung_up {
-                true => {
-                    "Inna MCP failed. Check input format, file permissions, and local configuration.\n"
-                }
-                false => "\nInna login cancelled.\n",
+        // When the controlling side closes, Linux hangs the terminal up. A read already waiting in
+        // the terminal driver fails (EIO), which readline reports as an error, the generic
+        // failure; a read that starts after the hang-up ends the input, which cancels. Which one a
+        // prompt meets depends on whether it is back in its read when the terminal hangs up, which
+        // the test cannot see for Bun, so on Linux each side is checked against both outcomes and
+        // not against the other. The binary maps each read result as readline does
+        // (terminal::tests). macOS ends the input either way, and there both sides cancel.
+        if cfg!(target_os = "linux") && case.hang_up {
+            let after_prompt = |text: &str| Outcome {
+                code: Some(1),
+                signal: None,
+                stdout: String::new(),
+                stderr: format!("Icelandic phone number (input hidden): {text}"),
+                sent: Vec::new(),
+                restored: None,
             };
+            let outcomes = [
+                after_prompt(
+                    "Inna MCP failed. Check input format, file permissions, and local configuration.\n",
+                ),
+                after_prompt("\nInna login cancelled.\n"),
+            ];
+            assert!(outcomes.contains(&ts), "{case:?}: {ts:?}");
+            let rust = run("rust");
+            assert!(outcomes.contains(&rust), "{case:?}: {rust:?}");
+            continue;
+        }
+
+        if case.hang_up {
             assert_eq!(
                 (ts.code, ts.stderr.as_str()),
                 (
                     Some(1),
-                    format!("Icelandic phone number (input hidden): {after_prompt}").as_str()
+                    "Icelandic phone number (input hidden): \nInna login cancelled.\n"
                 ),
                 "{case:?}"
             );
@@ -258,11 +279,7 @@ fn the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli() {
         // Rust: a deliberate difference. Bun dies of the second SIGINT with the terminal still in
         // raw mode; the binary gives the terminal its mode back first.
         let raw_left = case.signals == ["INT", "INT"];
-        assert_eq!(
-            ts.restored,
-            (!hung_up).then_some(!raw_left),
-            "{case:?}: {ts:?}"
-        );
+        assert_eq!(ts.restored, Some(!raw_left), "{case:?}: {ts:?}");
         let mut rust = run("rust");
 
         if (case.keys == b"55x\x7f50000\n" || case.keys == b"5\x04550000\r")
