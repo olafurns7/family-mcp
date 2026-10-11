@@ -424,7 +424,8 @@ fn a_key_typed_as_the_prompt_shows_is_read_raw_and_not_echoed() {
         errors.read_to_end(&mut stderr).unwrap();
         // Whatever the terminal echoed would wait on the controlling side.
         ioctl_fionbio(&controller, true).unwrap();
-        let echoed = std::fs::File::from(controller).read(&mut chunk);
+        // A clone: closing the controlling side would hang the terminal up before it is read.
+        let echoed = std::fs::File::from(controller.try_clone().unwrap()).read(&mut chunk);
         assert!(
             matches!(&echoed, Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
             "{side}: {echoed:?}"
