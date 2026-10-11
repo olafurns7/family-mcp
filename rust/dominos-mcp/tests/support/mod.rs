@@ -22,6 +22,8 @@ use family_store::{
 };
 use serde_json::{Map, Value, json};
 
+pub mod provider;
+
 pub const BINARY: &str = env!("CARGO_BIN_EXE_dominos-mcp");
 
 /// How long one answer, one exit or one request may take before a test fails instead of hanging.
@@ -224,6 +226,62 @@ impl Drop for Home {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// An epoch-millisecond time as JavaScript's `toISOString`.
+pub fn iso(ms: i64) -> String {
+    let (days, rest) = (ms.div_euclid(86_400_000), ms.rem_euclid(86_400_000));
+    // Civil from days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let of_era = z - era * 146_097;
+    let year_of_era = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
+    let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted = (5 * of_year + 2) / 153;
+    let day = of_year - (153 * shifted + 2) / 5 + 1;
+    let month = if shifted < 10 {
+        shifted + 3
+    } else {
+        shifted - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rest / 3_600_000,
+        rest / 60_000 % 60,
+        rest / 1000 % 60,
+        rest % 1000
+    )
+}
+
+/// The first exchange for `path` (query ignored) in the frozen parity case `name`.
+pub fn frozen_exchange(name: &str, path: &str) -> Value {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/parity")
+        .join(format!("{name}.json"));
+    let frozen: Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+    frozen["homes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|home| home["steps"].as_array().unwrap())
+        .flat_map(|step| {
+            let mut exchanges: Vec<Value> =
+                step["exchanges"].as_array().cloned().unwrap_or_default();
+            for result in step["results"].as_array().into_iter().flatten() {
+                exchanges.extend(result["exchanges"].as_array().unwrap().iter().cloned());
+            }
+            exchanges
+        })
+        .find(|exchange| {
+            exchange["request"]["path"]
+                .as_str()
+                .unwrap()
+                .split('?')
+                .next()
+                == Some(path)
+        })
+        .unwrap_or_else(|| panic!("no frozen exchange for {path} in {name}"))
 }
 
 pub fn now() -> i64 {
@@ -490,6 +548,7 @@ type Handler = Box<dyn Fn(&Request) -> Reply + Send + Sync>;
 pub struct Upstream {
     pub origin: String,
     seen: Arc<Mutex<Vec<Request>>>,
+    abandoned: Arc<Mutex<Vec<String>>>,
 }
 
 impl Upstream {
@@ -497,17 +556,28 @@ impl Upstream {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let abandoned = Arc::new(Mutex::new(Vec::new()));
         let handler: Arc<Handler> = Arc::new(Box::new(handler));
-        let record = seen.clone();
+        let (record, gone) = (seen.clone(), abandoned.clone());
 
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
-                let (record, handler) = (record.clone(), handler.clone());
-                std::thread::spawn(move || serve(stream, &record, &handler));
+                let (record, gone, handler) = (record.clone(), gone.clone(), handler.clone());
+                std::thread::spawn(move || serve(stream, &record, &gone, &handler));
             }
         });
-        Self { origin, seen }
+        Self {
+            origin,
+            seen,
+            abandoned,
+        }
+    }
+
+    /// `METHOD /path` of each request whose client closed its connection before the answer: an
+    /// aborted fetch.
+    pub fn abandoned(&self) -> Vec<String> {
+        self.abandoned.lock().unwrap().clone()
     }
 
     /// Every request so far, in arrival order.
@@ -525,7 +595,12 @@ impl Upstream {
     }
 }
 
-fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, handler: &Handler) {
+fn serve(
+    stream: TcpStream,
+    seen: &Mutex<Vec<Request>>,
+    abandoned: &Mutex<Vec<String>>,
+    handler: &Handler,
+) {
     let mut reader = BufReader::new(stream);
     let mut head = Vec::new();
 
@@ -585,6 +660,14 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, handler: &Handler) {
     };
     seen.lock().unwrap().push(request.clone());
     let reply = handler(&request);
+    // A client that gave up while the answer was prepared has closed its side already.
+    let stream = reader.get_mut();
+    stream.set_nonblocking(true).unwrap();
+
+    if matches!(stream.read(&mut [0u8; 1]), Ok(0)) {
+        abandoned.lock().unwrap().push(request.line());
+    }
+    stream.set_nonblocking(false).unwrap();
 
     if reply.status == 0 {
         let _ = reader.get_mut().shutdown(std::net::Shutdown::Both);
@@ -781,6 +864,29 @@ impl Mcp {
 
     pub fn call(&mut self, name: &str, arguments: Value) -> Answer {
         self.request("tools/call", json!({"name": name, "arguments": arguments}))
+    }
+
+    /// Send a tool call without waiting for its answer; its request id.
+    pub fn begin(&mut self, name: &str, arguments: Value) -> u64 {
+        let id = self.next;
+        self.next += 1;
+        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": arguments}}));
+        id
+    }
+
+    /// The next line the server writes, or `None` once its output closed.
+    pub fn next_line(&self) -> Option<String> {
+        match self.lines.recv_timeout(PATIENCE) {
+            Ok(line) => Some(line),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+            Err(error) => panic!("serve wrote nothing: {error}"),
+        }
+    }
+
+    /// SIGKILL, and wait for the exit.
+    pub fn kill(&mut self) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
     }
 
     /// Close standard input and wait for the exit: the exit code and what went to stderr.
