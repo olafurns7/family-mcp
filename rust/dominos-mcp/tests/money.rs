@@ -564,3 +564,113 @@ fn host_cancellation_does_not_change_the_payment_outcome_or_abort_the_provider()
     );
     fixture.provider.check();
 }
+
+/// The public checkout must never carry the journal's private Adyen values.
+fn public(value: &Value) -> &Value {
+    assert!(!value.to_string().contains("private-"), "{value}");
+    value
+}
+
+// interop.test.ts:45 (the TypeScript-writer half; the Rust-writer half is every case above, whose
+// records the TypeScript client no longer reads)
+#[test]
+fn frozen_typescript_quote_and_checkout_records_continue_without_a_second_send() {
+    // A TypeScript quote: the binary creates its checkout, once, and pays it, once.
+    let (home, frozen) = support::plant("quoted");
+    let fixture = Fixture::in_home(home, |_, _| None);
+    let quote = &frozen["result"]["quote"];
+    let checkout = fixture.create(quote).unwrap();
+    assert_eq!(public(&checkout)["state"], "ready");
+    let get = json!({"checkoutId": checkout["checkoutId"]});
+    assert_eq!(fixture.call("get_checkout", get.clone()).unwrap(), checkout);
+    assert_eq!(fixture.create(quote).unwrap(), checkout);
+    assert_eq!(fixture.provider.state().orders, 1);
+    assert_eq!(fixture.pay(&checkout).unwrap()["state"], "authorised");
+    assert_eq!(fixture.pay(&checkout).unwrap()["state"], "authorised");
+    assert_eq!(fixture.provider.state().payments, 1);
+    assert_eq!(
+        public(&fixture.call("get_checkout", get).unwrap())["state"],
+        "authorised"
+    );
+    // A read of a non-ready checkout asks Domino’s for its latest state, as the package did.
+    assert_eq!(
+        fixture.upstream.sent(),
+        quote_then(&[SETUP, PAY, "GET /api/orders/cart/latest"])
+    );
+    assert_eq!(
+        fixture.journal(&checkout["checkoutId"])["state"],
+        "authorised"
+    );
+    assert_eq!(
+        fixture.left(),
+        fixture.records(&[&quote["quoteId"], &checkout["checkoutId"]])
+    );
+    fixture.provider.check();
+
+    // A TypeScript checkout: the binary reads it as the TypeScript client returned it, creates
+    // nothing, and pays it once.
+    let (home, frozen) = support::plant("checkout-ready");
+    let fixture = Fixture::in_home(home, |_, _| None);
+    let (quote, checkout) = (&frozen["result"]["quote"], &frozen["result"]["checkout"]);
+    assert_eq!(checkout["state"], "ready");
+    let get = json!({"checkoutId": checkout["checkoutId"]});
+    assert_eq!(
+        &fixture.call("get_checkout", get.clone()).unwrap(),
+        checkout
+    );
+    assert_eq!(&fixture.create(quote).unwrap(), checkout);
+    assert_eq!(fixture.upstream.sent(), Vec::<String>::new());
+    assert_eq!(fixture.pay(checkout).unwrap()["state"], "authorised");
+    assert_eq!(fixture.pay(checkout).unwrap()["state"], "authorised");
+    assert_eq!(
+        public(&fixture.call("get_checkout", get).unwrap())["state"],
+        "authorised"
+    );
+    assert_eq!(
+        fixture.upstream.sent(),
+        lines(&[PAY, "GET /api/orders/cart/latest"])
+    );
+    let state = fixture.provider.state();
+    assert_eq!((state.orders, state.payments), (0, 1));
+    drop(state);
+    assert_eq!(
+        fixture.journal(&checkout["checkoutId"])["state"],
+        "authorised"
+    );
+    assert_eq!(
+        fixture.left(),
+        fixture.records(&[&quote["quoteId"], &checkout["checkoutId"]])
+    );
+    fixture.provider.check();
+
+    // A checkout the TypeScript client paid: the binary sends no order or payment.
+    let (home, frozen) = support::plant("checkout-authorised");
+    let fixture = Fixture::in_home(home, |_, _| None);
+    let (quote, checkout) = (&frozen["result"]["quote"], &frozen["result"]["checkout"]);
+    assert_eq!(frozen["result"]["paid"]["state"], "authorised");
+    let before = fs::read(
+        fixture
+            .checkouts()
+            .join(format!("{}.json", checkout["checkoutId"].as_str().unwrap())),
+    )
+    .unwrap();
+    assert_eq!(fixture.pay(checkout).unwrap(), frozen["result"]["paid"]);
+    assert_eq!(fixture.create(quote).unwrap()["state"], "authorised");
+    let get = json!({"checkoutId": checkout["checkoutId"]});
+    assert_eq!(
+        public(&fixture.call("get_checkout", get).unwrap())["state"],
+        "authorised"
+    );
+    assert_eq!(
+        fixture.upstream.sent(),
+        lines(&["GET /api/orders/cart/latest"])
+    );
+    let after = fs::read(
+        fixture
+            .checkouts()
+            .join(format!("{}.json", checkout["checkoutId"].as_str().unwrap())),
+    )
+    .unwrap();
+    assert_eq!(after, before, "the paid record is left byte for byte");
+    fixture.provider.check();
+}

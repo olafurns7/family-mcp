@@ -1,0 +1,108 @@
+{
+ "id": "dominos/store/checkout-ready",
+ "case": "interop.test.ts:45",
+ "now": 4102444800000,
+ "result": {
+  "quote": {
+   "quoteId": "ec2c49c9-fcda-4f30-a48a-8300580f9c57",
+   "total": 2500,
+   "currency": "ISK",
+   "expiresAt": "2100-01-01T00:05:00.000Z",
+   "cart": {
+    "fulfillment": {
+     "type": "pickup",
+     "storeId": "1",
+     "instructions": ""
+    },
+    "pizzas": [
+     {
+      "quantity": 1,
+      "sizeId": "LG",
+      "crustId": "HANDTOSS",
+      "sections": [
+       {
+        "pizzaId": "TEST",
+        "modifications": []
+       }
+      ]
+     }
+    ],
+    "sides": [],
+    "beverages": [],
+    "packages": []
+   }
+  },
+  "checkout": {
+   "checkoutId": "b17ff0ec-b20a-46bd-a48a-c49dcc41e388",
+   "state": "ready",
+   "total": 2500,
+   "currency": "ISK",
+   "cart": {
+    "fulfillment": {
+     "type": "pickup",
+     "storeId": "1",
+     "instructions": ""
+    },
+    "pizzas": [
+     {
+      "quantity": 1,
+      "sizeId": "LG",
+      "crustId": "HANDTOSS",
+      "sections": [
+       {
+        "pizzaId": "TEST",
+        "modifications": []
+       }
+      ]
+     }
+    ],
+    "sides": [],
+    "beverages": [],
+    "packages": []
+   },
+   "orderId": 123,
+   "expiresAt": "2100-01-01T00:10:00.000Z",
+   "resultCode": null,
+   "cards": [
+    {
+     "cardId": "card_1",
+     "brand": "visa",
+     "lastFour": "1234",
+     "expiryMonth": "12",
+     "expiryYear": "2030"
+    }
+   ]
+  }
+ },
+ "provider": {
+  "orders": 1,
+  "payments": 0
+ },
+ "files": [
+  {
+   "path": "config/dominos-mcp/session.enc",
+   "mode": "600",
+   "hex": "7b2276223a312c22736572766572223a22646f6d696e6f732d6d6370222c2270726f66696c65223a2264656661756c74222c22707572706f7365223a2273657373696f6e222c22736368656d61223a312c2267656e65726174696f6e223a312c226b65794964223a226c6f63616c222c226e6f6e6365223a226f6232576162364455794f52317a6270227d0a3461434e3562663842695a70374e5549344b756e313059582d47503435676e56654b4f675a7650747634666443573861324346506e4a62466f47437364747646486b387057344c3830415a724853596b73424b487270716f644c767858736347583075416474654b544d7444546b7053354a3730346e74484e554c4670367357335266775a70634b4c4169326d6b4f6148624359546646746a6e6277714f7279303951456f6e694e316b6a574b6e6a6f6c6f6a34386d673463764e594f5152546e5875610a"
+  },
+  {
+   "path": "config/dominos-mcp/session.enc.marker",
+   "mode": "600",
+   "hex": "7b226261636b656e64223a22656e637279707465642d66696c65222c226b6579536f75726365223a226c6f63616c2d66696c65222c226b65794964223a226c6f63616c222c2270726f66696c65223a2264656661756c74222c226d69677261746564223a747275652c2267656e65726174696f6e223a317d0a"
+  },
+  {
+   "path": "data/family-mcp/keys/dominos-mcp.default.key",
+   "mode": "600",
+   "hex": "ac587b9bac8a70e4e3ac9c23cb84d20f28eaabbd4ea502fe01770c92ce9652c4"
+  },
+  {
+   "path": "session.json.checkouts/b17ff0ec-b20a-46bd-a48a-c49dcc41e388.json",
+   "mode": "600",
+   "text": "{\"id\":\"b17ff0ec-b20a-46bd-a48a-c49dcc41e388\",\"quoteId\":\"ec2c49c9-fcda-4f30-a48a-8300580f9c57\",\"username\":\"3545550123\",\"total\":2500,\"cart\":{\"fulfillment\":{\"type\":\"pickup\",\"storeId\":\"1\",\"instructions\":\"\"},\"pizzas\":[{\"quantity\":1,\"sizeId\":\"LG\",\"crustId\":\"HANDTOSS\",\"sections\":[{\"pizzaId\":\"TEST\",\"modifications\":[]}]}],\"sides\":[],\"beverages\":[],\"packages\":[]},\"state\":\"ready\",\"expiresAt\":4102445400000,\"orderId\":123,\"cards\":[{\"id\":\"private-vault-token\",\"type\":\"scheme\",\"brand\":\"visa\",\"lastFour\":\"1234\",\"expiryMonth\":\"12\",\"expiryYear\":\"2030\"}],\"orderGuid\":\"synthetic-order-guid\",\"sessionId\":\"synthetic-session\",\"sessionData\":\"private-rotated-session\",\"clientKey\":\"private-client-key\"}\n"
+  },
+  {
+   "path": "session.json.checkouts/ec2c49c9-fcda-4f30-a48a-8300580f9c57.json",
+   "mode": "600",
+   "text": "{\"id\":\"ec2c49c9-fcda-4f30-a48a-8300580f9c57\",\"username\":\"3545550123\",\"cart\":{\"fulfillment\":{\"type\":\"pickup\",\"storeId\":\"1\",\"instructions\":\"\"},\"pizzas\":[{\"quantity\":1,\"sizeId\":\"LG\",\"crustId\":\"HANDTOSS\",\"sections\":[{\"pizzaId\":\"TEST\",\"modifications\":[]}]}],\"sides\":[],\"beverages\":[],\"packages\":[]},\"total\":2500,\"createdAt\":4102444800000,\"expiresAt\":4102445100000,\"checkoutId\":\"b17ff0ec-b20a-46bd-a48a-c49dcc41e388\"}\n"
+  }
+ ]
+}

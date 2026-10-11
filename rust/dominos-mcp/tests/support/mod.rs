@@ -322,6 +322,40 @@ pub fn iso(ms: i64) -> String {
     )
 }
 
+/// Lays out the frozen TypeScript store state `name` (fixtures/store) in a fresh home: every file
+/// with its bytes and permission bits, its folders private. Returns the home and the frozen value.
+pub fn plant(name: &str) -> (Home, Value) {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/store")
+        .join(format!("{name}.json"));
+    let frozen: Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+    let home = Home::new(name);
+
+    for entry in frozen["files"].as_array().unwrap() {
+        let path = home.path(entry["path"].as_str().unwrap());
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path.parent().unwrap())
+            .unwrap();
+        let bytes = match entry.get("text") {
+            Some(text) => text.as_str().unwrap().as_bytes().to_vec(),
+            None => hex(entry["hex"].as_str().unwrap()),
+        };
+        fs::write(&path, bytes).unwrap();
+        let mode = u32::from_str_radix(entry["mode"].as_str().unwrap(), 8).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    (home, frozen)
+}
+
+fn hex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
+        .collect()
+}
+
 /// The first exchange for `path` (query ignored) in the frozen parity case `name`.
 pub fn frozen_exchange(name: &str, path: &str) -> Value {
     let file = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1043,6 +1077,14 @@ impl Fixture {
             true => home.legacy(expired, "synthetic"),
             false => home.seed(expired),
         }
+        Self::in_home(home, first)
+    }
+
+    /// The provider and its fake for a home already laid out.
+    pub fn in_home(
+        home: Home,
+        first: impl Fn(&Provider, &Request) -> Option<Reply> + Send + Sync + 'static,
+    ) -> Self {
         let provider = Provider::default();
         let answer = provider.clone();
         let upstream = Upstream::new(move |request| {

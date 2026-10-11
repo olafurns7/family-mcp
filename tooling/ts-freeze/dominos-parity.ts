@@ -17,6 +17,10 @@
 // and the scenario tables are the parity scripts', copied without change between the markers below;
 // the copied code changed only where this workspace's lint requires (marked `lint:`), not in
 // behaviour. Every value is synthetic. PR 3 deletes this script with the TypeScript sources.
+//
+// The `store` set instead freezes what the TypeScript package leaves on disk in the states
+// tests/ts/interop.test.ts had the TypeScript side write and the binary continue, for
+// rust/dominos-mcp/tests/money.rs and persistence.rs (see that set's PROVENANCE.md).
 import { strict as assert } from 'node:assert';
 import {
   existsSync,
@@ -44,17 +48,19 @@ import {
 } from '../../packages/session-store/src/index.ts';
 import {
   SESSION_MAX_BYTES,
+  login as referenceLogin,
   migrate,
   saveSession,
   type Session,
 } from '../../packages/dominos-mcp/src/auth.ts';
+import { DominosClient as Reference } from '../../packages/dominos-mcp/src/client.ts';
 import { parseMenu } from '../../packages/dominos-mcp/src/catalog.ts';
 import { cartInput } from '../../packages/dominos-mcp/src/schemas.ts';
 
 const [output, set = 'parity'] = process.argv.slice(2);
 
-if (output === undefined || (set !== 'parity' && set !== 'contract'))
-  throw new RangeError('Usage: dominos-parity.ts OUTPUT_DIRECTORY [parity|contract]');
+if (output === undefined || !['parity', 'contract', 'store'].includes(set))
+  throw new RangeError('Usage: dominos-parity.ts OUTPUT_DIRECTORY [parity|contract|store]');
 
 if (existsSync(output) && readdirSync(output).length)
   throw new RangeError('The output directory must be empty or absent.');
@@ -1708,10 +1714,164 @@ function pack(text: string): string {
   );
 }
 
+// ---- store: what the TypeScript package left on disk for interop.test.ts ----
+/** A fixed clock far ahead, so no frozen session, quote or checkout has expired when it is read. */
+const FROZEN_NOW = Date.UTC(2100, 0, 1);
+
+/** interop.test.ts `request`: its login's token exchange and account read. */
+const interopRequest = async (url: string): Promise<Response> =>
+  url.endsWith('/token')
+    ? Response.json({
+        access_token: 'interop-access',
+        refresh_token: 'interop-refresh',
+        username: '3545550123',
+        token_type: 'bearer',
+        expires_in: 3600,
+      })
+    : Response.json(profile);
+
+/** fixtures.ts `setup()` on the TypeScript side: a session migrated into the store. */
+async function migrated(path: string): Promise<void> {
+  await saveSession(path, saved());
+  assert.equal(await migrate(path), 'migrated');
+}
+
+/** The package's client in this process, against `provider`, for `work`. */
+async function client<T>(
+  path: string,
+  provider: Provider,
+  work: (reference: Reference) => Promise<T>,
+): Promise<T> {
+  const reference = new Reference(path, provider.request);
+
+  try {
+    return await work(reference);
+  } finally {
+    await reference.close();
+  }
+}
+
+type StoreState = {
+  name: string;
+  case: string;
+  run: (path: string, provider: Provider) => Promise<object>;
+};
+
+const payment = (created: { checkoutId: string; total: number }) => ({
+  checkoutId: created.checkoutId,
+  cardId: 'card_1',
+  expectedTotal: created.total,
+  confirm: true as const,
+});
+
+/** The TypeScript quote, then its checkout. */
+async function quoteAndCheckout(reference: Reference) {
+  const quoted = await reference.quoteOrder(cart);
+
+  const created = await reference.createCheckout({
+    quoteId: quoted.quoteId,
+    expectedTotal: quoted.total,
+  });
+
+  return { quote: quoted, checkout: created };
+}
+
+const storeStates: StoreState[] = [
+  {
+    name: 'session',
+    case: 'interop.test.ts:23',
+    run: async (path) => ({
+      replaced: await referenceLogin('5550123', '123456', path, interopRequest),
+    }),
+  },
+  {
+    name: 'quoted',
+    case: 'interop.test.ts:45',
+    run: async (path, provider) => {
+      await migrated(path);
+
+      return client(path, provider, async (reference) => ({
+        quote: await reference.quoteOrder(cart),
+      }));
+    },
+  },
+  {
+    name: 'checkout-ready',
+    case: 'interop.test.ts:45',
+    run: async (path, provider) => {
+      await migrated(path);
+
+      return client(path, provider, quoteAndCheckout);
+    },
+  },
+  {
+    name: 'checkout-authorised',
+    case: 'interop.test.ts:45',
+    run: async (path, provider) => {
+      await migrated(path);
+
+      return client(path, provider, async (reference) => {
+        const made = await quoteAndCheckout(reference);
+
+        return { ...made, paid: await reference.paySavedCard(payment(made.checkout)) };
+      });
+    },
+  },
+];
+
+/** Every file under `home`, sorted, with its permission bits and bytes. */
+function storeFiles(home: string) {
+  return readdirSync(home, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => {
+      const path = join(entry.parentPath, entry.name);
+      const bytes = readFileSync(path);
+      const mode = (lstatSync(path).mode & 0o777).toString(8);
+      const name = relative(home, path);
+
+      return name.endsWith('.json')
+        ? { path: name, mode, text: bytes.toString('utf8') }
+        : { path: name, mode, hex: bytes.toString('hex') };
+    })
+    .toSorted((a, b) => (a.path < b.path ? -1 : 1));
+}
+
+async function freezeStores(directory: string): Promise<void> {
+  const realNow = Date.now;
+  Date.now = () => FROZEN_NOW;
+
+  try {
+    for (const state of storeStates) {
+      const home = join(scratch, `store-${state.name}`);
+      mkdirSync(home, { recursive: true, mode: 0o700 });
+      const provider = new Provider();
+
+      const result = await inHome(home, () => state.run(join(home, 'session.json'), provider));
+
+      const frozen = {
+        id: `dominos/store/${state.name}`,
+        case: state.case,
+        now: FROZEN_NOW,
+        result,
+        provider: { orders: provider.orders, payments: provider.payments },
+        files: storeFiles(home),
+      };
+
+      const text = JSON.stringify(frozen, null, 1);
+
+      if (text.includes(scratch)) throw new RangeError(`${state.name}: a value names the scratch.`);
+      writeFileSync(join(directory, `${state.name}.json`), `${text}\n`);
+      process.stdout.write(`${state.name}: ${frozen.files.length} files\n`);
+    }
+  } finally {
+    Date.now = realNow;
+  }
+}
+
 mkdirSync(output, { recursive: true });
 
 try {
-  for (const item of set === 'parity' ? cases : contracts) {
+  for (const item of set === 'parity' ? cases : set === 'contract' ? contracts : []) {
     const homes: string[] = [];
 
     for (const [index, spec] of item.homes.entries())
@@ -1724,6 +1884,8 @@ try {
     writeFileSync(join(output, `${item.name}.json`), `${pack(text)}\n`);
     process.stdout.write(`${item.name}: ${item.homes.length} homes\n`);
   }
+
+  if (set === 'store') await freezeStores(output);
 } finally {
   server.closeAllConnections();
   server.close();
