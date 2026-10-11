@@ -12,7 +12,12 @@ this binary through the same cases and compares the outcomes, without Bun.
   - Bun 1.4.2 on macOS;
   - from `rust/`:
     `FAMILY_MCP_BUN="$(command -v bun)" KRONAN_PTY_FREEZE="$PWD/kronan-mcp/tests/fixtures/pty/macos.json" cargo test --locked --all-features -p kronan-mcp --test prompt freeze_the_typescript_prompt_outcomes -- --ignored`.
-- Linux: not frozen yet (open in the 1b report).
+- `linux.json` (same id):
+  - source and generator as `macos.json`, with `KRONAN_PTY_FREEZE=/out/linux.json`;
+  - Bun 1.4.2 for Linux (arm64, copied from the `oven/bun:1.4.2` image) in a
+    `rust:1.99.0-bookworm` (arm64) container, the worktree mounted read-only;
+  - every case equals `macos.json` except the hang-up, where Linux leaves no terminal mode:
+    the hang-up case is `Cancelled: the terminal input closed.` with no terminal mode left. Bun met only this outcome in the freeze and five live Linux runs, and the binary's reader (`src/terminal.rs`) ends the same way on end of input and on a failed read, so Krónan has no second hang-up outcome to freeze.
 
 The token is synthetic. The prompt ran with the store test seam in a scratch home; nothing
 reached Krónan or the real store.

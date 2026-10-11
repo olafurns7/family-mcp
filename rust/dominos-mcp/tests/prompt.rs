@@ -452,11 +452,17 @@ fn freeze_the_typescript_prompt_outcomes() {
         .map(|(keys, end)| {
             let ts = run(Some(&bun), keys, end);
             check_typescript(&ts, keys, end);
-            serde_json::json!({
+            let mut case = serde_json::json!({
                 "keys": String::from_utf8_lossy(keys),
                 "end": end.name(),
                 "outcome": ts.json(),
-            })
+            });
+
+            // On Linux a hang-up has two outcomes; the pair is frozen with the one Bun met.
+            if cfg!(target_os = "linux") && matches!(end, End::HangUp) {
+                case["allowed"] = linux_hang_up_outcomes().iter().map(Outcome::json).collect();
+            }
+            case
         })
         .collect();
     let frozen = serde_json::json!({
@@ -491,6 +497,16 @@ fn the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli() {
         assert_eq!(case["end"], end.name(), "{keys:?}");
         let ts = Outcome::from_json(&case["outcome"]);
         check_typescript(&ts, keys, end);
+
+        if let Some(allowed) = case.get("allowed") {
+            let allowed: Vec<Outcome> = allowed
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(Outcome::from_json)
+                .collect();
+            assert_eq!(allowed, linux_hang_up_outcomes(), "{keys:?}");
+        }
         compare(run(None, keys, end), &ts, keys, end);
     }
 }

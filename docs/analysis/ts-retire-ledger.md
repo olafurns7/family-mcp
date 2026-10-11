@@ -118,7 +118,7 @@ Per suite:
 | suite | cases | fixture row | existing Rust test | new executing Rust test | obsolete |
 | --- | --- | --- | --- | --- | --- |
 | bun runner abler-mcp | 5 | 0 | 0 | 0 | 5 |
-| bun runner dominos-mcp | 10 | 0 | 1 | 0 | 9 |
+| bun runner dominos-mcp | 12 | 0 | 2 | 0 | 10 |
 | bun runner family-store | 11 | 0 | 0 | 8 | 3 |
 | bun runner infomentor-mcp | 5 | 0 | 0 | 0 | 5 |
 | bun runner inna-mcp | 8 | 0 | 2 | 0 | 6 |
@@ -140,7 +140,7 @@ Per suite:
 | package kronan-mcp | 37 | 1 | 3 | 0 | 33 |
 | package mcp-runtime | 2 | 0 | 1 | 1 | 0 |
 | package session-store | 73 | 0 | 52 | 18 | 3 |
-| **all** | 710 | 199 | 88 | 195 | 228 |
+| **all** | 712 | 199 | 89 | 195 | 229 |
 
 Per category:
 
@@ -148,7 +148,7 @@ Per category:
 | --- | --- | --- | --- | --- |
 | money | 46 | 3 | 34 | 27 |
 | auth/renewal | 37 | 3 | 46 | 42 |
-| pty/signal | 9 | 12 | 26 | 25 |
+| pty/signal | 9 | 13 | 26 | 26 |
 | lock/store | 26 | 60 | 81 | 59 |
 | contract | 81 | 10 | 7 | 43 |
 | other | 0 | 0 | 1 | 32 |
@@ -346,7 +346,8 @@ the lead checks before fixtures are generated.
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/browser-login.test.ts:793` | auth login errors when an ignored launcher child may still be running | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | rust/abler-mcp/tests/browser_login.rs::auth_login_errors_when_an_ignored_launcher_child_may_still_be_running |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/browser-login.test.ts:830` | auth login rediscovers an Abler tab after its pipe session detaches | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/browser-login/src/login.rs::a_followed_tab_is_found_on_every_attempt_and_attached_again_when_it_changes |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/integration.test.ts:1198` | SIGTERM aborts an in-flight Abler fetch and releases its session lock | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/abler-mcp/tests/cli.rs::sigterm_and_end_of_input_cancel_a_hanging_request_and_release_the_lock |
-| bun runner dominos-mcp | `rust/dominos-mcp/tests/prompt.rs:261` | the_hidden_prompt_reads_keystrokes_like_the_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/dominos-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_typescript_cli: the Rust PTY driver stays; only its TypeScript run is replaced by the frozen per-platform outcomes dominos/pty/the-hidden-prompt-reads-keystrokes-like-the-typescript-cli |
+| bun runner dominos-mcp | `rust/dominos-mcp/tests/prompt.rs:378` | the_hidden_prompt_reads_keystrokes_like_the_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/dominos-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_typescript_cli: the Rust PTY driver stays; its TypeScript run is replaced by the frozen per-platform outcomes dominos/pty/the-hidden-prompt-reads-keystrokes-like-the-typescript-cli in rust/dominos-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli (macOS and Linux frozen, Q1 81106; Linux hang-up: the frozen EOF-cancel or EIO-generic pair, the binary must give one) |
+| bun runner dominos-mcp | `rust/dominos-mcp/tests/prompt.rs:481` | the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/dominos-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli: the replacement itself, without Bun; listed only while prompt.rs reads FAMILY_MCP_BUN |
 | drop-in infomentor-mcp | `rust/infomentor-mcp/tests/ts/integration.test.ts:1602` | HTTP cancellation aborts in-flight requests; closing a client drains reads | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | rust/infomentor-mcp/tests/signals.rs::http_cancellation_aborts_in_flight_requests_and_closing_drains_reads |
 | parity infomentor-mcp | `rust/infomentor-mcp/tests/ts/parity.ts:1123` | setup-stalled | cargo test --all-features (test-origin) | pty/signal | fixture row | infomentor/parity/setup-stalled (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity infomentor-mcp | `rust/infomentor-mcp/tests/ts/parity.ts:818` | login-timeout | cargo test --all-features (test-origin) | pty/signal | fixture row | infomentor/parity/login-timeout (executing replay of every step: outputs, exit codes, request list, store and files) |
@@ -373,7 +374,7 @@ the lead checks before fixtures are generated.
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:562` | absence-close-submit | cargo test --all-features (test-origin) | pty/signal | fixture row | inna/parity/absence-close-submit (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:575` | absence-sigint-submit | cargo test --all-features (test-origin) | pty/signal | fixture row | inna/parity/absence-sigint-submit (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:588` | absence-sigterm-submit | cargo test --all-features (test-origin) | pty/signal | fixture row | inna/parity/absence-sigterm-submit (executing replay of every step: outputs, exit codes, request list, store and files) |
-| bun runner kronan-mcp | `rust/kronan-mcp/tests/prompt.rs:236` | the_hidden_prompt_reads_keystrokes_like_the_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/kronan-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_typescript_cli: the Rust PTY driver stays; its TypeScript run is replaced by the frozen per-platform outcomes kronan/pty/the-hidden-prompt-reads-keystrokes-like-the-typescript-cli in rust/kronan-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli (macOS frozen; Linux open, Q1 81106) |
+| bun runner kronan-mcp | `rust/kronan-mcp/tests/prompt.rs:236` | the_hidden_prompt_reads_keystrokes_like_the_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/kronan-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_typescript_cli: the Rust PTY driver stays; its TypeScript run is replaced by the frozen per-platform outcomes kronan/pty/the-hidden-prompt-reads-keystrokes-like-the-typescript-cli in rust/kronan-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli (macOS and Linux frozen, Q1 81106; Linux hang-up: the one outcome, no terminal mode left) |
 | bun runner kronan-mcp | `rust/kronan-mcp/tests/prompt.rs:334` | the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/kronan-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli: the replacement itself, without Bun; listed only while prompt.rs reads FAMILY_MCP_BUN |
 | drop-in kronan-mcp | `rust/kronan-mcp/tests/ts/integration.test.ts:2500` | SIGTERM aborts a pending API request and closes the stdio process | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | rust/kronan-mcp/tests/signals.rs::sigterm_aborts_a_pending_request_and_closes_the_stdio_process |
 | package dominos-mcp | `packages/dominos-mcp/test/integration.test.ts:685` | store failures have fixed messages, change no file and never fall back | bun test (turbo test) | lock/store | new executing Rust test | rust/dominos-mcp/tests/session.rs::store_failures_change_no_file_and_never_fall_back — verified 2026-10-11 (1b): both bodies read, rust/dominos-mcp/src/store.rs::every_store_failure_has_a_fixed_text_without_its_underlying_cause proves less (it checks only that no text names its cause), so this row is an executing test through the binary; the injected key-provider codes are real failures there (an unsafe key refused at startup, a missing key, another key, a record without its marker) |
@@ -804,6 +805,7 @@ runners, helpers).
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/parity.ts:85` | invalid tool input list | cargo test --all-features (test-origin) | contract | fixture row | dominos/parity/invalid-tool-input-list (replay: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/reads-parity.ts:6` | reads-parity | cargo test --all-features (test-origin) | contract | fixture row | dominos/parity/reads-parity (replay: outputs, exit codes, request list, store and files) |
 | bun runner dominos-mcp | `rust/dominos-mcp/tests/parity.rs:13` | every_scenario_matches_the_typescript_package | cargo test --all-features (test-origin) | other | obsolete | runner of the parity rows of dominos-mcp; replaced by rust/dominos-mcp/tests/replay.rs::every_frozen_parity_scenario_replays (asserts the loaded scenario count) |
+| bun runner dominos-mcp | `rust/dominos-mcp/tests/prompt.rs:447` | freeze_the_typescript_prompt_outcomes | cargo test --all-features (test-origin); ignored helper (run by hand to freeze outcomes) | pty/signal | obsolete | ignored freeze helper, not a case: writes dominos/pty/the-hidden-prompt-reads-keystrokes-like-the-typescript-cli (tests/fixtures/pty/PROVENANCE.md); PR 3 deletes it with the TypeScript CLI |
 | bun runner dominos-mcp | `rust/dominos-mcp/tests/typescript.rs:46` | the_public_menu_and_mcp_case_passes_against_this_binary | cargo test --all-features (test-origin) | other | obsolete | runner of the drop-in rows of rust/dominos-mcp/tests/ts; each case has its own row |
 | bun runner dominos-mcp | `rust/dominos-mcp/tests/typescript.rs:51` | the_sms_auth_cases_pass_against_this_binary | cargo test --all-features (test-origin) | other | obsolete | runner of the drop-in rows of rust/dominos-mcp/tests/ts; each case has its own row |
 | bun runner dominos-mcp | `rust/dominos-mcp/tests/typescript.rs:55` | the_auth_rotation_and_store_cases_pass_against_this_binary | cargo test --all-features (test-origin) | other | obsolete | runner of the drop-in rows of rust/dominos-mcp/tests/ts; each case has its own row |
