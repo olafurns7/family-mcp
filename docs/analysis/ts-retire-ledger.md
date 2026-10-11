@@ -20,24 +20,44 @@ fills the rows of its suites; PR 2 starts after all four have merged:
 ## Enumeration
 
 ```sh
-node tooling/ts-freeze/ledger.mjs list    # one tab-separated line per case: suite, file:line, name, variants
-node tooling/ts-freeze/ledger.mjs check   # every enumerated case has exactly one complete row here
+node tooling/ts-freeze/ledger.mjs list       # one tab-separated line per case: suite, file:line, name, variants
+node tooling/ts-freeze/ledger.mjs check      # the self-check, then: every case has exactly one complete row here
+node tooling/ts-freeze/ledger.mjs selfcheck  # the adversarial self-check alone
 ```
 
-The enumerator is static, so a reviewer can rerun it on any checkout. It reads:
+The enumerator is static, so a reviewer can rerun it on any checkout. It reads tokens, not lines
+(comments, strings, templates and regular expressions are skipped whole), so a registration is
+found wherever it sits: in a helper or loop, after an `if`, with space or a line break before its
+`(`. It reads:
 
-- every `test(`/`it(` site in `packages/*/test/**/*.test.ts` (the five servers, `mcp-runtime` and
-  `session-store`) and `rust/*/tests/ts/**/*.test.ts` (the drop-ins), including the
-  `skipIf`/`if (process.platform …)`/`(… ? test : () => undefined)` platform forms. There is no
-  `describe` and no `test.each` in these files. A `test(` inside a loop is one source site; its
-  variants column lists the loop values, each a run-time case;
-- the `scenarios` array of each `rust/*/tests/ts/parity.ts`. Domino's parity has no named scenarios,
-  so its rows are its argument list, tool surface, invalid-input list and unsafe-folder check, the
-  named scenarios of `money-parity.ts`, and one row each for `reads-parity.ts` and `auth-parity.ts`;
+- every `test`/`it` registration in `packages/*/test/**/*.test.ts` (the five servers, `mcp-runtime`
+  and `session-store`) and `rust/*/tests/ts/**/*.test.ts` (the drop-ins), with its modifiers
+  (`skip`, `only`, `todo`, `skipIf(…)` and the like) and the `if (…)` and
+  `(… ? test : () => undefined)` platform forms. A registration in a loop or helper is one source
+  site; its variants column lists the loop values, each a run-time case;
+- the `scenarios` array of each `rust/*/tests/ts/parity.ts`: the `name` of each element object, or
+  of each object a spread element maps to (a mapped or interpolated name is a loop site). A `name`
+  key nested deeper (a cookie, a call) is data. Domino's parity has no named scenarios, so its rows
+  are its argument list, tool surface, invalid-input list and unsafe-folder check (each found
+  exactly once), the scenarios of `money-parity.ts`, and one row each for `reads-parity.ts` and
+  `auth-parity.ts`;
 - every `#[test]` function of a `rust/*/tests/*.rs` file that reads `FAMILY_MCP_BUN`, ignored
   helpers included;
 - every other file under those test trees, listed below as harness files that carry no assertion of
   their own.
+
+A form it cannot read stops the run instead of yielding no case: an aliased, namespace or
+`describe` import from `bun:test`, a computed (`test[…]`) or unknown (`test.each`) member, `test`
+used other than as a call, a test name that is not one literal, a scenario `name` that is not
+`name: value`, and any Rust test attribute other than `#[test]`. Cases are keyed by their full site
+and name; two cases with one identity stop the run, and two same-name sites are two cases. `check`
+first runs the self-check, which feeds each of these forms (and the plain, modifier, helper, inline
+`if`, spaced, split, commented, conditional and looped forms) to the enumerator and fails unless
+each is either found, so that a ledger without its row fails, or refused.
+
+The token-aware enumerator found four Domino's `money-parity.ts` sites the earlier line-based one
+had missed (mapped scenario names, 30 run-time scenarios); they are rows here since the 1a review
+(finding 1). Every other case is unchanged.
 
 ## Outcomes
 
@@ -109,7 +129,7 @@ Per suite:
 | drop-in inna-mcp | 85 | 14 | 6 | 65 | 0 |
 | drop-in kronan-mcp | 38 | 9 | 1 | 28 | 0 |
 | parity abler-mcp | 15 | 15 | 0 | 0 | 0 |
-| parity dominos-mcp | 30 | 30 | 0 | 0 | 0 |
+| parity dominos-mcp | 34 | 34 | 0 | 0 | 0 |
 | parity infomentor-mcp | 44 | 44 | 0 | 0 | 0 |
 | parity inna-mcp | 38 | 38 | 0 | 0 | 0 |
 | parity kronan-mcp | 22 | 22 | 0 | 0 | 0 |
@@ -120,13 +140,13 @@ Per suite:
 | package kronan-mcp | 37 | 1 | 3 | 0 | 33 |
 | package mcp-runtime | 2 | 0 | 1 | 1 | 0 |
 | package session-store | 73 | 0 | 52 | 17 | 4 |
-| **all** | 704 | 195 | 90 | 191 | 228 |
+| **all** | 708 | 199 | 90 | 191 | 228 |
 
 Per category:
 
 | category | fixture row | existing Rust test | new executing Rust test | obsolete |
 | --- | --- | --- | --- | --- |
-| money | 42 | 4 | 33 | 27 |
+| money | 46 | 4 | 33 | 27 |
 | auth/renewal | 37 | 3 | 46 | 42 |
 | pty/signal | 9 | 11 | 26 | 24 |
 | lock/store | 26 | 62 | 78 | 60 |
@@ -147,12 +167,15 @@ the lead checks before fixtures are generated.
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/intent.test.ts:147` | host cancellation does not change the payment outcome or abort the provider | cargo test --all-features (test-origin) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::host_cancellation_does_not_change_the_payment_outcome_or_abort_the_provider |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/intent.test.ts:92` | a killed Rust payment process leaves submitting intent and a restart sends nothing | cargo test --all-features (test-origin) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::a_killed_payment_process_leaves_submitting_intent_and_a_restart_sends_nothing |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/interop.test.ts:45` | ${writer} quote and checkout records continue in the other language without a second send | cargo test --all-features (test-origin); loop: writer in ts, rust (2) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::frozen_typescript_quote_and_checkout_records_continue_without_a_second_send |
+| parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:113` | mode | cargo test --all-features (test-origin); loop: mode in order-lost, order-rejected, order-schema, order-total, setup-amount, setup-currency, setup-id, setup-date, setup-schema (9) | money | fixture row | dominos/parity/{order-lost,order-rejected,order-schema,order-total,setup-amount,setup-currency,setup-id,setup-date,setup-schema}, one per loop value (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:114` | payment confirmed total changed | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-confirmed-total-changed (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:115` | payment account changed | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-account-changed (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:116` | payment expired | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-expired (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:117` | payment card missing | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-card-missing (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:118` | payment card numeric overflow | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-card-numeric-overflow (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:119` | payment empty session refuses without send | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-empty-session-refuses-without-send (executing replay of every step: outputs, exit codes, request list, store and files) |
+| parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:129` | payment already ${state} | cargo test --all-features (test-origin); loop: state in creating, submitting, authorised, refused, pending, requires_action, unknown, amount_changed (8) | money | fixture row | dominos/parity/payment-already-{creating,submitting,authorised,refused,pending,requires-action,unknown,amount-changed}, one per loop value (executing replay of every step: outputs, exit codes, request list, store and files) |
+| parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:140` | mode | cargo test --all-features (test-origin); loop: mode in Authorised, Refused, Cancelled, Error, Pending, action, payment-schema, payment-401, payment-lost (9) | money | fixture row | dominos/parity/{authorised,refused,cancelled,error,pending,action,payment-schema,payment-401,payment-lost}, one per loop value (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:141` | get different account | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/get-different-account (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:142` | get unknown unpaid | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/get-unknown-unpaid (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:143` | get unknown paid | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/get-unknown-paid (executing replay of every step: outputs, exit codes, request list, store and files) |
@@ -165,6 +188,7 @@ the lead checks before fixtures are generated.
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:65` | quote pickup | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/quote-pickup (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:67` | quote delivery | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/quote-delivery (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:80` | quote menu selection refusal | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/quote-menu-selection-refusal (executing replay of every step: outputs, exit codes, request list, store and files) |
+| parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:85` | mode | cargo test --all-features (test-origin); loop: mode in quote-zero, quote-fraction, quote-401, store-disabled (4) | money | fixture row | dominos/parity/{quote-zero,quote-fraction,quote-401,store-disabled}, one per loop value (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:89` | create ready | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/create-ready (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:90` | quote account changed | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/quote-account-changed (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:91` | quote confirmed total changed | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/quote-confirmed-total-changed (executing replay of every step: outputs, exit codes, request list, store and files) |
