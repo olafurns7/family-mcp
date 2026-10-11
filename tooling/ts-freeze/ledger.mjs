@@ -1027,7 +1027,7 @@ function selfcheck() {
     misses.push(`scenario array: ${JSON.stringify(mapped)}`);
 
   // Every other element or member form stops the run.
-  for (const [form, elements] of [
+  for (const [form, body] of [
     ['shorthand name', '{ name }'],
     ['quoted key', '{ "name": "lost" }'],
     ['quoted other key', "{ name: 'lost', 'steps': [] }"],
@@ -1045,7 +1045,7 @@ function selfcheck() {
     ['hole', "{ name: 'a' }, , { name: 'b' }"],
   ]) {
     try {
-      const found = scenariosIn('parity probe', 'probe.ts', `const scenarios = [${elements}];`);
+      const found = scenariosIn('parity probe', 'probe.ts', `const scenarios = [${body}];`);
       misses.push(`scenario ${form}: not refused, found ${JSON.stringify(found)}`);
     } catch {
       // Refused, as required.
