@@ -7,6 +7,16 @@ fixture suite may carry many rows, and every row names the behaviour it keeps.
 
 Snapshot: `origin/main` 41d6f98 (after #21 and #22), branch `feat/ts-retire-freeze`.
 
+PR 1 is split into four additive PRs, each reviewed on its own (lead decision, taskr 80757). Each
+fills the rows of its suites; PR 2 starts after all four have merged:
+
+- **1a**: this ledger, the Krónan OpenAPI byte-hash gate, and family-store: golden formats, the
+  store-record persistence matrix, Rust-versus-Rust process tests in place of
+  `rust/family-store/tests/interop.rs`, and the `session-store` and `mcp-runtime` rows;
+- **1b**: kronan-mcp and dominos-mcp;
+- **1c**: inna-mcp;
+- **1d**: abler-mcp and infomentor-mcp.
+
 ## Enumeration
 
 ```sh
@@ -48,6 +58,16 @@ The enumerator is static, so a reviewer can rerun it on any checkout. It reads:
   PR 1 replaces each planned name with the implemented one.
 - **obsolete**: the case only exercises deleted TypeScript machinery, or it is a TypeScript run of a
   case whose run against the binary has its own row. The target gives the reason.
+
+Parity rows in the safety categories are fixture rows on three conditions (lead decision, taskr
+80757), which the replay engine and these rows keep:
+
+1. every money and auth replay asserts the full request list (method, path, body, count, order),
+   the journal or record state and the files left behind; output text alone is never enough;
+2. for each crate, a mutation proves that one money replay fails on an extra send and one fails on
+   a changed journal state (recorded in the PR report);
+3. timing- and restart-dependent behaviour (a lost response, a restart or kill mid-send, renewal
+   timers, lock takeover) stays in its dedicated executing row; a replay never stands in for it.
 
 Categories: `money` (one-send consequential writes: orders, payments, absence requests),
 `auth/renewal`, `pty/signal`, `lock/store` (store, migrate and logout precedence, locks, durable
