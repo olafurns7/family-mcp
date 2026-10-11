@@ -124,7 +124,7 @@ Per suite:
 | bun runner inna-mcp | 8 | 0 | 2 | 0 | 6 |
 | bun runner kronan-mcp | 8 | 0 | 2 | 0 | 6 |
 | drop-in abler-mcp | 43 | 11 | 6 | 26 | 0 |
-| drop-in dominos-mcp | 25 | 4 | 1 | 20 | 0 |
+| drop-in dominos-mcp | 25 | 4 | 0 | 21 | 0 |
 | drop-in infomentor-mcp | 25 | 3 | 3 | 19 | 0 |
 | drop-in inna-mcp | 85 | 14 | 6 | 65 | 0 |
 | drop-in kronan-mcp | 38 | 9 | 0 | 29 | 0 |
@@ -134,13 +134,13 @@ Per suite:
 | parity inna-mcp | 38 | 38 | 0 | 0 | 0 |
 | parity kronan-mcp | 22 | 22 | 0 | 0 | 0 |
 | package abler-mcp | 42 | 0 | 1 | 0 | 41 |
-| package dominos-mcp | 21 | 0 | 1 | 0 | 20 |
+| package dominos-mcp | 21 | 0 | 0 | 1 | 20 |
 | package infomentor-mcp | 32 | 4 | 5 | 2 | 21 |
 | package inna-mcp | 87 | 0 | 6 | 5 | 76 |
 | package kronan-mcp | 37 | 1 | 3 | 0 | 33 |
 | package mcp-runtime | 2 | 0 | 1 | 1 | 0 |
 | package session-store | 73 | 0 | 52 | 18 | 3 |
-| **all** | 710 | 199 | 90 | 193 | 228 |
+| **all** | 710 | 199 | 88 | 195 | 228 |
 
 Per category:
 
@@ -149,7 +149,7 @@ Per category:
 | money | 46 | 3 | 34 | 27 |
 | auth/renewal | 37 | 3 | 46 | 42 |
 | pty/signal | 9 | 12 | 26 | 25 |
-| lock/store | 26 | 62 | 79 | 59 |
+| lock/store | 26 | 60 | 81 | 59 |
 | contract | 81 | 10 | 7 | 43 |
 | other | 0 | 0 | 1 | 32 |
 
@@ -166,7 +166,7 @@ the lead checks before fixtures are generated.
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/intent.test.ts:11` | ${Type === Rust ? 'Rust' : 'TS'} ${phase} retains intent when post-send persistence fails | cargo test --all-features (test-origin); loop: Type in TS reference, Rust; phase in create, pay (4) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::checkout_and_payment_retain_intent_when_post_send_persistence_fails (TS-writer half: obsolete, no TS writer remains) |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/intent.test.ts:147` | host cancellation does not change the payment outcome or abort the provider | cargo test --all-features (test-origin) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::host_cancellation_does_not_change_the_payment_outcome_or_abort_the_provider |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/intent.test.ts:92` | a killed Rust payment process leaves submitting intent and a restart sends nothing | cargo test --all-features (test-origin) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::a_killed_payment_process_leaves_submitting_intent_and_a_restart_sends_nothing |
-| drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/interop.test.ts:45` | ${writer} quote and checkout records continue in the other language without a second send | cargo test --all-features (test-origin); loop: writer in ts, rust (2) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::frozen_typescript_quote_and_checkout_records_continue_without_a_second_send |
+| drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/interop.test.ts:45` | ${writer} quote and checkout records continue in the other language without a second send | cargo test --all-features (test-origin); loop: writer in ts, rust (2) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::frozen_typescript_quote_and_checkout_records_continue_without_a_second_send (frozen TS-written records dominos/store/quoted, checkout-ready and checkout-authorised; Rust-writer half obsolete: no TypeScript reader remains) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:113` | mode | cargo test --all-features (test-origin); loop: mode in order-lost, order-rejected, order-schema, order-total, setup-amount, setup-currency, setup-id, setup-date, setup-schema (9) | money | fixture row | dominos/parity/{order-lost,order-rejected,order-schema,order-total,setup-amount,setup-currency,setup-id,setup-date,setup-schema}, one per loop value (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:114` | payment confirmed total changed | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-confirmed-total-changed (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:115` | payment account changed | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-account-changed (executing replay of every step: outputs, exit codes, request list, store and files) |
@@ -376,7 +376,7 @@ the lead checks before fixtures are generated.
 | bun runner kronan-mcp | `rust/kronan-mcp/tests/prompt.rs:236` | the_hidden_prompt_reads_keystrokes_like_the_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/kronan-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_typescript_cli: the Rust PTY driver stays; its TypeScript run is replaced by the frozen per-platform outcomes kronan/pty/the-hidden-prompt-reads-keystrokes-like-the-typescript-cli in rust/kronan-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli (macOS frozen; Linux open, Q1 81106) |
 | bun runner kronan-mcp | `rust/kronan-mcp/tests/prompt.rs:334` | the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/kronan-mcp/tests/prompt.rs::the_hidden_prompt_reads_keystrokes_like_the_frozen_typescript_cli: the replacement itself, without Bun; listed only while prompt.rs reads FAMILY_MCP_BUN |
 | drop-in kronan-mcp | `rust/kronan-mcp/tests/ts/integration.test.ts:2500` | SIGTERM aborts a pending API request and closes the stdio process | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | rust/kronan-mcp/tests/signals.rs::sigterm_aborts_a_pending_request_and_closes_the_stdio_process |
-| package dominos-mcp | `packages/dominos-mcp/test/integration.test.ts:685` | store failures have fixed messages, change no file and never fall back | bun test (turbo test) | lock/store | existing Rust test | rust/dominos-mcp/src/store.rs::every_store_failure_has_a_fixed_text_without_its_underlying_cause (+ N session.rs::store_failures_change_no_file_and_never_fall_back) |
+| package dominos-mcp | `packages/dominos-mcp/test/integration.test.ts:685` | store failures have fixed messages, change no file and never fall back | bun test (turbo test) | lock/store | new executing Rust test | rust/dominos-mcp/tests/session.rs::store_failures_change_no_file_and_never_fall_back — verified 2026-10-11 (1b): both bodies read, rust/dominos-mcp/src/store.rs::every_store_failure_has_a_fixed_text_without_its_underlying_cause proves less (it checks only that no text names its cause), so this row is an executing test through the binary; the injected key-provider codes are real failures there (an unsafe key refused at startup, a missing key, another key, a record without its marker) |
 | package infomentor-mcp | `packages/infomentor-mcp/test/collection.test.ts:161` | collection snapshots replay deltas, preserve context, and fail without advancing | bun test (turbo test) | lock/store | existing Rust test | rust/infomentor-mcp/src/collection.rs::snapshots_replay_deltas_preserve_context_and_fail_without_advancing |
 | package infomentor-mcp | `packages/infomentor-mcp/test/collection.test.ts:356` | partial feeds preserve their baselines through unchanged recovery | bun test (turbo test) | lock/store | existing Rust test | rust/infomentor-mcp/src/collection.rs::partial_feeds_preserve_their_baselines_through_unchanged_recovery |
 | package infomentor-mcp | `packages/infomentor-mcp/test/integration.test.ts:1585` | an oversized Retry-After is capped with rotated cookies and honoured by another client | bun test (turbo test) | lock/store | new executing Rust test | rust/infomentor-mcp/tests/session.rs::an_oversized_retry_after_is_capped_and_honoured_by_another_client |
@@ -464,11 +464,11 @@ the lead checks before fixtures are generated.
 | parity abler-mcp | `rust/abler-mcp/tests/ts/parity.ts:493` | collision | cargo test --all-features (test-origin) | lock/store | fixture row | abler/parity/collision (executing replay of every step: outputs, exit codes, request list, store and files) |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/startup.test.ts:41` | the CLI refuses to start on an unsafe store and touches nothing | cargo test --all-features (test-origin) | lock/store | new executing Rust test | rust/abler-mcp/tests/startup.rs::the_cli_refuses_to_start_on_an_unsafe_store_and_touches_nothing |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/startup.test.ts:72` | an earlier build’s macOS store keeps deciding, so no plaintext is imported over it | cargo test --all-features (test-origin); macOS only | lock/store | new executing Rust test | rust/abler-mcp/tests/startup.rs::an_earlier_builds_macos_store_keeps_deciding |
-| drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/auth-integration.test.ts:123` | the largest schema-valid session fits the store, so a refreshed one is always storable | cargo test --all-features (test-origin) | lock/store | existing Rust test | rust/dominos-mcp/src/store.rs::the_session_bound_and_schema_cover_the_largest_rotated_session |
+| drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/auth-integration.test.ts:123` | the largest schema-valid session fits the store, so a refreshed one is always storable | cargo test --all-features (test-origin) | lock/store | new executing Rust test | rust/dominos-mcp/tests/persistence.rs::the_largest_schema_valid_session_fits_the_store — verified 2026-10-11 (1b): both bodies read, rust/dominos-mcp/src/store.rs::the_session_bound_and_schema_cover_the_largest_rotated_session proves less (it checks the parse bound, not a store write and read-back), so this row is an executing test through the binary |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/auth-integration.test.ts:194` | a lost key fails closed until an explicit login replaces the store | cargo test --all-features (test-origin) | lock/store | new executing Rust test | rust/dominos-mcp/tests/session.rs::a_lost_key_fails_closed_until_an_explicit_login_replaces_the_store |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/auth-integration.test.ts:220` | migrate resumes on an empty store with a marker, and refuses it untouched while its key is missing | cargo test --all-features (test-origin) | lock/store | new executing Rust test | rust/dominos-mcp/tests/persistence.rs::migrate_resumes_on_an_empty_store_with_a_marker_and_refuses_without_its_key |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/auth-integration.test.ts:249` | a session path that aliases the store, its key or the checkouts is refused untouched | cargo test --all-features (test-origin) | lock/store | new executing Rust test | rust/dominos-mcp/tests/session.rs::a_session_path_that_aliases_the_store_its_key_or_the_checkouts_is_refused |
-| drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/interop.test.ts:23` | ${writer} writes a session the other language verifies and logs out | cargo test --all-features (test-origin); loop: writer in ts, rust (2) | lock/store | new executing Rust test | rust/dominos-mcp/tests/persistence.rs::a_frozen_typescript_session_is_verified_and_logged_out_by_the_binary (Rust-writer half: golden envelope) |
+| drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/interop.test.ts:23` | ${writer} writes a session the other language verifies and logs out | cargo test --all-features (test-origin); loop: writer in ts, rust (2) | lock/store | new executing Rust test | rust/dominos-mcp/tests/persistence.rs::a_frozen_typescript_session_is_verified_and_logged_out_by_the_binary (frozen TS-written store dominos/store/signed-in; Rust-writer half: golden envelope) |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/money.test.ts:67` | migrate is explicit, idempotent and leaves quotes and checkouts where they are | cargo test --all-features (test-origin) | lock/store | new executing Rust test | rust/dominos-mcp/tests/persistence.rs::migrate_and_logout_leave_quotes_and_checkouts_where_they_are |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/parity.ts:229` | unsafe config folder refusal | cargo test --all-features (test-origin) | lock/store | fixture row | dominos/parity/unsafe-config-folder-refusal (executing replay of every step: outputs, exit codes, request list, store and files) |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/startup.test.ts:39` | the CLI refuses to start on an unsafe store and touches nothing | cargo test --all-features (test-origin) | lock/store | new executing Rust test | rust/dominos-mcp/tests/startup.rs::the_cli_refuses_to_start_on_an_unsafe_store_and_touches_nothing |
