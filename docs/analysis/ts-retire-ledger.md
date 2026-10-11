@@ -20,24 +20,44 @@ fills the rows of its suites; PR 2 starts after all four have merged:
 ## Enumeration
 
 ```sh
-node tooling/ts-freeze/ledger.mjs list    # one tab-separated line per case: suite, file:line, name, variants
-node tooling/ts-freeze/ledger.mjs check   # every enumerated case has exactly one complete row here
+node tooling/ts-freeze/ledger.mjs list       # one tab-separated line per case: suite, file:line, name, variants
+node tooling/ts-freeze/ledger.mjs check      # the self-check, then: every case has exactly one complete row here
+node tooling/ts-freeze/ledger.mjs selfcheck  # the adversarial self-check alone
 ```
 
-The enumerator is static, so a reviewer can rerun it on any checkout. It reads:
+The enumerator is static, so a reviewer can rerun it on any checkout. It reads tokens, not lines
+(comments, strings, templates and regular expressions are skipped whole), so a registration is
+found wherever it sits: in a helper or loop, after an `if`, with space or a line break before its
+`(`. It reads:
 
-- every `test(`/`it(` site in `packages/*/test/**/*.test.ts` (the five servers, `mcp-runtime` and
-  `session-store`) and `rust/*/tests/ts/**/*.test.ts` (the drop-ins), including the
-  `skipIf`/`if (process.platform …)`/`(… ? test : () => undefined)` platform forms. There is no
-  `describe` and no `test.each` in these files. A `test(` inside a loop is one source site; its
-  variants column lists the loop values, each a run-time case;
-- the `scenarios` array of each `rust/*/tests/ts/parity.ts`. Domino's parity has no named scenarios,
-  so its rows are its argument list, tool surface, invalid-input list and unsafe-folder check, the
-  named scenarios of `money-parity.ts`, and one row each for `reads-parity.ts` and `auth-parity.ts`;
+- every `test`/`it` registration in `packages/*/test/**/*.test.ts` (the five servers, `mcp-runtime`
+  and `session-store`) and `rust/*/tests/ts/**/*.test.ts` (the drop-ins), with its modifiers
+  (`skip`, `only`, `todo`, `skipIf(…)` and the like) and the `if (…)` and
+  `(… ? test : () => undefined)` platform forms. A registration in a loop or helper is one source
+  site; its variants column lists the loop values, each a run-time case;
+- the `scenarios` array of each `rust/*/tests/ts/parity.ts`: the `name` of each element object, or
+  of each object a spread element maps to (a mapped or interpolated name is a loop site). A `name`
+  key nested deeper (a cookie, a call) is data. Domino's parity has no named scenarios, so its rows
+  are its argument list, tool surface, invalid-input list and unsafe-folder check (each found
+  exactly once), the scenarios of `money-parity.ts`, and one row each for `reads-parity.ts` and
+  `auth-parity.ts`;
 - every `#[test]` function of a `rust/*/tests/*.rs` file that reads `FAMILY_MCP_BUN`, ignored
   helpers included;
 - every other file under those test trees, listed below as harness files that carry no assertion of
   their own.
+
+A form it cannot read stops the run instead of yielding no case: an aliased, namespace or
+`describe` import from `bun:test`, a computed (`test[…]`) or unknown (`test.each`) member, `test`
+used other than as a call, a test name that is not one literal, a scenario `name` that is not
+`name: value`, and any Rust test attribute other than `#[test]`. Cases are keyed by their full site
+and name; two cases with one identity stop the run, and two same-name sites are two cases. `check`
+first runs the self-check, which feeds each of these forms (and the plain, modifier, helper, inline
+`if`, spaced, split, commented, conditional and looped forms) to the enumerator and fails unless
+each is either found, so that a ledger without its row fails, or refused.
+
+The token-aware enumerator found four Domino's `money-parity.ts` sites the earlier line-based one
+had missed (mapped scenario names, 30 run-time scenarios); they are rows here since the 1a review
+(finding 1). Every other case is unchanged.
 
 ## Outcomes
 
@@ -109,7 +129,7 @@ Per suite:
 | drop-in inna-mcp | 85 | 14 | 6 | 65 | 0 |
 | drop-in kronan-mcp | 38 | 9 | 1 | 28 | 0 |
 | parity abler-mcp | 15 | 15 | 0 | 0 | 0 |
-| parity dominos-mcp | 30 | 30 | 0 | 0 | 0 |
+| parity dominos-mcp | 34 | 34 | 0 | 0 | 0 |
 | parity infomentor-mcp | 44 | 44 | 0 | 0 | 0 |
 | parity inna-mcp | 38 | 38 | 0 | 0 | 0 |
 | parity kronan-mcp | 22 | 22 | 0 | 0 | 0 |
@@ -119,17 +139,17 @@ Per suite:
 | package inna-mcp | 87 | 0 | 6 | 5 | 76 |
 | package kronan-mcp | 37 | 1 | 3 | 0 | 33 |
 | package mcp-runtime | 2 | 0 | 1 | 1 | 0 |
-| package session-store | 73 | 0 | 52 | 17 | 4 |
-| **all** | 704 | 195 | 90 | 191 | 228 |
+| package session-store | 73 | 0 | 52 | 18 | 3 |
+| **all** | 708 | 199 | 90 | 192 | 227 |
 
 Per category:
 
 | category | fixture row | existing Rust test | new executing Rust test | obsolete |
 | --- | --- | --- | --- | --- |
-| money | 42 | 4 | 33 | 27 |
+| money | 46 | 4 | 33 | 27 |
 | auth/renewal | 37 | 3 | 46 | 42 |
 | pty/signal | 9 | 11 | 26 | 24 |
-| lock/store | 26 | 62 | 78 | 60 |
+| lock/store | 26 | 62 | 79 | 59 |
 | contract | 81 | 10 | 7 | 43 |
 | other | 0 | 0 | 1 | 32 |
 
@@ -147,12 +167,15 @@ the lead checks before fixtures are generated.
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/intent.test.ts:147` | host cancellation does not change the payment outcome or abort the provider | cargo test --all-features (test-origin) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::host_cancellation_does_not_change_the_payment_outcome_or_abort_the_provider |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/intent.test.ts:92` | a killed Rust payment process leaves submitting intent and a restart sends nothing | cargo test --all-features (test-origin) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::a_killed_payment_process_leaves_submitting_intent_and_a_restart_sends_nothing |
 | drop-in dominos-mcp | `rust/dominos-mcp/tests/ts/interop.test.ts:45` | ${writer} quote and checkout records continue in the other language without a second send | cargo test --all-features (test-origin); loop: writer in ts, rust (2) | money | new executing Rust test | rust/dominos-mcp/tests/money.rs::frozen_typescript_quote_and_checkout_records_continue_without_a_second_send |
+| parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:113` | mode | cargo test --all-features (test-origin); loop: mode in order-lost, order-rejected, order-schema, order-total, setup-amount, setup-currency, setup-id, setup-date, setup-schema (9) | money | fixture row | dominos/parity/{order-lost,order-rejected,order-schema,order-total,setup-amount,setup-currency,setup-id,setup-date,setup-schema}, one per loop value (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:114` | payment confirmed total changed | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-confirmed-total-changed (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:115` | payment account changed | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-account-changed (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:116` | payment expired | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-expired (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:117` | payment card missing | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-card-missing (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:118` | payment card numeric overflow | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-card-numeric-overflow (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:119` | payment empty session refuses without send | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/payment-empty-session-refuses-without-send (executing replay of every step: outputs, exit codes, request list, store and files) |
+| parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:129` | payment already ${state} | cargo test --all-features (test-origin); loop: state in creating, submitting, authorised, refused, pending, requires_action, unknown, amount_changed (8) | money | fixture row | dominos/parity/payment-already-{creating,submitting,authorised,refused,pending,requires-action,unknown,amount-changed}, one per loop value (executing replay of every step: outputs, exit codes, request list, store and files) |
+| parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:140` | mode | cargo test --all-features (test-origin); loop: mode in Authorised, Refused, Cancelled, Error, Pending, action, payment-schema, payment-401, payment-lost (9) | money | fixture row | dominos/parity/{authorised,refused,cancelled,error,pending,action,payment-schema,payment-401,payment-lost}, one per loop value (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:141` | get different account | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/get-different-account (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:142` | get unknown unpaid | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/get-unknown-unpaid (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:143` | get unknown paid | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/get-unknown-paid (executing replay of every step: outputs, exit codes, request list, store and files) |
@@ -165,6 +188,7 @@ the lead checks before fixtures are generated.
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:65` | quote pickup | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/quote-pickup (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:67` | quote delivery | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/quote-delivery (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:80` | quote menu selection refusal | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/quote-menu-selection-refusal (executing replay of every step: outputs, exit codes, request list, store and files) |
+| parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:85` | mode | cargo test --all-features (test-origin); loop: mode in quote-zero, quote-fraction, quote-401, store-disabled (4) | money | fixture row | dominos/parity/{quote-zero,quote-fraction,quote-401,store-disabled}, one per loop value (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:89` | create ready | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/create-ready (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:90` | quote account changed | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/quote-account-changed (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity dominos-mcp | `rust/dominos-mcp/tests/ts/money-parity.ts:91` | quote confirmed total changed | cargo test --all-features (test-origin) | money | fixture row | dominos/parity/quote-confirmed-total-changed (executing replay of every step: outputs, exit codes, request list, store and files) |
@@ -363,7 +387,8 @@ the lead checks before fixtures are generated.
 | package session-store | `packages/session-store/test/backup.test.ts:190` | a bounded child settles at its deadline even when its output stays open | bun test (turbo test) | lock/store | existing Rust test | rust/family-store/src/spawn.rs::a_bounded_child_settles_at_its_deadline_even_when_its_output_stays_open — verified 2026-10-11 (1a): both bodies read, same behaviour |
 | package session-store | `packages/session-store/test/backup.test.ts:207` | no tmutil runs off macOS or under the test seam without a fake | bun test (turbo test) | lock/store | existing Rust test | rust/family-store/tests/backup.rs::no_tmutil_runs_off_macos_or_under_the_test_seam_without_a_fake — verified 2026-10-11 (1a): both bodies read, same behaviour (TS expects one empty log line from its fake, Rust an absent log) |
 | package session-store | `packages/session-store/test/files.test.ts:102` | rejects hard-linked session files | bun test (turbo test) | lock/store | existing Rust test | rust/family-store/tests/files_lock.rs::private_reads_refuse_everything_but_an_owner_only_regular_file — verified 2026-10-11 (1a): both bodies read, same behaviour |
-| package session-store | `packages/session-store/test/files.test.ts:136` | an abort observed at the commit point keeps the previous file and leaves no temporary | bun test (turbo test) | lock/store | new executing Rust test | rust/family-store/src/files.rs::tests::a_cancel_observed_at_the_commit_point_keeps_the_previous_file_and_no_temporary (cfg(test) unit test, lead decision 80799; mutation: removing the check before the rename fails it) |
+| package session-store | `packages/session-store/test/files.test.ts:115` | rejects files owned by another user | bun test (turbo test) | lock/store | new executing Rust test | rust/family-store/src/files.rs::tests::a_file_owned_by_another_user_is_refused_by_the_reader_itself (cfg(test) unit test through a test-only thread-local fake getuid, as TS faked process.getuid; review finding 2, lead ruling 80923; mutation: the reader UID check disabled fails it). The preflight predicate stays separately covered by rust/family-store/src/storage.rs::private_files_follow_the_reader_rules, which is not reader proof |
+| package session-store | `packages/session-store/test/files.test.ts:136` | an abort observed at the commit point keeps the previous file and leaves no temporary | bun test (turbo test) | lock/store | new executing Rust test | rust/family-store/src/files.rs::tests::a_cancel_observed_at_the_commit_point_keeps_the_previous_file_and_no_temporary (the check before the rename; mutation: removing it fails) and rust/family-store/src/files.rs::tests::the_public_writer_cancelled_at_its_commit_point_keeps_the_previous_bytes_and_no_temporary (the public writer cancelled by a test-only hook after its initial check, with its temporary written: previous bytes and exactly session.json left, no manual cleanup; review finding 3, lead ruling 80923; mutation: skipping the cleanup only for a cancel fails it). cfg(test) unit tests, lead decisions 80799 and 80923 |
 | package session-store | `packages/session-store/test/files.test.ts:164` | sweeping removes only old temporary files that belong to the target | bun test (turbo test) | lock/store | new executing Rust test | rust/family-store/tests/files.rs::sweeps_leave_planted_directories_pending_files_and_lock_temporaries_alone (+ existing files_lock.rs::sweeps_remove_only_this_files_own_temporaries). Verification 2026-10-11: the existing test lacked the planted directory, the pending file, the lock temporary and the aged-versus-fresh split. sweepTempInDirectory has no family-store counterpart; it is InfoMentor's (rows under package infomentor-mcp, PR 1d) |
 | package session-store | `packages/session-store/test/files.test.ts:215` | private directories are created with 0700 and tightened only on request | bun test (turbo test) | lock/store | new executing Rust test | rust/family-store/tests/files.rs::private_directories_are_created_0700_and_tightened_only_on_request |
 | package session-store | `packages/session-store/test/files.test.ts:45` | private files are written atomically with owner-only permissions and read back | bun test (turbo test) | lock/store | new executing Rust test | rust/family-store/tests/files.rs::private_files_are_written_atomically_owner_only_and_read_back |
@@ -518,6 +543,16 @@ the lead checks before fixtures are generated.
 | drop-in kronan-mcp | `rust/kronan-mcp/tests/ts/startup.test.ts:41` | the CLI refuses to start on an unsafe store and touches nothing | cargo test --all-features (test-origin) | lock/store | new executing Rust test | rust/kronan-mcp/tests/startup.rs::the_cli_refuses_to_start_on_an_unsafe_store_and_touches_nothing |
 | drop-in kronan-mcp | `rust/kronan-mcp/tests/ts/startup.test.ts:72` | an earlier build’s macOS store keeps deciding, so no plaintext is imported over it | cargo test --all-features (test-origin); macOS only | lock/store | new executing Rust test | rust/kronan-mcp/tests/startup.rs::an_earlier_builds_macos_store_keeps_deciding |
 
+## Split subassertions
+
+A case whose binary twin preserves all but one of its assertions keeps its rows (the twin's outcome
+for the rest, obsolete for the TypeScript run) and names the missing subassertion here with its own
+outcome. These entries are not cases, so the summary counts above do not include them.
+
+| split | case | subassertion | category | outcome | target |
+| --- | --- | --- | --- | --- | --- |
+| S1 | `packages/infomentor-mcp/test/integration.test.ts:396` (spy at `:409`, asserted at `:496` and `:521`); twin `rust/infomentor-mcp/tests/ts/integration.test.ts:408` drops the spy (`:421`) | private login never opens a credential listener | auth/renewal | new executing Rust test (PR 1d) | `rust/infomentor-mcp/tests/login.rs::private_login_opens_no_credential_listener`: drives the binary through private login and the eleven tools against the loopback fake and observes from outside the process that it holds no listening socket while login runs and after it. Required mutation: a listener opened during private login (for example a `TcpListener` bound on loopback in the login path and held until login ends) fails the test. The absence of listener code and matching outputs are not this proof |
+
 ## Other rows
 
 Contract and other rows, and every obsolete row (TypeScript runs of a case with a binary twin, Bun
@@ -588,7 +623,7 @@ runners, helpers).
 | package dominos-mcp | `packages/dominos-mcp/test/startup.test.ts:39` | the CLI refuses to start on an unsafe store and touches nothing | bun test (turbo test) | lock/store | obsolete | runs the TS implementation; the same case against the binary is row `rust/dominos-mcp/tests/ts/startup.test.ts:39` |
 | package dominos-mcp | `packages/dominos-mcp/test/startup.test.ts:69` | an earlier build’s macOS store keeps deciding, so no plaintext is imported over it | bun test (turbo test); macOS only | lock/store | obsolete | runs the TS implementation; the same case against the binary is row `rust/dominos-mcp/tests/ts/startup.test.ts:70` |
 | package infomentor-mcp | `packages/infomentor-mcp/test/collection.test.ts:334` | collection reports skipped upstream items while retaining valid feed data | bun test (turbo test) | contract | existing Rust test | rust/infomentor-mcp/src/collection.rs::skipped_upstream_items_are_reported_while_valid_feeds_are_kept |
-| package infomentor-mcp | `packages/infomentor-mcp/test/integration.test.ts:396` | private login and eleven MCP tools select children and read school data without changing read state | bun test (turbo test) | contract | obsolete | runs the TS implementation; the same case against the binary is row `rust/infomentor-mcp/tests/ts/integration.test.ts:408` |
+| package infomentor-mcp | `packages/infomentor-mcp/test/integration.test.ts:396` | private login and eleven MCP tools select children and read school data without changing read state | bun test (turbo test) | contract | obsolete | runs the TS implementation; the same case against the binary is row `rust/infomentor-mcp/tests/ts/integration.test.ts:408`; obsolete for every assertion except the no-credential-listener subassertion (`:409`, `:496`, `:521`), which is split S1 |
 | package infomentor-mcp | `packages/infomentor-mcp/test/integration.test.ts:819` | InfoMentor skips malformed feed items and preserves nullable and unknown values | bun test (turbo test) | contract | obsolete | runs the TS implementation; the same case against the binary is row `rust/infomentor-mcp/tests/ts/integration.test.ts:828` |
 | package infomentor-mcp | `packages/infomentor-mcp/test/integration.test.ts:869` | expired sessions renew once with private credentials, preserve account and child, and persist cookies | bun test (turbo test) | auth/renewal | obsolete | runs the TS implementation; the same case against the binary is row `rust/infomentor-mcp/tests/ts/integration.test.ts:878` |
 | package infomentor-mcp | `packages/infomentor-mcp/test/integration.test.ts:1076` | rejected login, unsafe redirects, challenges, rate limits and malformed authentication fail closed | bun test (turbo test) | auth/renewal | obsolete | runs the TS implementation; the same case against the binary is row `rust/infomentor-mcp/tests/ts/integration.test.ts:1085` |
@@ -732,7 +767,6 @@ runners, helpers).
 | package mcp-runtime | `packages/mcp-runtime/test/index.test.ts:8` | response body reads enforce byte limits and cancel stalled reads on abort | bun test (turbo test) | contract | new executing Rust test | rust/mcp-runtime/tests/bodies.rs::the_cap_counts_bytes + an_abandoned_stalled_read_closes_the_connection (+ existing rust/mcp-runtime/src/body.rs::bodies_up_to_the_cap_are_read_and_longer_ones_refused). The already-aborted signal case has no Rust form: read_capped takes no signal, a caller drops the future |
 | package mcp-runtime | `packages/mcp-runtime/test/index.test.ts:29` | toolResult returns structured content and only exposes safe error messages | bun test (turbo test) | contract | existing Rust test | rust/mcp-runtime/src/server.rs::results_match_tool_result + rust/mcp-runtime/src/fail.rs::texts_match_the_typescript_constants — verified 2026-10-11 (1a): both bodies read, same behaviour; the private-message cases hold by construction: Fail carries no runtime string and tool_text returns only &'static str constants or reviewed SafeError texts |
 | package session-store | `packages/session-store/test/files.test.ts:36` | detects inode, size, and modification-time changes between read stats | bun test (turbo test) | lock/store | obsolete | unit test of the TS helper fileChanged, which Rust does not have: rust/family-store/src/files.rs read_private_bytes compares ino, size, mtime and mtime_nsec inline between two fstats of one open file. Admitted gap (lead decision 80801): no deterministic test exists without a production hook, and a racing-writer test is ruled out |
-| package session-store | `packages/session-store/test/files.test.ts:115` | rejects files owned by another user | bun test (turbo test) | lock/store | obsolete | needs a file owned by another user (root in TS via a fake stat); Rust checks owner in rust/family-store/src/storage.rs::private_files_follow_the_reader_rules |
 | package session-store | `packages/session-store/test/files.test.ts:237` | the default session path follows XDG and keeps an existing legacy file | bun test (turbo test) | lock/store | obsolete | TS-only helper defaultSessionPath; each server binary resolves its own legacy path, covered by the persistence matrix rows per server |
 | package session-store | `packages/session-store/test/secret.test.ts:776` | a custom key provider with a malformed key is STORE_ERROR before any read or write | bun test (turbo test) | lock/store | obsolete | a custom provider cannot return a malformed key in Rust: KeyProvider::get_key returns Key, a fixed 32-byte array. Key files of another length: rust/family-store/tests/secret.rs::key_files_must_be_single_link_owner_only_regular_files_of_exactly_32_bytes and persistence.rs::unsafe_permissions_and_links_on_a_frozen_store_are_refused_untouched |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/browser-login.test.ts:882` | README marks auth login as 0.5.0+ and documents cleanup order and timeouts | cargo test --all-features (test-origin) | other | new executing Rust test | rust/abler-mcp/tests/readme.rs::the_readme_marks_auth_login_and_documents_cleanup_order_and_timeouts |
@@ -780,7 +814,7 @@ runners, helpers).
 | bun runner family-store | `rust/family-store/tests/interop.rs:169` | the_configured_bun_is_1_4_2 | cargo test -p family-store and --all-features | other | obsolete | checks only the Bun used to run TS; the Bun version is recorded in each fixture provenance (rust/family-store/tests/fixtures/store/PROVENANCE.md) |
 | bun runner family-store | `rust/family-store/tests/interop.rs:347` | hold_the_lock_until_killed | ignored helper (run by another case); cargo test -p family-store and --all-features | lock/store | obsolete | helper process of the killed-holder case; its Rust half moves with rust/family-store/tests/processes.rs::a_lock_left_by_a_killed_holder_is_recovered |
 | bun runner family-store | `rust/family-store/tests/interop.rs:646` | default_layout_operation | ignored helper (run by another case); cargo test -p family-store and --all-features | lock/store | obsolete | helper process of the default-layout cases; replaced by the helper rust/family-store/tests/golden.rs::frozen_layout_operation |
-| drop-in infomentor-mcp | `rust/infomentor-mcp/tests/ts/integration.test.ts:408` | private login and eleven MCP tools select children and read school data without changing read state | cargo test --all-features (test-origin) | contract | fixture row | infomentor/contract/login-and-eleven-tools |
+| drop-in infomentor-mcp | `rust/infomentor-mcp/tests/ts/integration.test.ts:408` | private login and eleven MCP tools select children and read school data without changing read state | cargo test --all-features (test-origin) | contract | fixture row | infomentor/contract/login-and-eleven-tools; does not observe the no-credential-listener subassertion; split S1 |
 | drop-in infomentor-mcp | `rust/infomentor-mcp/tests/ts/integration.test.ts:828` | InfoMentor skips malformed feed items and preserves nullable and unknown values | cargo test --all-features (test-origin) | contract | fixture row | infomentor/contract/malformed-feed-items |
 | drop-in infomentor-mcp | `rust/infomentor-mcp/tests/ts/loopback.test.ts:16` | real loopback HTTP covers login redirects, cookies, rate limits, and body caps | cargo test --all-features (test-origin) | contract | new executing Rust test | rust/infomentor-mcp/tests/loopback.rs::real_loopback_http_covers_login_redirects_cookies_rate_limits_and_body_caps |
 | parity infomentor-mcp | `rust/infomentor-mcp/tests/ts/parity.ts:497` | surface | cargo test --all-features (test-origin) | contract | fixture row | infomentor/parity/surface (replay: outputs, exit codes, request list, store and files) |
