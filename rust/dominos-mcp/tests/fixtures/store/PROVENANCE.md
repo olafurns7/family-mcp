@@ -13,7 +13,7 @@ not regenerated.
   `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 FAMILY_MCP_STORE_TEST_SEAM=1 bun tooling/ts-freeze/dominos-parity.ts rust/dominos-mcp/tests/fixtures/store store`
 - Clock: `Date.now` returned 2100-01-01T00:00:00Z (`now`) while the package ran, so no session,
   quote or checkout has expired when a test reads it. Everything else is as written.
-- Data: synthetic. The session tokens are `interop-access`/`interop-refresh` (state `session`) or
+- Data: synthetic. The session tokens are `interop-access`/`interop-refresh` (state `signed-in`) or
   `synthetic-access`/`synthetic-refresh`; the journal records hold the provider's synthetic
   `private-*` Adyen values, as the package wrote them. Each key is a random 32-byte key made for
   its scratch home; it protects only those synthetic tokens. Nothing reached Domino’s, Adyen or
@@ -21,7 +21,7 @@ not regenerated.
 
 | id `dominos/store/…`  | case                 | the TypeScript calls                                                  |
 | --------------------- | -------------------- | --------------------------------------------------------------------- |
-| `session`             | `interop.test.ts:23` | `login('5550123', '123456', path, request)` with the case's `request` |
+| `signed-in`           | `interop.test.ts:23` | `login('5550123', '123456', path, request)` with the case's `request` |
 | `quoted`              | `interop.test.ts:45` | `saveSession(saved())`, `migrate`, then `quoteOrder(cart)`            |
 | `checkout-ready`      | `interop.test.ts:45` | as `quoted`, then `createCheckout` (`ready`)                          |
 | `checkout-authorised` | `interop.test.ts:45` | as `checkout-ready`, then `paySavedCard` (`authorised`)               |

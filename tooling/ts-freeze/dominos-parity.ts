@@ -1778,7 +1778,7 @@ async function quoteAndCheckout(reference: Reference) {
 
 const storeStates: StoreState[] = [
   {
-    name: 'session',
+    name: 'signed-in',
     case: 'interop.test.ts:23',
     run: async (path) => ({
       replaced: await referenceLogin('5550123', '123456', path, interopRequest),

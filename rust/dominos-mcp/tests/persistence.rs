@@ -127,7 +127,7 @@ fn migrate_resumes_on_an_empty_store_with_a_marker_and_refuses_without_its_key()
 // rust/family-store/tests/golden.rs)
 #[test]
 fn a_frozen_typescript_session_is_verified_and_logged_out_by_the_binary() {
-    let (home, frozen) = support::plant("session");
+    let (home, frozen) = support::plant("signed-in");
     assert_eq!(frozen["result"], json!({"replaced": false}));
     let fixture = Fixture::in_home(home, |_, request| {
         let verified = request.path == "/api/user/newuser"
