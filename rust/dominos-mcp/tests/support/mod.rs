@@ -22,7 +22,10 @@ use family_store::{
 };
 use serde_json::{Map, Value, json};
 
+pub mod auth;
 pub mod provider;
+
+use provider::{Provider, cart};
 
 pub const BINARY: &str = env!("CARGO_BIN_EXE_dominos-mcp");
 
@@ -42,6 +45,14 @@ pub const LEAKS: [&str; 7] = [
 
 /// The store's own bound (src/store.rs `SESSION_MAX_BYTES`).
 pub const SESSION_MAX_BYTES: usize = 132_707;
+
+/// fixtures.ts `TOKENS`.
+pub const TOKENS: [&str; 4] = [
+    "synthetic-access",
+    "synthetic-refresh",
+    "rotated-access",
+    "rotated-refresh",
+];
 
 /// A private home for one case, removed on drop. Its path is canonical, as the freeze's was.
 pub struct Home(pub PathBuf);
@@ -132,6 +143,63 @@ impl Home {
             key_provider_in(&environment, "dominos-mcp", "default").unwrap(),
             SESSION_MAX_BYTES,
         )
+    }
+
+    /// The encrypted session record (tests/ts/scratch.ts `record`).
+    pub fn record(&self) -> PathBuf {
+        self.path("config/dominos-mcp/session.enc")
+    }
+
+    pub fn marker(&self) -> PathBuf {
+        self.path("config/dominos-mcp/session.enc.marker")
+    }
+
+    /// The store's key file (scratch.ts `key`).
+    pub fn key(&self) -> PathBuf {
+        self.path("data/family-mcp/keys/dominos-mcp.default.key")
+    }
+
+    /// fixtures.ts `current`: the session the store holds now, or the plaintext file while the
+    /// store does not decide.
+    pub fn current(&self) -> Value {
+        let options = self.store_options();
+        let mut marker = options.path.clone().into_os_string();
+        marker.push(".marker");
+
+        if !options.path.exists() && !Path::new(&marker).exists() {
+            return serde_json::from_str(&fs::read_to_string(self.session()).unwrap()).unwrap();
+        }
+        let text = with_secret_store(&options, |store| store.read())
+            .unwrap()
+            .expect("no stored session");
+        serde_json::from_str(&text).unwrap()
+    }
+
+    /// scratch.ts `filesContaining`: every file under the home whose bytes hold one of `needles`.
+    pub fn containing(&self, needles: &[&str]) -> Vec<PathBuf> {
+        fn walk(directory: &Path, needles: &[&str], found: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                let info = fs::symlink_metadata(&path).unwrap();
+
+                if info.is_dir() {
+                    walk(&path, needles, found);
+                } else if info.is_file() {
+                    let bytes = fs::read(&path).unwrap();
+
+                    if needles.iter().any(|needle| {
+                        bytes
+                            .windows(needle.len())
+                            .any(|window| window == needle.as_bytes())
+                    }) {
+                        found.push(path);
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(&self.0, needles, &mut found);
+        found
     }
 
     /// tests/ts/fixtures.ts `saved(expired, prefix)` as `saveSession` writes it: the plaintext file
@@ -937,6 +1005,124 @@ pub fn call(
     let (code, _) = mcp.close();
     assert_eq!(code, Some(0), "{name}: serve exit");
     answer.outcome()
+}
+
+/// The `pay_saved_card` input for `checkout` with its own total, confirmed.
+pub fn payment(checkout: &Value) -> Value {
+    json!({
+        "checkoutId": checkout["checkoutId"],
+        "cardId": "card_1",
+        "expectedTotal": checkout["total"],
+        "confirm": true
+    })
+}
+
+/// fixtures.ts `setup(expired, legacy)`: a session in a fresh home (migrated into the store unless
+/// `legacy`), the provider, and a fake that asks `first` before the provider.
+pub struct Fixture {
+    pub home: Home,
+    pub provider: Provider,
+    pub upstream: Upstream,
+}
+
+impl Fixture {
+    pub fn new(
+        first: impl Fn(&Provider, &Request) -> Option<Reply> + Send + Sync + 'static,
+    ) -> Self {
+        Self::setup(false, false, first)
+    }
+
+    pub fn setup(
+        expired: bool,
+        legacy: bool,
+        first: impl Fn(&Provider, &Request) -> Option<Reply> + Send + Sync + 'static,
+    ) -> Self {
+        let home = Home::new("fixture");
+
+        match legacy {
+            true => home.legacy(expired, "synthetic"),
+            false => home.seed(expired),
+        }
+        let provider = Provider::default();
+        let answer = provider.clone();
+        let upstream = Upstream::new(move |request| {
+            first(&answer, request).unwrap_or_else(|| answer.answer(request))
+        });
+        Self {
+            home,
+            provider,
+            upstream,
+        }
+    }
+
+    pub fn plain() -> Self {
+        Self::new(|_, _| None)
+    }
+
+    /// One tool call in its own `serve`: its structured result or its error text. No output holds
+    /// a secret.
+    pub fn call(&self, name: &str, arguments: Value) -> Result<Value, String> {
+        let (mut mcp, _) = Mcp::start(&self.home, &self.upstream.origin, &self.home.with_session());
+        let answer = mcp.call(name, arguments);
+        let (code, stderr) = mcp.close();
+        assert_eq!(code, Some(0), "{name}: {stderr}");
+        no_leak(&answer.line, name);
+        answer.outcome()
+    }
+
+    pub fn quote(&self) -> Value {
+        self.call("quote_order", cart()).unwrap()
+    }
+
+    pub fn create(&self, quote: &Value) -> Result<Value, String> {
+        self.call(
+            "create_checkout",
+            json!({"quoteId": quote["quoteId"], "expectedTotal": quote["total"]}),
+        )
+    }
+
+    pub fn pay(&self, checkout: &Value) -> Result<Value, String> {
+        self.call("pay_saved_card", payment(checkout))
+    }
+
+    /// What the fake saw since the last call to `sent`.
+    pub fn sent(&self, since: &mut usize) -> Vec<String> {
+        let all = self.upstream.sent();
+        let new = all[*since..].to_vec();
+        *since = all.len();
+        new
+    }
+
+    pub fn checkouts(&self) -> PathBuf {
+        self.home.path("session.json.checkouts")
+    }
+
+    /// The journal record of `id`.
+    pub fn journal(&self, id: &Value) -> Value {
+        let file = self
+            .checkouts()
+            .join(format!("{}.json", id.as_str().unwrap()));
+        serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap()
+    }
+
+    /// The journal folder's entries: one record per quote and checkout, nothing else.
+    pub fn left(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(self.checkouts())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    pub fn records(&self, ids: &[&Value]) -> Vec<String> {
+        let mut names: Vec<String> = ids
+            .iter()
+            .map(|id| format!("{}.json", id.as_str().unwrap()))
+            .collect();
+        names.sort();
+        names
+    }
 }
 
 /// A frozen value with its packed runs expanded: the freeze wrote each run of 1024 or more of one

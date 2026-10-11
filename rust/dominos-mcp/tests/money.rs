@@ -16,8 +16,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use serde_json::{Value, json};
-use support::provider::{Provider, cart};
-use support::{Home, Mcp, PATIENCE, Reply, Request, Upstream, no_leak};
+use support::provider::cart;
+use support::{Fixture, Mcp, PATIENCE, Reply, payment};
 
 const QUOTE: [&str; 4] = [
     "GET /website/panta/pizzur",
@@ -27,109 +27,6 @@ const QUOTE: [&str; 4] = [
 ];
 const SETUP: &str = "POST /adyen/checkoutshopper/v1/sessions/synthetic-session/setup";
 const PAY: &str = "POST /adyen/checkoutshopper/v1/sessions/synthetic-session/payments";
-
-/// fixtures.ts `setup()`: a migrated session in a fresh home, the provider, and a fake that asks
-/// `first` before the provider.
-struct Fixture {
-    home: Home,
-    provider: Provider,
-    upstream: Upstream,
-}
-
-impl Fixture {
-    fn new(first: impl Fn(&Provider, &Request) -> Option<Reply> + Send + Sync + 'static) -> Self {
-        let home = Home::new("money");
-        home.seed(false);
-        let provider = Provider::default();
-        let answer = provider.clone();
-        let upstream = Upstream::new(move |request| {
-            first(&answer, request).unwrap_or_else(|| answer.answer(request))
-        });
-        Self {
-            home,
-            provider,
-            upstream,
-        }
-    }
-
-    fn plain() -> Self {
-        Self::new(|_, _| None)
-    }
-
-    /// One tool call in its own `serve`: its structured result or its error text. No output holds
-    /// a secret.
-    fn call(&self, name: &str, arguments: Value) -> Result<Value, String> {
-        let (mut mcp, _) = Mcp::start(&self.home, &self.upstream.origin, &self.home.with_session());
-        let answer = mcp.call(name, arguments);
-        let (code, stderr) = mcp.close();
-        assert_eq!(code, Some(0), "{name}: {stderr}");
-        no_leak(&answer.line, name);
-        answer.outcome()
-    }
-
-    fn quote(&self) -> Value {
-        self.call("quote_order", cart()).unwrap()
-    }
-
-    fn create(&self, quote: &Value) -> Result<Value, String> {
-        self.call(
-            "create_checkout",
-            json!({"quoteId": quote["quoteId"], "expectedTotal": quote["total"]}),
-        )
-    }
-
-    fn pay(&self, checkout: &Value) -> Result<Value, String> {
-        self.call("pay_saved_card", payment(checkout))
-    }
-
-    /// What the fake saw since the last call to `sent`.
-    fn sent(&self, since: &mut usize) -> Vec<String> {
-        let all = self.upstream.sent();
-        let new = all[*since..].to_vec();
-        *since = all.len();
-        new
-    }
-
-    fn checkouts(&self) -> PathBuf {
-        self.home.path("session.json.checkouts")
-    }
-
-    /// The journal record of `id`.
-    fn journal(&self, id: &Value) -> Value {
-        let file = self
-            .checkouts()
-            .join(format!("{}.json", id.as_str().unwrap()));
-        serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap()
-    }
-
-    /// The journal folder's entries: one record per quote and checkout, nothing else.
-    fn left(&self) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(self.checkouts())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        names.sort();
-        names
-    }
-
-    fn records(&self, ids: &[&Value]) -> Vec<String> {
-        let mut names: Vec<String> = ids
-            .iter()
-            .map(|id| format!("{}.json", id.as_str().unwrap()))
-            .collect();
-        names.sort();
-        names
-    }
-}
-
-fn payment(checkout: &Value) -> Value {
-    json!({
-        "checkoutId": checkout["checkoutId"],
-        "cardId": "card_1",
-        "expectedTotal": checkout["total"],
-        "confirm": true
-    })
-}
 
 fn quote_then(rest: &[&str]) -> Vec<String> {
     QUOTE

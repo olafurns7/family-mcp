@@ -9,6 +9,8 @@ use serde_json::{Value, json};
 use super::{Reply, Request, iso, now};
 
 pub struct State {
+    /// Every request that reached the provider (fixtures.ts `requests.length`).
+    pub requests: usize,
     pub orders: usize,
     pub payments: usize,
     pub refreshes: usize,
@@ -81,6 +83,7 @@ pub fn cart() -> Value {
 impl Default for Provider {
     fn default() -> Self {
         Self(Arc::new(Mutex::new(State {
+            requests: 0,
             orders: 0,
             payments: 0,
             refreshes: 0,
@@ -112,6 +115,7 @@ impl Provider {
     }
 
     pub fn answer(&self, request: &Request) -> Reply {
+        self.state().requests += 1;
         let (path, query) = request
             .path
             .split_once('?')
