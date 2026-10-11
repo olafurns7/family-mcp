@@ -8,9 +8,10 @@
 //
 // Run from the repository root. Cases are found statically, so a test defined in a loop is one
 // source site; its `variants` column names the loop. Discovery reads tokens, not lines: a
-// registration is found wherever it sits (in a helper, after an `if`, split over lines), and any
-// form it cannot read (an aliased or computed registration, a name that is not a literal, a Rust
-// test attribute other than `#[test]`) stops the run instead of yielding no case. Cases are keyed
+// registration is found wherever it sits (in a helper, after an `if`, split over lines, inside a
+// template expression), and any form it cannot read (an aliased or computed registration, a name
+// that is not a literal, a scenario element or member other than the accepted literal forms, a
+// Rust test attribute other than `#[test]`) stops the run instead of yielding no case. Cases are keyed
 // by their full site and name, and two cases with one identity stop the run. PR 3 deletes this
 // script with the sources.
 import assert from 'node:assert/strict';
@@ -63,56 +64,26 @@ const BEFORE_REGEX = new Set([
 ]);
 
 /**
- * The end of the template literal that starts at `start` (its backtick), past nested `${…}`.
+ * The end of one piece of template text that starts at `start` (just past a backtick or the `}`
+ * closing an expression): past the closing backtick, or past the `${` that opens an expression.
  * @param {string} source
  * @param {number} start
  * @param {string} file
  * @returns {number}
  */
-function templateEnd(source, start, file) {
-  let index = start + 1;
+function templatePiece(source, start, file) {
+  let index = start;
 
   while (index < source.length) {
     const char = source[index];
 
     if (char === '\\') index += 2;
     else if (char === '`') return index + 1;
-    else if (char === '$' && source[index + 1] === '{')
-      index = expressionEnd(source, index + 2, file);
+    else if (char === '$' && source[index + 1] === '{') return index + 2;
     else index++;
   }
 
   throw new RangeError(`${file}: unterminated template literal`);
-}
-
-/**
- * The index just past the `}` that closes the template expression starting at `start`.
- * @param {string} source
- * @param {number} start
- * @param {string} file
- * @returns {number}
- */
-function expressionEnd(source, start, file) {
-  let depth = 1;
-  let index = start;
-
-  while (index < source.length) {
-    const char = source[index] ?? '';
-
-    if (char === '`') index = templateEnd(source, index, file);
-    else if (char === "'" || char === '"') index = stringEnd(source, index, file);
-    else if (char === '{') {
-      depth++;
-      index++;
-    } else if (char === '}') {
-      depth--;
-      index++;
-
-      if (depth === 0) return index;
-    } else index++;
-  }
-
-  throw new RangeError(`${file}: unterminated template expression`);
 }
 
 /**
@@ -165,8 +136,10 @@ function regexEnd(source, start, at) {
 }
 
 /**
- * The tokens of a TypeScript source: comments dropped, strings, templates and regular expressions
- * whole, so text inside them is never read as code.
+ * The tokens of a TypeScript source: comments dropped, strings and regular expressions whole, so
+ * text inside them is never read as code. A template literal is its text pieces (`` `a${ ``,
+ * `}b${`, `` }c` ``, or a whole `` `a` ``) with each `${…}` expression tokenized as code between
+ * them, so a registration inside an interpolation is found like any other.
  * @param {string} source
  * @param {string} file
  * @returns {Token[]}
@@ -176,6 +149,9 @@ function tokenize(source, file) {
   const tokens = [];
   let index = 0;
   let line = 1;
+  /** The brace depth inside each open template expression, innermost last. */
+  /** @type {number[]} */
+  const expressions = [];
 
   /**
    * @param {Token['kind']} kind
@@ -205,8 +181,16 @@ function tokenize(source, file) {
       line += source.slice(index, end).split('\n').length - 1;
       index = end + 2;
     } else if (char === "'" || char === '"') push('string', stringEnd(source, index, file));
-    else if (char === '`') push('template', templateEnd(source, index, file));
-    else if (/[A-Za-z_$]/.test(char)) {
+    else if (char === '`' || (char === '}' && expressions.at(-1) === 0)) {
+      // A template's opening piece, or the piece after one of its expressions.
+      if (char === '}') expressions.pop();
+      push('template', templatePiece(source, index + 1, file));
+
+      if (tokens.at(-1)?.text.endsWith('${')) expressions.push(0);
+    } else if ((char === '{' || char === '}') && expressions.length) {
+      expressions.push((expressions.pop() ?? 0) + (char === '{' ? 1 : -1));
+      push('punct', index + 1);
+    } else if (/[A-Za-z_$]/.test(char)) {
       const match = /^[\w$]+/.exec(source.slice(index, index + 200));
       push('name', index + (match?.[0].length ?? 1));
     } else if (/\d/.test(char)) {
@@ -217,7 +201,8 @@ function tokenize(source, file) {
 
       const division =
         previous !== undefined &&
-        (['number', 'string', 'template', 'regex'].includes(previous.kind) ||
+        (['number', 'string', 'regex'].includes(previous.kind) ||
+          (previous.kind === 'template' && !previous.text.endsWith('${')) ||
           (previous.kind === 'name' && !BEFORE_REGEX.has(previous.text)) ||
           [')', ']', '}'].includes(previous.text));
 
@@ -232,7 +217,56 @@ function tokenize(source, file) {
     else push('punct', index + 1);
   }
 
+  if (expressions.length) throw new RangeError(`${file}: unterminated template expression`);
+
   return tokens;
+}
+
+/**
+ * The index past the template literal whose first piece is `tokens[index]`, its expressions'
+ * tokens and any nested templates included.
+ * @param {Token[]} tokens
+ * @param {number} index
+ * @returns {number}
+ */
+function templateLiteralEnd(tokens, index) {
+  let depth = 0;
+
+  for (let at = index; at < tokens.length; at++) {
+    const token = tokens[at];
+
+    if (token?.kind !== 'template') continue;
+    const opens = token.text.startsWith('`');
+    const closes = token.text.endsWith('`') && token.text.length > 1;
+
+    if (opens && !closes) depth++;
+    else if (!opens && closes) depth--;
+
+    if (depth === 0 && closes) return at + 1;
+  }
+
+  throw new RangeError('unterminated template literal');
+}
+
+/**
+ * The value starting at `tokens[index]` as one literal: a string, or a template literal (whole or
+ * interpolated). Undefined for anything else.
+ * @param {Token[]} tokens
+ * @param {number} index
+ * @param {string} source
+ * @returns {{ end: number, text: string, interpolated: boolean } | undefined}
+ */
+function literalAt(tokens, index, source) {
+  const token = tokens[index];
+
+  if (token?.kind === 'string')
+    return { end: index + 1, text: unquote(token), interpolated: false };
+
+  if (token?.kind !== 'template' || !token.text.startsWith('`')) return undefined;
+  const end = templateLiteralEnd(tokens, index);
+  const text = source.slice(token.start + 1, (tokens[end - 1]?.end ?? 1) - 1);
+
+  return { end, text, interpolated: end !== index + 1 };
 }
 
 /**
@@ -406,11 +440,10 @@ function bunCasesIn(suite, file, source) {
         throw new RangeError(`${file}:${token.line}: ${token.text} used other than as a call`);
     }
 
-    const name = tokens[call + 1];
-    const separator = tokens[call + 2]?.text;
+    const name = literalAt(tokens, call + 1, source);
 
-    if (!name || (name.kind !== 'string' && name.kind !== 'template'))
-      throw new RangeError(`${file}:${token.line}: no literal test name`);
+    if (!name) throw new RangeError(`${file}:${token.line}: no literal test name`);
+    const separator = tokens[name.end]?.text;
 
     if (separator !== ',' && separator !== ')')
       throw new RangeError(`${file}:${token.line}: the test name is not one literal`);
@@ -440,7 +473,7 @@ function bunCasesIn(suite, file, source) {
     // A registration in a loop, or inside any block or call (a loop or helper), is a site whose
     // every run is a case.
     if (looped || (opener(tokens, start) >= 0 && !guarded)) variants.push('loop site');
-    cases.push({ suite, site: `${file}:${tokens[start]?.line}`, name: unquote(name), variants });
+    cases.push({ suite, site: `${file}:${tokens[start]?.line}`, name: name.text, variants });
   }
 
   return cases;
@@ -456,8 +489,127 @@ function bunCases(suite, file) {
 }
 
 /**
- * The scenarios of a `scenarios` array literal: every `name` key in it. A literal name is the
- * case's name; any other value (a mapped or interpolated name) is a loop site named by its source.
+ * The elements of the group opened at `open` and closed at `close`, as [first, last] token
+ * indexes: split at its own commas, with nested groups and template literals kept whole. A
+ * trailing comma ends the list; an empty element is refused.
+ * @param {Token[]} tokens
+ * @param {number} open
+ * @param {number} close
+ * @param {string} at
+ * @returns {[number, number][]}
+ */
+function elements(tokens, open, close, at) {
+  /** @type {[number, number][]} */
+  const found = [];
+  let first = open + 1;
+  let index = first;
+
+  while (index <= close) {
+    const token = tokens[index];
+
+    if (index === close || token?.text === ',') {
+      if (index > first) found.push([first, index - 1]);
+      else if (index < close) throw new RangeError(`${at}: an empty element`);
+      first = index + 1;
+      index++;
+    } else if (token?.kind === 'template') index = templateLiteralEnd(tokens, index);
+    else if (['(', '[', '{'].includes(token?.text ?? '')) index = closing(tokens, index) + 1;
+    else index++;
+  }
+
+  return found;
+}
+
+/**
+ * The opening brace of the scenario object that the spread element `[first, last]` maps to. The
+ * only accepted form is `...<expression>.map(<parameters> => ({ … }))`, with at most a one-name
+ * return type; anything else (a spread variable, a block-bodied arrow, another call after `.map`)
+ * stops the run.
+ * @param {Token[]} tokens
+ * @param {number} first
+ * @param {number} last
+ * @param {string} at
+ * @returns {number}
+ */
+function mappedObject(tokens, first, last, at) {
+  const refused = () => new RangeError(`${at}: unsupported scenario mapping`);
+  const call = tokens[last]?.text === ')' ? opener(tokens, last) : -1;
+
+  if (call <= first || tokens[call - 1]?.text !== 'map' || tokens[call - 2]?.text !== '.')
+    throw refused();
+  const parameters = tokens[call + 1];
+  let arrow = parameters?.text === '(' ? closing(tokens, call + 1) + 1 : call + 2;
+
+  if (parameters?.kind !== 'name' && parameters?.text !== '(') throw refused();
+
+  // A return type that is one name (`(value): Scenario => ({ … })`).
+  if (tokens[arrow]?.text === ':' && tokens[arrow + 1]?.kind === 'name') arrow += 2;
+
+  if (tokens[arrow]?.text !== '=>' || tokens[arrow + 1]?.text !== '(') throw refused();
+  const body = closing(tokens, arrow + 1);
+
+  if (tokens[arrow + 2]?.text !== '{' || closing(tokens, arrow + 2) !== body - 1) throw refused();
+
+  if (body !== last - 1) throw refused();
+
+  return arrow + 2;
+}
+
+/**
+ * The case of the scenario object opened at `open`. Its members must be `key: value` with a plain
+ * key, a shorthand other than `name`, or a spread before the name; exactly one is `name: value`.
+ * A quoted, computed or method key, or a spread after the name, stops the run.
+ * @param {string} suite
+ * @param {string} file
+ * @param {string} source
+ * @param {Token[]} tokens
+ * @param {number} open
+ * @returns {Case}
+ */
+function scenarioCase(suite, file, source, tokens, open) {
+  const at = `${file}:${tokens[open]?.line}`;
+  /** @type {Case | undefined} */
+  let found;
+
+  for (const [first, last] of elements(tokens, open, closing(tokens, open), at)) {
+    const key = tokens[first];
+    const after = tokens[first + 1]?.text;
+
+    if (key?.text === '...') {
+      if (found) throw new RangeError(`${at}: a spread after the scenario name`);
+      continue;
+    }
+
+    if (key?.kind !== 'name' || (after !== ':' && first !== last))
+      throw new RangeError(`${at}: unsupported scenario member ${key?.text}`);
+
+    if (key.text !== 'name') continue;
+
+    if (first === last) throw new RangeError(`${at}: a scenario name that is not \`name: value\``);
+
+    if (found) throw new RangeError(`${at}: two scenario names`);
+    const literal = literalAt(tokens, first + 2, source);
+    const whole = literal?.end === last + 1;
+    const text = source.slice(tokens[first + 2]?.start ?? 0, tokens[last]?.end ?? 0);
+
+    found = {
+      suite,
+      site: `${file}:${key.line}`,
+      name: whole ? literal.text : text,
+      variants: whole && !literal.interpolated ? [] : ['loop site'],
+    };
+  }
+
+  if (!found) throw new RangeError(`${at}: a scenario without a \`name:\` key`);
+
+  return found;
+}
+
+/**
+ * The scenarios of a `scenarios` array literal. Each element must be a scenario object literal or
+ * a spread of `.map` over one (`...list.map((value) => ({ name: …, … }))`); anything else stops
+ * the run. A literal name is the case's name; any other value (a mapped or interpolated name) is a
+ * loop site named by its source.
  * @param {string} suite
  * @param {string} file
  * @param {string} source
@@ -478,57 +630,18 @@ function scenariosIn(suite, file, source) {
 
   if (tokens[open]?.text !== '[')
     throw new RangeError(`${file}: scenarios is not an array literal`);
-  const close = closing(tokens, open);
-  /** @type {Case[]} */
-  const cases = [];
 
-  for (let index = open + 1; index < close; index++) {
-    const token = tokens[index];
-    const before = tokens[index - 1]?.text;
-    const after = tokens[index + 1]?.text;
+  return elements(tokens, open, closing(tokens, open), file).map(([first, last]) => {
+    const at = `${file}:${tokens[first]?.line}`;
 
-    if (token?.text !== 'name' || (before !== '{' && before !== ',')) continue;
+    if (tokens[first]?.text === '...')
+      return scenarioCase(suite, file, source, tokens, mappedObject(tokens, first, last, at));
 
-    // Only a scenario's own `name`: its object is an element of the array, or the result of a
-    // mapping in a spread element (only parentheses between it and the array). A `name` key of an
-    // object nested in a scenario (a cookie, a call) is data.
-    let enclosing = opener(tokens, index);
+    if (tokens[first]?.text !== '{' || closing(tokens, first) !== last)
+      throw new RangeError(`${at}: unsupported scenario element ${tokens[first]?.text}`);
 
-    if (tokens[enclosing]?.text !== '{') continue;
-    enclosing = opener(tokens, enclosing);
-
-    while (enclosing > open && tokens[enclosing]?.text === '(')
-      enclosing = opener(tokens, enclosing);
-
-    if (enclosing !== open) continue;
-
-    if (after !== ':')
-      throw new RangeError(`${file}:${token.line}: a scenario name that is not \`name: value\``);
-    let end = index + 2;
-
-    while (end < close && ![',', '}'].includes(tokens[end]?.text ?? '')) {
-      const text = tokens[end]?.text ?? '';
-      end = ['(', '[', '{'].includes(text) ? closing(tokens, end) + 1 : end + 1;
-    }
-
-    const value = tokens.slice(index + 2, end);
-    const only = value.length === 1 ? value[0] : undefined;
-
-    const literal =
-      only?.kind === 'string' || (only?.kind === 'template' && !only.text.includes('${'));
-
-    const name = only && (only.kind === 'string' || only.kind === 'template') ? unquote(only) : '';
-    const text = source.slice(value[0]?.start ?? 0, value.at(-1)?.end ?? 0);
-
-    cases.push({
-      suite,
-      site: `${file}:${token.line}`,
-      name: name || text,
-      variants: literal ? [] : ['loop site'],
-    });
-  }
-
-  return cases;
+    return scenarioCase(suite, file, source, tokens, first);
+  });
 }
 
 /**
@@ -811,6 +924,19 @@ function selfcheck() {
     ],
     ['in-loop', 'for (const x of [1]) test(`lost`, () => {});', 'found', ['loop site']],
     ['imported', "import { expect, test } from 'bun:test';\ntest('lost', () => {});", 'found', []],
+    [
+      'template-expression',
+      "import { test } from 'bun:test';\nconst value = `${test('lost', () => {})}`;",
+      'found',
+      [],
+    ],
+    ['nested-template', 'const value = `a${`b${test(`lost`, () => {})}`}`;', 'found', []],
+    [
+      'interpolated-name',
+      'for (const n of [1]) test(`lost`, () => `${n}`);',
+      'found',
+      ['loop site'],
+    ],
     ['computed', "const name = 'lost';\ntest(name, () => {});", 'refused'],
     ['concatenated', "test('lo' + 'st', () => {});", 'refused'],
     ['computed-member', "test['skip']('lost', () => {});", 'refused'],
@@ -875,11 +1001,11 @@ function selfcheck() {
     // Refused, as required.
   }
 
-  // Scenario arrays: mapped and interpolated names are loop sites; shorthand names stop the run.
+  // Scenario arrays: the accepted literal forms; mapped and interpolated names are loop sites.
   const mapped = scenariosIn(
     'parity probe',
     'probe.ts',
-    "const scenarios = [\n  { name: 'a' },\n  ...['b', 'c'].map((mode) => ({ name: mode })),\n  ...[1].map((n) => ({ name: `d ${n}` })),\n];",
+    "const scenarios = [\n  { name: 'a', steps },\n  ...['b', 'c'].map((mode) => ({ name: mode })),\n  ...[1].map((n): Scenario => ({ ...base, name: `d ${n}` })),\n  { name: `e`, nested: { name: 'data' } },\n];",
   );
 
   if (
@@ -888,15 +1014,35 @@ function selfcheck() {
       ['a', []],
       ['mode', ['loop site']],
       ['d ${n}', ['loop site']],
+      ['e', []],
     ])
   )
     misses.push(`scenario array: ${JSON.stringify(mapped)}`);
 
-  try {
-    scenariosIn('parity probe', 'probe.ts', 'const scenarios = [{ name }];');
-    misses.push('shorthand scenario name: not refused');
-  } catch {
-    // Refused, as required.
+  // Every other element or member form stops the run.
+  for (const [form, elements] of [
+    ['shorthand name', '{ name }'],
+    ['quoted key', '{ "name": "lost" }'],
+    ['quoted other key', "{ name: 'lost', 'steps': [] }"],
+    ['computed key', "{ ['name']: 'lost' }"],
+    ['block-bodied mapping', "...[1].map(n => { return {name: 'lost'}; })"],
+    ['spread variable', '...more'],
+    ['call after map', "...[1].map((n) => ({ name: 'lost' })).filter(Boolean)"],
+    ['mapping to a variable', '...[1].map((n) => base)'],
+    ['variable element', 'base'],
+    ['call element', "make('lost')"],
+    ['no name', '{ steps: [] }'],
+    ['spread after name', "{ name: 'lost', ...base }"],
+    ['method member', "{ name: 'lost', run() {} }"],
+    ['two names', "{ name: 'lost', name: 'found' }"],
+    ['hole', "{ name: 'a' }, , { name: 'b' }"],
+  ]) {
+    try {
+      const found = scenariosIn('parity probe', 'probe.ts', `const scenarios = [${elements}];`);
+      misses.push(`scenario ${form}: not refused, found ${JSON.stringify(found)}`);
+    } catch {
+      // Refused, as required.
+    }
   }
 
   // Rust: a one-line `#[test] fn` is found; another test attribute stops the run.
@@ -927,30 +1073,36 @@ function selfcheck() {
 
 const [command] = process.argv.slice(2);
 
-if (command === 'list') {
-  for (const entry of enumerate())
+// A form discovery cannot read stops the run with its own message.
+try {
+  if (command === 'list') {
+    for (const entry of enumerate())
+      process.stdout.write(
+        `${entry.suite}\t${entry.site}\t${entry.name}\t${entry.variants.join('; ')}\n`,
+      );
+
+    for (const file of harnesses()) process.stdout.write(`harness\t${file}\t\t\n`);
+  } else if (command === 'selfcheck') {
+    selfcheck();
+    process.stdout.write('self-check ok\n');
+  } else if (command === 'check') {
+    selfcheck();
+    const text = readFileSync(join(root, LEDGER), 'utf8');
+    const problems = problemsWith(enumerate(), text, harnesses());
+
+    if (problems.length) {
+      process.stderr.write(`${problems.join('\n')}\n`);
+      process.exit(1);
+    }
+
     process.stdout.write(
-      `${entry.suite}\t${entry.site}\t${entry.name}\t${entry.variants.join('; ')}\n`,
+      `ledger ok: ${ledgerRows(text).length} cases, ${harnesses().length} harness files (self-check ok)\n`,
     );
-
-  for (const file of harnesses()) process.stdout.write(`harness\t${file}\t\t\n`);
-} else if (command === 'selfcheck') {
-  selfcheck();
-  process.stdout.write('self-check ok\n');
-} else if (command === 'check') {
-  selfcheck();
-  const text = readFileSync(join(root, LEDGER), 'utf8');
-  const problems = problemsWith(enumerate(), text, harnesses());
-
-  if (problems.length) {
-    process.stderr.write(`${problems.join('\n')}\n`);
-    process.exit(1);
+  } else {
+    process.stderr.write('Usage: node tooling/ts-freeze/ledger.mjs list|check|selfcheck\n');
+    process.exit(2);
   }
-
-  process.stdout.write(
-    `ledger ok: ${ledgerRows(text).length} cases, ${harnesses().length} harness files (self-check ok)\n`,
-  );
-} else {
-  process.stderr.write('Usage: node tooling/ts-freeze/ledger.mjs list|check|selfcheck\n');
-  process.exit(2);
+} catch (error) {
+  process.stderr.write(`ledger: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
 }
