@@ -24,7 +24,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rustix::io::{Errno, FdFlags, fcntl_setfd};
+use rustix::io::{Errno, FdFlags, fcntl_setfd, ioctl_fionbio};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
 
@@ -332,4 +332,122 @@ fn check_keystrokes(rust: &Outcome, ts: &Outcome, keys: &[u8]) {
     };
     assert_eq!(rust, &documented);
     assert!(ts == &documented || ts == &plain_input, "{keys:?}: {ts:?}");
+}
+
+/// The prompt shows only once the terminal reads raw keys, in both CLIs: cli.ts creates its
+/// readline interface, which sets raw mode, before it writes the prompt. Standard error is a pipe
+/// filled to capacity before the start, so the prompt's write waits until the test reads it, and
+/// the terminal must already be raw while it waits. The number is typed the moment the prompt has
+/// been read; it is read whole and never echoed.
+#[test]
+fn a_key_typed_as_the_prompt_shows_is_read_raw_and_not_echoed() {
+    const PROMPT: &[u8] = b"Icelandic phone number (input hidden): ";
+    let bun = std::env::var_os("FAMILY_MCP_BUN")
+        .expect("FAMILY_MCP_BUN must name a Bun 1.4.2 executable; parity tests never skip");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    for side in ["ts", "rust"] {
+        let scratch = scratch::Scratch::new(&format!("prompt-order-{side}"));
+        let mut command = match side {
+            "ts" => {
+                let mut command = Command::new(&bun);
+                command
+                    .arg("--preload")
+                    .arg(manifest.join("tests/ts/rewrite.ts"))
+                    .arg(manifest.join("../../packages/inna-mcp/src/cli.ts"))
+                    .env("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0");
+                command
+            }
+            _ => Command::new(env!("CARGO_BIN_EXE_inna-mcp")),
+        };
+        command.args(["auth", "login"]);
+        scratch.isolate(&mut command);
+
+        let (origin, seen) = upstream();
+        let (controller, terminal) = terminal();
+        let mut marked = tcgetattr(&terminal).unwrap();
+        marked.local_modes.toggle(LocalModes::ECHOCTL);
+        tcsetattr(&terminal, OptionalActions::Now, &marked).unwrap();
+        let before = tcgetattr(&terminal).unwrap();
+        let (mut errors, full) = std::io::pipe().unwrap();
+        // Fill the pipe, so the child's first write to standard error waits for the test.
+        ioctl_fionbio(&full, true).unwrap();
+        let mut filled = 0;
+
+        for size in [4096, 1] {
+            loop {
+                match (&full).write(&vec![b'.'; size]) {
+                    Ok(written) => filled += written,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("cannot fill the pipe: {error}"),
+                }
+            }
+        }
+        ioctl_fionbio(&full, false).unwrap();
+        let child = command
+            .env("INNA_TEST_ORIGIN", &origin)
+            .stdin(Stdio::from(terminal.try_clone().unwrap()))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(OwnedFd::from(full)))
+            .spawn()
+            .unwrap();
+        // The child holds the pipe's only writing end now, so it ends when the child does.
+        drop(command);
+        let raw = || {
+            !tcgetattr(&terminal)
+                .unwrap()
+                .local_modes
+                .intersects(LocalModes::ICANON | LocalModes::ECHO)
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+
+        while !raw() {
+            assert!(
+                Instant::now() < deadline,
+                "{side}: the prompt was written before the terminal read raw keys"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut stderr = Vec::new();
+        let mut chunk = [0u8; 4096];
+
+        while stderr.len() < filled || !stderr[filled..].ends_with(PROMPT) {
+            let read = errors.read(&mut chunk).unwrap();
+            assert!(read > 0, "{side}: standard error ended before the prompt");
+            stderr.extend_from_slice(&chunk[..read]);
+        }
+        assert!(raw(), "{side}");
+        std::fs::File::from(controller.try_clone().unwrap())
+            .write_all(b"5550000\r")
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        errors.read_to_end(&mut stderr).unwrap();
+        // Whatever the terminal echoed would wait on the controlling side.
+        ioctl_fionbio(&controller, true).unwrap();
+        let echoed = std::fs::File::from(controller).read(&mut chunk);
+        assert!(
+            matches!(&echoed, Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "{side}: {echoed:?}"
+        );
+        let after = tcgetattr(&terminal).unwrap();
+
+        assert_eq!(
+            (
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&stderr[filled..]).into_owned(),
+                seen.lock().unwrap().clone(),
+                after.local_modes - LocalModes::PENDIN == before.local_modes
+                    && after.input_modes == before.input_modes,
+            ),
+            (
+                Some(1),
+                String::new(),
+                "Icelandic phone number (input hidden): \nInna electronic-ID login failed or expired. Check your phone and start a fresh explicit login.\n".to_owned(),
+                vec!["GET /r.inna.is/auth/island HTTP/1.1".to_owned()],
+                true,
+            ),
+            "{side}"
+        );
+    }
 }
