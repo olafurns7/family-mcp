@@ -354,6 +354,21 @@ fn an_amount_mismatch_prevents_charging_and_uncertain_payments_survive_restarts(
     fixture.provider.check();
 }
 
+/// The intent case fails the write after the send with a read-only (0500) journal folder. That
+/// stops every user but root, so the case cannot run as root: say so instead of failing later.
+fn read_only_folders_stop_this_user(probe: &std::path::Path) {
+    fs::create_dir(probe).unwrap();
+    fs::set_permissions(probe, fs::Permissions::from_mode(0o500)).unwrap();
+    let refused = fs::write(probe.join("written"), "").is_err();
+    fs::set_permissions(probe, fs::Permissions::from_mode(0o700)).unwrap();
+    let _ = fs::remove_file(probe.join("written"));
+    fs::remove_dir(probe).unwrap();
+    assert!(
+        refused,
+        "a 0500 folder must refuse this user's writes; root is not refused, so run as another user"
+    );
+}
+
 /// intent.test.ts:11: once the intent is committed and the send reached the provider, the journal
 /// folder turns read-only, so the outcome cannot be written.
 fn retains_intent(phase: &'static str) {
@@ -400,6 +415,7 @@ fn retains_intent(phase: &'static str) {
         Some(reply)
     });
     *home_slot.lock().unwrap() = Some(fixture.checkouts());
+    read_only_folders_stop_this_user(&fixture.home.path("probe"));
     let quote = fixture.quote();
     let mut since = fixture.upstream.count();
     let directory = fixture.checkouts();
@@ -504,7 +520,8 @@ fn a_killed_payment_process_leaves_submitting_intent_and_a_restart_sends_nothing
     );
     mcp.kill();
     assert_eq!(mcp.next_line(), None, "a killed server answers nothing");
-    // The OS released the killed holder's lock; the restart takes it over and sends nothing.
+    // The killed holder's lock folder names a pid that no longer runs, so the restart removes it,
+    // takes the lock, and sends nothing.
     assert_eq!(fixture.pay(&checkout).unwrap()["state"], "submitting");
     assert_eq!(fixture.provider.state().payments, 1);
     assert_eq!(fixture.sent(&mut since), lines(&[PAY]));
