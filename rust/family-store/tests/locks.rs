@@ -25,6 +25,33 @@ fn age(path: &std::path::Path) {
     fs::File::open(path).unwrap().set_modified(old).unwrap();
 }
 
+/// The lock temporary a waiter publishes in `directory` once it is inside its lock call (bounded
+/// wait). Only one waiter at a time may be polling.
+fn published(directory: &std::path::Path) -> std::path::PathBuf {
+    let deadline = Instant::now() + Duration::from_secs(30);
+
+    loop {
+        let found = fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("session.json.lock-tmp.")
+            });
+
+        if let Some(path) = found {
+            return path;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no waiter published its lock temporary"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn waiters_poll_a_busy_lock_and_a_live_pid_never_expires_by_age() {
     let scratch = Scratch::new();
@@ -70,7 +97,8 @@ fn waiters_poll_a_busy_lock_and_a_live_pid_never_expires_by_age() {
     assert!(waited >= Duration::from_millis(150), "{waited:?}");
     assert!(waited < Duration::from_secs(3), "{waited:?}");
 
-    // A cancel while waiting ends the wait.
+    // A cancel while waiting ends the wait. The waiter is inside its lock call, polling, once its
+    // temporary is published while the holder still holds; it measures its own wait.
     let cancel = Cancel::default();
     let cancelled = {
         let (file, cancel) = (file.clone(), cancel.clone());
@@ -79,30 +107,42 @@ fn waiters_poll_a_busy_lock_and_a_live_pid_never_expires_by_age() {
                 cancel,
                 wait: Duration::from_secs(10),
             };
-            code(with_file_lock(&file, &options, || Ok::<_, Error>(())))
+            let started = Instant::now();
+            let outcome = code(with_file_lock(&file, &options, || Ok::<_, Error>(())));
+            (outcome, started.elapsed())
         })
     };
-    std::thread::sleep(Duration::from_millis(50));
+    let temporary = published(&scratch.0);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(temporary.exists(), "the waiter is still polling");
     cancel.cancel();
-    assert_eq!(cancelled.join().unwrap(), Some(Code::Cancelled));
+    let (outcome, waited) = cancelled.join().unwrap();
+    assert_eq!(outcome, Some(Code::Cancelled));
+    assert!(waited >= Duration::from_millis(100), "{waited:?}");
+    assert!(
+        !temporary.exists(),
+        "a cancelled waiter removes its temporary"
+    );
 
-    // A waiter gets the lock once the holder releases it.
-    let started = Instant::now();
+    // A waiter gets the lock once the holder releases it, and not before: measured inside the
+    // waiter, from its lock call to its work.
     let waiter = {
         let file = file.clone();
         std::thread::spawn(move || {
+            let started = Instant::now();
             with_file_lock(&file, &waiting(Duration::from_secs(10)), || {
-                Ok::<_, Error>("waited")
+                Ok::<_, Error>(started.elapsed())
             })
         })
     };
+    let temporary = published(&scratch.0);
     std::thread::sleep(Duration::from_millis(300));
+    assert!(temporary.exists(), "the waiter is still polling");
     release.send(()).unwrap();
     assert_eq!(holder.join().unwrap().unwrap(), "held");
-    assert_eq!(waiter.join().unwrap().unwrap(), "waited");
-    let waited = started.elapsed();
+    let waited = waiter.join().unwrap().unwrap();
     assert!(waited >= Duration::from_millis(250), "{waited:?}");
-    assert!(waited < Duration::from_secs(5), "{waited:?}");
+    assert!(waited < Duration::from_secs(10), "{waited:?}");
     assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
 
     // A live PID stays busy however old its owner file is.

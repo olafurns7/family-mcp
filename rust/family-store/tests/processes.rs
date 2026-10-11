@@ -113,7 +113,10 @@ fn worker() {
         }),
         "remove-file" => {
             say("started");
+            let started = Instant::now();
             with_file_lock(&target, &LockOptions::default(), || {
+                // Measured here, from the lock call to the work.
+                say(&format!("waited:{}", started.elapsed().as_millis()));
                 fs::remove_file(&target).unwrap();
                 Ok::<_, Error>(None)
             })
@@ -160,20 +163,30 @@ fn printed(child: &mut Child, line: &str) {
     }
 }
 
-/// The worker's `result:` line once it exits successfully.
-fn finished(child: Child) -> String {
+/// The worker's stdout once it exits successfully.
+fn output(child: Child) -> String {
     let output = child.wait_with_output().unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(
         output.status.success(),
         "{stdout}{}",
         String::from_utf8_lossy(&output.stderr)
     );
     stdout
+}
+
+/// The value of the worker's `<prefix>` line.
+fn line(stdout: &str, prefix: &str) -> String {
+    stdout
         .lines()
-        .find_map(|line| line.strip_prefix("result:"))
-        .unwrap_or_else(|| panic!("no result: {stdout}"))
+        .find_map(|line| line.strip_prefix(prefix))
+        .unwrap_or_else(|| panic!("no {prefix} {stdout}"))
         .to_owned()
+}
+
+/// The worker's `result:` line once it exits successfully.
+fn finished(child: Child) -> String {
+    line(&output(child), "result:")
 }
 
 fn run(scratch: &Scratch, mode: &str, target: &Path, argument: &str) -> String {
@@ -361,11 +374,31 @@ fn separate_processes_serialize_file_locks_and_removal_waits_for_an_in_flight_ho
     printed(&mut holder, "held");
     let mut remover = start(&scratch, "remove-file", &file, "");
     printed(&mut remover, "started");
+    // The remover is inside its lock call once its own lock temporary is published.
+    let temporary = format!("session.json.lock-tmp.{}-", remover.id());
+    let deadline = Instant::now() + Duration::from_secs(60);
+
+    while !fs::read_dir(scratch.join("data")).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&temporary)
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "the remover never started waiting"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(text(&file), "3");
     assert!(remover.try_wait().unwrap().is_none(), "the remover waits");
     fs::write(&release, "").unwrap();
     assert_eq!(finished(holder), "none");
-    assert_eq!(finished(remover), "none");
+    let removed = output(remover);
+    assert_eq!(line(&removed, "result:"), "none");
+    let waited: u64 = line(&removed, "waited:").parse().unwrap();
+    assert!(waited >= 250, "{waited} ms");
     assert_eq!(fs::read_dir(scratch.join("data")).unwrap().count(), 0);
 }
