@@ -585,7 +585,8 @@ impl Mcp {
         (mcp, initialized)
     }
 
-    fn send(&mut self, message: &Value) {
+    /// Write one message without waiting for an answer.
+    pub fn send(&mut self, message: &Value) {
         let stdin = self.stdin.as_mut().unwrap();
         writeln!(stdin, "{message}").unwrap();
         stdin.flush().unwrap();
