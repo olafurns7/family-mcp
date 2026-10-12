@@ -31,6 +31,11 @@ test('real loopback HTTP covers login redirects, cookies, rate limits, and body 
     const method = init.method ?? 'GET';
     requests.push(`${method} ${url.pathname}`);
 
+    // Rust: InfoMentor answers 411 to a POST without its length, as it did to 0.9.3's empty
+    // isauthenticated form; fetch always sends one.
+    if (method === 'POST' && new Headers(init.headers).get('content-length') === null)
+      return new Response(null, { status: 411 });
+
     if (url.pathname === '/production/mentor/' && method === 'GET')
       return new Response(
         '<form method="POST" action="./"><input type="hidden" name="__VIEWSTATE" value="state"><input type="hidden" name="__EVENTVALIDATION" value="validation"></form>',

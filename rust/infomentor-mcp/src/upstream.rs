@@ -6,7 +6,7 @@ use std::future::Future;
 
 use mcp_runtime::{BodyError, read_capped};
 use reqwest::Method;
-use reqwest::header::HeaderMap;
+use reqwest::header::{CONTENT_LENGTH, HeaderMap};
 use tokio::runtime::Handle;
 use url::Url;
 
@@ -115,7 +115,9 @@ impl Net {
         let mut request = self.client.request(method, target(url)).headers(headers);
 
         if let Some(body) = body {
-            request = request.body(body);
+            // fetch always sends a POST's length; with an empty body hyper sends none, and
+            // InfoMentor answers 411 to isauthenticated's empty form.
+            request = request.header(CONTENT_LENGTH, body.len()).body(body);
         }
         let sent = self.wait(signal, request.send())?;
         Some(sent.ok().map(|response| Response {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.4
+
+Released 2026-10-12.
+
+- `auth login` works again. Since 0.9.0 the Rust server sent its final
+  sign-in check, an empty form post, without a `Content-Length` header;
+  InfoMentor answered HTTP 411, so every login failed with "InfoMentor returned
+  an error. Try again later." even with the right password. The automatic
+  sign-in with the stored password, after a session expires, uses the same
+  login and failed the same way. Every form post now sends its length, as the
+  TypeScript server did.
+
 ## 0.9.3
 
 Released 2026-10-12.
