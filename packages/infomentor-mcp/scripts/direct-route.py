@@ -14,10 +14,10 @@ HOSTS = ("im1.infomentor.is", "minn.infomentor.is")
 MARKER = b"infomentor-mcp alternate frontend"
 
 
-def verify(address):
-    context = ssl.create_default_context()
+def verify(address, context=None, connect=socket.create_connection):
+    context = context or ssl.create_default_context()
     for host, path in zip(HOSTS, ("/production/mentor/", "/")):
-        with socket.create_connection((address, 443), timeout=10) as connection:
+        with connect((address, 443), timeout=10) as connection:
             with context.wrap_socket(connection, server_hostname=host) as tls:
                 tls.sendall(
                     f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode()
@@ -27,26 +27,96 @@ def verify(address):
                 if host == HOSTS[0]:
                     body = response.read(65537)
                     if response.status != 200 or b"__VIEWSTATE" not in body or b"password" not in body.lower():
-                        raise ValueError("Alternate frontend did not return the school login form.")
+                        raise ValueError(f"Frontend did not return the school login form (HTTP {response.status}).")
                 elif response.status != 302 or not response.getheader("Location", "").lower().startswith(
                     "/authentication/authentication/login"
                 ):
-                    raise ValueError("Alternate frontend did not return the parent login redirect.")
+                    raise ValueError(f"Frontend did not return the parent login redirect (HTTP {response.status}).")
 
 
-def discover():
-    addresses = dict.fromkeys(
-        item[4][0]
-        for item in socket.getaddrinfo("api-im.infomentor.net", 443, socket.AF_INET, socket.SOCK_STREAM)
-        if ipaddress.ip_address(item[4][0]).is_global
-    )
+def attempt(address, failures, label=""):
+    try:
+        verify(address)
+        return True
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        # HTTP parse errors carry raw upstream bytes; report only their type.
+        detail = "invalid HTTP response" if isinstance(error, http.client.HTTPException) else error
+        failures.append(f"{label}{address}: {type(error).__name__}: {detail}")
+        return False
+
+
+def discover(failures):
+    try:
+        found = socket.getaddrinfo("api-im.infomentor.net", 443, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError as error:
+        failures.append(f"api-im.infomentor.net lookup: {type(error).__name__}: {error}")
+        return None
+    addresses = dict.fromkeys(item[4][0] for item in found if ipaddress.ip_address(item[4][0]).is_global)
+    if not addresses:
+        failures.append("api-im.infomentor.net lookup: no public IPv4 address")
     for address in list(addresses)[:4]:
-        try:
-            verify(address)
+        if attempt(address, failures):
             return address
-        except (OSError, ValueError, http.client.HTTPException):
+    return None
+
+
+def report(summary, failures):
+    return "\n".join([summary, *(f"  {failure}" for failure in failures)])
+
+
+def existing_entry(original):
+    """Return (address, marked) for the current school-host entry, or None when there is none."""
+    addresses = {host.encode(): set() for host in HOSTS}
+    kinds = set()
+    for line in original.splitlines():
+        entry, _, comment = line.partition(b"#")
+        fields = entry.split()
+        names = [field.lower().rstrip(b".") for field in fields[1:]]
+        marked = comment.strip() == MARKER
+        if marked and (len(fields) != 3 or set(names) != set(addresses)):
+            raise ValueError("Modified managed hosts entry; review /etc/hosts before retrying.")
+        matched = [name for name in names if name in addresses]
+        if not matched:
             continue
-    raise ValueError("Alternate frontend checks failed; hosts file unchanged.")
+        try:
+            address = str(ipaddress.ip_address(fields[0].decode("ascii")))
+        except ValueError:
+            raise ValueError("Unreadable InfoMentor hosts entry; review /etc/hosts before retrying.") from None
+        kinds.add(marked)
+        for name in matched:
+            addresses[name].add(address)
+    found = set().union(*addresses.values())
+    if not found:
+        return None
+    if len(found) != 1 or not all(addresses.values()) or len(kinds) != 1:
+        raise ValueError(
+            "Ambiguous InfoMentor hosts entries: both school hostnames must map to one address "
+            "in either the managed entry or hand-written entries; review /etc/hosts before retrying."
+        )
+    return found.pop(), kinds.pop()
+
+
+def choose(original):
+    """Return the verified address to write, or None to keep the hosts file unchanged."""
+    current = existing_entry(original)
+    failures = []
+    if current:
+        address, marked = current
+        kind = "managed" if marked else "hand-written"
+        if attempt(address, failures, f"existing {kind} entry "):
+            print(f"Kept the existing {kind} InfoMentor direct route: {address}")
+            return None
+        if not marked:
+            # The operator owns a hand-written entry: report a working alternate, never replace it.
+            alternate = discover(failures)
+            summary = "Existing hand-written InfoMentor hosts entry failed verification; hosts file unchanged."
+            if alternate:
+                summary += f" Verified alternate address: {alternate}."
+            raise ValueError(report(f"{summary} Review /etc/hosts before retrying.", failures))
+    address = discover(failures)
+    if not address:
+        raise ValueError(report("Alternate frontend checks failed; hosts file unchanged.", failures))
+    return address
 
 
 def rewrite(original, address):
@@ -81,7 +151,11 @@ def configure(action, path="/etc/hosts"):
         original = hosts.read(1024 * 1024 + 1)
         if len(original) > 1024 * 1024:
             raise ValueError("Hosts file is unexpectedly large; review it before retrying.")
-        address = discover() if action == "install" else None
+        address = None
+        if action == "install":
+            address = choose(original)
+            if not address:
+                return
         result = rewrite(original, address)
         if result != original:
             hosts.seek(0)

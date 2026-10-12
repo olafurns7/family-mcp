@@ -35,13 +35,13 @@ with tempfile.TemporaryDirectory() as directory:
     path.write_bytes(original)
     path.chmod(0o644)
     inode = path.stat().st_ino
-    with patch.object(route, "discover", return_value=address):
+    with patch.object(route, "discover", return_value=address), patch.object(route, "verify", return_value=None):
         route.configure("install", path)
         route.configure("install", path)
         assert path.read_bytes() == installed
         assert path.stat().st_ino == inode
         assert path.stat().st_mode & 0o777 == 0o644
-    with patch.object(route, "discover", side_effect=ValueError("TLS preflight failed")):
+    with patch.object(route, "discover", return_value=None), patch.object(route, "verify", side_effect=OSError("down")):
         try:
             route.configure("install", path)
             raise AssertionError("Failed preflight accepted")
@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory() as directory:
             pass
         assert path.read_bytes() == original
 
-    def concurrent_edit():
+    def concurrent_edit(failures):
         path.write_bytes(original + b"127.0.0.2 another-host\n")
         return address
 
@@ -93,7 +93,9 @@ with patch.object(route.socket, "getaddrinfo", return_value=[
     (0, 0, 0, "", ("8.8.8.8", 443)),
     (0, 0, 0, "", ("1.1.1.1", 443)),
 ]), patch.object(route, "verify", side_effect=[OSError("unreachable"), None]) as verify:
-    assert route.discover() == "1.1.1.1"
+    failures = []
+    assert route.discover(failures) == "1.1.1.1"
+    assert failures == ["8.8.8.8: OSError: unreachable"]
     assert [call.args[0] for call in verify.call_args_list] == ["8.8.8.8", "1.1.1.1"]
 
 print("Direct-route offline checks passed.")
