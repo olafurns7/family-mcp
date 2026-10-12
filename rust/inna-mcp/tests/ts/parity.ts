@@ -664,6 +664,8 @@ function hiddenOperation(result: unknown): unknown {
   return operation ? JSON.parse(JSON.stringify(result).replaceAll(operation, '<operation>')) : result;
 }
 
+const RENEW_HELP = '  inna-mcp auth renew                 Renew the saved session once, for a timer; prints nothing on success\n';
+
 function command(side: 'ts' | 'rust', args: string[]): string[] {
   return side === 'ts' ? [process.execPath, '--preload', rewrite, cli, ...args] : [rust!, ...args];
 }
@@ -683,8 +685,10 @@ async function runCli(side: 'ts' | 'rust', home: string, env: Record<string, str
   ]);
 
   const hidden = (text: string) => text.replaceAll(home, '<home>');
+  // Rust: `auth renew` has no TypeScript counterpart; tests/renew.rs covers it.
+  const help = side === 'rust' ? stdout.replace(RENEW_HELP, '') : stdout;
 
-  return { args: args.map(hidden), code, stdout: hidden(stdout), stderr: hidden(stderr) };
+  return { args: args.map(hidden), code, stdout: hidden(help), stderr: hidden(stderr) };
 }
 
 async function runServe(

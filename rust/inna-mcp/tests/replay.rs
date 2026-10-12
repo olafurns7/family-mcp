@@ -104,6 +104,9 @@ const KEEP_ALIVE_TEXT: [&str; 2] = [
     "Do not touch the saved session every 10 minutes while serving",
 ];
 
+/// The help line of `auth renew`, which the TypeScript CLI never had; tests/renew.rs covers it.
+const RENEW_HELP: &str = "  inna-mcp auth renew                 Renew the saved session once, for a timer; prints nothing on success\n";
+
 /// The package version the freeze recorded at 41d6f98: `--version` printed it and `initialize`
 /// named it in `serverInfo.version`. The replay expects this binary's own version there instead.
 const RECORDED_VERSION: &str = "0.4.1";
@@ -132,6 +135,7 @@ fn named(names: &Names, text: &str) -> String {
     names
         .fresh(text)
         .replace(KEEP_ALIVE_TEXT[0], KEEP_ALIVE_TEXT[1])
+        .replace(RENEW_HELP, "")
 }
 
 /// A JSON-RPC answer line as the freeze named it, without its envelope: `{result}` or `{error}`.
