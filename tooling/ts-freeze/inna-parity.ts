@@ -1,9 +1,12 @@
 // Freezes what the TypeScript Inna CLI and server do in every case of
-// rust/inna-mcp/tests/ts/parity.ts, for rust/inna-mcp/tests/replay.rs. Run once from the
-// repository root with Bun 1.4.2 at the commit named in the provenance:
+// rust/inna-mcp/tests/ts/parity.ts, and in the drop-in cases the ledger names `inna/contract/*`,
+// for rust/inna-mcp/tests/replay.rs. Run once per set from the repository root with Bun 1.4.2 at
+// the commit named in the provenance:
 //
 //   BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 FAMILY_MCP_STORE_TEST_SEAM=1 \
 //     bun tooling/ts-freeze/inna-parity.ts rust/inna-mcp/tests/fixtures/parity
+//   BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 FAMILY_MCP_STORE_TEST_SEAM=1 \
+//     bun tooling/ts-freeze/inna-parity.ts rust/inna-mcp/tests/fixtures/contract contract
 //
 // parity.ts ran each scenario once against the TypeScript CLI (rewrite.ts preloaded) and once
 // against the binary, each in its own scratch home, against one fake Inna (fake-inna.ts) and one
@@ -17,8 +20,13 @@
 // would be answered, without changing the fake. MCP traffic is raw newline-delimited JSON-RPC, and
 // each answer is kept as the line the server wrote. The scenario tables are parity.ts's, copied
 // between the markers below; the copied code changed only where this workspace's lint requires
-// (marked `lint:`) and in layout (oxfmt), not in behaviour. Every value is synthetic. PR 3 deletes
-// this script with the TypeScript sources.
+// (marked `lint:`) and in layout (oxfmt), not in behaviour.
+//
+// A contract case is its test's steps as the drop-in client made them (a tool call on one long
+// `serve`, an `auth` command, a sign-in), run against the TypeScript side with the test's own
+// scripted Inna (integration.test.ts's `Provider`, login.test.ts's `provider()` and rust-login.ts's
+// `user()`, copied unchanged between markers) behind the same proxy, and asserting what the test
+// asserted. Every value is synthetic. PR 3 deletes this script with the TypeScript sources.
 import { strict as assert } from 'node:assert';
 import {
   chmodSync,
@@ -38,19 +46,22 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import * as z from 'zod/v4';
 
-import { setSystemTime } from 'bun:test';
+import { expect, setSystemTime } from 'bun:test';
 
 import {
   SessionStoreError,
   defaultKeyProvider,
   defaultSecretRecordPath,
+  withSecretRecord,
   withSecretStore,
 } from '../../packages/session-store/src/index.ts';
 import {
   RECORD_MAX_BYTES,
   cookieExportSchema,
   sessionJar,
+  type InnaClient,
 } from '../../packages/inna-mcp/src/client.ts';
+import type { User } from '../../packages/inna-mcp/src/schemas.ts';
 import {
   COOKIES,
   fresh,
@@ -75,8 +86,12 @@ const repo = resolve(import.meta.dir, '../..');
 
 const cli = join(repo, 'packages/inna-mcp/src/cli.ts');
 
-// Routes the package's fetch to the proxy and its `Date.now` to the clock file.
-const rewrite = join(repo, 'rust/inna-mcp/tests/ts/rewrite.ts');
+// Routes the package's fetch to the proxy and its `Date.now` to the clock file; the contract set's
+// copy routes the electronic-ID host too.
+const rewrite =
+  set === 'contract'
+    ? join(repo, 'tooling/ts-freeze/inna-rewrite.ts')
+    : join(repo, 'rust/inna-mcp/tests/ts/rewrite.ts');
 
 const scratch = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ts-freeze-inna-'));
 
@@ -114,6 +129,12 @@ const COMPARED = [
 /** Every exchange the proxy has seen, in the order the requests arrived. */
 const exchanges: Exchange[] = [];
 
+/** What went wrong out of a case's sight (a provider's failed expectation); the freeze fails. */
+const problems: string[] = [];
+
+/** Where the proxy forwards: the parity fake, or the contract set's case upstream. */
+let target = fake.origin;
+
 /** A request's body as UTF-8 text, a leading byte order mark kept; never lossy. */
 async function bytesOf(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
@@ -134,7 +155,7 @@ async function forward(
 
   if (method !== 'GET' && method !== 'HEAD') init.body = body;
 
-  const response = await fetch(`${fake.origin}${path}`, init);
+  const response = await fetch(`${target}${path}`, init);
 
   const kept: Record<string, string | string[]> = {};
 
@@ -176,10 +197,23 @@ async function proxy(incoming: IncomingMessage, out: ServerResponse): Promise<vo
   const body = await bytesOf(incoming);
   const exchange: Exchange = { request: { method, url, headers: recorded, body } };
   exchanges.push(exchange);
-  const answer = await forward(method, path, headers, body);
+  let answer: Answer;
+
+  try {
+    answer = await forward(method, path, headers, body);
+  } catch {
+    // The upstream dropped the connection, as a failed fetch: status 0, and so does the proxy.
+    exchange.response = { status: 0, headers: {}, body: '' };
+    incoming.socket.destroy();
+
+    return;
+  }
+
   exchange.response = answer;
 
-  if (method === 'GET' && answer.status === 401) {
+  if (method === 'GET' && answer.status === 401 && set === 'contract')
+    problems.push(`${url}: a GET answered 401 in a contract case, which records no recovery`);
+  else if (method === 'GET' && answer.status === 401) {
     // A copy of the fake's state answers the renewal and the retry, so the TypeScript run sees no
     // change.
     const kept = current;
@@ -1134,6 +1168,12 @@ const LEAKS = [
   'synthetic-xsrf',
   'synthetic-rotated',
   'synthetic-switched',
+  // The contract set's own: the access decoy, the sign-in cookies, and the access list's id.
+  '8888888',
+  'synthetic-saved',
+  'synthetic-school',
+  'synthetic-identity-cookie',
+  'DO-NOT-SAVE',
 ];
 
 function leaks(at: string, text: string): void {
@@ -1770,18 +1810,1684 @@ function layout(frozen: { steps: object[] }): string {
   return `{"steps":[\n${steps.map((step) => JSON.stringify(step)).join(',\n')}\n],${head.slice(1)}\n`;
 }
 
+// ---- integration.test.ts (41d6f98): the contract cases' Inna ----
+const request = {
+  kind: 'sick',
+  dateFrom: '2040-01-02',
+  dateTo: '2040-01-02',
+  reason: 'Synthetic reason',
+} satisfies Parameters<InnaClient['prepareAbsence']>[0];
+
+const student: User = {
+  userId: 1,
+  studentId: '2',
+  schoolId: '3',
+  studentName: 'Synthetic student',
+  name: 'Synthetic guardian',
+  schoolLong: 'Synthetic school',
+  defaultTermId: '4',
+  isGuardian: true,
+  logInType: '2',
+  olderThan18: false,
+  registerAbsenceGuardian: '1',
+  registerAbsenceUnder18: '0',
+  registerAbsenceOver18: '1',
+  registerAbsence: '1',
+  student18RegisterAbsence: '1',
+  registerLeave: '1',
+  student18RegisterLeave: '1',
+  registerIllnessTomorrow: '1',
+};
+
+const sibling: User = {
+  ...student,
+  userId: 5,
+  studentId: '6',
+  schoolId: '8',
+  studentName: 'Synthetic sibling',
+  schoolLong: 'Synthetic second school',
+};
+
+const SIBLING = '5';
+
+// copy: `range` is the parity tables' own name here; the contract cases use `days`.
+
+// Decoys for the access fields that must never reach a tool result or the session file.
+const hidden = {
+  kennitala: '9999999999',
+  notandi_id: '8888888',
+  url_login: 'https://nam.inna.is/auth/token?token=DO-NOT-RETURN',
+};
+
+function expectClean(text: string): void {
+  for (const decoy of ['9999999999', '8888888', 'DO-NOT-RETURN', 'auth/token'])
+    expect(text).not.toContain(decoy);
+}
+
+type AccessEntry = { system: string; status: string; skoli_id?: string; skoli_heiti: string };
+
+class Provider {
+  readonly calls: { url: URL; method: string; body: string | undefined }[] = [];
+  posts = 0;
+  failPost = false;
+  redirect = false;
+  rateLimit = false;
+  ignoreSwitch = false;
+  switchRateLimit = false;
+  unauthorized = false;
+  switchUnauthorized = false;
+  rotation = 'synthetic-rotated';
+  numeric = false;
+  switchLocation = 'http://nam.inna.is/Components/Students/Students.html';
+  switches = 0;
+  user = student;
+  selected = '1';
+  order = ['1', SIBLING, '9'];
+  contexts = new Map([
+    ['1', student],
+    [SIBLING, sibling],
+  ]);
+
+  // Live shape: digit strings, no id key. The last entry is another Inna application.
+  entries = new Map<string, AccessEntry>([
+    ['1', { system: '1', status: '1', skoli_id: '3', skoli_heiti: 'Synthetic school' }],
+    [SIBLING, { system: '1', status: '2', skoli_id: '8', skoli_heiti: 'Synthetic second school' }],
+    ['9', { system: '2', status: '1', skoli_id: '3', skoli_heiti: 'Synthetic school' }],
+  ]);
+
+  access() {
+    return this.order.map((key) => {
+      const entry = this.entries.get(key);
+      const on = key === this.selected;
+
+      return {
+        ...hidden,
+        ...entry,
+        userId: this.numeric ? Number(key) : key,
+        system: this.numeric ? Number(entry?.system) : entry?.system,
+        loggedIn: this.numeric ? on : on ? '1' : '0',
+        isStudent: '1',
+        virkur: '1',
+        adgangur: '1',
+        nafn: this.contexts.get(key)?.studentName ?? 'Synthetic staff',
+        title: 'Synthetic role',
+        tegund: 'Synthetic kind',
+        skoli_audk: 'SYN',
+        showPersonalInfoConfirmationModal: false,
+      };
+    });
+  }
+
+  paths(from = 0): string[] {
+    return this.calls.slice(from).map((call) => call.url.pathname);
+  }
+
+  private switchStudent(url: URL, headers: Headers, options: RequestInit): Response {
+    expect(options.method).toBe('GET');
+    expect(options.body).toBeUndefined();
+    expect(headers.get('X-Requested-By')).toBeNull();
+    expect(headers.get('X-XSRF-TOKEN')).toBeNull();
+    expect(headers.get('Authorization')).toBeNull();
+    this.switches += 1;
+
+    if (this.switchRateLimit)
+      return new Response(null, { status: 429, headers: { 'Retry-After': '120' } });
+
+    if (this.switchUnauthorized) return new Response(null, { status: 401 });
+    const key = this.order[Number(url.searchParams.get('i'))];
+    const entry = key === undefined ? undefined : this.entries.get(key);
+
+    expect([...url.searchParams.keys()]).toEqual(['i', 'system', 'status', 'user_id']);
+    expect(url.searchParams.get('system')).toBe('1');
+    expect(url.searchParams.get('system')).toBe(String(entry?.system));
+    expect(url.searchParams.get('status')).toBe(String(entry?.status));
+    expect(url.searchParams.get('user_id')).toBe(key ?? '');
+
+    if (key !== undefined && !this.ignoreSwitch) {
+      this.selected = key;
+      this.user = this.contexts.get(key) ?? this.user;
+    }
+
+    return new Response('<html>Synthetic redirect</html>', {
+      status: 303,
+      headers: {
+        Location: this.switchLocation,
+        'Set-Cookie': `SESSION=synthetic-switched-${this.switches}; Path=/; Secure; HttpOnly`,
+      },
+    });
+  }
+
+  fetch = async (value: string, options: RequestInit): Promise<Response> => {
+    const url = new URL(value);
+    expect(url.origin).toBe('https://nam.inna.is');
+    expect(options.redirect).toBe('manual');
+    const headers = new Headers(options.headers);
+    expect(headers.get('Cookie')).toContain('SESSION=synthetic-');
+    this.calls.push({
+      url,
+      method: options.method ?? 'GET',
+      body: z.string().optional().parse(options.body),
+    });
+
+    if (url.pathname === '/auth/system') return this.switchStudent(url, headers, options);
+
+    if (url.pathname === '/Components/Students/Students.html')
+      return new Response('<html>Synthetic application</html>', {
+        headers: { 'Content-Type': 'text/html' },
+      });
+    expect(url.pathname.startsWith('/api/')).toBe(true);
+    expect(headers.get('X-Requested-By')).toBe('XMLHttpRequest');
+    expect(headers.get('X-XSRF-TOKEN')).toBe('synthetic-xsrf');
+
+    if (this.redirect)
+      return new Response(null, {
+        status: 302,
+        headers: { Location: 'https://example.invalid/credential-trap' },
+      });
+
+    if (this.rateLimit)
+      return new Response(null, { status: 429, headers: { 'Retry-After': '60' } });
+
+    if (this.unauthorized) return new Response(null, { status: 401 });
+
+    if (url.pathname === '/api/UserData/GetLoggedInUser')
+      return Response.json(
+        {
+          ...this.user,
+          access: this.access(),
+          studentIdNumber: 'DO-NOT-RETURN',
+          privateToken: 'DO-NOT-RETURN',
+        },
+        { headers: { 'Set-Cookie': `SESSION=${this.rotation}; Path=/; Secure; HttpOnly` } },
+      );
+
+    if (url.pathname === '/api/RegisterAbsence/AddNewLeave') {
+      this.posts += 1;
+      expect(options.method).toBe('POST');
+
+      if (this.failPost) throw new Error('Synthetic lost response');
+
+      return Response.json({ id: 123 });
+    }
+
+    switch (url.pathname) {
+      case '/api/StudentTerms/GetStudentTerms':
+        return Response.json([{ termId: '4', termCode: 'Synthetic term' }]);
+      case '/api/ModulesAndBooklist/GetModulesAndBooklist':
+      case '/api/Homework/GetStudentHomework':
+      case '/api/StudentGrades/GetStudentGrades':
+      case '/api/RegisterAbsence/GetLeaves':
+      case '/api/RegisterAbsence/GetStudentRegisteredAbsences':
+        return Response.json([]);
+      case '/api/Announcements/GetStudentAnnouncements':
+        return Response.json([
+          {
+            announcementId: '12',
+            date: '02.01.2040',
+            title: 'Synthetic school-wide announcement',
+            sender: 'Synthetic school',
+            contentHtml: '<p>Synthetic notice</p>',
+            hasOpened: false,
+          },
+        ]);
+      case '/api/Timetable/GetTimetable':
+        return Response.json([
+          {
+            start: '2040-01-02T10:00:00',
+            end: '2040-01-02T11:00:00',
+            titleShort: 'Synthetic lesson',
+            allDay: false,
+          },
+          { start: '2040-01-02', end: '2040-01-03', titleShort: 'Synthetic event', allDay: true },
+        ]);
+      case '/api/GetAssignments/GetStudentAssignments':
+        return Response.json([
+          {
+            assignmentId: '5',
+            name: 'Synthetic assignment',
+            module: 'Synthetic course',
+            type: '0',
+            assignedFullDate: '01.01.2040',
+            handInFullDate: '03.01.2040',
+            handedIn: 0,
+            isOpen: 1,
+            projectId: '6',
+          },
+        ]);
+      case '/api/GetAssignments/GetAssignmentInfo':
+        return Response.json({
+          assignmentId: '5',
+          name: 'Synthetic assignment',
+          description: '<p>Instructions</p><script>discard()</script>',
+          moduleName: 'Synthetic course',
+          groupId: '7',
+          groupName: '1',
+          moduleTermId: '8',
+          returnDate: '03.01.2040',
+          type: 0,
+          exam: 0,
+          weight: '20',
+          projectId: '6',
+          groupReturnSize: 0,
+        });
+      case '/api/GetAssignments/Groups/7/StudentProjects':
+        return Response.json({
+          assignments: [
+            {
+              id: 5,
+              name: 'Synthetic assessment',
+              type: 0,
+              weight: 20,
+              grade: '8',
+              returnDate: 1,
+              assignDate: 1,
+              handedIn: true,
+            },
+          ],
+          categories: [],
+        });
+      case '/api/Attendance/GetAttendance':
+        return Response.json({
+          absencesTotal: [],
+          leaveOfAbsencesTotal: [],
+          attendanceTerm: { realAttendance: '90', attendance: '95' },
+          dateFrom: '01.01.2040',
+          dateTo: '01.05.2040',
+          termName: 'Synthetic term',
+          nrClassesTotal: 10,
+          absencePointsTotal: '1',
+          modules: [],
+        });
+      case '/api/Attachment/GetModuleFiles':
+        return Response.json([
+          {
+            fileGroupId: '9',
+            groupId: '7',
+            fileGroup: 'Synthetic group',
+            files: [
+              {
+                name: 'Synthetic file',
+                fileId: '10',
+                closed: false,
+                link: 'https://example.invalid/do-not-fetch',
+              },
+            ],
+          },
+        ]);
+      case '/api/Messages/GetReceivedMessages':
+        return Response.json({
+          count: 1,
+          messages: [
+            {
+              messagesId: '11',
+              table: 'A',
+              title: 'Synthetic message',
+              sender: 'Synthetic sender',
+              date: '02.01.2040',
+              status: 'S',
+            },
+          ],
+        });
+      case '/api/Messages/GetMessageDetails':
+        return Response.json({
+          title: 'Synthetic message',
+          message: '<p>Hello &amp; welcome</p>',
+          dateCreated: '02.01.2040',
+          dateSent: '02.01.2040',
+          sentTo: 'Synthetic recipient',
+          type: 'A',
+          attachmentList: [],
+        });
+      case '/api/RegisterAbsence/GetRegisterAbsences':
+        return Response.json({
+          todayAllowed: true,
+          tomorrowAllowed: true,
+          today: false,
+          tomorrow: false,
+          doctorsNote: '',
+          comment: '',
+        });
+      default:
+        throw new Error('Unimplemented synthetic endpoint');
+    }
+  };
+}
+
+// ---- end of integration.test.ts ----
+
+// ---- login.test.ts (41d6f98): the sign-in cases' Inna ----
+const token = `${Buffer.from('{"alg":"HS256","typ":"JWT"}').toString('base64url')}.${Buffer.from('{"sub":"synthetic-subject"}').toString('base64url')}.${'x'.repeat(32)}-`;
+
+const bodySchema = z.object({
+  returnUrl: z.string().optional(),
+  userIdentifier: z.string().optional(),
+  verificationProperties: z.string().optional(),
+  data: z.string().optional(),
+  session: z.object({ data: z.string(), isSuccess: z.boolean() }).optional(),
+});
+
+const session = (data: string, success = false, wait = 2000) => ({
+  isSuccess: success,
+  retryWaitTime: wait,
+  retries: 10,
+  nexusUrl: null,
+  data,
+  timeoutErrorMessage: 'Synthetic expired message',
+  isFirstPoll: false,
+  scriptId: null,
+  sessionId: null,
+  deviceLinkUrl: null,
+});
+
+const redirect = (url: string, cookies?: string) =>
+  new Response(null, {
+    status: 302,
+    headers: cookies ? { Location: url, 'Set-Cookie': cookies } : { Location: url },
+  });
+
+function provider() {
+  const calls: { url: URL; method: string }[] = [];
+  let polls = 0;
+  let terms = true;
+  let access = [{ system: 1, user_id: 2, status: 3, is_access: true }];
+  const selections: Record<string, string>[] = [];
+  let trap = false;
+
+  const fetcher = async (value: string, options: RequestInit): Promise<Response> => {
+    const url = new URL(value);
+    const headers = new Headers(options.headers);
+    const method = options.method ?? 'GET';
+    const body = bodySchema.parse(JSON.parse(z.string().optional().parse(options.body) ?? '{}'));
+    expect(url.protocol).toBe('https:');
+    expect(options.redirect).toBe('manual');
+    expect([
+      'r.inna.is',
+      'inna.is',
+      'heimdallur.inna.is',
+      'innskra.island.is',
+      'nam.inna.is',
+    ]).toContain(url.hostname);
+    calls.push({ url, method });
+
+    if (headers.has('Authorization')) {
+      expect(url.origin).toBe('https://inna.is');
+      expect(headers.get('Authorization')).toBe(`Bearer ${token}`);
+    }
+
+    if (method === 'POST' && url.hostname === 'innskra.island.is')
+      expect(headers.get('X-CSRF-TOKEN-IDS')).toBe('synthetic-csrf');
+
+    switch (`${url.hostname}${url.pathname}`) {
+      case 'r.inna.is/auth/island':
+        return redirect(
+          trap
+            ? 'https://example.invalid/credential-trap'
+            : 'https://heimdallur.inna.is/auth/island/login',
+        );
+      case 'heimdallur.inna.is/auth/island/login':
+        return redirect('https://innskra.island.is/connect/authorize');
+      case 'innskra.island.is/connect/authorize':
+        return redirect(
+          'https://innskra.island.is/app/login?ReturnUrl=' +
+            encodeURIComponent('/connect/authorize/callback?state=synthetic'),
+        );
+      case 'innskra.island.is/app/login':
+        return new Response('<html>synthetic phone shell</html>');
+      case 'innskra.island.is/login/context':
+        return Response.json(
+          { identityProviderRestrictions: [] },
+          { headers: { 'Set-Cookie': 'CSRF-TOKEN-IDS=synthetic-csrf; Path=/; Secure' } },
+        );
+      case 'innskra.island.is/login/phone':
+        return Response.json({
+          displayCode: '1234',
+          verificationProperties: 'synthetic-verification',
+        });
+      case 'innskra.island.is/login/phone/check-device':
+        expect(body).toEqual({
+          returnUrl: encodeURIComponent('/connect/authorize/callback?state=synthetic'),
+          userIdentifier: '5550000',
+        });
+
+        return Response.json({ isTwoFactorRequired: false, isNewLoginRestricted: false });
+      case 'innskra.island.is/login/phone/authenticate':
+        expect(body.verificationProperties).toBe('synthetic-verification');
+
+        return Response.json({ userIdentifier: null, session: session('synthetic-first') });
+      case 'innskra.island.is/login/phone/poll':
+        expect(body.userIdentifier).toBeUndefined();
+        expect(body.data).toBe(polls++ ? 'synthetic-next' : 'synthetic-first');
+
+        return Response.json(
+          polls === 1 ? session('synthetic-next', false, 3000) : session('synthetic-success', true),
+        );
+      case 'innskra.island.is/login/phone/signin':
+        expect(body.session?.data).toBe('synthetic-success');
+        expect(body.session?.isSuccess).toBe(true);
+
+        return Response.json(
+          { validReturnUrl: '/connect/authorize/callback?state=synthetic' },
+          { headers: { 'Set-Cookie': 'innskra=synthetic-identity-cookie; Path=/; Secure' } },
+        );
+      case 'innskra.island.is/connect/authorize/callback':
+        return redirect('https://heimdallur.inna.is/auth/island/callback');
+      case 'heimdallur.inna.is/auth/island/callback':
+        return redirect('https://innskra.island.is/connect/endsession');
+      case 'innskra.island.is/connect/endsession':
+        return redirect('https://innskra.island.is/logout?logoutId=synthetic');
+      case 'innskra.island.is/logout':
+        return new Response(
+          '<a class="other PostLogoutRedirectUri" href="https://heimdallur.inna.is/auth/island/logout-callback?state=synthetic">Continue</a>',
+        );
+      case 'heimdallur.inna.is/auth/island/logout-callback':
+        return redirect('https://inna.is/auth/island/callback?token=synthetic');
+      case 'inna.is/auth/island/callback':
+        return new Response(`<script>var jwt = "${token}"; store.set('id_token',jwt);</script>`);
+      case 'inna.is/auth/access':
+        return Response.json(access.map((entry) => Object.assign({ ssn: 'DO-NOT-SAVE' }, entry)));
+      case 'inna.is/auth/user-terms-confirmed':
+        return Response.json({ confirmed: terms });
+      case 'inna.is/auth/system':
+        expect(method).toBe('POST');
+        expect(body).toEqual({});
+        expect([...url.searchParams.keys()]).toEqual(['i', 'system', 'user_id', 'status']);
+        selections.push(Object.fromEntries(url.searchParams));
+
+        return Response.json({ url: 'http://nam.inna.is/auth/token?token=synthetic' });
+      case 'nam.inna.is/auth/token':
+        expect(headers.has('Authorization')).toBe(false);
+
+        return redirect(
+          'http://nam.inna.is/auth/system',
+          'SESSION=synthetic-school; Path=/; Secure; HttpOnly',
+        );
+      case 'nam.inna.is/auth/system':
+        return redirect(
+          'http://nam.inna.is/Components/Students/Students.html',
+          'XSRF-TOKEN=synthetic-xsrf; Path=/',
+        );
+      case 'nam.inna.is/Components/Students/Students.html':
+        return new Response('<html>Synthetic student application</html>');
+      default:
+        throw new Error('Unexpected synthetic login request');
+    }
+  };
+
+  return {
+    calls,
+    fetcher,
+    setTerms: (value: boolean) => {
+      terms = value;
+    },
+    selections,
+    setAccess: (value: typeof access) => {
+      access = value;
+    },
+    setTrap: () => {
+      trap = true;
+    },
+  };
+}
+// ---- end of login.test.ts ----
+
+// ---- rust-login.ts (41d6f98): the school session's user ----
+/** The user Inna reports for the new school session: the saved default student, if any. */
+const user = (userId: number) => ({
+  userId,
+  studentId: '2',
+  schoolId: '3',
+  studentName: 'Synthetic student',
+  name: 'Synthetic guardian',
+  schoolLong: 'Synthetic school',
+  defaultTermId: '4',
+  isGuardian: true,
+  logInType: '2',
+  olderThan18: false,
+  registerAbsenceGuardian: '1',
+  registerAbsenceUnder18: '0',
+  registerAbsenceOver18: '1',
+  registerAbsence: '1',
+  student18RegisterAbsence: '1',
+  registerLeave: '1',
+  student18RegisterLeave: '1',
+  registerIllnessTomorrow: '1',
+});
+// ---- end of rust-login.ts ----
+
+// ---- the contract set ----
+
+/** The fetch the contract upstream answers with; each case sets its own. */
+let contractFetch = async (_url: string, _init: RequestInit): Promise<Response> => {
+  throw new Error('Synthetic: no case upstream yet');
+};
+
+/** rust-inna.ts's and rust-login.ts's hosts. */
+const CONTRACT_HOSTS = new Set([
+  'nam.inna.is',
+  'inna.is',
+  'r.inna.is',
+  'heimdallur.inna.is',
+  'innskra.island.is',
+]);
+
+/**
+ * rust-inna.ts's `upstream`: the case's fetch on loopback, given the Inna URL back with the
+ * method, headers, body and `redirect: 'manual'`. A thrown error drops the connection, as a failed
+ * fetch; one the case did not mean (a provider's failed expectation) fails the freeze.
+ */
+async function answerCase(incoming: IncomingMessage, out: ServerResponse): Promise<void> {
+  const path = incoming.url ?? '/';
+  const [, host = ''] = path.split('/');
+
+  if (!CONTRACT_HOSTS.has(host)) {
+    out.statusCode = 404;
+    out.end();
+
+    return;
+  }
+
+  const headers = new Headers();
+
+  for (const [name, value] of Object.entries(incoming.headers))
+    for (const item of [value ?? []].flat()) headers.append(name, item);
+
+  const body = await bytesOf(incoming);
+  const init: RequestInit = { method: incoming.method ?? 'GET', headers, redirect: 'manual' };
+
+  if (body !== '') init.body = body;
+
+  let response: Response;
+
+  try {
+    response = await contractFetch(`https://${path.slice(1)}`, init);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (!message.startsWith('Synthetic')) problems.push(`${path}: ${message}`);
+
+    incoming.socket.destroy();
+
+    return;
+  }
+
+  out.statusCode = response.status;
+
+  for (const [name, value] of response.headers)
+    if (name !== 'set-cookie') out.setHeader(name, value);
+
+  const cookies = response.headers.getSetCookie();
+
+  if (cookies.length) out.setHeader('set-cookie', cookies);
+
+  out.end(Buffer.from(await response.arrayBuffer()));
+}
+
+const caseServer = createServer((incoming, out) => void answerCase(incoming, out));
+
+await new Promise<void>((done) => caseServer.listen({ host: '127.0.0.1', port: 0 }, done));
+
+const caseAddress = caseServer.address();
+
+if (!(caseAddress instanceof Object)) throw new RangeError('No case upstream port.');
+
+if (set === 'contract') target = `http://127.0.0.1:${caseAddress.port}`;
+
+/** integration.test.ts's `fixture`: the cookie export each case imports. */
+const EXPORT = JSON.stringify(
+  ['SESSION', 'XSRF-TOKEN'].map((name) => ({
+    name,
+    value: name === 'SESSION' ? 'synthetic-session' : 'synthetic-xsrf',
+    domain: 'nam.inna.is',
+    path: '/',
+    secure: true,
+  })),
+);
+
+/** rust-login.ts's session saved before a sign-in that prefers its default student. */
+const SAVED_EXPORT = JSON.stringify([
+  { name: 'SESSION', value: 'synthetic-saved', domain: 'nam.inna.is', path: '/', secure: true },
+  {
+    name: 'XSRF-TOKEN',
+    value: 'synthetic-saved-xsrf',
+    domain: 'nam.inna.is',
+    path: '/',
+    secure: true,
+  },
+]);
+
+const toolAnswer = z.looseObject({
+  result: z
+    .looseObject({
+      isError: z.boolean().optional(),
+      content: z.array(z.looseObject({ text: z.string() })).optional(),
+      structuredContent: z.unknown().optional(),
+    })
+    .optional(),
+  error: z.looseObject({ message: z.string() }).optional(),
+});
+
+type Called = { ok: true; value: unknown } | { ok: false; text: string };
+
+const listedTools = z.object({
+  result: z.object({
+    tools: z.array(
+      z.looseObject({
+        name: z.string(),
+        inputSchema: z.unknown(),
+        annotations: z.looseObject({ readOnlyHint: z.boolean().optional() }).optional(),
+      }),
+    ),
+  }),
+});
+
+/** The store's record options in this process, inside `inHome`. */
+function recordOptions() {
+  return {
+    path: defaultSecretRecordPath('inna-mcp'),
+    server: 'inna-mcp',
+    profile: 'default',
+    purpose: 'session',
+    schema: 1,
+    maxBytes: RECORD_MAX_BYTES,
+    keys: defaultKeyProvider({ server: 'inna-mcp', profile: 'default' }),
+  };
+}
+
+/** The store marker's generation, when there is a marker. */
+function generation(home: string): number | undefined {
+  const marker = join(home, '.config/inna-mcp/session.enc.marker');
+
+  if (!existsSync(marker)) return undefined;
+
+  return Number(/"generation":(\d+)/.exec(readFileSync(marker, 'utf8'))?.[1] ?? Number.NaN);
+}
+
+/**
+ * A contract case's steps, recorded as it runs them. As the drop-in `InnaClient`, the tool calls
+ * share one `serve` until the case closes it, and a CLI run may come between two of them.
+ */
+class Recorder {
+  readonly steps: object[] = [];
+
+  private server: Server | undefined;
+
+  constructor(
+    readonly home: string,
+    readonly names: Names,
+    private readonly env: Record<string, string>,
+    private readonly serveArgs: string[],
+  ) {}
+
+  private journal() {
+    return { journal: journals(this.home, this.names) };
+  }
+
+  file(file: string, text: string, permissions?: number): void {
+    const step = permissions === undefined ? { file, text } : { file, text, permissions };
+    writeStep(this.home, step);
+    this.steps.push(step);
+  }
+
+  remove(path: string): void {
+    rmSync(join(this.home, path));
+    this.steps.push({ remove: path });
+  }
+
+  async cli(args: string[], stdin?: string) {
+    const step = stdin === undefined ? { cli: args } : { cli: args, stdin };
+    const ran = await runCli(this.home, this.names, this.env, step);
+    this.steps.push({ ...ran, ...this.journal() });
+
+    return ran;
+  }
+
+  /** integration.test.ts's `fixture`: a cookie export, imported. */
+  async import(text = EXPORT): Promise<void> {
+    this.file('cookies.json', text);
+    const ran = await this.cli(['auth', 'import', '<home>/cookies.json']);
+    assert.equal(ran.code, 0, ran.stderr);
+  }
+
+  /** Starts the case's `serve`; with `surface`, also its `initialize` and `tools/list` answers. */
+  async open(surface = false): Promise<Server> {
+    assert.equal(this.server, undefined, 'serve is already open');
+    const server = new Server(this.home, this.env, this.serveArgs);
+    const initialize = await server.initialize();
+    const list = surface ? (await server.request('tools/list', {})).answer : undefined;
+
+    this.steps.push(
+      Object.assign(
+        { open: true },
+        this.serveArgs.length ? { args: this.serveArgs } : undefined,
+        list === undefined ? undefined : { initialize, list },
+      ),
+    );
+
+    this.server = server;
+
+    return server;
+  }
+
+  /** The `tools/list` answer of a surface `open`. */
+  listed(): z.infer<typeof listedTools>['result']['tools'] {
+    const step = z.looseObject({ list: z.string() }).parse(this.steps.at(-1));
+
+    return listedTools.parse(JSON.parse(step.list)).result.tools;
+  }
+
+  async call(name: string, args: Arguments = {}): Promise<Called> {
+    const server = this.server ?? (await this.open());
+    const start = exchanges.length;
+
+    const { notifications, answer } = await server.request('tools/call', {
+      name,
+      arguments: placed(JSON.stringify(args), this.names),
+    });
+
+    leaks(this.home, answer + notifications.join(''));
+    expectClean(answer);
+    this.names.learn(answer);
+
+    const step = Object.assign(
+      { call: [name, args] satisfies [string, unknown] },
+      notifications.length
+        ? {
+            notifications: notifications.map((line) =>
+              z.unknown().parse(JSON.parse(this.names.fresh(line))),
+            ),
+          }
+        : undefined,
+      { answer: this.names.fresh(answer), exchanges: since(start, this.names) },
+    );
+
+    this.steps.push({ ...step, ...this.journal() });
+    const message = toolAnswer.parse(JSON.parse(answer));
+
+    if (message.result === undefined) return { ok: false, text: message.error?.message ?? '' };
+
+    if (message.result.isError === true)
+      return { ok: false, text: message.result.content?.[0]?.text ?? '' };
+
+    return { ok: true, value: message.result.structuredContent };
+  }
+
+  /** Closes the case's `serve`, if open: its exit code and stderr once its input closed. */
+  async close(): Promise<void> {
+    const server = this.server;
+
+    if (server === undefined) return;
+
+    this.server = undefined;
+    const { code, stderr } = await server.close();
+    leaks(this.home, stderr);
+    this.steps.push({ close: true, code, stderr: this.names.fresh(stderr), ...this.journal() });
+  }
+
+  /** The store as the replay must find it now, with the marker's generation; the record text. */
+  async stored(): Promise<string | null> {
+    const found = await stored(this.home, this.names);
+    const marker = generation(this.home);
+    this.steps.push(
+      marker === undefined ? { stored: found } : { stored: found, generation: marker },
+    );
+
+    return 'record' in found ? found.record : null;
+  }
+
+  /** scratch.ts's `updateStored`, by the TypeScript store; the replay plants the home it left. */
+  async updateStored(update: (text: string) => string): Promise<void> {
+    await inHome(this.home, () =>
+      withSecretRecord(recordOptions(), async (text) => update(text ?? 'null')),
+    );
+    this.steps.push({ plant: snapshot(this.home), operations: [...this.names.operations] });
+  }
+}
+
+type Contract = {
+  name: string;
+  /** `serve`'s arguments. */
+  args?: string[];
+  env?: Record<string, string>;
+  run: (c: Recorder) => Promise<void>;
+};
+
+const WRITE_ARGS = ['--allow-absence-writes'];
+
+/** The drop-in harness's legacy session file, beside the store. */
+const SESSION_FILE = { INNA_SESSION_FILE: '<home>/session.json' };
+
+/** The contract cases' two days; the parity tables' `range` is a week. */
+const days = { dateFrom: '2040-01-02', dateTo: '2040-01-03' };
+
+/** integration.test.ts's `fixture`: the case's Inna, and the cookie export imported. */
+async function begin(c: Recorder, inna = new Provider()): Promise<Provider> {
+  contractFetch = inna.fetch;
+  await c.import();
+
+  return inna;
+}
+
+/** rust-login.ts's upstream: the case's sign-in, and Inna's user for the new school session. */
+function signIn(p: ReturnType<typeof provider>, userId = 2): void {
+  contractFetch = async (url, init) => {
+    const { hostname, pathname } = new URL(url);
+
+    if (hostname === 'nam.inna.is' && pathname === '/api/UserData/GetLoggedInUser')
+      return Response.json(user(userId));
+
+    return p.fetcher(url, init);
+  };
+}
+
+function failed(called: Called, pattern: RegExp, at: string): void {
+  expect(called.ok, at).toBe(false);
+
+  if (!called.ok) expect(called.text, at).toMatch(pattern);
+}
+
+function succeeded<T>(called: Called, schema: z.ZodType<T>, at: string): T {
+  if (!called.ok) throw new RangeError(`${at}: ${called.text}`);
+
+  return schema.parse(called.value);
+}
+
+const anyOutput = z.unknown();
+
+const READ_CALLS: [string, Arguments][] = [
+  ['inna_session_status', {}],
+  ['inna_list_students', {}],
+  ['inna_get_overview', {}],
+  ['inna_get_timetable', days],
+  ['inna_get_assignments', {}],
+  ['inna_get_assignment', { assignmentId: '5' }],
+  ['inna_get_grades', {}],
+  ['inna_get_course_grades', { groupId: '7' }],
+  ['inna_get_attendance', {}],
+  ['inna_get_materials', { groupId: '7' }],
+  ['inna_get_messages', {}],
+  ['inna_get_message', { messageId: '11', type: 'A' }],
+  ['inna_get_absences', days],
+  ['inna_absence_status', {}],
+];
+
+/** integration.test.ts:1120's `parseSaved`. */
+const savedRecord = z.object({
+  version: z.number(),
+  jar: z.string(),
+  account: z.object({ userId: z.number(), studentId: z.string(), schoolId: z.string() }),
+  students: z.record(z.string(), z.object({ studentId: z.string(), studentName: z.string() })),
+  pauseUntil: z.number(),
+});
+
+/** integration.test.ts:2365's `digits`. */
+const digits = (index: number) => String(index).padStart(32, '9');
+
+const TOO_MANY =
+  'This Inna session holds more saved students than this version keeps. Run inna-mcp auth logout, then sign in again.';
+
+const contracts: Contract[] = [
+  {
+    // integration.test.ts:460
+    name: 'read-tools-round-trip',
+    env: SESSION_FILE,
+    run: async (c) => {
+      const p = await begin(c);
+      await c.open(true);
+      const tools = c.listed();
+      expect(tools.some((tool) => tool.name === 'inna_submit_absence')).toBe(false);
+
+      expect(tools.map((tool) => tool.name).toSorted()).toEqual(
+        READ_CALLS.map(([name]) => name).toSorted(),
+      );
+
+      expect(
+        tools
+          .filter((tool) => tool.annotations?.readOnlyHint === true)
+          .map((tool) => tool.name)
+          .toSorted(),
+      ).toEqual(['inna_absence_status', 'inna_list_students']);
+
+      const metadata = z.looseObject({ retrievedAt: z.string(), timeZone: z.string() });
+
+      for (const [name, args] of READ_CALLS) {
+        const shown = succeeded(await c.call(name, args), metadata, name);
+        expect(shown.retrievedAt, name).toBe(new Date(NOW).toISOString());
+        expect(shown.timeZone, name).toBe('UTC');
+      }
+
+      expect(p.calls.every((call) => call.method === 'GET')).toBe(true);
+
+      expect(
+        p.calls.some((call) =>
+          /Mark|SetUserOptions|Download|SubmitAssignment/.test(call.url.pathname),
+        ),
+      ).toBe(false);
+
+      const timetable = p.calls.find((call) => call.url.pathname === '/api/Timetable/GetTimetable');
+      expect(timetable?.url.searchParams.get('date_from')).toBe('02.01.2040');
+      expect(timetable?.url.searchParams.get('student_id')).toBe('2');
+    },
+  },
+  {
+    // integration.test.ts:590
+    name: 'message-continuation',
+    env: SESSION_FILE,
+    run: async (c) => {
+      const p = await begin(c);
+
+      const messages = Array.from({ length: 41 }, (_, i) => ({
+        messagesId: String(i + 1),
+        table: 'A',
+        sender: 'Synthetic sender',
+        date: '02.01.2040 9:05',
+        status: 'S',
+      }));
+
+      let broken: 'empty' | 'duplicate' | 'count' | undefined;
+
+      contractFetch = async (url, options) => {
+        const response = await p.fetch(url, options);
+        const endpoint = new URL(url);
+
+        if (endpoint.pathname !== '/api/Messages/GetReceivedMessages') return response;
+
+        const start = Number(endpoint.searchParams.get('rowFrom'));
+        const end = Number(endpoint.searchParams.get('rowTo'));
+
+        const rows =
+          broken === 'empty'
+            ? []
+            : broken === 'duplicate'
+              ? [messages[0], messages[0]]
+              : messages.slice(start - 1, end - 1);
+
+        return Response.json({ count: broken === 'count' ? 0 : messages.length, messages: rows });
+      };
+
+      const page = z.looseObject({
+        messages: z.array(z.looseObject({ messagesId: z.string() })),
+        nextRowFrom: z.number().nullable(),
+      });
+
+      const seen = new Set<string>();
+
+      for (const [rowFrom, rowTo, length, next] of [
+        [1, 21, 20, 21],
+        [21, 41, 20, 41],
+        [41, 61, 1, null],
+      ] as const) {
+        const shown = succeeded(
+          await c.call('inna_get_messages', { rowFrom, rowTo }),
+          page,
+          `rows ${rowFrom}`,
+        );
+
+        expect(shown.messages).toHaveLength(length);
+        expect(shown.nextRowFrom).toBe(next);
+
+        for (const message of shown.messages) seen.add(message.messagesId);
+      }
+
+      expect(seen.size).toBe(41);
+
+      for (const failure of ['empty', 'duplicate', 'count'] as const) {
+        broken = failure;
+        failed(
+          await c.call('inna_get_messages', { rowFrom: 1, rowTo: 21 }),
+          /incomplete|inconsistent/,
+          failure,
+        );
+      }
+
+      expect(p.posts).toBe(0);
+    },
+  },
+  {
+    // integration.test.ts:781: each history in its own client, as the case's two fixtures.
+    name: 'illness-history-blocks-requests',
+    args: WRITE_ARGS,
+    env: SESSION_FILE,
+    run: async (c) => {
+      for (const date of ['02.01.2040 malformed time', '02.01.2040']) {
+        const p = await begin(c);
+
+        contractFetch = async (url, options) => {
+          const response = await p.fetch(url, options);
+
+          return new URL(url).pathname === '/api/RegisterAbsence/GetStudentRegisteredAbsences'
+            ? Response.json([{ id: 1, date, statusCode: 0, allDay: '1', classes: [] }])
+            : response;
+        };
+
+        for (const kind of ['sick', 'leave'] as const)
+          failed(
+            await c.call('inna_prepare_absence', { ...request, kind }),
+            /unrecognized absence date|already registered/,
+            `${date} ${kind}`,
+          );
+
+        expect(p.posts).toBe(0);
+        await c.close();
+      }
+    },
+  },
+  {
+    // integration.test.ts:806
+    name: 'dated-feeds',
+    env: SESSION_FILE,
+    run: async (c) => {
+      const p = await begin(c);
+
+      const responses = new Map([
+        [
+          '/api/ModulesAndBooklist/GetModulesAndBooklist',
+          JSON.stringify([
+            {
+              moduleId: '1',
+              moduleTermId: '2',
+              moduleName: 'Synthetic',
+              moduleName2: 'Synthetic',
+              subjectName: 'Synthetic',
+              groupId: '7',
+              groupName: '1',
+              termId: '4',
+              dateFrom: '02.01.2040',
+              dateTo: 'bad',
+            },
+          ]),
+        ],
+        [
+          '/api/Homework/GetStudentHomework',
+          JSON.stringify([
+            { id: 1, date: '02.01.2040 9:05', moduleName: 'Synthetic', text: '<p>Synthetic</p>' },
+          ]),
+        ],
+        [
+          '/api/StudentGrades/GetStudentGrades',
+          JSON.stringify([
+            {
+              moduleTermId: '2',
+              termId: '4',
+              moduleName: 'Synthetic',
+              subjectName: 'Synthetic',
+              units: '5',
+              status: '1',
+              show: true,
+              termCode: 'Synthetic',
+              dateFinished: '',
+            },
+          ]),
+        ],
+        [
+          '/api/RegisterAbsence/GetStudentRegisteredAbsences',
+          JSON.stringify([
+            {
+              id: 1,
+              date: '02.01.2040',
+              statusCode: 0,
+              allDay: '1',
+              classes: [
+                {
+                  id: 1,
+                  date: '02.01.2040',
+                  timeFrom: '9:05',
+                  timeTo: '10:00',
+                  class: 'Synthetic',
+                },
+              ],
+            },
+          ]),
+        ],
+        [
+          '/api/RegisterAbsence/GetLeaves',
+          JSON.stringify([
+            {
+              id: 2,
+              dateFrom: '02.01.2040',
+              dateTo: '03.01.2040',
+              created: '01.01.2040 23:59:59',
+              leaveType: '3',
+              status: '0',
+              statusCode: 0,
+              reasonForLeave: 'Synthetic',
+              createdBy: 'Synthetic',
+              classes: [],
+            },
+          ]),
+        ],
+      ]);
+
+      contractFetch = async (url, options) => {
+        const response = await p.fetch(url, options);
+        const body = responses.get(new URL(url).pathname);
+
+        return body === undefined
+          ? response
+          : new Response(body, { headers: { 'Content-Type': 'application/json' } });
+      };
+
+      const overview = succeeded(
+        await c.call('inna_get_overview'),
+        z.looseObject({
+          courses: z.array(z.looseObject({ dateTo: z.string(), dates: z.unknown() })),
+        }),
+        'overview',
+      );
+
+      expect(overview.courses[0]?.dateTo).toBe('bad');
+
+      expect(overview.courses[0]?.dates).toEqual({
+        dateFrom: { iso: '2040-01-02', status: 'parsed' },
+        dateTo: { iso: null, status: 'unrecognized' },
+      });
+
+      for (const [name, args] of [
+        ['inna_get_timetable', days],
+        ['inna_get_assignments', { type: 'assignments' }],
+        ['inna_get_assignment', { assignmentId: '5' }],
+        ['inna_get_grades', {}],
+        ['inna_get_course_grades', { groupId: '7' }],
+        ['inna_get_attendance', {}],
+        ['inna_get_materials', { groupId: '7' }],
+        ['inna_get_message', { messageId: '11', type: 'A' }],
+        ['inna_get_absences', days],
+      ] satisfies [string, Arguments][])
+        succeeded(await c.call(name, args), anyOutput, name);
+
+      expect(p.posts).toBe(0);
+    },
+  },
+  {
+    // integration.test.ts:1177: the TypeScript client read the default user id from the store.
+    name: 'default-user-id',
+    env: SESSION_FILE,
+    run: async (c) => {
+      const p = await begin(c);
+
+      const userId = (text: string | null) =>
+        savedRecord.parse(JSON.parse(text ?? 'null')).account.userId;
+
+      expect(userId(await c.stored())).toBe(1);
+
+      succeeded(await c.call('inna_get_overview', { studentKey: SIBLING }), anyOutput, 'overview');
+      expect(userId(await c.stored())).toBe(1);
+      const calls = p.calls.length;
+      expect((await c.cli(['auth', 'logout'])).code).toBe(0);
+      expect(await c.stored()).toBe('null');
+      expect(p.calls).toHaveLength(calls);
+    },
+  },
+  {
+    // integration.test.ts:1242
+    name: 'students-listed-without-switching',
+    env: SESSION_FILE,
+    run: async (c) => {
+      const p = await begin(c);
+
+      const listing = z.looseObject({
+        students: z.array(z.looseObject({})),
+        context: z.looseObject({ studentId: z.string() }),
+        retrievedAt: z.string(),
+      });
+
+      const listed = succeeded(await c.call('inna_list_students'), listing, 'list');
+
+      expect(listed.students).toEqual([
+        {
+          studentKey: '1',
+          title: 'Synthetic role',
+          schoolName: 'Synthetic school',
+          schoolId: '3',
+          selected: true,
+          isDefault: true,
+          studentId: '2',
+          studentName: 'Synthetic student',
+        },
+        {
+          studentKey: SIBLING,
+          title: 'Synthetic role',
+          schoolName: 'Synthetic second school',
+          schoolId: '8',
+          selected: false,
+          isDefault: false,
+          studentName: 'Synthetic sibling',
+        },
+      ]);
+
+      expect(listed.context.studentId).toBe('2');
+      expect(listed.retrievedAt).toBe(new Date(NOW).toISOString());
+      expectClean((await c.stored()) ?? '');
+      expect(p.paths()).toEqual(['/api/UserData/GetLoggedInUser', '/api/UserData/GetLoggedInUser']);
+      succeeded(
+        await c.call('inna_get_timetable', { ...days, studentKey: SIBLING }),
+        anyOutput,
+        'timetable',
+      );
+      const after = succeeded(await c.call('inna_list_students'), listing, 'list after');
+      expect(after.context.studentId).toBe('6');
+      expect(p.switches).toBe(1);
+    },
+  },
+  {
+    // integration.test.ts:1289
+    name: 'single-default-context',
+    env: SESSION_FILE,
+    run: async (c) => {
+      const p = await begin(c);
+      p.order = ['9'];
+
+      const listed = succeeded(
+        await c.call('inna_list_students'),
+        z.looseObject({ students: z.array(z.looseObject({})) }),
+        'list',
+      );
+
+      expect(listed.students).toEqual([
+        {
+          schoolName: 'Synthetic school',
+          schoolId: '3',
+          selected: true,
+          isDefault: true,
+          studentId: '2',
+          studentName: 'Synthetic student',
+        },
+      ]);
+
+      succeeded(await c.call('inna_get_overview'), anyOutput, 'overview');
+      failed(
+        await c.call('inna_get_overview', { studentKey: SIBLING }),
+        /not in this Inna session/,
+        'sibling',
+      );
+      p.order = ['1', '1'];
+      failed(await c.call('inna_list_students'), /no usable student list/, 'duplicate list');
+      failed(
+        await c.call('inna_get_overview', { studentKey: '1' }),
+        /not in this Inna session/,
+        'key 1',
+      );
+      succeeded(await c.call('inna_get_overview'), anyOutput, 'overview again');
+      expect(p.switches).toBe(0);
+    },
+  },
+  {
+    // integration.test.ts:1417
+    name: 'unknown-student-keys',
+    env: SESSION_FILE,
+    run: async (c) => {
+      const p = await begin(c);
+
+      for (const key of ['999', '9'])
+        failed(
+          await c.call('inna_get_overview', { studentKey: key }),
+          /not in this Inna session/,
+          key,
+        );
+
+      failed(await c.call('inna_get_overview', { studentKey: 'abc' }), /./, 'abc');
+      expect(p.switches).toBe(0);
+      expect(p.paths()).not.toContain('/api/StudentTerms/GetStudentTerms');
+    },
+  },
+  {
+    // integration.test.ts:1642
+    name: 'sibling-tool-round-trips',
+    args: WRITE_ARGS,
+    env: SESSION_FILE,
+    run: async (c) => {
+      const p = await begin(c);
+      await c.open(true);
+      const keyed = { studentKey: SIBLING };
+
+      const calls: [string, Arguments][] = [
+        ['inna_list_students', {}],
+        ['inna_session_status', keyed],
+        ['inna_get_overview', keyed],
+        ['inna_get_timetable', { ...days, ...keyed }],
+        ['inna_get_assignments', keyed],
+        ['inna_get_assignment', { assignmentId: '5', ...keyed }],
+        ['inna_get_grades', keyed],
+        ['inna_get_course_grades', { groupId: '7', ...keyed }],
+        ['inna_get_attendance', keyed],
+        ['inna_get_materials', { groupId: '7', ...keyed }],
+        ['inna_get_messages', keyed],
+        ['inna_get_message', { messageId: '11', type: 'A', ...keyed }],
+        ['inna_get_absences', { ...days, ...keyed }],
+        ['inna_prepare_absence', { ...request, ...keyed }],
+        ['inna_absence_status', {}],
+      ];
+
+      const tools = c.listed();
+
+      expect(tools.map((tool) => tool.name).toSorted()).toEqual(
+        [...calls.map(([name]) => name), 'inna_submit_absence'].toSorted(),
+      );
+
+      for (const tool of tools)
+        expect(JSON.stringify(tool.inputSchema).includes('studentKey'), tool.name).toBe(
+          !['inna_list_students', 'inna_absence_status', 'inna_submit_absence'].includes(tool.name),
+        );
+
+      const keyedOutput = z.looseObject({
+        retrievedAt: z.string(),
+        timeZone: z.literal('UTC'),
+        context: z.object({ studentId: z.string() }).loose().optional(),
+        account: z.object({ studentId: z.string() }).loose().optional(),
+      });
+
+      for (const [name, args] of calls) {
+        const result = succeeded(await c.call(name, args), keyedOutput, name);
+
+        if (name !== 'inna_list_students')
+          expect((result.context ?? result.account)?.studentId, name).toBe('6');
+      }
+
+      expect(p.switches).toBe(1);
+      const approval = { operationId: '<operation>', confirm: true };
+      failed(await c.call('inna_submit_absence', { ...approval, ...keyed }), /./, 'keyed submit');
+      succeeded(await c.call('inna_get_overview'), anyOutput, 'overview');
+
+      const submitted = succeeded(
+        await c.call('inna_submit_absence', approval),
+        z.looseObject({ account: z.looseObject({ studentId: z.string() }) }),
+        'submit',
+      );
+
+      expect(submitted.account.studentId).toBe('6');
+      expect(p.posts).toBe(1);
+      expect(p.switches).toBe(3);
+    },
+  },
+  {
+    // integration.test.ts:1916
+    name: 'keep-alive-opt-out-flag',
+    env: SESSION_FILE,
+    run: async (c) => {
+      for (const args of [
+        ['auth', 'status', '--no-keep-alive'],
+        ['auth', 'logout', '--no-keep-alive'],
+      ]) {
+        const ran = await c.cli(args);
+        expect(ran.code).toBe(1);
+        expect(ran.stdout).toBe('');
+        expect(ran.stderr).toBe('Invalid command. Run inna-mcp --help.\n');
+      }
+    },
+  },
+  {
+    // integration.test.ts:2396: the unmigrated half's own store is this home's, emptied.
+    name: 'too-many-saved-students',
+    env: SESSION_FILE,
+    run: async (c) => {
+      const p = await begin(c);
+      let original = '';
+
+      const withStudents = (count: number) =>
+        JSON.stringify({
+          ...savedRecord.parse(JSON.parse(original)),
+          students: Object.fromEntries(
+            Array.from({ length: count }, (_, index) => [
+              digits(index),
+              {
+                userId: index + 100,
+                studentId: digits(index),
+                schoolId: '3',
+                studentName: 'Synthetic',
+              },
+            ]),
+          ),
+        });
+
+      await c.updateStored((text) => {
+        original = text;
+
+        return withStudents(64);
+      });
+
+      await c.stored();
+      const before = generation(c.home) ?? Number.NaN;
+      // Learning a 65th student is refused; only the jar is written back.
+      expect(await c.call('inna_get_overview', { studentKey: SIBLING })).toEqual({
+        ok: false,
+        text: TOO_MANY,
+      });
+      expect(generation(c.home)).toBe(before + 1);
+      const after = savedRecord.parse(JSON.parse((await c.stored()) ?? 'null'));
+      expect(Object.keys(after.students)).toHaveLength(64);
+      await c.updateStored(() => withStudents(65));
+      const calls = p.calls.length;
+      const refused = await c.call('inna_get_overview');
+      expect(refused).toEqual({ ok: false, text: TOO_MANY });
+      await c.stored();
+      await c.close();
+      c.remove('.config/inna-mcp/session.enc');
+      c.remove('.config/inna-mcp/session.enc.marker');
+      c.remove('.local/share/family-mcp/keys/inna-mcp.default.key');
+      // freeze: the jar's wall-clock times at the scenario clock, so the file is the same each run.
+      c.file(
+        'session.json',
+        withStudents(65).replaceAll(
+          /20[23]\d-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g,
+          new Date(NOW).toISOString(),
+        ),
+      );
+      expect(await c.call('inna_get_overview')).toEqual({ ok: false, text: TOO_MANY });
+      await c.close();
+      const migrate = await c.cli(['auth', 'migrate']);
+      expect({ code: migrate.code, stderr: migrate.stderr }).toEqual({
+        code: 1,
+        stderr: `${TOO_MANY}\n`,
+      });
+      expect(p.calls).toHaveLength(calls);
+    },
+  },
+  {
+    // login.test.ts:214: each refusal its own sign-in, as the case's three providers.
+    name: 'phone-login-refusals',
+    env: { INNA_SESSION_FILE: '<home>/legacy/session.json' },
+    run: async (c) => {
+      const p = provider();
+      p.setTrap();
+      signIn(p);
+      const trapped = await c.cli(['auth', 'login'], '5550000\n');
+      expect(trapped.code).toBe(1);
+      expect(trapped.stderr).toMatch(/unexpected destination/);
+      expect(p.calls).toHaveLength(1);
+
+      for (const reason of ['terms', 'schools']) {
+        const q = provider();
+
+        if (reason === 'terms') q.setTerms(false);
+        else
+          q.setAccess([
+            { system: 2, user_id: 7, status: 1, is_access: true },
+            { system: 1, user_id: 8, status: 1, is_access: false },
+          ]);
+
+        signIn(q);
+        const refused = await c.cli(['auth', 'login'], '5550000\n');
+        expect(refused.code).toBe(1);
+        expect(refused.stderr).toMatch(
+          reason === 'terms' ? /accept Inna terms yourself/ : /Select the intended school/,
+        );
+
+        expect(
+          q.calls.some((call) => call.method === 'POST' && call.url.hostname === 'inna.is'),
+        ).toBe(false);
+      }
+    },
+  },
+  {
+    // login.test.ts:242: a preferred user id is the default student of a session saved first.
+    name: 'phone-login-student-context',
+    env: { INNA_SESSION_FILE: '<home>/legacy/session.json' },
+    run: async (c) => {
+      const access = [
+        { system: 2, user_id: 7, status: 1, is_access: true },
+        { system: 1, user_id: 8, status: 1, is_access: false },
+        { system: 1, user_id: 2, status: 3, is_access: true },
+        { system: 1, user_id: 5, status: 4, is_access: true },
+      ];
+
+      const first = { i: '2', system: '1', user_id: '2', status: '3' };
+
+      for (const [index, [preferredUserId, selection]] of (
+        [
+          [undefined, first],
+          [5, { i: '3', system: '1', user_id: '5', status: '4' }],
+          [2, first],
+          [99, first],
+          [8, first],
+          [7, first],
+        ] as const
+      ).entries()) {
+        const p = provider();
+        p.setAccess(access);
+        signIn(p, preferredUserId ?? 2);
+
+        if (index > 0) expect((await c.cli(['auth', 'logout'])).code).toBe(0);
+
+        if (preferredUserId !== undefined) await c.import(SAVED_EXPORT);
+
+        const ran = await c.cli(['auth', 'login'], '5550000\n');
+        expect(ran.code, ran.stderr).toBe(0);
+        expect({ preferredUserId, selections: p.selections }).toEqual({
+          preferredUserId,
+          selections: [selection],
+        });
+      }
+    },
+  },
+  {
+    // browser-login.test.ts:729: a browser file that is never started.
+    name: 'browser-options-only-with-google-login',
+    env: { ...SESSION_FILE, INNA_BROWSER: '<home>/no-browser-selected', DISPLAY: ':0' },
+    run: async (c) => {
+      c.file('browser', '#!/bin/sh\nexit 1\n', 0o755);
+      const browser = '<home>/browser';
+
+      for (const args of [
+        ['--google'],
+        ['serve', '--google'],
+        ['auth', '--google'],
+        ['auth', 'status', '--google'],
+        ['auth', 'logout', '--google'],
+        ['auth', 'import', '<home>/cookies.json', '--google'],
+        ['auth', 'login', 'extra', '--google'],
+        ['auth', 'login', '--timeout', '5'],
+        ['auth', 'login', '--browser', browser],
+        ['auth', 'login', '--timeout', '5', '--browser', browser],
+        ['auth', 'status', '--timeout', '5'],
+        ['serve', '--browser', browser],
+        ['--timeout', '5'],
+        ['auth', 'login', '--google', '--browser', browser, '--no-keep-alive'],
+        ['auth', 'login', '--google', '--browser', browser, '--allow-absence-writes'],
+      ]) {
+        const ran = await c.cli(args);
+        expect({ args, stderr: ran.stderr }).toEqual({
+          args,
+          stderr: 'Invalid command. Run inna-mcp --help.\n',
+        });
+        expect(ran.stdout).toBe('');
+        expect(ran.code).toBe(1);
+      }
+
+      for (const timeout of ['0', '-1', '1.5', 'soon', '']) {
+        const ran = await c.cli([
+          'auth',
+          'login',
+          '--google',
+          '--browser',
+          browser,
+          `--timeout=${timeout}`,
+        ]);
+
+        expect({ timeout, stderr: ran.stderr }).toEqual({
+          timeout,
+          stderr: 'Provide a positive whole number for --timeout.\n',
+        });
+        expect(ran.stdout).toBe('');
+        expect(ran.code).toBe(1);
+      }
+    },
+  },
+  {
+    // The two tools no other frozen case gives an invalid input, and an unknown key for each of
+    // the 16: with parity.ts's, every tool's input validation is frozen (ledger :1642).
+    name: 'strict-inputs-of-every-other-tool',
+    args: WRITE_ARGS,
+    env: SESSION_FILE,
+    run: async (c) => {
+      const p = await begin(c);
+      await c.open(true);
+
+      const inputs: [string, Arguments][] = [
+        ['inna_get_attendance', { termId: 5 }],
+        ['inna_get_attendance', { termId: 'x' }],
+        ['inna_get_materials', {}],
+        ['inna_get_materials', { groupId: 'x' }],
+        ...c.listed().map((tool): [string, Arguments] => [tool.name, { q: 1 }]),
+      ];
+
+      expect(inputs).toHaveLength(20);
+
+      for (const [name, args] of inputs)
+        failed(
+          await c.call(name, args),
+          /Input validation error/,
+          `${name} ${JSON.stringify(args)}`,
+        );
+
+      expect(p.calls).toHaveLength(1);
+    },
+  },
+];
+
+async function runContract(contract: Contract) {
+  const home = join(scratch, contract.name);
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const names = new Names(home, false);
+  const start = exchanges.length;
+  writeFileSync(clock, String(NOW));
+  const place = (text: string) => text.replaceAll('<home>', home);
+
+  const env = Object.fromEntries(
+    Object.entries(contract.env ?? {}).map(([name, value]) => [name, place(value)]),
+  );
+
+  const recorder = new Recorder(home, names, env, contract.args ?? []);
+
+  try {
+    await contract.run(recorder);
+  } finally {
+    await recorder.close();
+  }
+
+  assert.deepEqual(problems.splice(0), [], `${contract.name}: the upstream saw a problem`);
+
+  const frozen: Frozen = Object.assign(
+    { steps: recorder.steps, id: `inna/contract/${contract.name}` },
+    contract.env ? { env: contract.env } : undefined,
+    { requests: exchanges.length - start, files: files(home, names) },
+  );
+
+  return { ...frozen, ...(await stored(home, names)) };
+}
+
 try {
   mkdirSync(output, { recursive: true });
+  const cases = set === 'parity' ? scenarios : contracts;
 
-  for (const scenario of scenarios) {
-    if (only !== undefined && scenario.name !== only) continue;
+  for (const item of cases) {
+    if (only !== undefined && item.name !== only) continue;
 
-    const frozen = await run(scenario);
-    writeFileSync(join(output, `${scenario.name}.json`), pack(layout(frozen)));
-    process.stdout.write(`${scenario.name}: ${frozen.requests} requests\n`);
+    const frozen = 'run' in item ? await runContract(item) : await run(item);
+    writeFileSync(join(output, `${item.name}.json`), pack(layout(frozen)));
+    process.stdout.write(`${item.name}: ${frozen.requests} requests\n`);
   }
 } finally {
   await fake.close();
   proxyServer.close();
+  caseServer.close();
   rmSync(scratch, { recursive: true, force: true });
 }

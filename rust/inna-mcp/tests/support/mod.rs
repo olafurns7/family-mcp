@@ -178,6 +178,14 @@ impl Home {
         }
     }
 
+    /// The store marker's generation, when there is a marker.
+    pub fn generation(&self) -> Option<u64> {
+        let marker = fs::read_to_string(self.path(".config/inna-mcp/session.enc.marker")).ok()?;
+        let rest = &marker[marker.find("\"generation\":")? + "\"generation\":".len()..];
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        rest[..digits].parse().ok()
+    }
+
     /// Every path under the home, relative, in no particular order.
     fn walk(&self) -> Vec<PathBuf> {
         fn walk(root: &Path, directory: &Path, paths: &mut Vec<PathBuf>) {

@@ -25,7 +25,27 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use support::{Home, Mcp, Names, Script, Upstream, cli, ended, no_leak, unpack};
+use support::{Answer, Home, Mcp, Names, Script, Upstream, cli, ended, no_leak, unpack};
+
+/// The drop-in cases the ledger names `inna/contract/*`, one file each, and the case that freezes an
+/// invalid input for every tool no other case gives one.
+const CONTRACTS: [&str; 15] = [
+    "read-tools-round-trip",
+    "message-continuation",
+    "illness-history-blocks-requests",
+    "dated-feeds",
+    "default-user-id",
+    "students-listed-without-switching",
+    "single-default-context",
+    "unknown-student-keys",
+    "sibling-tool-round-trips",
+    "keep-alive-opt-out-flag",
+    "too-many-saved-students",
+    "phone-login-refusals",
+    "phone-login-student-context",
+    "browser-options-only-with-google-login",
+    "strict-inputs-of-every-other-tool",
+];
 
 /// tests/ts/parity.ts's scenarios, one file each, under their ledger names.
 const SCENARIOS: [&str; 38] = [
@@ -158,6 +178,8 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
         })
         .unwrap_or_default();
 
+    let mut serving: Option<Mcp> = None;
+
     for (index, step) in case["steps"].as_array().unwrap().iter().enumerate() {
         let at = format!("{name} step {index}");
 
@@ -192,14 +214,7 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
             );
         } else if step.get("serve").is_some() {
             if let Some(plant) = step.get("plant") {
-                home.plant(plant);
-                let operations = step["operations"].as_array().unwrap();
-                names.set_operations(
-                    operations
-                        .iter()
-                        .map(|id| id.as_str().unwrap().to_owned())
-                        .collect(),
-                );
+                planted(&home, &names, plant, step);
             }
             let args: Vec<&str> = step
                 .get("args")
@@ -208,65 +223,50 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
                 .unwrap_or_default();
             let (mut mcp, initialized) = Mcp::start(&home, &origin, &extra, &args);
 
-            if let Some(expected) = step.get("initialize") {
-                same_answer(
-                    &names,
-                    &initialized.line,
-                    expected,
-                    &format!("{at} initialize"),
-                    false,
-                );
-                let listed = mcp.request("tools/list", json!({}));
-                same_answer(
-                    &names,
-                    &listed.line,
-                    &step["list"],
-                    &format!("{at} tools/list"),
-                    false,
-                );
-            }
+            surface(&names, &mut mcp, &initialized, step, &at);
             for (number, result) in step["results"].as_array().unwrap().iter().enumerate() {
-                let call = &result["call"];
-                let at = format!("{at} call {number} {}", call[0]);
-                script.expect(&result["exchanges"]);
-                let got = mcp.call(call[0].as_str().unwrap(), names.placed(&call[1]));
-                script.finish(&at);
-                no_leak(&format!("{}{}", got.line, got.notifications.join("")), &at);
-                names.learn(&got.value());
-                let notifications: Vec<Value> = got
-                    .notifications
-                    .iter()
-                    .map(|line| serde_json::from_str(&named(&names, line)).unwrap())
-                    .collect();
-                let frozen_notifications = result
-                    .get("notifications")
-                    .cloned()
-                    .unwrap_or_else(|| json!([]));
-                assert_eq!(
-                    json!(notifications),
-                    frozen_notifications,
-                    "{at}: notifications"
-                );
-                same_answer(&names, &got.line, &result["answer"], &at, true);
-                let answer: Value =
-                    serde_json::from_str(result["answer"].as_str().unwrap()).unwrap();
-
-                if answer["result"].get("content").is_some() {
-                    coverage.tools += 1;
-                }
-                if answer["result"].get("structuredContent").is_some() {
-                    coverage.structured += 1;
-                }
+                let at = format!("{at} call {number} {}", result["call"][0]);
+                one_call(&names, &script, &mut mcp, result, &at, coverage);
             }
-            let (code, stderr) = mcp.close();
-            no_leak(&stderr, &at);
-            assert_eq!(
-                json!({"code": code, "stderr": named(&names, &stderr)}),
-                json!({"code": step["code"], "stderr": step["stderr"]}),
-                "{at} exit"
-            );
+            closed(&names, mcp, step, &at);
         } else if step.get("cancel").is_some() {
             cancel(&home, &names, &script, &upstream, &extra, step, &at);
+        } else if step.get("open").is_some() {
+            // A contract case's long-lived `serve`, as the drop-in client's.
+            assert!(serving.is_none(), "{at}: serve is already open");
+            let args = strings(step.get("args"));
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let (mut mcp, initialized) = Mcp::start(&home, &origin, &extra, &args);
+            surface(&names, &mut mcp, &initialized, step, &at);
+            serving = Some(mcp);
+        } else if step.get("call").is_some() {
+            let mcp = serving
+                .as_mut()
+                .unwrap_or_else(|| panic!("{at}: no serve is open"));
+            one_call(
+                &names,
+                &script,
+                mcp,
+                step,
+                &format!("{at} {}", step["call"][0]),
+                coverage,
+            );
+        } else if step.get("close").is_some() {
+            let mcp = serving
+                .take()
+                .unwrap_or_else(|| panic!("{at}: no serve is open"));
+            closed(&names, mcp, step, &at);
+        } else if let Some(path) = step["remove"].as_str() {
+            fs::remove_file(home.path(path)).unwrap();
+        } else if let Some(plant) = step.get("plant") {
+            planted(&home, &names, plant, step);
+        } else if let Some(expected) = step.get("stored") {
+            assert_eq!(&home.stored(&names), expected, "{at}: store");
+            assert_eq!(
+                home.generation().map(Value::from),
+                step.get("generation").cloned(),
+                "{at}: marker generation"
+            );
         } else if let Some(file) = step["file"].as_str() {
             let mode = step
                 .get("permissions")
@@ -280,6 +280,7 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
             assert_eq!(&home.journals(&names), journal, "{at}: absence records");
         }
     }
+    assert!(serving.is_none(), "{name}: serve left open");
     let (served, hops) = script.served();
     assert_eq!(
         served as u64,
@@ -303,6 +304,96 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
         },
     };
     assert_eq!(stored, frozen_store, "{name}: store");
+}
+
+/// The `initialize` and `tools/list` answers of a surface step, when it recorded them.
+fn surface(names: &Names, mcp: &mut Mcp, initialized: &Answer, step: &Value, at: &str) {
+    if let Some(expected) = step.get("initialize") {
+        same_answer(
+            names,
+            &initialized.line,
+            expected,
+            &format!("{at} initialize"),
+            false,
+        );
+        let listed = mcp.request("tools/list", json!({}));
+        same_answer(
+            names,
+            &listed.line,
+            &step["list"],
+            &format!("{at} tools/list"),
+            false,
+        );
+    }
+}
+
+/// One recorded tool call on the open `serve`: its requests, notifications and answer.
+fn one_call(
+    names: &Names,
+    script: &Script,
+    mcp: &mut Mcp,
+    result: &Value,
+    at: &str,
+    coverage: &mut Coverage,
+) {
+    let call = &result["call"];
+    script.expect(&result["exchanges"]);
+    let got = mcp.call(call[0].as_str().unwrap(), names.placed(&call[1]));
+    script.finish(at);
+    no_leak(&format!("{}{}", got.line, got.notifications.join("")), at);
+    names.learn(&got.value());
+    let notifications: Vec<Value> = got
+        .notifications
+        .iter()
+        .map(|line| serde_json::from_str(&named(names, line)).unwrap())
+        .collect();
+    let frozen_notifications = result
+        .get("notifications")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    assert_eq!(
+        json!(notifications),
+        frozen_notifications,
+        "{at}: notifications"
+    );
+    same_answer(names, &got.line, &result["answer"], at, true);
+    let answer: Value = serde_json::from_str(result["answer"].as_str().unwrap()).unwrap();
+
+    if answer["result"].get("content").is_some() {
+        coverage.tools += 1;
+    }
+    if answer["result"].get("structuredContent").is_some() {
+        coverage.structured += 1;
+    }
+}
+
+/// A `serve` closed by the end of its input: its exit code and stderr.
+fn closed(names: &Names, mcp: Mcp, step: &Value, at: &str) {
+    let (code, stderr) = mcp.close();
+    no_leak(&stderr, at);
+    assert_eq!(
+        json!({"code": code, "stderr": named(names, &stderr)}),
+        json!({"code": step["code"], "stderr": step["stderr"]}),
+        "{at} exit"
+    );
+}
+
+/// The home as the TypeScript side had written it, and the operations it knew.
+fn planted(home: &Home, names: &Names, plant: &Value, step: &Value) {
+    home.plant(plant);
+    names.set_operations(strings(step.get("operations")));
+}
+
+fn strings(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item.as_str().unwrap().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// parity.ts's cancelled call: the reply to `when` is held until the host's cancel, the end of
@@ -410,6 +501,22 @@ fn every_frozen_parity_scenario_replays() {
             structured: 119,
             requests: 558,
             hops: 6,
+        }
+    );
+}
+
+#[test]
+fn every_frozen_contract_case_replays() {
+    let coverage = replay("contract", &CONTRACTS);
+    // What the freeze recorded, so a fixture emptied by mistake fails here.
+    assert_eq!(
+        coverage,
+        Coverage {
+            cli: 55,
+            tools: 88,
+            structured: 51,
+            requests: 406,
+            hops: 0,
         }
     );
 }
