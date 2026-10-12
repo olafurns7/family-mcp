@@ -26,5 +26,14 @@ result (taskr 76066/76588/76640/76644).
   - from `rust/`:
     `FAMILY_MCP_BUN="$(command -v bun)" INNA_PTY_FREEZE="$PWD/inna-mcp/tests/fixtures/pty/macos.json" cargo test --locked --all-features -p inna-mcp --test prompt freeze_the_typescript_prompt_outcomes -- --ignored`.
 
+- `linux.json`:
+  - source as for `macos.json`;
+  - Bun 1.4.2 (linux-arm64, copied from `oven/bun:1.4.2`) in `rust:1.99.0-bookworm`, run as
+    uid 65534 with the worktree mounted read-only;
+  - the same command with `FAMILY_MCP_BUN=/opt/bun/bun` and `INNA_PTY_FREEZE=/out/inna-linux.json`,
+    then copied here.
+  - It equals `macos.json` except for the hang-up. Bun met the failed read (the generic failure,
+    nothing sent, no terminal mode left), and the case also freezes the pair as `allowed`.
+
 The phone number is synthetic. The prompt ran with the store test seam in a scratch home, and the
 fake Inna refused the sign-in's first request; nothing reached Inna or the real store.
