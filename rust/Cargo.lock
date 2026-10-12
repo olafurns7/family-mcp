@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "infomentor-mcp"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "aws-lc-rs",
  "family-store",
