@@ -29,6 +29,14 @@ saved school sessions or absence-operation records. After upgrading from 0.3.0
 or earlier, run `inna-mcp auth migrate` once (see
 [Upgrading from 0.3.0](#upgrading-from-030)).
 
+On an always-on machine, add `--with-renewal` to have the system renew the saved
+session every ten minutes, whether or not a server runs (see
+[Scheduled renewal](#scheduled-renewal)):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.4.2/packages/inna-mcp/install.sh | sh -s -- --with-renewal
+```
+
 To build before publication, use the pinned Bun 1.4.2 and the Rust toolchain that
 `rust/rust-toolchain.toml` pins, from the repository root:
 
@@ -124,8 +132,10 @@ login or import that lands on a different binding is refused unless the owner
 deliberately adds `--allow-account-change`; when it lands on another student
 already read through this session, select the default student in the Inna
 browser session first. Replacing the default forgets the other learned students.
-No unattended login or renewal is implemented. Expiry needs a fresh explicit
-login/import.
+No unattended login is implemented: electronic-ID, Google and cookie-import
+sign-in stay explicit. Renewal can run unattended (see
+[Scheduled renewal](#scheduled-renewal)), but an expired session needs a fresh
+explicit login/import.
 
 ### Where the session is saved
 
@@ -258,9 +268,9 @@ once, then reports the existing switch-refused text.
 `inna-mcp serve --no-keep-alive` now disables only the optional ten-minute touches.
 Mandatory renewal still runs every twenty minutes while serving, including when
 no tools arrive. Both schedules stop when the connection closes. Outside `serve`,
-nothing renews the session automatically. A host that starts the server per
-conversation leaves the session idle between conversations; there, schedule
-`inna-mcp auth status` (for example from cron) for the same effect.
+only [scheduled renewal](#scheduled-renewal) renews the session. A host that
+starts the server per conversation leaves the session idle between
+conversations unless scheduled renewal is on.
 
 These timing and retry guarantees were checked offline with synthetic short-lived
 sessions. Whether real Inna extends its session on these requests, and its actual
@@ -268,6 +278,71 @@ session lifetime, remain unmeasured. The owner can run the read-only school chec
 in [SESSION-CHECK.md](docs/SESSION-CHECK.md) for more than seventy minutes. `auth
 status` verifies the default student and may switch Inna's selection back to it;
 no absence is submitted.
+
+### Scheduled renewal
+
+`inna-mcp auth renew` makes one renewal and exits: the same verification request
+that the server's keep-alive makes, through the same code. It reads no school
+data, never switches or learns a student, so the default student stays as it was,
+and never submits anything. It holds the session's lock for its request and the
+write-back of the cookies Inna set, as every server operation does, so it is safe
+beside running servers: each waits for the other and continues from the cookies
+the other saved. A wait longer than 30 seconds gives up with exit code 5.
+
+| Exit code | Meaning                                                                                           |
+| --------- | ------------------------------------------------------------------------------------------------- |
+| 0         | Renewed. Nothing is printed.                                                                      |
+| 3         | No saved session. Nothing was sent.                                                               |
+| 4         | Inna asked for sign-in: run `inna-mcp auth login` or import a fresh export. The session is kept.  |
+| 5         | Not renewed, and Inna did not ask for sign-in: a network, Inna or store problem. Try again later. |
+| 6         | Inna's rate-limit pause is in force. Nothing was sent.                                            |
+| 1         | An invalid command, a store the preflight refuses, or another failure before the renewal.         |
+
+Failures print one fixed line on stderr, with no cookie, path or Inna text. A
+refused store says to run `inna-mcp auth status`, which shows the path. Each run
+starts afresh: on a session Inna refused, every run sends one request until you
+sign in again.
+
+The installer sets it up with `--with-renewal` and removes it with
+`--without-renewal`. The choice is saved and kept when you upgrade without
+either option. It is off by default, because it adds a background job that
+touches the saved session; turn it on where the session must outlive the gaps
+between conversations, such as an always-on home server.
+
+- **Linux:** a systemd user service, `inna-mcp-renew.service`, which runs
+  `inna-mcp auth renew`, and `inna-mcp-renew.timer`, which starts it every ten
+  minutes, catches up once after sleep, and adds up to a minute of random delay.
+  The installer runs `systemctl --user daemon-reload` and
+  `systemctl --user enable --now inna-mcp-renew.timer`. If lingering is not on
+  for your user, the timer stops when your last login session ends, and the
+  installer prints the `sudo loginctl enable-linger <user>` command to run; it
+  never runs sudo itself. Without a systemd user manager it says so and installs
+  nothing; run `inna-mcp auth renew` every ten minutes from another scheduler.
+  Check it with `systemctl --user list-timers inna-mcp-renew.timer` and
+  `journalctl --user -u inna-mcp-renew.service`.
+- **macOS:** a LaunchAgent,
+  `~/Library/LaunchAgents/is.olinn.inna-mcp.renew.plist`, which runs every ten
+  minutes and at login, loaded with `launchctl bootstrap gui/$(id -u)` and
+  replaced in place on upgrade. Its output is discarded;
+  `launchctl print gui/$(id -u)/is.olinn.inna-mcp.renew` shows the last exit
+  code.
+
+The installer replaces or removes only the files it wrote, which carry its
+marker. A hand-written file at one of those paths stops `--with-renewal` before
+anything changes, and `--without-renewal` leaves it in place. The job runs with
+the scheduler's environment, not your MCP host's: it uses the default store and
+session paths, not an `INNA_SESSION_FILE` set only in the host configuration.
+
+A timer does not run while the machine sleeps or is off. On waking it renews
+once, but a session that idled out during a longer sleep is gone, and you must
+sign in again. One observation, not a measurement: on an always-on Linux host
+with no renewal outside `serve`, no server ran from 11:20 to 15:23 while the
+machine slept, and the session was lost between 13:26 and 14:03, about 2 to 2.7
+hours after its last renewal. Renewing every ten minutes stays well inside that
+and inside the server's own 30-minute bound. That bound is unchanged: it limits
+how old a verification the server trusts before a school request, not how long
+Inna keeps a session. A renewal by the timer rotates the cookies, so the server
+then verifies again before its next school request.
 
 ### Connect an MCP host
 
