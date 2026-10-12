@@ -4,10 +4,12 @@
 
 - `serve` now ends when the connection to the host breaks, as the TypeScript
   server does: when a write to stdout fails because the host closed its end,
-  or when one input line passes 10 MiB, its newline included. Calls in flight
-  are cancelled at once and the server closes as on SIGTERM, then the process
-  exits with code 0 and prints nothing. Before, it kept running until stdin
-  ended, and it buffered an over-long line without limit.
+  or when one input line passes 10 MiB, its newline included. That limit is
+  exact; the TypeScript server can also close on a shorter line, depending on
+  how the input arrives in reads, which is an intended difference. Calls in
+  flight are cancelled at once and the server closes as on SIGTERM, then the
+  process exits with code 0 and prints nothing. Before, it kept running until
+  stdin ended, and it buffered an over-long line without limit.
 
 ## 0.2.0
 
