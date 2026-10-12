@@ -312,6 +312,13 @@ impl Gate {
         }
     }
 
+    /// Say it has come, without waiting: what `reached` waits for.
+    pub fn arrive(&self) {
+        let (lock, changed) = &*self.0;
+        lock.lock().unwrap().0 = true;
+        changed.notify_all();
+    }
+
     /// Wait until the held request has come.
     pub fn reached(&self) {
         let (lock, changed) = &*self.0;
