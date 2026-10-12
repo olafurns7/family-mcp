@@ -145,12 +145,17 @@ impl Home {
 
     /// The store options the binary uses in this home: the default record and key file.
     pub fn store_options(&self) -> SecretRecordOptions {
+        self.store_options_at(&self.0)
+    }
+
+    /// The store options with the XDG folders under `root` (`Home::store_env(root)`).
+    pub fn store_options_at(&self, root: &Path) -> SecretRecordOptions {
         family_store::enable_test_seam();
         let environment = StoreEnvironment {
             os: std::env::consts::OS.to_owned(),
             home: Some(self.0.clone()),
-            xdg_config_home: Some(self.path(".config").into_os_string()),
-            xdg_data_home: Some(self.path(".local/share").into_os_string()),
+            xdg_config_home: Some(root.join(".config").into_os_string()),
+            xdg_data_home: Some(root.join(".local/share").into_os_string()),
             key_backend: None,
             test_seam: true,
         };
@@ -185,6 +190,35 @@ impl Home {
     /// The decrypted record text as the binary left it (`null` once logged out), if any.
     pub fn record(&self) -> Option<String> {
         with_secret_store(&self.store_options(), |store| store.read()).unwrap()
+    }
+
+    /// The record of the store under `root`.
+    pub fn record_at(&self, root: &Path) -> Option<String> {
+        with_secret_store(&self.store_options_at(root), |store| store.read()).unwrap()
+    }
+
+    /// The environment that moves the binary's store under `root` (the drop-ins' `storeAt`).
+    pub fn store_env(root: &Path) -> Vec<(String, String)> {
+        vec![
+            (
+                "XDG_CONFIG_HOME".into(),
+                root.join(".config").display().to_string(),
+            ),
+            (
+                "XDG_DATA_HOME".into(),
+                root.join(".local/share").display().to_string(),
+            ),
+        ]
+    }
+
+    /// integration.test.ts's `resetStored`: a marker of a new generation, a new key and no
+    /// record, as a sign-in that replaced a lost key's store leaves them before its write.
+    pub fn reset_store(&self) {
+        with_secret_store(&self.store_options(), |store| {
+            store.reset()?;
+            store.create_key()
+        })
+        .unwrap();
     }
 
     /// integration.test.ts's `updateStored`: rewrites the decrypted record with `change`.

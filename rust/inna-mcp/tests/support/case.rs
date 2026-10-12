@@ -63,6 +63,18 @@ impl Case {
         cli(&self.home, &self.upstream.origin, &self.env(), args, None)
     }
 
+    /// One command line with `env` in place of the case's own.
+    pub fn cli_in(&self, env: &[(String, String)], args: &[&str]) -> Run {
+        cli(&self.home, &self.upstream.origin, env, args, None)
+    }
+
+    /// The case's environment with its store moved under `root` (`storeAt(root)`).
+    pub fn env_store(&self, root: &Path) -> Vec<(String, String)> {
+        let mut env = self.env();
+        env.extend(Home::store_env(root));
+        env
+    }
+
     /// One command line with another session path.
     pub fn cli_at(&self, session: &Path, args: &[&str]) -> Run {
         cli(
@@ -184,12 +196,17 @@ impl Case {
     }
 
     fn client_on(&self, upstream: Option<Upstream>) -> Client {
+        self.client_in(self.env(), upstream)
+    }
+
+    /// A client with `env` in place of the case's own, on `upstream` or the case's.
+    pub fn client_in(&self, env: Vec<(String, String)>, upstream: Option<Upstream>) -> Client {
         let origin = upstream.as_ref().unwrap_or(&self.upstream).origin.clone();
         let args: &[&str] = match self.writes {
             true => &["--allow-absence-writes"],
             false => &[],
         };
-        let (mcp, _) = Mcp::start(&self.home, &origin, &self.env(), args);
+        let (mcp, _) = Mcp::start(&self.home, &origin, &env, args);
         Client { mcp, upstream }
     }
 
