@@ -16,8 +16,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use support::browser::{Login, START_MESSAGE, USER_PATH, collect};
 use support::case::{Case, Gate, refused};
-use support::provider::{Provider, SIBLING, request, sibling, student};
+use support::provider::{Provider, SIBLING, expect_clean, request, sibling, student};
 use support::{NOW, PATIENCE, Reply, Request};
 
 const USER: &str = "/api/UserData/GetLoggedInUser";
@@ -836,4 +837,79 @@ fn clients_sharing_one_store_serialize_and_logout_waits_for_a_request_in_flight(
     assert!(status.success());
     assert_eq!(case.home.record().as_deref(), Some("null"));
     assert_eq!(maximum.load(Ordering::SeqCst), 1);
+}
+
+/// Not a case: the fake browser, run by `fake-chrome` (support/browser.rs).
+#[test]
+#[ignore = "run as the fake browser by support/browser.rs's fake-chrome"]
+fn fake_browser() {
+    support::browser::fake_browser();
+}
+
+/// integration.test.ts:1190
+#[test]
+fn google_sign_in_saves_a_version_2_session_and_refuses_a_changed_binding() {
+    let case = Case::empty("google", false);
+    // The fake browser and its profile's TMPDIR; the store, session and Inna are the case's.
+    let login = Login::new("google-binding");
+    let mut env = login.environment(&[]);
+    env.extend(case.env());
+    let run = |extra: &[&str]| {
+        collect(login.spawn_at(
+            &case.home,
+            &login.browser,
+            &env,
+            20,
+            Some(&case.upstream.origin),
+            extra,
+        ))
+    };
+    let signed_in = || {
+        (
+            Some(0),
+            "Signed in. Saved in an encrypted file.\n".to_owned(),
+        )
+    };
+
+    let (exit, stdout, stderr) = run(&[]);
+    assert_eq!((exit, stdout), signed_in());
+    assert_eq!(stderr, START_MESSAGE);
+    assert_eq!(case.provider.paths(0), [USER_PATH]);
+    let saved = case.saved();
+    assert_eq!(saved["version"], 2);
+    assert_eq!(
+        saved["account"],
+        json!({"userId": 1, "studentId": "2", "schoolId": "3"})
+    );
+    let students: Vec<&String> = saved["students"].as_object().unwrap().keys().collect();
+    assert_eq!(students, ["1"]);
+    let jar = saved["jar"].as_str().unwrap();
+    assert!(jar.contains("synthetic-rotated"), "{jar}");
+    assert!(jar.contains("synthetic-xsrf"), "{jar}");
+    assert!(!jar.contains("decoy"), "{jar}");
+    assert_eq!(mode(&case.store()), 0o600);
+
+    let status = case
+        .client()
+        .call("inna_session_status", json!({}))
+        .unwrap();
+    assert_eq!(status["authenticated"], true, "{status}");
+    assert_eq!(status["context"]["studentId"], "2", "{status}");
+
+    let before = case.home.record();
+    case.provider.state().user["studentId"] = json!("99");
+    let (exit, stdout, stderr) = run(&[]);
+    assert_eq!((exit, stdout.as_str()), (Some(1), ""));
+    assert_eq!(
+        stderr,
+        format!(
+            "{START_MESSAGE}This export changes the account, student, or school. Use --allow-account-change deliberately.\n"
+        )
+    );
+    assert_eq!(case.home.record(), before);
+
+    let (exit, stdout, _) = run(&["--allow-account-change"]);
+    assert_eq!((exit, stdout), signed_in());
+    assert_eq!(case.saved()["account"]["studentId"], "99");
+    expect_clean(&case.home.record().unwrap(), "the saved session");
 }

@@ -5,6 +5,7 @@
 //! here needs Bun.
 #![allow(dead_code)]
 
+pub mod browser;
 pub mod case;
 pub mod fake;
 pub mod provider;
