@@ -1,0 +1,4 @@
+{"steps":[
+{"cli":["auth","import","-"],"stdin":"[{\"name\":\"refreshToken\",\"value\":\"r0\",\"domain\":\".abler.io\",\"path\":\"/oauth\",\"expirationDate\":4102444800,\"httpOnly\":true},{\"name\":\"id_token\",\"value\":\"stale\",\"domain\":\"www.abler.io\",\"path\":\"/\",\"expires\":1},{\"name\":\"_ga\",\"value\":\"GA1\",\"domain\":\".abler.io\"},{\"name\":\"other\",\"value\":\"x\",\"domain\":\"example.com\"}]","code":1,"stdout":"","stderr":"ABLER_SESSION_FILE overlaps the encrypted Abler session store or its key. Choose another path.\n","exchanges":[]},
+{"cli":["auth","logout"],"code":1,"stdout":"","stderr":"ABLER_SESSION_FILE overlaps the encrypted Abler session store or its key. Choose another path.\n","exchanges":[]}
+],"id":"abler/parity/collision","env":{"ABLER_SESSION_FILE":".config/abler-mcp/session.enc.json"},"requests":0,"files":[],"texts":{},"store":"none"}

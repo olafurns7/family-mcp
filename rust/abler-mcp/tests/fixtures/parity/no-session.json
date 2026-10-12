@@ -1,0 +1,8 @@
+{"steps":[
+{"serve":true,"results":[{"call":["auth_status",{}],"answer":"{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"No saved Abler session. Run abler-mcp auth capture or abler-mcp auth import first.\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":1}","exchanges":[]},{"call":["get_profile",{}],"answer":"{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"No saved Abler session. Run abler-mcp auth capture or abler-mcp auth import first.\"}],\"isError\":true},\"jsonrpc\":\"2.0\",\"id\":2}","exchanges":[]}],"code":0,"stderr":""},
+{"cli":["auth","status"],"code":1,"stdout":"","stderr":"No saved Abler session. Run abler-mcp auth capture or abler-mcp auth import first.\n","exchanges":[]},
+{"cli":["auth","retry-candidate"],"code":1,"stdout":"","stderr":"No retained Abler session candidate. Capture or import a fresh session.\n","exchanges":[]},
+{"cli":["auth","migrate"],"code":1,"stdout":"","stderr":"No saved Abler session. Run abler-mcp auth capture or abler-mcp auth import first.\n","exchanges":[]},
+{"cli":["auth","logout"],"code":0,"stdout":"Local Abler session and failed-import candidates removed. This does not sign out other devices.\n","stderr":"","exchanges":[]},
+{"cli":["auth","status"],"code":1,"stdout":"","stderr":"No saved Abler session. Run abler-mcp auth capture or abler-mcp auth import first.\n","exchanges":[]}
+],"id":"abler/parity/no-session","requests":0,"files":[".config/ 700",".config/abler-mcp/ 700"],"texts":{},"store":"none"}
