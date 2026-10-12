@@ -176,8 +176,9 @@ n$2/bin/inna-mcp-warp
     mv -f "$temporary/renewal-file" "$1"
   }
 
-  # Unload this installer's agent and check that launchd no longer has it; otherwise stop with
-  # everything kept, so a later run can retry.
+  # Unload this installer's agent, then require launchd's definitive answer that it has no such
+  # agent (print exits 113). Any other answer, including a failed query, stops with everything
+  # kept, so a later run can retry.
   renewal_unload_agent() {
     if ! command -v launchctl >/dev/null 2>&1; then
       echo 'launchctl is not available to unload the renewal agent, so its file and the saved choice were kept.' >&2
@@ -185,20 +186,27 @@ n$2/bin/inna-mcp-warp
     fi
     renewal_domain="gui/$(id -u)"
     launchctl bootout "$renewal_domain/$renewal_label" >/dev/null 2>&1 || true
-    if launchctl print "$renewal_domain/$renewal_label" >/dev/null 2>&1; then
-      printf 'launchd still has the renewal agent loaded, so its file and the saved choice were kept. Run:\n  launchctl bootout %s/%s\nThen rerun this installer.\n' "$renewal_domain" "$renewal_label" >&2
+    if launchctl print "$renewal_domain/$renewal_label" >/dev/null 2>&1; then renewal_listed=0; else renewal_listed=$?; fi
+    if [ "$renewal_listed" != 113 ]; then
+      printf 'launchd did not confirm that the renewal agent is unloaded, so its file and the saved choice were kept. Run:\n  launchctl bootout %s/%s\nThen rerun this installer.\n' "$renewal_domain" "$renewal_label" >&2
       exit 1
     fi
   }
 
-  # Disable and stop this installer's timer and check that systemd reports it neither enabled nor
-  # active; otherwise stop with everything kept.
+  # Disable and stop this installer's timer, then require systemd's definitive answer that it is
+  # inactive (or unknown) and disabled (or not-found). Any other answer, including a failed query,
+  # stops with everything kept.
   renewal_stop_timer() {
     systemctl --user disable --now inna-mcp-renew.timer >/dev/null 2>&1 || true
-    if systemctl --user is-active --quiet inna-mcp-renew.timer || systemctl --user is-enabled --quiet inna-mcp-renew.timer; then
-      printf 'systemd still has inna-mcp-renew.timer enabled or running, so the renewal files and the saved choice were kept. Run:\n  systemctl --user disable --now inna-mcp-renew.timer\nThen rerun this installer with --without-renewal.\n' >&2
-      exit 1
-    fi
+    renewal_active=$(systemctl --user is-active inna-mcp-renew.timer 2>/dev/null) || true
+    renewal_enabled=$(systemctl --user is-enabled inna-mcp-renew.timer 2>/dev/null) || true
+    case "$renewal_active:$renewal_enabled" in
+      inactive:disabled|inactive:not-found|unknown:disabled|unknown:not-found) ;;
+      *)
+        printf 'systemd did not confirm that inna-mcp-renew.timer is stopped and disabled, so the renewal files and the saved choice were kept. Run:\n  systemctl --user disable --now inna-mcp-renew.timer\nThen rerun this installer with --without-renewal.\n' >&2
+        exit 1
+        ;;
+    esac
   }
 
   install_renewal() {
@@ -313,12 +321,13 @@ $renewal_service"
         fi
         renewal_removed=true
       elif [ "$#" -gt 0 ]; then
-        # Without a user manager nothing runs the timer; its enablement link goes with it.
-        rm -f "$@"
+        # Without a user manager nothing runs the timer; the enablement link of a marked timer
+        # goes with it, and a hand-written timer keeps its own.
         renewal_wants="$renewal_units/timers.target.wants/inna-mcp-renew.timer"
-        if [ -L "$renewal_wants" ] && [ "$(readlink "$renewal_wants")" = "$renewal_timer" ]; then
+        if renewal_marked "$renewal_timer" && [ -L "$renewal_wants" ] && [ "$(readlink "$renewal_wants")" = "$renewal_timer" ]; then
           rm -f "$renewal_wants"
         fi
+        rm -f "$@"
         renewal_removed=true
       fi
     fi

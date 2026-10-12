@@ -153,7 +153,13 @@ printf '%s\\0' systemctl "$#" "$@" >> "$TEST_RENEWAL_CALLS"
 case "$2" in
   enable) : > "$TEST_TIMER_STATE" ;;
   disable) [ "\${TEST_SYSTEMCTL_STUCK:-}" = 1 ] || rm -f "$TEST_TIMER_STATE" ;;
-  is-active|is-enabled) [ -e "$TEST_TIMER_STATE" ] || exit 3 ;;
+  is-active|is-enabled)
+    if [ "\${TEST_SYSTEMCTL_QUERY:-}" = error ]; then echo 'Failed to connect to bus' >&2; exit 1; fi
+    if [ -e "$TEST_TIMER_STATE" ]; then answer=active,enabled; code=0; else answer=inactive,disabled; code=3; fi
+    if [ "$2" = is-active ]; then answer=\${answer%,*}; else answer=\${answer#*,}; fi
+    [ "$3" = --quiet ] || echo "$answer"
+    exit "$code"
+    ;;
 esac
 `,
       { mode: 0o755 },
@@ -173,7 +179,7 @@ printf '%s\\0' launchctl "$#" "$@" >> "$TEST_RENEWAL_CALLS"
 case "$1" in
   bootstrap) [ ! -e "$TEST_AGENT_STATE" ] || exit 5; : > "$TEST_AGENT_STATE" ;;
   bootout) [ "\${TEST_LAUNCHCTL_FAIL:-}" != bootout ] || exit 1; [ -e "$TEST_AGENT_STATE" ] || exit 3; rm -f "$TEST_AGENT_STATE" ;;
-  print) [ -e "$TEST_AGENT_STATE" ] || exit 113 ;;
+  print) [ "\${TEST_LAUNCHCTL_PRINT:-}" != error ] || exit 5; [ -e "$TEST_AGENT_STATE" ] || exit 113 ;;
 esac
 `,
       { mode: 0o755 },
@@ -543,8 +549,8 @@ cat >/dev/null
       ];
 
       const disable = ['systemctl', '--user', 'disable', '--now', 'inna-mcp-renew.timer'];
-      const isActive = ['systemctl', '--user', 'is-active', '--quiet', 'inna-mcp-renew.timer'];
-      const isEnabled = ['systemctl', '--user', 'is-enabled', '--quiet', 'inna-mcp-renew.timer'];
+      const isActive = ['systemctl', '--user', 'is-active', 'inna-mcp-renew.timer'];
+      const isEnabled = ['systemctl', '--user', 'is-enabled', 'inna-mcp-renew.timer'];
       const removed = [show, disable, isActive, isEnabled, reload];
 
       // Off by default: nothing written, no command run.
@@ -589,14 +595,36 @@ cat >/dev/null
       const unitFiles = [await readFile(service, 'utf8'), await readFile(timer, 'utf8')];
       run = await renewalRun(['--without-renewal'], { TEST_SYSTEMCTL_FAIL: 'disable' });
       keptAfter(run, disable.join(' '));
-      assert.deepEqual(run.calls, [show, disable, isActive]);
+      assert.deepEqual(run.calls, [show, disable, isActive, isEnabled]);
       run = await renewalRun(['--without-renewal'], { TEST_SYSTEMCTL_STUCK: '1' });
       keptAfter(run, disable.join(' '));
-      assert.deepEqual(run.calls, [show, disable, isActive]);
+      assert.deepEqual(run.calls, [show, disable, isActive, isEnabled]);
+
+      // A failed status query is no proof the timer stopped, whether or not the disable failed.
+      for (const failure of [{ TEST_SYSTEMCTL_FAIL: 'disable' }, {}]) {
+        run = await renewalRun(['--without-renewal'], {
+          ...failure,
+          TEST_SYSTEMCTL_QUERY: 'error',
+        });
+        keptAfter(run, disable.join(' '));
+        assert.deepEqual(run.calls, [show, disable, isActive, isEnabled]);
+        await writeFile(timerState, '');
+      }
+
       run = await renewalRun(['--without-renewal'], { TEST_SYSTEMCTL_FAIL: 'daemon-reload' });
       keptAfter(run, 'systemctl --user daemon-reload');
       assert.deepEqual(run.calls, removed);
       assert.deepEqual([await readFile(service, 'utf8'), await readFile(timer, 'utf8')], unitFiles);
+
+      // A timer systemd answers is inactive and disabled is removed even when the disable fails.
+      await rm(timerState, { force: true });
+      run = await renewalRun(['--without-renewal'], { TEST_SYSTEMCTL_FAIL: 'disable' });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.saved, 'off');
+      assert.deepEqual(run.calls, removed);
+      assert.ok(!(await exists(timer)) && !(await exists(service)));
+      run = await renewalRun(['--with-renewal']);
+      assert.equal(run.status, 0, run.stderr);
 
       // Removal takes exactly the marked units.
       run = await renewalRun(['--without-renewal']);
@@ -659,6 +687,21 @@ cat >/dev/null
       assert.deepEqual(run.calls, [show]);
       assert.deepEqual(await readdir(units), ['timers.target.wants']);
       assert.deepEqual(await readdir(join(wants, '..')), []);
+
+      // Mixed ownership without a user manager: the marked service goes; the hand-written timer
+      // and its enablement link stay.
+      await writeFile(service, `# ${marker}\n[Service]\n`);
+      await writeFile(timer, handWritten);
+      await symlink(timer, wants);
+      run = await renewalRun(['--without-renewal'], { TEST_NO_SYSTEMD: '1' });
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(run.calls, [show]);
+      assert.ok(run.stdout.includes(`Left ${timer} in place: this installer did not write it.`));
+      assert.ok(!(await exists(service)));
+      assert.equal(await readFile(timer, 'utf8'), handWritten);
+      assert.equal(await readlink(wants), timer);
+      await rm(wants);
+      await rm(timer);
       await rm(join(wants, '..'), { recursive: true });
       await rm(timerState, { force: true });
 
@@ -737,10 +780,31 @@ cat >/dev/null
       assert.equal(run.saved, 'on');
       assert.ok(await exists(agentState));
 
+      // A failed print is no proof the agent is gone, whether or not the unload failed: neither
+      // removal nor upgrade goes ahead.
+      const bootoutFails = { TEST_LAUNCHCTL_FAIL: 'bootout' };
+
+      for (const { args, failure } of [
+        { args: ['--without-renewal'], failure: bootoutFails },
+        { args: ['--without-renewal'], failure: {} },
+        { args: [], failure: bootoutFails },
+        { args: [], failure: {} },
+      ]) {
+        run = await renewalRun(args, { ...darwin, ...failure, TEST_LAUNCHCTL_PRINT: 'error' });
+        keptAfter(run, bootout.join(' '));
+        assert.deepEqual(run.calls, [bootout, print]);
+        assert.equal(await readFile(plist, 'utf8'), loadedText);
+        // A successful unload cleared the fake's state; the agent counts as loaded again.
+        await writeFile(agentState, '');
+      }
+
+      // An agent launchd no longer has (bootout fails, print answers 113) is removed.
+      await rm(agentState);
       run = await renewalRun(['--without-renewal'], darwin);
       assert.equal(run.status, 0, run.stderr);
       assert.equal(run.saved, 'off');
       assert.deepEqual(run.calls, [bootout, print]);
+      assert.match(run.stdout, /Scheduled renewal removed\./);
       assert.ok(!(await exists(plist)));
       assert.ok(!(await exists(agentState)));
 
