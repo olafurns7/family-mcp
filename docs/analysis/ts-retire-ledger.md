@@ -17,6 +17,20 @@ fills the rows of its suites; PR 2 starts after all four have merged:
 - **1c**: inna-mcp;
 - **1d**: abler-mcp and infomentor-mcp.
 
+## Production gaps
+
+These rows stay `planned` until a production fix lands (lead ruling, taskr 81676). Both gaps are in
+the shared `rust/mcp-runtime` stdio path, so all five servers have them. PR 3 keeps the TypeScript
+tests behind these rows until each gap is fixed or explicitly accepted.
+
+- **G1**: a broken stdout neither ends `serve` nor stops the keep-alive. With the reader of its
+  output closed, the binary keeps running, and its timer keeps renewing, until stdin ends.
+  TypeScript stops the timer and aborts the tick in flight on the output stream's `error`. Rows:
+  `packages/inna-mcp/test/integration.test.ts:1961` (its `error` event) and `:2113`.
+- **G2**: standard input has no line bound. 10 MiB + 1 bytes without a newline leave the binary
+  open and buffering. The TypeScript SDK closed the wire at that point. Row:
+  `packages/inna-mcp/test/integration.test.ts:2132`.
+
 ## Enumeration
 
 ```sh
@@ -346,10 +360,10 @@ the lead checks before fixtures are generated.
 | drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:309` | failed ticks retry before cadence and warn exactly once past the age bound | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::failed_ticks_retry_before_cadence_and_warn_once_past_the_age_bound |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1849` | keep-alive ticks never overlap, and stop cancels the timer and aborts the request in flight | bun test (turbo test) | pty/signal | existing Rust test | rust/inna-mcp/src/keep_alive.rs::ticks_never_overlap_and_stop_aborts_the_tick_in_flight |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1883` | the default keep-alive timer waits one interval and stops firing after stop | bun test (turbo test) | pty/signal | existing Rust test | rust/inna-mcp/src/keep_alive.rs::the_timer_waits_one_interval_and_stops_firing_after_stop |
-| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1961` | an output stream error or close stops the timer, aborts the tick in flight, and leaves no listener | bun test (turbo test) | pty/signal | new executing Rust test | rust/inna-mcp/tests/keep_alive.rs::an_output_error_or_close_stops_the_timer_and_aborts_the_tick |
+| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1961` | an output stream error or close stops the timer, aborts the tick in flight, and leaves no listener | bun test (turbo test) | pty/signal | new executing Rust test | rust/inna-mcp/tests/keep_alive.rs::the_end_of_input_stops_the_timer_and_aborts_the_tick_in_flight (the `close` event) + planned keep_alive.rs::a_broken_output_pipe_cancels_the_timer_and_aborts_the_tick (the `error` event: production gap G1) |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2078` | discovery followed by a legacy initialize keeps the keep-alive running on the live connection | bun test (turbo test) | pty/signal | new executing Rust test | rust/inna-mcp/tests/keep_alive.rs::discovery_then_a_legacy_initialize_keeps_the_keep_alive_running |
-| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2113` | a broken output pipe under the real stdio runtime cancels the timer and aborts the tick in flight | bun test (turbo test) | pty/signal | new executing Rust test | planned rust/inna-mcp/tests/keep_alive.rs::a_broken_output_pipe_cancels_the_timer_and_aborts_the_tick |
-| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2132` | input the SDK rejects closes the wire, cancels the timer, and aborts the tick in flight | bun test (turbo test) | pty/signal | new executing Rust test | planned rust/inna-mcp/tests/keep_alive.rs::rejected_input_closes_the_wire_cancels_the_timer_and_aborts_the_tick |
+| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2113` | a broken output pipe under the real stdio runtime cancels the timer and aborts the tick in flight | bun test (turbo test) | pty/signal | new executing Rust test | planned rust/inna-mcp/tests/keep_alive.rs::a_broken_output_pipe_cancels_the_timer_and_aborts_the_tick (production gap G1) |
+| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2132` | input the SDK rejects closes the wire, cancels the timer, and aborts the tick in flight | bun test (turbo test) | pty/signal | new executing Rust test | planned rust/inna-mcp/tests/keep_alive.rs::rejected_input_closes_the_wire_cancels_the_timer_and_aborts_the_tick (production gap G2) |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/browser-login.test.ts:383` | auth login closes a launcher-spawned browser child before removing its profile | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | planned rust/abler-mcp/tests/browser_login.rs::auth_login_closes_a_launcher_spawned_browser_child_before_removing_its_profile |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/browser-login.test.ts:436` | auth login timeout closes a launcher-spawned browser child | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | planned rust/abler-mcp/tests/browser_login.rs::auth_login_timeout_closes_a_launcher_spawned_browser_child |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/browser-login.test.ts:473` | auth login --keep-browser exits while the browser and profile remain open | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | planned rust/abler-mcp/tests/browser_login.rs::keep_browser_exits_while_the_browser_and_profile_remain_open |
@@ -724,7 +738,7 @@ runners, helpers).
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1834` | keep-alive on a session the browser moved to the sibling neither switches nor relearns | bun test (turbo test) | auth/renewal | obsolete | runs the TS implementation; the same case against the binary is row `rust/inna-mcp/tests/ts/integration.test.ts:1847` |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1907` | two servers sharing a refused session stop asking, and replaced credentials resume | bun test (turbo test) | auth/renewal | obsolete | runs the TS implementation; the same case against the binary is row `rust/inna-mcp/tests/ts/integration.test.ts:1862` |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1948` | a cookie value rotated by Inna counts as new credentials for a refused session | bun test (turbo test) | auth/renewal | obsolete | runs the TS implementation; the same case against the binary is row `rust/inna-mcp/tests/ts/integration.test.ts:1903` |
-| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2154` | keep-alive suspends with its last server, resumes with the next, and never after stop | bun test (turbo test) | pty/signal | obsolete | TS in-process server lifecycle (one runtime, several McpServer instances); the binary has one server per process. Its per-process suspend/stop is keep_alive.rs::an_output_error_or_close_stops_the_timer_and_aborts_the_tick |
+| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2154` | keep-alive suspends with its last server, resumes with the next, and never after stop | bun test (turbo test) | pty/signal | obsolete | TS in-process server lifecycle (one runtime, several McpServer instances); the binary has one server per process. Its per-process stop is keep_alive.rs::the_end_of_input_stops_the_timer_and_aborts_the_tick_in_flight |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2229` | the keep-alive opt-out is a serve flag only | bun test (turbo test) | contract | obsolete | runs the TS implementation; the same case against the binary is row `rust/inna-mcp/tests/ts/integration.test.ts:1916` |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2254` | dates and plain text fail safely on malformed inputs | bun test (turbo test) | contract | existing Rust test | rust/inna-mcp/src/dates.rs::statuses_distinguish_missing_from_unrecognized + rust/inna-mcp/src/html.rs::plain_text_matches_htmlparser2 |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2301` | the session is saved only encrypted after import, keep-alive, and reads | bun test (turbo test) | lock/store | obsolete | runs the TS implementation; the same case against the binary is row `rust/inna-mcp/tests/ts/integration.test.ts:1971` |
