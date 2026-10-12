@@ -160,7 +160,7 @@ fn placed_home(home: &Home, text: &str) -> String {
     text.replace("<home>", &home.0.display().to_string())
 }
 
-fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
+fn replay_case(set: &str, name: &str, coverage: &mut Coverage, tz: Option<&str>) {
     let case = frozen(set, name);
     assert_eq!(case["id"], format!("inna/{set}/{name}"));
     let home = Home::new(name);
@@ -168,7 +168,7 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
     let script = Script::new(names.clone());
     let upstream = script.upstream();
     let origin = upstream.origin.clone();
-    let extra: Vec<(String, String)> = case
+    let mut extra: Vec<(String, String)> = case
         .get("env")
         .and_then(Value::as_object)
         .map(|env| {
@@ -178,6 +178,9 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
         })
         .unwrap_or_default();
 
+    if let Some(tz) = tz {
+        extra.push(("TZ".into(), tz.into()));
+    }
     let mut serving: Option<Mcp> = None;
 
     for (index, step) in case["steps"].as_array().unwrap().iter().enumerate() {
@@ -484,7 +487,7 @@ fn replay(set: &str, names: &[&str]) -> Coverage {
     let mut coverage = Coverage::default();
 
     for name in names {
-        replay_case(set, name, &mut coverage);
+        replay_case(set, name, &mut coverage, None);
     }
     coverage
 }
@@ -519,4 +522,26 @@ fn every_frozen_contract_case_replays() {
             hops: 0,
         }
     );
+}
+
+/// dates.test.ts:61: unzoned Inna timestamps stay UTC whatever the host's timezone. The scenarios
+/// whose feeds hold unzoned times (lessons, homework, messages, absence and leave history), each
+/// replayed with the binary's TZ set to a zone west and two east of UTC, give the frozen UTC
+/// answers.
+#[test]
+fn reads_are_identical_under_another_host_timezone() {
+    for tz in ["Pacific/Honolulu", "Europe/Berlin", "Pacific/Auckland"] {
+        let mut coverage = Coverage::default();
+
+        for (set, name) in [
+            ("parity", "reads"),
+            ("parity", "siblings"),
+            ("parity", "absence-history"),
+            ("contract", "dated-feeds"),
+            ("contract", "message-continuation"),
+        ] {
+            replay_case(set, name, &mut coverage, Some(tz));
+        }
+        assert!(coverage.structured > 20, "{tz}: {coverage:?}");
+    }
 }
