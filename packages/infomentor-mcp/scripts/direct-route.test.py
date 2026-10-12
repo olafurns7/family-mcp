@@ -11,7 +11,7 @@ import ssl
 import subprocess
 import tempfile
 import threading
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 spec = importlib.util.spec_from_file_location("direct_route", Path(__file__).with_name("direct-route.py"))
@@ -178,18 +178,17 @@ with tempfile.TemporaryDirectory() as directory:
         return server
 
     working, broken = frontend(False), frontend(True)
-    with socket.socket() as closed:
-        closed.bind(("127.0.0.1", 0))
-        closed_port = closed.getsockname()[1]  # Released unused: connections are refused.
     ports = {
         "198.51.100.10": working.server_address[1],
         "198.51.100.20": broken.server_address[1],
-        "8.8.4.4": closed_port,
+        "8.8.4.4": None,  # Refused without opening a socket, so no port can be reused under the test.
         "1.0.0.1": working.server_address[1],
     }
 
     def connect(target, timeout):
         assert target[1] == 443 and target[0] in ports, f"Unexpected connection to {target}"
+        if ports[target[0]] is None:
+            raise ConnectionRefusedError(errno.ECONNREFUSED, os.strerror(errno.ECONNREFUSED))
         return socket.create_connection(("127.0.0.1", ports[target[0]]), timeout=timeout)
 
     trusted = ssl.create_default_context(cafile=str(folder / "ca.pem"))
@@ -218,15 +217,15 @@ with tempfile.TemporaryDirectory() as directory:
     managed = lambda ip: original + f"{ip} im1.infomentor.is minn.infomentor.is # ".encode() + route.MARKER + b"\n"
     by_hand = lambda ip: original + f"{ip} im1.infomentor.is minn.infomentor.is\n".encode()
 
-    def install(content, discovery):
+    def install(content, discovery, checker=loopback_verify, action="install"):
         path = folder / "hosts"
         path.write_bytes(content)
         path.chmod(0o644)
         os.utime(path, ns=(1, 1))
         before = path.stat()
-        with patch.object(route, "verify", loopback_verify), discovery:
+        with patch.object(route, "verify", checker), discovery:
             try:
-                route.configure("install", path)
+                route.configure(action, path)
                 error = None
             except ValueError as failure:
                 error = str(failure)
@@ -276,15 +275,26 @@ with tempfile.TemporaryDirectory() as directory:
     assert "existing hand-written entry 198.51.100.20: ValueError" in error and "8.8.4.4: ConnectionRefusedError" in error, error
     assert content == by_hand("198.51.100.20") and not written, "Broken hand-written entry rewritten"
 
-    # Ambiguous entries are refused before any connection.
-    content, written, error = install(original + b"198.51.100.10 im1.infomentor.is\n198.51.100.20 minn.infomentor.is\n", dns_down)
-    assert error is not None and error.startswith("Ambiguous") and not written, error
+    # Ambiguous entries are refused before any verification or discovery.
+    ambiguous = original + b"198.51.100.10 im1.infomentor.is\n198.51.100.20 minn.infomentor.is\n"
+    spy = Mock(side_effect=AssertionError("verified an ambiguous entry"))
+    no_lookup = patch.object(route.socket, "getaddrinfo", side_effect=AssertionError("discovery ran"))
+    content, written, error = install(ambiguous, no_lookup, spy)
+    assert error is not None and error.startswith("Ambiguous") and not spy.called, error
+    assert content == ambiguous and not written, "Ambiguous entry rewritten"
 
     # Remove keeps a hand-written entry.
-    path = folder / "hosts"
-    path.write_bytes(by_hand("198.51.100.10"))
-    route.configure("remove", path)
-    assert path.read_bytes() == by_hand("198.51.100.10")
+    content, written, error = install(by_hand("198.51.100.10"), no_lookup, spy, "remove")
+    assert error is None and content == by_hand("198.51.100.10") and not written and not spy.called, error
+
+    # Case 4: a bare CR does not end a hosts line, so a managed-looking entry after it is still a comment.
+    commented = original + b"# disabled\r198.51.100.10 im1.infomentor.is minn.infomentor.is # " + route.MARKER + b"\r\n"
+    content, written, error = install(commented, dns_down)
+    assert error is not None and error.startswith("Alternate frontend checks failed"), f"Case 4: commented entry kept: {error}"
+    assert content == commented and not written, "Case 4: hosts file changed"
+    content, written, error = install(commented, no_lookup, spy, "remove")
+    assert error is None and content == commented and not written, f"Case 4: commented bytes removed: {error}"
+    assert route.rewrite(commented, "1.0.0.1") == commented + b"1.0.0.1 im1.infomentor.is minn.infomentor.is # " + route.MARKER + b"\n"
     for server in (working, broken):
         server.shutdown()
         server.server_close()

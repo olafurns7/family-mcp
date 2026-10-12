@@ -2,6 +2,7 @@
 
 import fcntl
 import http.client
+import io
 import ipaddress
 import os
 import socket
@@ -75,7 +76,8 @@ def existing_entry(original):
     """Return (address, marked) for the current school-host entry, or None when there is none."""
     addresses = {host.encode(): set() for host in HOSTS}
     kinds = set()
-    for line in original.splitlines():
+    # Iterate LF-delimited lines as glibc does: a bare CR does not end a hosts line or its comment.
+    for line in io.BytesIO(original):
         entry, _, comment = line.partition(b"#")
         fields = entry.split()
         names = [field.lower().rstrip(b".") for field in fields[1:]]
@@ -128,7 +130,7 @@ def choose(original):
 
 def rewrite(original, address):
     lines = []
-    for line in original.splitlines(keepends=True):
+    for line in io.BytesIO(original):
         entry, _, comment = line.partition(b"#")
         fields = entry.split()
         names = [field.lower().rstrip(b".") for field in fields[1:]]
