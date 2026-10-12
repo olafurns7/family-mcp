@@ -1506,6 +1506,27 @@ const contracts: Contract[] = [
       cliIn('saved.json', ['not-a-command']),
     ],
   },
+  {
+    // Not a drop-in case: with :1725's 28 unknown-key inputs and the other contract and parity
+    // inputs, every one of the 41 tools gets an invalid input whose frozen answer the replay
+    // checks (lead 81512). No request may follow any of them.
+    name: 'strict-inputs-of-every-other-tool',
+    steps: [
+      LEGACY,
+      {
+        serve: [
+          ['get_active_order', unexpected({})],
+          ['get_checkout', unexpected({})],
+          ['get_shopping_note', unexpected({})],
+          ['list_addresses', unexpected({})],
+          ['list_archived_shopping_note_lines', unexpected({})],
+          ['list_favorite_products', unexpected({})],
+          ['list_favorite_products', { page: 0 }],
+          ['list_product_tags', unexpected({})],
+        ],
+      },
+    ],
+  },
 ];
 
 /**

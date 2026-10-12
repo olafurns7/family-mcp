@@ -44,8 +44,9 @@ const SCENARIOS: [&str; 22] = [
     "token-file",
 ];
 
-/// The integration.test.ts cases the ledger names `kronan/contract/*`, one file each.
-const CONTRACTS: [&str; 9] = [
+/// The integration.test.ts cases the ledger names `kronan/contract/*`, one file each, and the
+/// unknown-key inputs of the seven tools no other frozen case gives an invalid input.
+const CONTRACTS: [&str; 10] = [
     "offset-pages",
     "oversized-token-input",
     "published-paths-and-bodies",
@@ -55,6 +56,7 @@ const CONTRACTS: [&str; 9] = [
     "nested-nutrition-and-encoded-slugs",
     "stdio-missing-token",
     "cli-offline-commands",
+    "strict-inputs-of-every-other-tool",
 ];
 
 fn frozen(set: &str, name: &str) -> Value {
@@ -120,8 +122,9 @@ fn replay(set: &str, name: &str, coverage: &mut Coverage) {
             if let Some(expected) = step.get("initialize") {
                 assert_eq!(initialized.answer, answer(expected), "{at} initialize");
                 let listed = mcp.request("tools/list", json!({}));
-                // Schema key order differs between rmcp and zod; parity.ts never compared it, and
-                // surface.rs checks the contract on its own.
+                // Schema key order differs between rmcp and zod; parity.ts never compared it. This
+                // comparison with the frozen TypeScript list is the surface check apart from
+                // src/surface.json: a change to that file fails here.
                 assert_eq!(listed.answer, answer(&step["list"]), "{at} tools/list");
             }
             for (number, result) in step["results"].as_array().unwrap().iter().enumerate() {
@@ -245,7 +248,7 @@ fn every_frozen_contract_case_replays_through_the_binary() {
     }
     // What the freeze recorded, so a fixture emptied by mistake fails here.
     assert!(
-        coverage.cli >= 17 && coverage.tools >= 166 && coverage.structured >= 93,
+        coverage.cli >= 17 && coverage.tools >= 174 && coverage.structured >= 93,
         "{coverage:?}"
     );
 }
