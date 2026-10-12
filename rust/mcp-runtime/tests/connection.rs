@@ -110,3 +110,53 @@ fn a_stdout_that_cannot_be_written_ends_the_process() {
     assert_eq!(code, Some(0), "{written}");
     assert_eq!(written, "CLOSE\n");
 }
+
+/// The example with its `hang` call in flight and a stdout the host no longer reads: a ping whose
+/// 3 MiB id comes back in its answer has started writing (4096 bytes read), and the rest waits on
+/// the full pipe, which stays open.
+fn stuck() -> support::Example {
+    let mut example = support::hanging();
+    let id = "x".repeat(3 * 1024 * 1024);
+    send(
+        &mut example.stdin,
+        &format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"ping"}}"#),
+    );
+    let mut started = [0; 4096];
+    example.stdout.read_exact(&mut started).unwrap();
+    example
+}
+
+/// rmcp drains for up to 5 s at stdin's end, then closes its transport, which waits without
+/// bound for the stuck write. Serving stops anyway once `ENDED_SERVING` (6 s) has passed.
+const ENDED: Duration = Duration::from_secs(9);
+
+#[test]
+fn the_end_of_stdin_ends_the_process_while_a_write_waits_on_an_unread_stdout() {
+    let mut example = stuck();
+    let ended = Instant::now();
+    drop(example.stdin);
+    assert_eq!(example.stderr.next(), "CANCELLED\n");
+    assert_eq!(example.stderr.next(), "CLOSE\n");
+    assert_eq!(exits_within(&mut example.child, ENDED), Some(0));
+    assert!(ended.elapsed() < ENDED, "{:?}", ended.elapsed());
+    assert_eq!(example.stderr.rest(), "");
+    // Open and unread until the process has exited.
+    drop(example.stdout);
+}
+
+#[test]
+fn a_call_cancelled_before_stdins_end_still_ends_the_process_while_a_write_waits() {
+    let mut example = stuck();
+    send(
+        &mut example.stdin,
+        r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}}"#,
+    );
+    assert_eq!(example.stderr.next(), "CANCELLED\n");
+    let ended = Instant::now();
+    drop(example.stdin);
+    assert_eq!(example.stderr.next(), "CLOSE\n");
+    assert_eq!(exits_within(&mut example.child, ENDED), Some(0));
+    assert!(ended.elapsed() < ENDED, "{:?}", ended.elapsed());
+    assert_eq!(example.stderr.rest(), "");
+    drop(example.stdout);
+}
