@@ -1321,6 +1321,22 @@ impl Mcp {
     }
 }
 
+/// Whether process `pid` waits for the lock on `locked`: its `<file>.lock-tmp.<pid>-<id>`
+/// temporary (family-store/src/lock.rs) sits beside the file.
+pub fn waits_for_lock(locked: &Path, pid: u32) -> bool {
+    let prefix = format!(
+        "{}.lock-tmp.{pid}-",
+        locked.file_name().unwrap().to_string_lossy()
+    );
+    fs::read_dir(locked.parent().unwrap())
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        })
+        .unwrap_or(false)
+}
+
 /// The lines of `text` its newline has ended, without the newline.
 fn whole_lines(text: &str) -> impl Iterator<Item = &str> {
     text.split_inclusive('\n')

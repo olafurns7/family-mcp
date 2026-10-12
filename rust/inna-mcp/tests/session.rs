@@ -829,8 +829,21 @@ fn clients_sharing_one_store_serialize_and_logout_waits_for_a_request_in_flight(
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    // The TypeScript case's 50 ms: the logout has not finished while the tick holds the store.
-    assert!(support::wait(&mut logout, Duration::from_millis(300)).is_none());
+    // The logout waits for the session lock the held tick has (review of PR #27, finding 2): its
+    // lock temporary appears, and it is still running, before the tick is released.
+    let session = case.home.path("session.json");
+    let deadline = std::time::Instant::now() + PATIENCE;
+
+    while !support::waits_for_lock(&session, logout.id()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the logout never waited for the store's lock"
+        );
+        assert!(logout.try_wait().unwrap().is_none(), "the logout ended");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(logout.try_wait().unwrap().is_none(), "the logout ended");
+    assert!(support::waits_for_lock(&session, logout.id()));
     gate.release();
     assert!(clients[0].mcp.until_stderr("keep-alive: kept", 2, PATIENCE));
     let status = support::wait(&mut logout, PATIENCE).expect("the logout finished");
