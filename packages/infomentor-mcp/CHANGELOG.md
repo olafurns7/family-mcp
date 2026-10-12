@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- On Linux, a direct-route install or upgrade now checks the existing hosts
+  entry for both school hostnames first. When it passes, the hosts file is left
+  unchanged, so an upgrade no longer fails just because the alternate address
+  cannot be found again. A working hand-written entry is kept as written, not
+  refused; a failing one is still never replaced. Entries that map the two
+  names to different addresses are refused. When the checks fail, the message
+  lists each address tried with its error, and each looked-up address skipped
+  because it is not public.
+
 ## 0.9.2
 
 Released 2026-10-12.

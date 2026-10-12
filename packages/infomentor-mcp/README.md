@@ -74,9 +74,12 @@ This requires `/usr/bin/python3` and administrator or `sudo` access. The install
 resolves InfoMentor's alternate frontend, verifies both original school hostnames
 over HTTPS, and adds one marked `/etc/hosts` entry. That entry affects these two
 hostnames for all programs on the machine. Login URLs and certificate verification
-stay unchanged. Existing unmanaged hostname overrides are left for you to review.
+stay unchanged. A working hostname override you wrote yourself is kept as it is;
+a failing one is left for you to review.
 
-Upgrades remember this option and recheck the current alternate address. To
+Upgrades remember this option. They first recheck the address already in
+`/etc/hosts` and keep it when it passes; only otherwise do they look up the
+current alternate address. To
 remove the managed entry and restore ordinary DNS, rerun with
 `--without-direct-route`. Restart the MCP host after installing. The
 [connectivity guide](docs/CONNECTIVITY.md#reproduce-on-another-grok-vm) records the
