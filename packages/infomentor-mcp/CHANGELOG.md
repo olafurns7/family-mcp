@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.9.4
+
+Released 2026-10-12.
 
 - `auth login` works again. Since 0.9.0 the Rust server sent its final
   sign-in check, an empty form post, without a `Content-Length` header;
