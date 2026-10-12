@@ -134,6 +134,10 @@ impl AsyncWrite for Output {
 /// The caller must end its runtime with `shutdown_background` after this returns, not with
 /// `#[tokio::main]` or a drop: the stdin read may still block, and waiting for it keeps a
 /// signalled process alive while the host holds stdin open. See the crate's entry point docs.
+/// A stdout write already blocked on the blocking pool can likewise outlive `close` until the
+/// process exits: it carries only bytes of an answer already produced and never touches the
+/// store. So callers must exit the process after `shutdown_background`, as all five servers do.
+/// Descriptor 1 is not made non-blocking, because that flag is shared with the host's open file.
 pub async fn serve_stdio<S: Server>(server: S) -> std::io::Result<()> {
     let server = Arc::new(server);
     let mut terminate = signal(SignalKind::terminate())?;

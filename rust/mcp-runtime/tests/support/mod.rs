@@ -47,6 +47,19 @@ pub fn exits_within(child: &mut Child, limit: Duration) -> Option<i32> {
     None
 }
 
+/// Whether the child is still running once `limit` has passed, waiting for it all the while.
+pub fn alive_after(child: &mut Child, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+
+    while Instant::now() < deadline {
+        if child.try_wait().unwrap().is_some() {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
 /// The example's stderr lines, read on a thread so that a line that never comes fails the test
 /// instead of hanging it.
 pub struct Stderr(Receiver<String>);

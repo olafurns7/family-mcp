@@ -10,7 +10,7 @@ use std::process::{Child, ChildStdin};
 use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal, kill_process};
-use support::{Example, Stderr, exits_within, send};
+use support::{Example, Stderr, alive_after, exits_within, send};
 
 /// The example, initialized, with one `hang` call in flight (id 2), and stdout drained.
 fn hanging() -> (Child, ChildStdin, Stderr) {
@@ -75,4 +75,23 @@ fn the_end_of_stdin_cancels_a_call_in_flight_only_after_rmcps_drain() {
     );
     assert_eq!(stderr.next(), "CLOSE\n");
     assert_eq!(exits_within(&mut child, Duration::from_secs(5)), Some(0));
+}
+
+/// The bound on serving after stdin's end (6 s, src/stdio.rs `ENDED_SERVING`) starts at that end:
+/// a server whose stdin stays open longer keeps serving, and its drain still runs from the end.
+#[test]
+fn serving_outlasts_the_bound_while_stdin_stays_open_and_drains_from_its_end() {
+    let (mut child, stdin, stderr) = hanging();
+    assert!(alive_after(&mut child, Duration::from_secs(7)));
+    let ended = Instant::now();
+    drop(stdin);
+    assert_eq!(stderr.next(), "CANCELLED\n");
+    let waited = ended.elapsed();
+    assert!(
+        (Duration::from_secs(4)..Duration::from_secs(8)).contains(&waited),
+        "{waited:?}"
+    );
+    assert_eq!(stderr.next(), "CLOSE\n");
+    assert_eq!(exits_within(&mut child, Duration::from_secs(5)), Some(0));
+    assert_eq!(stderr.rest(), "");
 }
