@@ -163,6 +163,11 @@ fn answer(state: &mut Provider, request: &Request, token: &str) -> Reply {
         "a sign-in host",
     );
     state.calls.push((url.clone(), request.method.clone()));
+    expect(
+        problems,
+        !header("cookie").is_some_and(|cookie| cookie.contains("DECOY")),
+        "no unrelated school cookie sent",
+    );
 
     if let Some(authorization) = header("authorization") {
         expect(
@@ -315,8 +320,15 @@ fn answer(state: &mut Provider, request: &Request, token: &str) -> Reply {
             "http://nam.inna.is/Components/Students/Students.html",
             Some("XSRF-TOKEN=synthetic-xsrf; Path=/"),
         ),
+        // An unrelated cookie of the school host: only SESSION and XSRF-TOKEN are kept (review of
+        // PR #27, finding 3).
         "nam.inna.is/Components/Students/Students.html" => {
-            text("<html>Synthetic student application</html>")
+            let mut reply = text("<html>Synthetic student application</html>");
+            reply.headers.push((
+                "set-cookie".into(),
+                "DECOY=synthetic-unrelated-school; Path=/; Secure".into(),
+            ));
+            reply
         }
         other => {
             problems.push(format!("Unexpected synthetic login request: {other}"));
@@ -412,6 +424,14 @@ fn phone_login_replaces_polling_completes_logout_relay_upgrades_http_keeps_schoo
     let state = state.lock().unwrap();
     assert!(state.problems.is_empty(), "{}", state.problems.join("\n"));
     assert_eq!(state.codes, ["1234"]);
+    // The verification follows the page that set the decoy, so it would have carried it.
+    let at = |path: &str| state.calls.iter().rposition(|(url, _)| url.path() == path);
+    assert!(
+        at("/api/UserData/GetLoggedInUser") > at("/Components/Students/Students.html"),
+        "{:?}",
+        state.calls
+    );
+    assert!(!format!("{stdout}{errors}").contains("synthetic-unrelated-school"));
     let selection = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
         pairs
             .iter()
@@ -438,6 +458,7 @@ fn phone_login_replaces_polling_completes_logout_relay_upgrades_http_keeps_schoo
     assert!(!jar.contains(&token));
     assert!(!jar.contains("synthetic-identity-cookie"));
     assert!(!jar.contains("DO-NOT-SAVE"));
+    assert!(!jar.contains("synthetic-unrelated-school"));
     let jar: Value = serde_json::from_str(jar).unwrap();
     let school: Vec<&Value> = jar["cookies"]
         .as_array()
