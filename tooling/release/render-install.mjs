@@ -11,6 +11,8 @@ export async function renderInstall(pkg) {
     (file) => file.destination === 'libexec/warp.sh',
   );
 
+  const renewal = pkg.name === 'inna-mcp';
+
   const extraFiles = pkg.familyMcp.release.extraFiles
     .map(
       (file) => `  if [ "$platform" = '${file.platform}' ]; then
@@ -41,12 +43,25 @@ export async function renderInstall(pkg) {
     esac
     shift
   done`
-      : `  case "$#" in
+      : renewal
+        ? `  renewal=''
+  renewal_requested=false
+  usage='Usage: install.sh [--with-renewal|--without-renewal] [--stop-running]'
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --stop-running) stop_running=true ;;
+      --with-renewal) [ -z "$renewal" ] || { echo "$usage" >&2; exit 1; }; renewal=on ;;
+      --without-renewal) [ -z "$renewal" ] || { echo "$usage" >&2; exit 1; }; renewal=off; renewal_requested=true ;;
+      *) echo "$usage" >&2; exit 1 ;;
+    esac
+    shift
+  done`
+        : `  case "$#" in
     0) ;;
     1) [ "$1" = --stop-running ] || { echo 'Usage: install.sh [--stop-running]' >&2; exit 1; }; stop_running=true ;;
     *) echo 'Usage: install.sh [--stop-running]' >&2; exit 1 ;;
   esac`,
-    NETWORK: warp
+    PREFLIGHT: warp
       ? `  previous_network=$(cat "$prefix/share/${pkg.name}/network" 2>/dev/null || printf direct)
   [ -n "$network" ] || network=$previous_network
   case "$network" in direct|warp|direct-route) ;; *) echo 'Invalid saved network setting.' >&2; exit 1 ;; esac
@@ -55,7 +70,9 @@ export async function renderInstall(pkg) {
   if [ "$network" = direct-route ] || [ "$remove_direct_route" = true ]; then
     [ "$platform" = linux ] && [ -x /usr/bin/python3 ] || { echo 'Direct-route setup requires Linux with /usr/bin/python3.' >&2; exit 1; }
   fi`
-      : '',
+      : renewal
+        ? (await readFile(new URL('./inna-renewal.sh.template', import.meta.url), 'utf8')).trimEnd()
+        : '',
     EXTRA_FILES: extraFiles,
     POST_INSTALL: warp
       ? `  if [ "$network" = warp ]; then
@@ -74,10 +91,14 @@ export async function renderInstall(pkg) {
     fi
   fi`
       : '',
-    SAVE_NETWORK: warp
+    SETTINGS: warp
       ? `  printf '%s\\n' "$network" > "$temporary/network"
   mv -f "$temporary/network" "$prefix/share/${pkg.name}/network"`
-      : '',
+      : renewal
+        ? `  printf '%s\\n' "$renewal" > "$temporary/renewal"
+  mv -f "$temporary/renewal" "$package_dir/renewal"
+  if [ "$renewal" = on ]; then install_renewal; else remove_renewal; fi`
+        : '',
   };
 
   let output = await readFile(new URL('./install.sh.template', import.meta.url), 'utf8');
