@@ -62,6 +62,43 @@ const SCENARIOS: [&str; 36] = [
     "graphql-protoChild",
 ];
 
+/// The package version the freeze recorded, in `--version`'s and `-v`'s stdout and in
+/// `initialize`'s `serverInfo.version`. A release changes the binary's, so the replay requires the
+/// binary to print its own (`CARGO_PKG_VERSION`) in exactly those two fields, in the recorded
+/// format, and compares them as the recorded one; every other field is compared as recorded
+/// (lead, taskr 82600; the_version_is_named_only_in_the_two_recorded_fields checks it).
+const FROZEN_VERSION: &str = "0.7.1";
+
+/// A version command's stdout, which must be `version` and a newline, as the frozen one; any other
+/// command's stdout as it is.
+fn recorded_version_stdout(args: &[&str], stdout: &str, version: &str) -> String {
+    match args {
+        ["--version"] | ["-v"] => {
+            assert_eq!(
+                stdout,
+                format!("{version}\n"),
+                "{args:?}: the binary's version"
+            );
+            format!("{FROZEN_VERSION}\n")
+        }
+        _ => stdout.to_owned(),
+    }
+}
+
+/// An `initialize` answer line, whose `serverInfo.version` must be `version`, with the frozen one
+/// in its place; nothing else changes.
+fn recorded_server_version(line: &str, version: &str) -> String {
+    let mut answer: Value = serde_json::from_str(line).unwrap();
+    let recorded = &mut answer["result"]["serverInfo"]["version"];
+    assert_eq!(
+        recorded,
+        &json!(version),
+        "initialize: the binary's version"
+    );
+    *recorded = json!(FROZEN_VERSION);
+    answer.to_string()
+}
+
 fn frozen(set: &str, name: &str) -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -136,8 +173,9 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
             let run = cli(&home, &origin, &extra, &args, stdin);
             script.finish(&format!("{at} {args:?}"));
             no_leak(&format!("{}{}", run.stdout, run.stderr), &at);
+            let stdout = recorded_version_stdout(&args, &run.stdout, env!("CARGO_PKG_VERSION"));
             assert_eq!(
-                json!({"code": run.code, "stdout": names.fresh(&run.stdout), "stderr": names.fresh(&run.stderr)}),
+                json!({"code": run.code, "stdout": names.fresh(&stdout), "stderr": names.fresh(&run.stderr)}),
                 json!({"code": step["code"], "stdout": step["stdout"], "stderr": step["stderr"]}),
                 "{at} {args:?}"
             );
@@ -147,7 +185,7 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
             if let Some(expected) = step.get("initialize") {
                 same_answer(
                     &names,
-                    &initialized.line,
+                    &recorded_server_version(&initialized.line, env!("CARGO_PKG_VERSION")),
                     expected,
                     &format!("{at} initialize"),
                     false,
@@ -277,5 +315,73 @@ fn every_frozen_parity_scenario_replays() {
             structured: 58,
             requests: 226,
         }
+    );
+}
+
+/// The version rule's own check: only a version command's stdout and `initialize`'s
+/// `serverInfo.version` are named, a binary printing another version than its package's fails,
+/// and the fixtures hold the frozen version in exactly those fields.
+#[test]
+fn the_version_is_named_only_in_the_two_recorded_fields() {
+    let fails =
+        |work: &dyn Fn()| std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_err();
+    assert_eq!(
+        recorded_version_stdout(&["--version"], "9.8.7\n", "9.8.7"),
+        format!("{FROZEN_VERSION}\n")
+    );
+    assert_eq!(
+        recorded_version_stdout(&["-v"], "9.8.7\n", "9.8.7"),
+        format!("{FROZEN_VERSION}\n")
+    );
+    // Another command's output keeps a version it prints.
+    assert_eq!(
+        recorded_version_stdout(&["--help"], "9.8.7\n", "9.8.7"),
+        "9.8.7\n"
+    );
+    assert_eq!(
+        recorded_version_stdout(&["-hv"], "9.8.7\n", "9.8.7"),
+        "9.8.7\n"
+    );
+    // A binary whose version is not its package's, or not in the recorded format, fails.
+    assert!(fails(&|| {
+        recorded_version_stdout(&["--version"], "9.8.6\n", "9.8.7");
+    }));
+    assert!(fails(&|| {
+        recorded_version_stdout(&["-v"], "v9.8.7\n", "9.8.7");
+    }));
+    let line = r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-11-25","serverInfo":{"name":"abler-mcp","version":"9.8.7"},"instructions":"9.8.7"}}"#;
+    let named: Value = serde_json::from_str(&recorded_server_version(line, "9.8.7")).unwrap();
+    let mut expected: Value = serde_json::from_str(line).unwrap();
+    expected["result"]["serverInfo"]["version"] = json!(FROZEN_VERSION);
+    assert_eq!(named, expected);
+    assert!(fails(&|| {
+        recorded_server_version(line, "9.8.6");
+    }));
+
+    // The frozen version appears in the fixtures only where the rule names it.
+    let mut places = Vec::new();
+
+    for name in SCENARIOS {
+        let text = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/parity")
+                .join(format!("{name}.json")),
+        )
+        .unwrap();
+
+        for line in text.lines().filter(|line| line.contains(FROZEN_VERSION)) {
+            places.push(format!(
+                "{name}: {}",
+                &line[..line.find(FROZEN_VERSION).unwrap()]
+            ));
+        }
+    }
+    assert_eq!(
+        places,
+        [
+            r#"surface: {"serve":true,"initialize":"{\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"abler-mcp\",\"version\":\""#,
+            r#"cli: {"cli":["--version"],"code":0,"stdout":""#,
+            r#"cli: {"cli":["-v"],"code":0,"stdout":""#,
+        ]
     );
 }

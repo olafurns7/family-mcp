@@ -93,6 +93,12 @@ U+0001. The replay expands the runs.
 - **Key order.** parity.ts read `initialize` and `tools/list` through the SDK client, which rebuilds
   them in its schemas' key order, so only their values were ever compared. The replay compares
   their values too. A tool answer's key order is compared exactly.
+- **The package version.** The freeze recorded 0.7.1 in `--version`'s and `-v`'s stdout (`cli`)
+  and in `initialize`'s `serverInfo.version` (`surface`), and nowhere else. A release changes the
+  binary's, so the replay requires the binary's own (`CARGO_PKG_VERSION`) in exactly those fields,
+  in the recorded format, and compares them as 0.7.1 (lead, taskr 82600).
+  `replay.rs::the_version_is_named_only_in_the_two_recorded_fields` checks the rule and that the
+  fixtures hold the version only there.
 - **What parity.ts did not compare and the replay does**: each request's method, each `serve`'s exit
   code and stderr, the whole home's listing with modes, the text of every file, and the store
   marker.
