@@ -23,7 +23,7 @@ fn example() -> PathBuf {
         .join("examples/stdio");
     assert!(
         path.exists(),
-        "build the example first: cargo test --examples --tests"
+        "build the example first: cargo build -p mcp-runtime --example stdio"
     );
     path
 }
