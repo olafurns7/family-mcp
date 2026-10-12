@@ -1,9 +1,16 @@
 """Offline check: python3 -I scripts/direct-route.test.py"""
 
+import errno
+from functools import partial
+import http.server
 import importlib.util
 import os
 from pathlib import Path
+import socket
+import ssl
+import subprocess
 import tempfile
+import threading
 from unittest.mock import patch
 
 
@@ -97,5 +104,180 @@ with patch.object(route.socket, "getaddrinfo", return_value=[
     assert route.discover(failures) == "1.1.1.1"
     assert failures == ["8.8.8.8: OSError: unreachable"]
     assert [call.args[0] for call in verify.call_args_list] == ["8.8.8.8", "1.1.1.1"]
+
+# Existing-entry parsing: one address for both names, or a refusal.
+assert route.existing_entry(original) is None
+assert route.existing_entry(installed) == (address, True)
+assert route.existing_entry(original + b"1.2.3.4 im1.infomentor.is minn.infomentor.is\n") == ("1.2.3.4", False)
+assert route.existing_entry(original + b"1.2.3.4 im1.infomentor.is\n1.2.3.4 MINN.infomentor.is.\n") == ("1.2.3.4", False)
+for ambiguous in (
+    b"1.2.3.4 im1.infomentor.is\n",
+    b"1.2.3.4 im1.infomentor.is\n5.6.7.8 minn.infomentor.is\n",
+    b"1.2.3.4 im1.infomentor.is minn.infomentor.is\n::1 im1.infomentor.is\n",
+    b"1.2.3.4 im1.infomentor.is minn.infomentor.is\n" + installed.splitlines(keepends=True)[-1],
+    b"not-an-address im1.infomentor.is minn.infomentor.is\n",
+    b"1.2.3.4 im1.infomentor.is other # infomentor-mcp alternate frontend\n",
+):
+    try:
+        route.existing_entry(original + ambiguous)
+        raise AssertionError(f"Ambiguous entry accepted: {ambiguous!r}")
+    except ValueError:
+        pass
+
+# A real loopback HTTPS fake for both school names, trusted only through an injected context.
+with tempfile.TemporaryDirectory() as directory:
+    folder = Path(directory)
+    (folder / "openssl.cnf").write_text(
+        "[req]\ndistinguished_name = dn\nprompt = no\n[dn]\nCN = direct-route test\n"
+        "[ca]\nbasicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign\n"
+        "subjectKeyIdentifier = hash\n"
+        "[leaf]\nbasicConstraints = critical,CA:FALSE\nkeyUsage = critical,digitalSignature\n"
+        "extendedKeyUsage = serverAuth\nsubjectKeyIdentifier = hash\nauthorityKeyIdentifier = keyid\n"
+        "subjectAltName = DNS:im1.infomentor.is,DNS:minn.infomentor.is\n"
+    )
+    key = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-config", "openssl.cnf"]
+    for command in (
+        ["openssl", "req", "-x509", *key, "-extensions", "ca", "-days", "2", "-keyout", "ca.key", "-out", "ca.pem"],
+        ["openssl", "req", "-new", *key, "-keyout", "leaf.key", "-out", "leaf.csr"],
+        ["openssl", "x509", "-req", "-in", "leaf.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-set_serial", "2",
+         "-days", "2", "-extfile", "openssl.cnf", "-extensions", "leaf", "-out", "leaf.pem"],
+    ):
+        subprocess.run(command, cwd=folder, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(folder / "leaf.pem", folder / "leaf.key")
+
+    class Frontend(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            host = self.headers["Host"]
+            if self.server.broken:
+                self.send_response(503)
+                self.end_headers()
+            elif host == "im1.infomentor.is" and self.path == "/production/mentor/":
+                body = b'<form><input name="__VIEWSTATE"><input type="Password"></form>'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif host == "minn.infomentor.is" and self.path == "/":
+                self.send_response(302)
+                self.send_header("Location", "/Authentication/Authentication/Login?x=1")
+                self.end_headers()
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    def frontend(broken):
+        # Bound and listening before the thread starts, so connections queue instead of racing.
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Frontend)
+        server.socket = server_context.wrap_socket(server.socket, server_side=True)
+        server.broken = broken
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    working, broken = frontend(False), frontend(True)
+    with socket.socket() as closed:
+        closed.bind(("127.0.0.1", 0))
+        closed_port = closed.getsockname()[1]  # Released unused: connections are refused.
+    ports = {
+        "198.51.100.10": working.server_address[1],
+        "198.51.100.20": broken.server_address[1],
+        "8.8.4.4": closed_port,
+        "1.0.0.1": working.server_address[1],
+    }
+
+    def connect(target, timeout):
+        assert target[1] == 443 and target[0] in ports, f"Unexpected connection to {target}"
+        return socket.create_connection(("127.0.0.1", ports[target[0]]), timeout=timeout)
+
+    trusted = ssl.create_default_context(cafile=str(folder / "ca.pem"))
+    loopback_verify = partial(route.verify, context=trusted, connect=connect)
+    route.verify("198.51.100.10", context=trusted, connect=connect)
+    try:
+        route.verify("198.51.100.10", connect=connect)
+        raise AssertionError("Fake frontend trusted without the injected context")
+    except ssl.SSLCertVerificationError:
+        pass
+    resolve = socket.getaddrinfo
+
+    def discovery(*answers):
+        # Only the discovery name is faked; loopback connections still resolve normally.
+        def lookup(name, *args):
+            if name != "api-im.infomentor.net":
+                return resolve(name, *args)
+            if not answers:
+                raise socket.gaierror(-2, "Name or service not known")
+            return [(0, 0, 0, "", (answer, 443)) for answer in answers]
+
+        return patch.object(route.socket, "getaddrinfo", side_effect=lookup)
+
+    dns_down = discovery()
+    candidates = discovery("8.8.4.4", "1.0.0.1")
+    managed = lambda ip: original + f"{ip} im1.infomentor.is minn.infomentor.is # ".encode() + route.MARKER + b"\n"
+    by_hand = lambda ip: original + f"{ip} im1.infomentor.is minn.infomentor.is\n".encode()
+
+    def install(content, discovery):
+        path = folder / "hosts"
+        path.write_bytes(content)
+        path.chmod(0o644)
+        os.utime(path, ns=(1, 1))
+        before = path.stat()
+        with patch.object(route, "verify", loopback_verify), discovery:
+            try:
+                route.configure("install", path)
+                error = None
+            except ValueError as failure:
+                error = str(failure)
+        after = path.stat()
+        written = (after.st_mtime_ns, after.st_ino) != (before.st_mtime_ns, before.st_ino)
+        return path.read_bytes(), written, error
+
+    # Case 1: a working managed entry is kept while discovery is down.
+    content, written, error = install(managed("198.51.100.10"), dns_down)
+    assert error is None, f"Case 1: working managed entry refused: {error}"
+    assert content == managed("198.51.100.10") and not written, "Case 1: hosts file changed"
+
+    # Case 2: a broken managed entry with discovery down fails, naming each address and error.
+    content, written, error = install(managed("198.51.100.20"), dns_down)
+    assert error is not None, "Case 2: broken route accepted"
+    assert content == managed("198.51.100.20") and not written, "Case 2: hosts file changed"
+    assert "existing managed entry 198.51.100.20: ValueError: Frontend did not return the school login form (HTTP 503)." in error, f"Case 2: {error}"
+    assert "api-im.infomentor.net lookup: gaierror: [Errno -2] Name or service not known" in error, f"Case 2: {error}"
+    content, written, error = install(managed("198.51.100.20"), discovery("8.8.4.4"))
+    assert error is not None and content == managed("198.51.100.20") and not written, "Case 2: hosts file changed"
+    assert error.splitlines()[1:] == [
+        "  existing managed entry 198.51.100.20: ValueError: Frontend did not return the school login form (HTTP 503).",
+        f"  8.8.4.4: ConnectionRefusedError: [Errno {errno.ECONNREFUSED}] {os.strerror(errno.ECONNREFUSED)}",
+    ], f"Case 2: {error}"
+
+    # Case 3: a working hand-written entry is kept as it is, with no marker.
+    content, written, error = install(by_hand("198.51.100.10"), dns_down)
+    assert error is None, f"Case 3: working hand-written entry refused: {error}"
+    assert content == by_hand("198.51.100.10") and not written and route.MARKER not in content, "Case 3: hosts file changed"
+
+    # A broken managed entry is replaced by a working discovery candidate after a refused one.
+    content, written, error = install(managed("198.51.100.20"), candidates)
+    assert error is None and content == managed("1.0.0.1"), f"Managed entry not replaced: {error}"
+
+    # A broken hand-written entry is refused even when discovery finds a working address.
+    content, written, error = install(by_hand("198.51.100.20"), candidates)
+    assert error is not None and "Verified alternate address: 1.0.0.1" in error and "Review /etc/hosts" in error, error
+    assert "existing hand-written entry 198.51.100.20: ValueError" in error and "8.8.4.4: ConnectionRefusedError" in error, error
+    assert content == by_hand("198.51.100.20") and not written, "Broken hand-written entry rewritten"
+
+    # Ambiguous entries are refused before any connection.
+    content, written, error = install(original + b"198.51.100.10 im1.infomentor.is\n198.51.100.20 minn.infomentor.is\n", dns_down)
+    assert error is not None and error.startswith("Ambiguous") and not written, error
+
+    # Remove keeps a hand-written entry.
+    path = folder / "hosts"
+    path.write_bytes(by_hand("198.51.100.10"))
+    route.configure("remove", path)
+    assert path.read_bytes() == by_hand("198.51.100.10")
+    for server in (working, broken):
+        server.shutdown()
+        server.server_close()
 
 print("Direct-route offline checks passed.")
