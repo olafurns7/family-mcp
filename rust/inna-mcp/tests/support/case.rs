@@ -4,6 +4,7 @@
 //! own loopback upstream, which answers as the shared provider or as a case's wrapper around it, and
 //! the keep-alive ticks only on SIGUSR1 (INNA_TEST_KEEP_ALIVE).
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::{Value, json};
@@ -46,11 +47,13 @@ impl Case {
 
     /// The drop-in harness's environment besides the home's own.
     pub fn env(&self) -> Vec<(String, String)> {
+        self.env_at(&self.home.path("session.json"))
+    }
+
+    /// The environment with another session path (`InnaClient({sessionFile})`).
+    pub fn env_at(&self, session: &Path) -> Vec<(String, String)> {
         vec![
-            (
-                "INNA_SESSION_FILE".into(),
-                self.home.path("session.json").display().to_string(),
-            ),
+            ("INNA_SESSION_FILE".into(), session.display().to_string()),
             ("INNA_TEST_KEEP_ALIVE".into(), "1".into()),
         ]
     }
@@ -58,6 +61,104 @@ impl Case {
     /// One `inna-mcp` command line against the case's upstream.
     pub fn cli(&self, args: &[&str]) -> Run {
         cli(&self.home, &self.upstream.origin, &self.env(), args, None)
+    }
+
+    /// One command line with another session path.
+    pub fn cli_at(&self, session: &Path, args: &[&str]) -> Run {
+        cli(
+            &self.home,
+            &self.upstream.origin,
+            &self.env_at(session),
+            args,
+            None,
+        )
+    }
+
+    /// `importSession(source, allowAccountChange)`: the import's stdout, or its stderr line.
+    pub fn import(&self, allow_account_change: bool) -> Result<String, String> {
+        let source = self.home.path("cookies.json").display().to_string();
+        let mut args = vec!["auth", "import", source.as_str()];
+
+        if allow_account_change {
+            args.push("--allow-account-change");
+        }
+        let run = self.cli(&args);
+        match run.code {
+            Some(0) => Ok(run.stdout),
+            _ => Err(run.stderr.trim_end().to_owned()),
+        }
+    }
+
+    /// A client with another session path.
+    pub fn client_at(&self, session: &Path) -> Client {
+        let (mcp, _) = Mcp::start(
+            &self.home,
+            &self.upstream.origin,
+            &self.env_at(session),
+            &[],
+        );
+        Client {
+            mcp,
+            upstream: None,
+        }
+    }
+
+    /// The legacy session path (`f.path`).
+    pub fn session(&self) -> PathBuf {
+        self.home.path("session.json")
+    }
+
+    /// The encrypted record (`f.store.path`).
+    pub fn store(&self) -> PathBuf {
+        self.home.path(".config/inna-mcp/session.enc")
+    }
+
+    /// The store's key file (`f.store.key`).
+    pub fn key(&self) -> PathBuf {
+        self.home
+            .path(".local/share/family-mcp/keys/inna-mcp.default.key")
+    }
+
+    /// integration.test.ts's `storeFiles`: the bytes of everything a store operation could
+    /// change: the record, its marker, the key, the legacy file and the absence record.
+    pub fn store_files(&self) -> Vec<Option<Vec<u8>>> {
+        let marker = PathBuf::from(format!("{}.marker", self.store().display()));
+        let absence = PathBuf::from(format!("{}.absence.json", self.session().display()));
+        [self.store(), marker, self.key(), self.session(), absence]
+            .iter()
+            .map(|path| std::fs::read(path).ok())
+            .collect()
+    }
+
+    /// integration.test.ts's `plaintextCookies`: every file under the home holding a cookie
+    /// value, besides the owner's own export.
+    pub fn plaintext_cookies(&self) -> Vec<PathBuf> {
+        const VALUES: [&str; 5] = [
+            "synthetic-session",
+            "synthetic-xsrf",
+            "synthetic-rotated",
+            "synthetic-kept",
+            "synthetic-planted",
+        ];
+        fn walk(directory: &Path, found: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(directory).into_iter().flatten().flatten() {
+                let path = entry.path();
+
+                if path.is_dir() {
+                    walk(&path, found);
+                } else if let Ok(bytes) = std::fs::read(&path) {
+                    let text = String::from_utf8_lossy(&bytes);
+
+                    if VALUES.iter().any(|value| text.contains(value)) {
+                        found.push(path);
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(&self.home.0, &mut found);
+        found.retain(|path| *path != self.home.path("cookies.json"));
+        found
     }
 
     /// A client on the case's own upstream.
