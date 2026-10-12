@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 pub mod case;
+pub mod fake;
 pub mod provider;
 
 use std::collections::VecDeque;
@@ -919,8 +920,32 @@ pub struct Mcp {
     child: Child,
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
-    stderr: Arc<Mutex<Vec<u8>>>,
+    stderr: Arc<Stream>,
     next: u64,
+}
+
+/// What a child wrote on stderr so far, and whether it has ended, with a wait on both.
+#[derive(Default)]
+struct Stream {
+    state: Mutex<(Vec<u8>, bool)>,
+    changed: Condvar,
+}
+
+impl Stream {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.state.lock().unwrap().0).into_owned()
+    }
+
+    fn until(&self, patience: Duration, mut ready: impl FnMut(&str, bool) -> bool) -> bool {
+        let state = self.state.lock().unwrap();
+        let (_state, timeout) = self
+            .changed
+            .wait_timeout_while(state, patience, |(bytes, ended)| {
+                !ready(&String::from_utf8_lossy(bytes), *ended)
+            })
+            .unwrap();
+        !timeout.timed_out()
+    }
 }
 
 /// The answer to one request, as the line the server wrote, and the notifications before it.
@@ -1005,7 +1030,7 @@ impl Mcp {
                 }
             }
         });
-        let stderr = Arc::new(Mutex::new(Vec::new()));
+        let stderr = Arc::new(Stream::default());
         let mut pipe = child.stderr.take().unwrap();
         let sink = stderr.clone();
 
@@ -1013,8 +1038,15 @@ impl Mcp {
             let mut buffer = [0u8; 4096];
 
             while let Ok(read @ 1..) = pipe.read(&mut buffer) {
-                sink.lock().unwrap().extend_from_slice(&buffer[..read]);
+                sink.state
+                    .lock()
+                    .unwrap()
+                    .0
+                    .extend_from_slice(&buffer[..read]);
+                sink.changed.notify_all();
             }
+            sink.state.lock().unwrap().1 = true;
+            sink.changed.notify_all();
         });
         let stdin = child.stdin.take();
         let mut mcp = Self {
@@ -1104,8 +1136,9 @@ impl Mcp {
         drop(self.stdin.take());
         let status =
             wait(&mut self.child, PATIENCE).expect("serve did not exit after its input closed");
-        let stderr = String::from_utf8(self.stderr.lock().unwrap().clone()).unwrap();
-        (status, stderr)
+        // All of stderr: the reader may still be draining the pipe.
+        self.stderr.until(PATIENCE, |_, ended| ended);
+        (status, self.stderr.text())
     }
 
     /// Wait for the exit with standard input still open (a signal's exit, not end of input's).
@@ -1126,6 +1159,27 @@ impl Mcp {
 
     pub fn id(&self) -> u32 {
         self.child.id()
+    }
+
+    /// What the server wrote on stderr so far.
+    pub fn stderr(&self) -> String {
+        self.stderr.text()
+    }
+
+    /// Waits, at most `patience`, until stderr holds `text` at least `times` times; whether it did.
+    pub fn until_stderr(&self, text: &str, times: usize, patience: Duration) -> bool {
+        self.stderr.until(patience, |written, _| {
+            written.matches(text).count() >= times
+        })
+    }
+
+    /// The keep-alive statuses the server reported (INNA_TEST_KEEP_ALIVE), in order.
+    pub fn statuses(&self) -> Vec<String> {
+        self.stderr()
+            .lines()
+            .filter_map(|line| line.strip_prefix("keep-alive: "))
+            .map(str::to_owned)
+            .collect()
     }
 }
 
