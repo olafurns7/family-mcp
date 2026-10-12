@@ -18,8 +18,8 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1009,6 +1009,8 @@ pub struct Mcp {
     child: Child,
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
+    /// Set by `deafen`: the reader closes stdout after the next line.
+    deaf: Arc<AtomicBool>,
     stderr: Arc<Stream>,
     next: u64,
 }
@@ -1118,12 +1120,16 @@ impl Mcp {
             .unwrap();
         let stdout = child.stdout.take().unwrap();
         let (send, lines) = channel();
+        let deaf = Arc::new(AtomicBool::new(false));
+        let deafened = deaf.clone();
 
+        // The reader is dropped, closing stdout's read side, before `send` is: a disconnected
+        // `lines` means stdout is closed.
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
 
-                if send.send(line).is_err() {
+                if send.send(line).is_err() || deafened.load(Ordering::SeqCst) {
                     break;
                 }
             }
@@ -1151,6 +1157,7 @@ impl Mcp {
             child,
             stdin,
             lines,
+            deaf,
             stderr,
             next: 1,
         }
@@ -1212,6 +1219,32 @@ impl Mcp {
     }
 
     /// Close standard input without waiting.
+    /// The host closes its read side of stdout after one more answer, as a broken pipe: the
+    /// server's next write fails. Standard input stays open.
+    pub fn deafen(&mut self) {
+        self.deaf.store(true, Ordering::SeqCst);
+        let answer = self.request("ping", json!({})).value();
+        assert!(answer["result"].is_object(), "{answer}");
+        assert!(
+            matches!(
+                self.lines.recv_timeout(PATIENCE),
+                Err(RecvTimeoutError::Disconnected)
+            ),
+            "stdout was not closed"
+        );
+    }
+
+    /// Write `bytes` to standard input on a thread of its own, so a server that stops reading
+    /// cannot block the test; joining it gives standard input back, still open.
+    pub fn write_input(&mut self, bytes: Vec<u8>) -> std::thread::JoinHandle<ChildStdin> {
+        let mut stdin = self.stdin.take().unwrap();
+
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&bytes).and_then(|()| stdin.flush());
+            stdin
+        })
+    }
+
     pub fn end_input(&mut self) {
         drop(self.stdin.take());
     }

@@ -19,17 +19,16 @@ fills the rows of its suites; PR 2 starts after all four have merged:
 
 ## Production gaps
 
-These rows stay `planned` until a production fix lands (lead ruling, taskr 81676). Both gaps are in
-the shared `rust/mcp-runtime` stdio path, so all five servers have them. PR 3 keeps the TypeScript
-tests behind these rows until each gap is fixed or explicitly accepted.
+Both gaps that 1c found (lead ruling, taskr 81676) are fixed on main in b0c2234 (PR #25, the
+shared `rust/mcp-runtime` stdio path, all five servers). Their rows now name the tests that
+landed with the fix.
 
-- **G1**: a broken stdout neither ends `serve` nor stops the keep-alive. With the reader of its
-  output closed, the binary keeps running, and its timer keeps renewing, until stdin ends.
-  TypeScript stops the timer and aborts the tick in flight on the output stream's `error`. Rows:
+- **G1** (fixed in b0c2234): a broken stdout ended neither `serve` nor the keep-alive. Rows:
   `packages/inna-mcp/test/integration.test.ts:1961` (its `error` event) and `:2113`.
-- **G2**: standard input has no line bound. 10 MiB + 1 bytes without a newline leave the binary
-  open and buffering. The TypeScript SDK closed the wire at that point. Row:
-  `packages/inna-mcp/test/integration.test.ts:2132`.
+- **G2** (fixed in b0c2234): standard input had no line bound. Row:
+  `packages/inna-mcp/test/integration.test.ts:2132`. Accepted divergence (lead 81755): Rust closes
+  at exactly 10,485,760 bytes, the newline included, never earlier depending on how the input
+  arrives in reads.
 
 ## Enumeration
 
@@ -155,7 +154,7 @@ Per suite:
 | drop-in abler-mcp | 43 | 11 | 6 | 26 | 0 |
 | drop-in dominos-mcp | 25 | 4 | 0 | 21 | 0 |
 | drop-in infomentor-mcp | 25 | 3 | 3 | 19 | 0 |
-| drop-in inna-mcp | 85 | 15 | 1 | 69 | 0 |
+| drop-in inna-mcp | 86 | 15 | 1 | 70 | 0 |
 | drop-in kronan-mcp | 38 | 9 | 0 | 29 | 0 |
 | parity abler-mcp | 15 | 15 | 0 | 0 | 0 |
 | parity dominos-mcp | 34 | 34 | 0 | 0 | 0 |
@@ -169,14 +168,14 @@ Per suite:
 | package kronan-mcp | 37 | 1 | 3 | 0 | 33 |
 | package mcp-runtime | 2 | 0 | 1 | 1 | 0 |
 | package session-store | 73 | 0 | 52 | 18 | 3 |
-| **all** | 715 | 200 | 85 | 200 | 230 |
+| **all** | 716 | 200 | 85 | 201 | 230 |
 
 Per category:
 
 | category | fixture row | existing Rust test | new executing Rust test | obsolete |
 | --- | --- | --- | --- | --- |
 | money | 46 | 3 | 34 | 27 |
-| auth/renewal | 37 | 2 | 47 | 42 |
+| auth/renewal | 37 | 2 | 48 | 42 |
 | pty/signal | 9 | 13 | 28 | 27 |
 | lock/store | 26 | 59 | 82 | 59 |
 | contract | 82 | 8 | 8 | 43 |
@@ -248,7 +247,7 @@ the lead checks before fixtures are generated.
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:481` | absence-429-post | cargo test --all-features (test-origin) | money | fixture row | inna/parity/absence-429-post (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:494` | absence-429-prepare | cargo test --all-features (test-origin) | money | fixture row | inna/parity/absence-429-prepare (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:508` | absence-429-submit-checks | cargo test --all-features (test-origin) | money | fixture row | inna/parity/absence-429-submit-checks (executing replay of every step: outputs, exit codes, request list, store and files) |
-| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:223` | 401 on absence POST sends once and retains the uncertain outcome | cargo test --all-features (test-origin) | money | new executing Rust test | rust/inna-mcp/tests/renewal.rs::a_401_on_absence_post_sends_once_and_retains_the_uncertain_outcome |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:247` | 401 on absence POST sends once and retains the uncertain outcome | cargo test --all-features (test-origin) | money | new executing Rust test | rust/inna-mcp/tests/renewal.rs::a_401_on_absence_post_sends_once_and_retains_the_uncertain_outcome |
 | drop-in kronan-mcp | `rust/kronan-mcp/tests/ts/integration.test.ts:1137` | the money gate refuses without sending a charge-bearing request | cargo test --all-features (test-origin) | money | new executing Rust test | rust/kronan-mcp/tests/money.rs::the_money_gate_refuses_without_sending_a_charge_bearing_request |
 | drop-in kronan-mcp | `rust/kronan-mcp/tests/ts/integration.test.ts:1186` | money and destructive tools called without confirm:true send nothing | cargo test --all-features (test-origin) | money | new executing Rust test | rust/kronan-mcp/tests/money.rs::money_and_destructive_tools_without_confirm_send_nothing |
 | drop-in kronan-mcp | `rust/kronan-mcp/tests/ts/integration.test.ts:1226` | add_checkout_to_order refuses when the active order is absent or differs | cargo test --all-features (test-origin) | money | new executing Rust test | rust/kronan-mcp/tests/money.rs::add_checkout_to_order_refuses_an_absent_or_different_active_order |
@@ -349,21 +348,22 @@ the lead checks before fixtures are generated.
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:300` | import-accounts | cargo test --all-features (test-origin) | auth/renewal | fixture row | inna/parity/import-accounts (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:325` | login-input | cargo test --all-features (test-origin) | auth/renewal | fixture row | inna/parity/login-input (executing replay of every step: outputs, exit codes, request list, store and files) |
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:340` | google-refusals | cargo test --all-features (test-origin) | auth/renewal | fixture row | inna/parity/google-refusals (executing replay of every step: outputs, exit codes, request list, store and files) |
-| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:126` | idle serve survives several TTLs within the scaled 30-minute bound, including the flag | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::idle_serve_survives_several_ttls_within_the_bound_including_the_flag |
-| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:143` | 401 and 5xx renewals fail closed past the bound without a school request | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::renewal_401_and_5xx_fail_closed_past_the_bound_without_a_school_request |
-| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:165` | read 401 refreshes once and retries once; a second 401 has no third school request | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::read_401_refreshes_once_and_retries_once_and_a_second_401_sends_no_third |
-| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:188` | a separate CLI import is used by the next call | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::a_separate_cli_import_is_used_by_the_next_call |
-| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:204` | renewal age is checked again between school requests within one call | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::renewal_age_is_checked_again_between_school_requests |
-| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:254` | serve start renews within bound/30 plus slack in both modes | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::serve_start_renews_within_the_bound_in_both_modes |
-| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:269` | a switch 401 recovers once and a persistent 401 refuses after exactly two switches | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::a_switch_401_recovers_once_and_a_persistent_401_refuses_after_two_switches |
-| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:292` | a 500 renewal after a checked read gets 401 keeps the transient text and sends no retry | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::a_500_renewal_after_a_checked_read_401_keeps_the_transient_text_and_sends_no_retry |
-| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:309` | failed ticks retry before cadence and warn exactly once past the age bound | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::failed_ticks_retry_before_cadence_and_warn_once_past_the_age_bound |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:150` | idle serve survives several TTLs within the scaled 30-minute bound, including the flag | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::idle_serve_survives_several_ttls_within_the_bound_including_the_flag |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:167` | 401 and 5xx renewals fail closed past the bound without a school request | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::renewal_401_and_5xx_fail_closed_past_the_bound_without_a_school_request |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:189` | read 401 refreshes once and retries once; a second 401 has no third school request | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::read_401_refreshes_once_and_retries_once_and_a_second_401_sends_no_third |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:212` | a separate CLI import is used by the next call | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::a_separate_cli_import_is_used_by_the_next_call |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:228` | renewal age is checked again between school requests within one call | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::renewal_age_is_checked_again_between_school_requests |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:278` | serve start renews within bound/30 plus slack in both modes | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::serve_start_renews_within_the_bound_in_both_modes |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:293` | a switch 401 recovers once and a persistent 401 refuses after exactly two switches | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::a_switch_401_recovers_once_and_a_persistent_401_refuses_after_two_switches |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:316` | a 500 renewal after a checked read gets 401 keeps the transient text and sends no retry | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::a_500_renewal_after_a_checked_read_401_keeps_the_transient_text_and_sends_no_retry |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:333` | failed ticks retry before cadence and warn exactly once past the age bound | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/renewal.rs::failed_ticks_retry_before_cadence_and_warn_once_past_the_age_bound |
+| drop-in inna-mcp | `rust/inna-mcp/tests/ts/renewal.test.ts:364` | a broken output pipe or an oversized input line ends serve and aborts the tick in flight | cargo test --all-features (test-origin) | auth/renewal | new executing Rust test | rust/inna-mcp/tests/broken_connection.rs::a_broken_output_pipe_or_an_oversized_input_line_ends_serve_and_aborts_the_tick_in_flight: the replacement itself, without Bun (lead 82087) |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1849` | keep-alive ticks never overlap, and stop cancels the timer and aborts the request in flight | bun test (turbo test) | pty/signal | existing Rust test | rust/inna-mcp/src/keep_alive.rs::ticks_never_overlap_and_stop_aborts_the_tick_in_flight — verified 2026-10-12 (1c): both bodies read, same behaviour (one run under repeated fires, stop aborts the run in flight, no run after stop); the aborted tick's request given up is rust/inna-mcp/tests/keep_alive.rs::the_end_of_input_stops_the_timer_and_aborts_the_tick_in_flight |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1883` | the default keep-alive timer waits one interval and stops firing after stop | bun test (turbo test) | pty/signal | existing Rust test | rust/inna-mcp/src/keep_alive.rs::the_timer_waits_one_interval_and_stops_firing_after_stop — verified 2026-10-12 (1c): both bodies read, same behaviour (no run before the first interval, a run after it, none after stop) |
-| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1961` | an output stream error or close stops the timer, aborts the tick in flight, and leaves no listener | bun test (turbo test) | pty/signal | new executing Rust test | rust/inna-mcp/tests/keep_alive.rs::the_end_of_input_stops_the_timer_and_aborts_the_tick_in_flight (the `close` event) + planned keep_alive.rs::a_broken_output_pipe_cancels_the_timer_and_aborts_the_tick (the `error` event: production gap G1) |
+| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:1961` | an output stream error or close stops the timer, aborts the tick in flight, and leaves no listener | bun test (turbo test) | pty/signal | new executing Rust test | rust/inna-mcp/tests/keep_alive.rs::the_end_of_input_stops_the_timer_and_aborts_the_tick_in_flight (the `close` event) + broken_connection.rs::a_broken_output_pipe_or_an_oversized_input_line_ends_serve_and_aborts_the_tick_in_flight (the `error` event; G1, fixed in b0c2234), with rust/inna-mcp/tests/typescript.rs::renewal_and_bounded_recovery_pass_against_this_binary (tests/ts/renewal.test.ts:364, under Bun) and rust/inna-mcp/tests/stdio.rs::a_broken_stdout_ends_serve_while_stdin_stays_open — verified 2026-10-12 (1c): both bodies read: the TS unit drives startKeepAlive with an emitter (listener counts are its own); the binary keeps the behaviour, a broken stdout stops the timer and aborts the tick in flight, seen as exit 0 within 5 s of a held 30 s request, one renewal path, and no status |
 | package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2078` | discovery followed by a legacy initialize keeps the keep-alive running on the live connection | bun test (turbo test) | pty/signal | new executing Rust test | rust/inna-mcp/tests/keep_alive.rs::discovery_then_a_legacy_initialize_keeps_the_keep_alive_running |
-| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2113` | a broken output pipe under the real stdio runtime cancels the timer and aborts the tick in flight | bun test (turbo test) | pty/signal | new executing Rust test | planned rust/inna-mcp/tests/keep_alive.rs::a_broken_output_pipe_cancels_the_timer_and_aborts_the_tick (production gap G1) |
-| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2132` | input the SDK rejects closes the wire, cancels the timer, and aborts the tick in flight | bun test (turbo test) | pty/signal | new executing Rust test | planned rust/inna-mcp/tests/keep_alive.rs::rejected_input_closes_the_wire_cancels_the_timer_and_aborts_the_tick (production gap G2) |
+| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2113` | a broken output pipe under the real stdio runtime cancels the timer and aborts the tick in flight | bun test (turbo test) | pty/signal | new executing Rust test | rust/inna-mcp/tests/broken_connection.rs::a_broken_output_pipe_or_an_oversized_input_line_ends_serve_and_aborts_the_tick_in_flight (G1, fixed in b0c2234), with rust/inna-mcp/tests/typescript.rs::renewal_and_bounded_recovery_pass_against_this_binary (tests/ts/renewal.test.ts:364, under Bun), rust/inna-mcp/tests/stdio.rs::a_broken_stdout_ends_serve_while_stdin_stays_open and rust/mcp-runtime/tests/connection.rs::a_failed_stdout_write_cancels_the_call_in_flight_and_ends_the_process — verified 2026-10-12 (1c): both bodies read: the same outcome through the binary (timer stopped and tick aborted, exit 0); instance and listener counts are the TypeScript runtime probe's own |
+| package inna-mcp | `packages/inna-mcp/test/integration.test.ts:2132` | input the SDK rejects closes the wire, cancels the timer, and aborts the tick in flight | bun test (turbo test) | pty/signal | new executing Rust test | rust/inna-mcp/tests/broken_connection.rs::a_broken_output_pipe_or_an_oversized_input_line_ends_serve_and_aborts_the_tick_in_flight (G2, fixed in b0c2234), with rust/mcp-runtime/tests/connection.rs::an_input_line_over_10_mib_cancels_the_call_in_flight_and_ends_the_process and rust/mcp-runtime/tests/connection.rs::a_line_of_10_mib_with_its_newline_is_read_and_one_byte_more_ends_the_process — verified 2026-10-12 (1c): both bodies read: one line of 10 MiB + 1 bytes ends serve at exit 0 and aborts the tick in flight. Accepted divergence (lead 81755): Rust has no chunk-dependent early close; the cap is exactly 10,485,760 bytes including the newline |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/browser-login.test.ts:383` | auth login closes a launcher-spawned browser child before removing its profile | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | planned rust/abler-mcp/tests/browser_login.rs::auth_login_closes_a_launcher_spawned_browser_child_before_removing_its_profile |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/browser-login.test.ts:436` | auth login timeout closes a launcher-spawned browser child | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | planned rust/abler-mcp/tests/browser_login.rs::auth_login_timeout_closes_a_launcher_spawned_browser_child |
 | drop-in abler-mcp | `rust/abler-mcp/tests/ts/browser-login.test.ts:473` | auth login --keep-browser exits while the browser and profile remain open | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | planned rust/abler-mcp/tests/browser_login.rs::keep_browser_exits_while_the_browser_and_profile_remain_open |

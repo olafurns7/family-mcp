@@ -217,7 +217,7 @@ fn holding(case: &Case, gate: &Gate) -> Client {
 /// packages/inna-mcp/test/integration.test.ts:1961 (its `close` event) and :2154: with a tick in
 /// flight, the end of the server's input stops the timer and aborts the tick. The process exits
 /// while Inna still holds the tick's request, which its client has given up. The `error` event
-/// (a broken stdout) is production gap G1 in the ledger.
+/// (a broken stdout) is broken_connection.rs's.
 #[test]
 fn the_end_of_input_stops_the_timer_and_aborts_the_tick_in_flight() {
     let case = Case::new("close-in-flight", false);
