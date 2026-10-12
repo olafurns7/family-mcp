@@ -31,6 +31,9 @@ use serde_json::{Map, Value, json};
 pub const BINARY: &str = env!("CARGO_BIN_EXE_inna-mcp");
 
 /// How long one answer, one exit or one request may take before a test fails instead of hanging.
+/// The header that marks a stalled reply; it is never sent.
+const STALL: &str = "x-test-stall";
+
 pub const PATIENCE: Duration = Duration::from_secs(60);
 
 /// What no output may hold: what fake-inna.ts marks as never to be returned (the access list's
@@ -531,6 +534,19 @@ impl Reply {
     }
 
     /// No answer: the connection closes once the request was read, as a failed fetch.
+    /// The head of an answer whose body never comes; the request counts as abandoned once the
+    /// client closes the connection.
+    pub fn stalled(status: u16, content_type: &str) -> Self {
+        Self {
+            status,
+            headers: vec![
+                ("content-type".into(), content_type.into()),
+                (STALL.into(), String::new()),
+            ],
+            body: Vec::new(),
+        }
+    }
+
     pub fn dropped() -> Self {
         Self::empty(0)
     }
@@ -715,9 +731,22 @@ fn serve(
         return;
     }
     let mut out = format!("HTTP/1.1 {} Status\r\nConnection: close\r\n", reply.status);
+    let stalled = reply.headers.iter().any(|(name, _)| name == STALL);
 
-    for (name, value) in &reply.headers {
+    for (name, value) in reply.headers.iter().filter(|(name, _)| name != STALL) {
         out.push_str(&format!("{name}: {value}\r\n"));
+    }
+    // A stalled answer: its head, then a body that never comes, until the client gives it up.
+    if stalled {
+        out.push_str("Content-Length: 1048576\r\n\r\n");
+        let stream = reader.get_mut();
+        let _ = stream
+            .write_all(out.as_bytes())
+            .and_then(|()| stream.flush());
+        let _ = std::io::copy(reader.get_mut(), &mut std::io::sink());
+        abandoned.0.lock().unwrap().push(request.line());
+        abandoned.1.notify_all();
+        return;
     }
     if !matches!(reply.status, 204 | 304) {
         out.push_str(&format!("Content-Length: {}\r\n", reply.body.len()));
