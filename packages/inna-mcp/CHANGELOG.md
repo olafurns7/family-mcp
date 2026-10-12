@@ -15,7 +15,8 @@
   minutes: a systemd user timer on Linux (with the `loginctl enable-linger`
   command to run when lingering is off) or a LaunchAgent on macOS. It is off by
   default; the choice is saved and kept on upgrade, and `--without-renewal`
-  removes only the files the installer wrote. Checked with fake `systemctl`,
+  removes only the files the installer wrote, once the scheduler confirms the
+  job is gone; otherwise it keeps them and the choice and exits with an error. Checked with fake `systemctl`,
   `loginctl` and `launchctl`; it has not yet run on a real systemd or launchd.
 - A renewal cannot run while the machine sleeps, so a sleep longer than Inna's
   idle lifetime still needs a fresh explicit login. That lifetime is unmeasured;

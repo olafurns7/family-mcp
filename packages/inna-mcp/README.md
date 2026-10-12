@@ -289,17 +289,20 @@ write-back of the cookies Inna set, as every server operation does, so it is saf
 beside running servers: each waits for the other and continues from the cookies
 the other saved. A wait longer than 30 seconds gives up with exit code 5.
 
-| Exit code | Meaning                                                                                           |
-| --------- | ------------------------------------------------------------------------------------------------- |
-| 0         | Renewed. Nothing is printed.                                                                      |
-| 3         | No saved session. Nothing was sent.                                                               |
-| 4         | Inna asked for sign-in: run `inna-mcp auth login` or import a fresh export. The session is kept.  |
-| 5         | Not renewed, and Inna did not ask for sign-in: a network, Inna or store problem. Try again later. |
-| 6         | Inna's rate-limit pause is in force. Nothing was sent.                                            |
-| 1         | An invalid command, a store the preflight refuses, or another failure before the renewal.         |
+| Exit code | Meaning                                                                                          |
+| --------- | ------------------------------------------------------------------------------------------------ |
+| 0         | Renewed. Nothing is printed.                                                                     |
+| 3         | No saved session. Nothing was sent.                                                              |
+| 4         | Inna asked for sign-in: run `inna-mcp auth login` or import a fresh export. The session is kept. |
+| 5         | Not renewed, and Inna did not ask for sign-in: a network, Inna or store problem. See below.      |
+| 6         | Inna's rate-limit pause is in force. Nothing was sent.                                           |
+| 1         | An invalid command, a store the preflight refuses, or another failure before the renewal.        |
 
 Failures print one fixed line on stderr, with no cookie, path or Inna text. A
-refused store says to run `inna-mcp auth status`, which shows the path. Each run
+refused store says to run `inna-mcp auth status`, which shows the path. Exit 5
+usually passes with a later run; when a store write did not complete, the line
+says the session cannot be used, and `inna-mcp auth status` says what to remove
+before you sign in again. Each run
 starts afresh: on a session Inna refused, every run sends one request until you
 sign in again.
 
@@ -329,7 +332,12 @@ between conversations, such as an always-on home server.
 
 The installer replaces or removes only the files it wrote, which carry its
 marker. A hand-written file at one of those paths stops `--with-renewal` before
-anything changes, and `--without-renewal` leaves it in place. The job runs with
+anything changes, and `--without-renewal` leaves it in place. It deletes a file
+only once the scheduler no longer runs it: `launchctl print` no longer finds the
+agent, or `systemctl --user` reports the timer neither active nor enabled and
+reloads without the units. Otherwise it keeps the files and the saved choice,
+prints the command to run, and exits with an error; upgrades likewise never load
+a second copy of the agent. The job runs with
 the scheduler's environment, not your MCP host's: it uses the default store and
 session paths, not an `INNA_SESSION_FILE` set only in the host configuration.
 
