@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.9.3
+
+Released 2026-10-12.
 
 - On Linux, a direct-route install or upgrade now checks the existing hosts
   entry for both school hostnames first. When it passes, the hosts file is left
