@@ -9,11 +9,18 @@ main() {
   case "$version" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid INNA_VERSION.' >&2; exit 1 ;; esac
   case "$prefix" in /*) ;; *) echo 'INNA_PREFIX must be an absolute path.' >&2; exit 1 ;; esac
   stop_running=false
-  case "$#" in
-    0) ;;
-    1) [ "$1" = --stop-running ] || { echo 'Usage: install.sh [--stop-running]' >&2; exit 1; }; stop_running=true ;;
-    *) echo 'Usage: install.sh [--stop-running]' >&2; exit 1 ;;
-  esac
+  renewal=''
+  renewal_requested=false
+  usage='Usage: install.sh [--with-renewal|--without-renewal] [--stop-running]'
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --stop-running) stop_running=true ;;
+      --with-renewal) [ -z "$renewal" ] || { echo "$usage" >&2; exit 1; }; renewal=on ;;
+      --without-renewal) [ -z "$renewal" ] || { echo "$usage" >&2; exit 1; }; renewal=off; renewal_requested=true ;;
+      *) echo "$usage" >&2; exit 1 ;;
+    esac
+    shift
+  done
   for tool in curl tar mktemp uname ps id readlink sleep tr; do
     command -v "$tool" >/dev/null 2>&1 || { printf 'Required command missing: %s\n' "$tool" >&2; exit 1; }
   done
@@ -129,7 +136,232 @@ n$2/bin/inna-mcp-warp
     detect_command_processes
     detect_macos_symlink_processes
   }
+  # Scheduled renewal, inna-mcp only (rendered from tooling/release/inna-renewal.sh.template): a
+  # systemd user timer or a LaunchAgent runs `inna-mcp auth renew` every 10 minutes. Off unless
+  # chosen; the choice is saved and kept on upgrade. Only files carrying the marker are replaced
+  # or removed.
+  previous_renewal=$(cat "$package_dir/renewal" 2>/dev/null || printf off)
+  [ -n "$renewal" ] || renewal=$previous_renewal
+  case "$renewal" in on|off) ;; *) echo 'Invalid saved renewal setting.' >&2; exit 1 ;; esac
+  renewal_command="$prefix/bin/inna-mcp"
+  renewal_label=is.olinn.inna-mcp.renew
+  renewal_marker='Installed by the inna-mcp installer for scheduled renewal; it removes this file when renewal is turned off.'
+  renewal_home=${HOME:-}
+  case "${XDG_CONFIG_HOME:-}" in
+    /*) renewal_units="$XDG_CONFIG_HOME/systemd/user" ;;
+    *) renewal_units="$renewal_home/.config/systemd/user" ;;
+  esac
+  renewal_plist="$renewal_home/Library/LaunchAgents/$renewal_label.plist"
 
+  renewal_marked() {
+    [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    while IFS= read -r renewal_line; do
+      case "$renewal_line" in "# $renewal_marker"|"<!-- $renewal_marker -->") return 0 ;; esac
+    done < "$1"
+    return 1
+  }
+
+  renewal_foreign() {
+    { [ -e "$1" ] || [ -L "$1" ]; } && ! renewal_marked "$1"
+  }
+
+  renewal_systemd() {
+    command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
+  }
+
+  # Write stdin to $1 through a temporary file, so a reader never sees a partial file.
+  renewal_write() {
+    cat > "$temporary/renewal-file"
+    chmod 644 "$temporary/renewal-file"
+    mv -f "$temporary/renewal-file" "$1"
+  }
+
+  # Unload this installer's agent, then require launchd's definitive answer that it has no such
+  # agent (print exits 113). Any other answer, including a failed query, stops with everything
+  # kept, so a later run can retry.
+  renewal_unload_agent() {
+    if ! command -v launchctl >/dev/null 2>&1; then
+      echo 'launchctl is not available to unload the renewal agent, so its file and the saved choice were kept.' >&2
+      exit 1
+    fi
+    renewal_domain="gui/$(id -u)"
+    launchctl bootout "$renewal_domain/$renewal_label" >/dev/null 2>&1 || true
+    if launchctl print "$renewal_domain/$renewal_label" >/dev/null 2>&1; then renewal_listed=0; else renewal_listed=$?; fi
+    if [ "$renewal_listed" != 113 ]; then
+      printf 'launchd did not confirm that the renewal agent is unloaded, so its file and the saved choice were kept. Run:\n  launchctl bootout %s/%s\nThen rerun this installer.\n' "$renewal_domain" "$renewal_label" >&2
+      exit 1
+    fi
+  }
+
+  # Disable and stop this installer's timer, then require systemd's definitive answer that it is
+  # inactive (or unknown) and disabled (or not-found). Any other answer, including a failed query,
+  # stops with everything kept.
+  renewal_stop_timer() {
+    systemctl --user disable --now inna-mcp-renew.timer >/dev/null 2>&1 || true
+    renewal_active=$(systemctl --user is-active inna-mcp-renew.timer 2>/dev/null) || true
+    renewal_enabled=$(systemctl --user is-enabled inna-mcp-renew.timer 2>/dev/null) || true
+    case "$renewal_active:$renewal_enabled" in
+      inactive:disabled|inactive:not-found|unknown:disabled|unknown:not-found) ;;
+      *)
+        printf 'systemd did not confirm that inna-mcp-renew.timer is stopped and disabled, so the renewal files and the saved choice were kept. Run:\n  systemctl --user disable --now inna-mcp-renew.timer\nThen rerun this installer with --without-renewal.\n' >&2
+        exit 1
+        ;;
+    esac
+  }
+
+  install_renewal() {
+    if [ "$platform" = darwin ]; then
+      if ! command -v launchctl >/dev/null 2>&1; then
+        printf 'launchctl is not available, so scheduled renewal was not set up. Run "%s auth renew" every 10 minutes from another scheduler.\n' "$renewal_command" >&2
+        return 0
+      fi
+      renewal_domain="gui/$(id -u)"
+      # Replaced in place: the earlier agent, when this installer wrote it, must be unloaded first.
+      if renewal_marked "$renewal_plist"; then renewal_unload_agent; fi
+      mkdir -p "${renewal_plist%/*}"
+      renewal_write "$renewal_plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- $renewal_marker -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$renewal_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$renewal_command</string>
+    <string>auth</string>
+    <string>renew</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>600</integer>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+EOF
+      if ! launchctl bootstrap "$renewal_domain" "$renewal_plist"; then
+        echo 'Installed, but launchctl could not load the renewal agent. Rerun this installer to retry.' >&2
+        exit 1
+      fi
+      printf 'Scheduled renewal: "%s auth renew" runs every 10 minutes (LaunchAgent %s).\n' "$renewal_command" "$renewal_label"
+      return 0
+    fi
+    if ! renewal_systemd; then
+      printf 'No systemd user manager is available, so scheduled renewal was not set up. Run "%s auth renew" every 10 minutes from another scheduler, or rerun this installer in a session with systemd.\n' "$renewal_command" >&2
+      return 0
+    fi
+    mkdir -p "$renewal_units"
+    renewal_write "$renewal_units/inna-mcp-renew.service" <<EOF
+# $renewal_marker
+[Unit]
+Description=Renew the saved Inna session (inna-mcp auth renew)
+
+[Service]
+Type=oneshot
+ExecStart="$renewal_command" auth renew
+TimeoutStartSec=5min
+EOF
+    renewal_write "$renewal_units/inna-mcp-renew.timer" <<EOF
+# $renewal_marker
+[Unit]
+Description=Renew the saved Inna session every 10 minutes
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
+EOF
+    if ! systemctl --user daemon-reload || ! systemctl --user enable --now inna-mcp-renew.timer; then
+      echo 'Installed, but systemctl could not enable inna-mcp-renew.timer. Rerun this installer to retry.' >&2
+      exit 1
+    fi
+    printf 'Scheduled renewal: "%s auth renew" runs every 10 minutes (systemd user timer inna-mcp-renew.timer).\n' "$renewal_command"
+    if command -v loginctl >/dev/null 2>&1; then
+      renewal_user=${USER:-$(id -un)}
+      case "$(loginctl show-user "$renewal_user" -p Linger 2>/dev/null || true)" in
+        Linger=yes) ;;
+        *) printf 'Lingering is not on for %s, so the renewal timer stops when your last session ends. To keep it running, run:\n  sudo loginctl enable-linger %s\n' "$renewal_user" "$renewal_user" ;;
+      esac
+    fi
+  }
+
+  # Remove only what this installer wrote, once the scheduler no longer runs it; say what was left
+  # when the owner asked for removal.
+  remove_renewal() {
+    [ -n "$renewal_home" ] || return 0
+    renewal_removed=false
+    if [ "$platform" = darwin ]; then
+      if renewal_marked "$renewal_plist"; then
+        renewal_unload_agent
+        rm -f "$renewal_plist"
+        renewal_removed=true
+      fi
+      renewal_kept="$renewal_plist"
+    else
+      renewal_timer="$renewal_units/inna-mcp-renew.timer"
+      renewal_service="$renewal_units/inna-mcp-renew.service"
+      renewal_kept="$renewal_timer
+$renewal_service"
+      set --
+      if renewal_marked "$renewal_timer"; then set -- "$@" "$renewal_timer"; fi
+      if renewal_marked "$renewal_service"; then set -- "$@" "$renewal_service"; fi
+      if [ "$#" -gt 0 ] && renewal_systemd; then
+        if renewal_marked "$renewal_timer"; then renewal_stop_timer; fi
+        # Set aside, not deleted, until systemd has reloaded without them.
+        mkdir "$temporary/renewal-removed"
+        for renewal_file in "$@"; do mv -f "$renewal_file" "$temporary/renewal-removed/"; done
+        if ! systemctl --user daemon-reload; then
+          for renewal_file in "$@"; do mv -f "$temporary/renewal-removed/${renewal_file##*/}" "$renewal_file"; done
+          printf 'systemctl --user daemon-reload failed, so the renewal files and the saved choice were kept. Run:\n  systemctl --user daemon-reload\nThen rerun this installer with --without-renewal.\n' >&2
+          exit 1
+        fi
+        renewal_removed=true
+      elif [ "$#" -gt 0 ]; then
+        # Without a user manager nothing runs the timer; the enablement link of a marked timer
+        # goes with it, and a hand-written timer keeps its own.
+        renewal_wants="$renewal_units/timers.target.wants/inna-mcp-renew.timer"
+        if renewal_marked "$renewal_timer" && [ -L "$renewal_wants" ] && [ "$(readlink "$renewal_wants")" = "$renewal_timer" ]; then
+          rm -f "$renewal_wants"
+        fi
+        rm -f "$@"
+        renewal_removed=true
+      fi
+    fi
+    if [ "$renewal_removed" = true ]; then echo 'Scheduled renewal removed.'; fi
+    if [ "$renewal_requested" = true ]; then
+      printf '%s\n' "$renewal_kept" | while IFS= read -r renewal_file; do
+        if renewal_foreign "$renewal_file"; then
+          printf 'Left %s in place: this installer did not write it.\n' "$renewal_file"
+        fi
+      done
+    fi
+  }
+
+  # Refuse before anything changes when renewal cannot be set up as asked.
+  if [ "$renewal" = on ]; then
+    [ -n "$renewal_home" ] || { echo 'Scheduled renewal needs HOME.' >&2; exit 1; }
+    case "$renewal_command" in
+      *[!A-Za-z0-9' '._/+@,:=-]*)
+        echo 'Scheduled renewal needs an install prefix of letters, digits, spaces and ._/+@,:=- only.' >&2
+        exit 1
+        ;;
+    esac
+    if [ "$platform" = darwin ]; then
+      set -- "$renewal_plist"
+    else
+      set -- "$renewal_units/inna-mcp-renew.service" "$renewal_units/inna-mcp-renew.timer"
+    fi
+    for renewal_file in "$@"; do
+      if renewal_foreign "$renewal_file"; then
+        printf '%s exists and this installer did not write it, so nothing was installed. Move it away, or rerun with --without-renewal to keep it and turn scheduled renewal off.\n' "$renewal_file" >&2
+        exit 1
+      fi
+    done
+  fi
   temporary=$(mktemp -d "${TMPDIR:-/tmp}/inna-install.XXXXXX")
   staging=
   command_tmp=
@@ -176,7 +408,10 @@ n$2/bin/inna-mcp-warp
   command_tmp=$(mktemp -d "$prefix/bin/.inna-mcp.XXXXXX")
   ln -s "$install_dir/bin/$entrypoint" "$command_tmp/command"
   mv -f "$command_tmp/command" "$prefix/bin/inna-mcp"
-
+  # Saved only once the scheduler matches it, so a failed change is retried by the next run.
+  if [ "$renewal" = on ]; then install_renewal; else remove_renewal; fi
+  printf '%s\n' "$renewal" > "$temporary/renewal"
+  mv -f "$temporary/renewal" "$package_dir/renewal"
   old_processes="$temporary/old-processes"
   : > "$old_processes"
   detect_old_processes

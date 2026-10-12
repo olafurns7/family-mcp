@@ -84,18 +84,31 @@ pub fn session_record(
     Ok(record)
 }
 
+/// What `auth renew` prints for a store its preflight refuses: the refusal names paths, and a
+/// scheduled job's output reaches the system log.
+pub const REFUSED_QUIETLY: &str = "Cannot use the Inna session store. Run inna-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.";
+
 /// The CLI's store preflight before it serves or runs an auth command: false, after the refusal
 /// on stderr, when the store is unsafe; a notice there when an earlier build's store is still on
-/// disk.
-pub fn check_store_at_startup() -> Result<bool> {
-    startup_check(
+/// disk. `quiet` prints only REFUSED_QUIETLY for a refusal, and no notice.
+pub fn check_store_at_startup(quiet: bool) -> Result<bool> {
+    let usable = startup_check(
         APP,
         "inna-mcp auth login",
         || session_record(None),
-        &mut |text| eprint!("{text}"),
+        &mut |text| {
+            if !quiet {
+                eprint!("{text}");
+            }
+        },
     )
     // A bug, not a store refusal: TypeScript rethrows it, and the CLI hides it.
-    .map_err(|_| Fail::Unknown)
+    .map_err(|_| Fail::Unknown)?;
+
+    if !usable && quiet {
+        eprintln!("{REFUSED_QUIETLY}");
+    }
+    Ok(usable)
 }
 
 #[cfg(test)]

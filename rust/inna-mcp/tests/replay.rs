@@ -104,6 +104,10 @@ const KEEP_ALIVE_TEXT: [&str; 2] = [
     "Do not touch the saved session every 10 minutes while serving",
 ];
 
+/// The help line of `auth renew`, which the TypeScript CLI never had: removed, once, only from the
+/// stdout of a help invocation, where it must appear exactly once (tests/renew.rs covers it).
+const RENEW_HELP: &str = "  inna-mcp auth renew                 Renew the saved session once, for a timer; prints nothing on success\n";
+
 /// The package version the freeze recorded at 41d6f98: `--version` printed it and `initialize`
 /// named it in `serverInfo.version`. The replay expects this binary's own version there instead.
 const RECORDED_VERSION: &str = "0.4.1";
@@ -234,8 +238,12 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage, tz: Option<&str>)
             } else {
                 step["stdout"].clone()
             };
+            let printed = match asks_help(&args) {
+                true => without_renew_help(&run.stdout, &at),
+                false => run.stdout.clone(),
+            };
             assert_eq!(
-                json!({"code": run.code, "stdout": named(&names, &run.stdout), "stderr": named(&names, &run.stderr)}),
+                json!({"code": run.code, "stdout": named(&names, &printed), "stderr": named(&names, &run.stderr)}),
                 json!({"code": step["code"], "stdout": stdout, "stderr": step["stderr"]}),
                 "{at} {args:?}"
             );
@@ -500,6 +508,17 @@ fn cancel(
 /// A version request, whose stdout is the only CLI output that names the version.
 fn asks_version(args: &[&str]) -> bool {
     matches!(args, ["--version"] | ["-v"])
+}
+
+/// The recorded help invocations: `--help`, `-h` or `-hv` first.
+fn asks_help(args: &[&str]) -> bool {
+    matches!(args.first(), Some(&("--help" | "-h" | "-hv")))
+}
+
+/// A help invocation's stdout without the `auth renew` line, which must be there exactly once.
+fn without_renew_help(stdout: &str, at: &str) -> String {
+    assert_eq!(stdout.matches(RENEW_HELP).count(), 1, "{at}: {stdout}");
+    stdout.replacen(RENEW_HELP, "", 1)
 }
 
 /// The recorded `--version` stdout, which must be exactly the recorded version and a newline, as

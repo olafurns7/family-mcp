@@ -125,7 +125,7 @@ n$2/bin/@@NAME@@-warp
     detect_command_processes
     detect_macos_symlink_processes
   }
-@@NETWORK@@
+@@PREFLIGHT@@
   temporary=$(mktemp -d "${TMPDIR:-/tmp}/@@SHORT@@-install.XXXXXX")
   staging=
   command_tmp=
@@ -172,7 +172,7 @@ n$2/bin/@@NAME@@-warp
   command_tmp=$(mktemp -d "$prefix/bin/.@@NAME@@.XXXXXX")
   ln -s "$install_dir/bin/$entrypoint" "$command_tmp/command"
   mv -f "$command_tmp/command" "$prefix/bin/@@NAME@@"
-@@SAVE_NETWORK@@
+@@SETTINGS@@
   old_processes="$temporary/old-processes"
   : > "$old_processes"
   detect_old_processes

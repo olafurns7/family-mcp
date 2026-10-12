@@ -3,8 +3,14 @@
 Owner only: use a release binary built without `test-origin` and an already signed-in
 Mac session. This check reads school state and renews the encrypted session cookies;
 it submits no absence. Stop other Inna servers and avoid browser or CLI activity on
-the account during the check, so only this server can extend the session. Do not
-sign in solely for the agent or share any cookie exports, files or command output.
+the account during the check, so only this server can extend the session. If
+[scheduled renewal](../README.md#scheduled-renewal) is on, stop it for the check
+(`systemctl --user stop inna-mcp-renew.timer` on Linux,
+`launchctl bootout gui/$(id -u)/is.olinn.inna-mcp.renew` on macOS) and start it
+again afterwards (`systemctl --user start inna-mcp-renew.timer`, or
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/is.olinn.inna-mcp.renew.plist`).
+Do not sign in solely for the agent or share any cookie exports, files or command
+output.
 
 Run from the repository root, replacing the binary path if needed. It initializes
 one read-only MCP connection, makes **no tool calls** for 71 minutes, closes it,
@@ -73,6 +79,10 @@ keeping the same Python body and closing `PY` delimiter:
 ```sh
 python3 - packages/inna-mcp/release/native/inna-mcp --no-keep-alive <<'PY'
 ```
+
+The same check without a server shows whether scheduled renewal alone keeps the
+session: leave the timer or agent on, run only the two `authenticated()` checks
+71 minutes apart, and make no other use of the account in between.
 
 Passing demonstrates that this real session stayed usable across this idle window.
 It does not establish Inna's universal TTL or prove which individual GET extended

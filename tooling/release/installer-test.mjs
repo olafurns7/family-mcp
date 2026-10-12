@@ -57,6 +57,67 @@ const env = {
   [pkg.envPrefix + '_VERSION']: pkg.version,
 };
 
+// inna-mcp's scheduled renewal writes under HOME and runs systemctl, loginctl and launchctl: the
+// test gives it a scratch HOME and fakes of those commands that record their arguments, so the
+// real user manager, launchd and HOME are never touched.
+const renewalHome = join(directory, 'renewal home');
+
+const renewalCalls = join(directory, 'renewal-calls');
+
+// The fakes keep the scheduler's state in these files: the timer enabled, the agent loaded.
+const timerState = join(directory, 'timer-enabled');
+
+const agentState = join(directory, 'agent-loaded');
+
+if (pkg.name === 'inna-mcp') {
+  env.HOME = renewalHome;
+  env.USER = 'parent';
+  env.TEST_RENEWAL_CALLS = renewalCalls;
+  env.TEST_TIMER_STATE = timerState;
+  env.TEST_AGENT_STATE = agentState;
+  delete env.XDG_CONFIG_HOME;
+}
+
+/** @param {string} path */
+const exists = (path) =>
+  readFile(path).then(
+    () => true,
+    () => false,
+  );
+
+/**
+ * The calls the renewal fakes recorded: each is its command name, the argument count, then each
+ * argument, NUL-terminated, so an argument split or joined by the shell shows.
+ * @param {string} text
+ */
+const parseCalls = (text) => {
+  const fields = text.split('\0');
+  assert.equal(fields.pop(), '');
+  /** @type {string[][]} */
+  const calls = [];
+
+  for (let index = 0; index < fields.length;) {
+    const count = Number(fields[index + 1]);
+    assert.ok(Number.isInteger(count) && index + 2 + count <= fields.length, text);
+    calls.push([fields[index] ?? '', ...fields.slice(index + 2, index + 2 + count)]);
+    index += 2 + count;
+  }
+
+  return calls;
+};
+
+/**
+ * A failed renewal removal keeps the files, the job and the saved choice, and says what to run.
+ * @param {{ status: number | null, stdout: string, stderr: string, saved: string }} failed
+ * @param {string} command
+ */
+const keptAfter = (failed, command) => {
+  assert.equal(failed.status, 1, failed.stdout);
+  assert.ok(failed.stderr.includes(`were kept. Run:\n  ${command}\nThen rerun`), failed.stderr);
+  assert.ok(!failed.stdout.includes('Scheduled renewal removed.'), failed.stdout);
+  assert.equal(failed.saved, 'on');
+};
+
 /** @param {import('node:child_process').ChildProcess} child */
 async function stopProcess(child) {
   const exited = new Promise((resolve) => child.once('exit', resolve));
@@ -78,6 +139,53 @@ try {
   await mkdir(temporary);
   await mkdir(join(prefix, 'bin'), { recursive: true });
   await writeFile(lsofMap, '');
+
+  if (pkg.name === 'inna-mcp') {
+    await mkdir(renewalHome);
+    await writeFile(renewalCalls, '');
+    await writeFile(
+      join(fakeBin, 'systemctl'),
+      `#!/bin/sh
+printf '%s\\0' systemctl "$#" "$@" >> "$TEST_RENEWAL_CALLS"
+[ "$1" = --user ] || exit 64
+[ "\${TEST_NO_SYSTEMD:-}" != 1 ] || exit 1
+[ "\${TEST_SYSTEMCTL_FAIL:-}" != "$2" ] || exit 1
+case "$2" in
+  enable) : > "$TEST_TIMER_STATE" ;;
+  disable) [ "\${TEST_SYSTEMCTL_STUCK:-}" = 1 ] || rm -f "$TEST_TIMER_STATE" ;;
+  is-active|is-enabled)
+    if [ "\${TEST_SYSTEMCTL_QUERY:-}" = error ]; then echo 'Failed to connect to bus' >&2; exit 1; fi
+    if [ -e "$TEST_TIMER_STATE" ]; then answer=active,enabled; code=0; else answer=inactive,disabled; code=3; fi
+    if [ "$2" = is-active ]; then answer=\${answer%,*}; else answer=\${answer#*,}; fi
+    [ "$3" = --quiet ] || echo "$answer"
+    exit "$code"
+    ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    await writeFile(
+      join(fakeBin, 'loginctl'),
+      `#!/bin/sh
+printf '%s\\0' loginctl "$#" "$@" >> "$TEST_RENEWAL_CALLS"
+printf 'Linger=%s\\n' "\${TEST_LINGER:-no}"
+`,
+      { mode: 0o755 },
+    );
+    await writeFile(
+      join(fakeBin, 'launchctl'),
+      `#!/bin/sh
+printf '%s\\0' launchctl "$#" "$@" >> "$TEST_RENEWAL_CALLS"
+case "$1" in
+  bootstrap) [ ! -e "$TEST_AGENT_STATE" ] || exit 5; : > "$TEST_AGENT_STATE" ;;
+  bootout) [ "\${TEST_LAUNCHCTL_FAIL:-}" != bootout ] || exit 1; [ -e "$TEST_AGENT_STATE" ] || exit 3; rm -f "$TEST_AGENT_STATE" ;;
+  print) [ "\${TEST_LAUNCHCTL_PRINT:-}" != error ] || exit 5; [ -e "$TEST_AGENT_STATE" ] || exit 113 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+  }
+
   await writeFile(
     join(fakeBin, 'curl'),
     `#!/bin/sh
@@ -406,6 +514,316 @@ cat >/dev/null
       join(directory, darwinArchive + '.sha256'),
       `${darwinDigest}  ${darwinArchive}\n`,
     );
+
+    if (pkg.name === 'inna-mcp') {
+      const marker =
+        'Installed by the inna-mcp installer for scheduled renewal; it removes this file when renewal is turned off.';
+
+      const units = join(renewalHome, '.config/systemd/user');
+      const service = join(units, 'inna-mcp-renew.service');
+      const timer = join(units, 'inna-mcp-renew.timer');
+      const plist = join(renewalHome, 'Library/LaunchAgents/is.olinn.inna-mcp.renew.plist');
+      const savedPath = join(prefix, 'share/inna-mcp/renewal');
+      const uid = execFileSync('id', ['-u'], { encoding: 'utf8' }).trim();
+      const domain = `gui/${uid}`;
+
+      /** @param {string[]} args @param {NodeJS.ProcessEnv} [extraEnv] */
+      const renewalRun = async (args, extraEnv = {}) => {
+        await writeFile(renewalCalls, '');
+        const result = runInstaller(args, extraEnv);
+        const calls = parseCalls(await readFile(renewalCalls, 'utf8'));
+        assert.ok(!result.stderr.includes('Unexpected sudo'), result.stderr);
+        assert.deepEqual(await readdir(temporary), [], `Temporary files leaked: ${args.join(' ')}`);
+
+        return { ...result, calls, saved: (await readFile(savedPath, 'utf8')).trim() };
+      };
+
+      const show = ['systemctl', '--user', 'show-environment'];
+      const reload = ['systemctl', '--user', 'daemon-reload'];
+
+      const enabled = [
+        show,
+        reload,
+        ['systemctl', '--user', 'enable', '--now', 'inna-mcp-renew.timer'],
+        ['loginctl', 'show-user', 'parent', '-p', 'Linger'],
+      ];
+
+      const disable = ['systemctl', '--user', 'disable', '--now', 'inna-mcp-renew.timer'];
+      const isActive = ['systemctl', '--user', 'is-active', 'inna-mcp-renew.timer'];
+      const isEnabled = ['systemctl', '--user', 'is-enabled', 'inna-mcp-renew.timer'];
+      const removed = [show, disable, isActive, isEnabled, reload];
+
+      // Off by default: nothing written, no command run.
+      let run = await renewalRun([]);
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.saved, 'off');
+      assert.deepEqual(run.calls, []);
+      assert.ok(!(await exists(timer)) && !(await exists(service)));
+
+      // Linux install, lingering off: the exact advice, never sudo.
+      run = await renewalRun(['--with-renewal']);
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.saved, 'on');
+      assert.deepEqual(run.calls, enabled);
+      assert.ok(run.stdout.includes('\n  sudo loginctl enable-linger parent\n'), run.stdout);
+      assert.ok(run.stdout.includes('systemd user timer inna-mcp-renew.timer'), run.stdout);
+      const serviceText = await readFile(service, 'utf8');
+      const timerText = await readFile(timer, 'utf8');
+      assert.equal(serviceText.split('\n')[0], `# ${marker}`);
+      assert.equal(timerText.split('\n')[0], `# ${marker}`);
+      assert.ok(serviceText.includes('\nType=oneshot\n'));
+      assert.ok(serviceText.includes(`\nExecStart="${prefix}/bin/inna-mcp" auth renew\n`));
+
+      for (const line of ['OnCalendar=*:0/10', 'Persistent=true', 'RandomizedDelaySec=60'])
+        assert.ok(timerText.includes(`\n${line}\n`), line);
+
+      // Upgrade without a flag keeps the choice and rewrites the units; lingering on: no advice.
+      await writeFile(service, serviceText.replace('auth renew', 'auth status'));
+      run = await renewalRun([], { TEST_LINGER: 'yes' });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.saved, 'on');
+      assert.deepEqual(run.calls, enabled);
+      assert.ok(!run.stdout.includes('enable-linger'), run.stdout);
+      assert.equal(await readFile(service, 'utf8'), serviceText);
+
+      // A failed enable is reported as a failure.
+      run = await renewalRun([], { TEST_SYSTEMCTL_FAIL: 'enable' });
+      assert.equal(run.status, 1);
+      assert.match(run.stderr, /could not enable inna-mcp-renew\.timer/);
+
+      // Removal never deletes units systemd still runs, or that a failed reload would leave loaded.
+      const unitFiles = [await readFile(service, 'utf8'), await readFile(timer, 'utf8')];
+      run = await renewalRun(['--without-renewal'], { TEST_SYSTEMCTL_FAIL: 'disable' });
+      keptAfter(run, disable.join(' '));
+      assert.deepEqual(run.calls, [show, disable, isActive, isEnabled]);
+      run = await renewalRun(['--without-renewal'], { TEST_SYSTEMCTL_STUCK: '1' });
+      keptAfter(run, disable.join(' '));
+      assert.deepEqual(run.calls, [show, disable, isActive, isEnabled]);
+
+      // A failed status query is no proof the timer stopped, whether or not the disable failed.
+      for (const failure of [{ TEST_SYSTEMCTL_FAIL: 'disable' }, {}]) {
+        run = await renewalRun(['--without-renewal'], {
+          ...failure,
+          TEST_SYSTEMCTL_QUERY: 'error',
+        });
+        keptAfter(run, disable.join(' '));
+        assert.deepEqual(run.calls, [show, disable, isActive, isEnabled]);
+        await writeFile(timerState, '');
+      }
+
+      run = await renewalRun(['--without-renewal'], { TEST_SYSTEMCTL_FAIL: 'daemon-reload' });
+      keptAfter(run, 'systemctl --user daemon-reload');
+      assert.deepEqual(run.calls, removed);
+      assert.deepEqual([await readFile(service, 'utf8'), await readFile(timer, 'utf8')], unitFiles);
+
+      // A timer systemd answers is inactive and disabled is removed even when the disable fails.
+      await rm(timerState, { force: true });
+      run = await renewalRun(['--without-renewal'], { TEST_SYSTEMCTL_FAIL: 'disable' });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.saved, 'off');
+      assert.deepEqual(run.calls, removed);
+      assert.ok(!(await exists(timer)) && !(await exists(service)));
+      run = await renewalRun(['--with-renewal']);
+      assert.equal(run.status, 0, run.stderr);
+
+      // Removal takes exactly the marked units.
+      run = await renewalRun(['--without-renewal']);
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.saved, 'off');
+      assert.deepEqual(run.calls, removed);
+      assert.match(run.stdout, /Scheduled renewal removed\./);
+      assert.ok(!(await exists(timer)) && !(await exists(service)));
+      assert.deepEqual(await readdir(units), []);
+
+      // Nothing to remove: no command.
+      run = await renewalRun(['--without-renewal']);
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(run.calls, []);
+      assert.ok(!run.stdout.includes('removed'), run.stdout);
+
+      // A hand-written unit is never replaced or removed, and blocks the install before any change.
+      const handWritten = '[Timer]\nOnCalendar=hourly\n';
+      await writeFile(timer, handWritten);
+      const linked = await readlink(binary);
+      run = await renewalRun(['--with-renewal']);
+      assert.equal(run.status, 1);
+      assert.ok(run.stderr.includes(`${timer} exists and this installer did not write it`));
+      assert.equal(run.saved, 'off');
+      assert.deepEqual(run.calls, []);
+      assert.equal(await readlink(binary), linked);
+      assert.ok(!(await exists(service)));
+      await writeFile(service, `# ${marker}\n[Service]\n`);
+      run = await renewalRun(['--without-renewal']);
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(run.calls, [show, reload]);
+      assert.ok(run.stdout.includes(`Left ${timer} in place: this installer did not write it.`));
+      assert.equal(await readFile(timer, 'utf8'), handWritten);
+      assert.ok(!(await exists(service)));
+      await rm(timer);
+
+      // No systemd user manager: a clear message, nothing written; the choice is still saved.
+      run = await renewalRun(['--with-renewal'], { TEST_NO_SYSTEMD: '1' });
+      assert.equal(run.status, 0, run.stderr);
+      assert.match(
+        run.stderr,
+        /No systemd user manager is available, so scheduled renewal was not set up/,
+      );
+      assert.equal(run.saved, 'on');
+      assert.deepEqual(run.calls, [show]);
+      assert.ok(!(await exists(timer)) && !(await exists(service)));
+      run = await renewalRun(['--without-renewal'], { TEST_NO_SYSTEMD: '1' });
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(run.calls, []);
+
+      // Without a user manager nothing runs the timer: its marked units and enablement link go.
+      run = await renewalRun(['--with-renewal']);
+      assert.equal(run.status, 0, run.stderr);
+      const wants = join(units, 'timers.target.wants/inna-mcp-renew.timer');
+      await mkdir(join(wants, '..'));
+      await symlink(timer, wants);
+      run = await renewalRun(['--without-renewal'], { TEST_NO_SYSTEMD: '1' });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.saved, 'off');
+      assert.deepEqual(run.calls, [show]);
+      assert.deepEqual(await readdir(units), ['timers.target.wants']);
+      assert.deepEqual(await readdir(join(wants, '..')), []);
+
+      // Mixed ownership without a user manager: the marked service goes; the hand-written timer
+      // and its enablement link stay.
+      await writeFile(service, `# ${marker}\n[Service]\n`);
+      await writeFile(timer, handWritten);
+      await symlink(timer, wants);
+      run = await renewalRun(['--without-renewal'], { TEST_NO_SYSTEMD: '1' });
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(run.calls, [show]);
+      assert.ok(run.stdout.includes(`Left ${timer} in place: this installer did not write it.`));
+      assert.ok(!(await exists(service)));
+      assert.equal(await readFile(timer, 'utf8'), handWritten);
+      assert.equal(await readlink(wants), timer);
+      await rm(wants);
+      await rm(timer);
+      await rm(join(wants, '..'), { recursive: true });
+      await rm(timerState, { force: true });
+
+      // A prefix that a unit or agent cannot name safely is refused before any change.
+      const odd = runInstaller(['--with-renewal'], { INNA_PREFIX: join(directory, 'odd%prefix') });
+      assert.equal(odd.status, 1);
+      assert.match(odd.stderr, /Scheduled renewal needs an install prefix/);
+
+      for (const args of [
+        ['--with-renewal', '--without-renewal'],
+        ['--without-renewal', '--without-renewal'],
+        ['--with-renewal', '--with-warp'],
+      ]) {
+        const conflicting = runInstaller(args);
+        assert.notEqual(conflicting.status, 0);
+        assert.match(
+          conflicting.stderr,
+          /Usage: install\.sh \[--with-renewal\|--without-renewal\]/,
+        );
+      }
+
+      // macOS: a LaunchAgent, loaded into the GUI domain and replaced in place on upgrade.
+      const darwin = { TEST_PLATFORM: 'Darwin' };
+      // The paths hold spaces (the scratch HOME and prefix); each must stay one argument.
+      assert.match(domain, /^gui\/\d+$/);
+      assert.ok(plist.includes(' ') && prefix.includes(' '));
+      const bootout = ['launchctl', 'bootout', `${domain}/is.olinn.inna-mcp.renew`];
+      const bootstrap = ['launchctl', 'bootstrap', domain, plist];
+      const print = ['launchctl', 'print', `${domain}/is.olinn.inna-mcp.renew`];
+      run = await renewalRun(['--with-renewal'], darwin);
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.saved, 'on');
+      assert.deepEqual(run.calls, [bootstrap]);
+      const plistText = await readFile(plist, 'utf8');
+      assert.equal(plistText.split('\n')[1], `<!-- ${marker} -->`);
+
+      for (const part of [
+        '<key>Label</key>\n  <string>is.olinn.inna-mcp.renew</string>',
+        `<array>\n    <string>${prefix}/bin/inna-mcp</string>\n    <string>auth</string>\n    <string>renew</string>\n  </array>`,
+        '<key>StartInterval</key>\n  <integer>600</integer>',
+        '<key>RunAtLoad</key>\n  <true/>',
+      ])
+        assert.ok(plistText.includes(part), part);
+      assert.ok(!plistText.includes('KeepAlive'));
+      assert.ok(!plistText.includes('StandardOutPath') && !plistText.includes('StandardErrorPath'));
+
+      if (process.platform === 'darwin') execFileSync('plutil', ['-lint', '-s', plist]);
+
+      await writeFile(plist, plistText.replace('<integer>600</integer>', '<integer>60</integer>'));
+      run = await renewalRun([], darwin);
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(run.calls, [bootout, print, bootstrap]);
+      assert.equal(await readFile(plist, 'utf8'), plistText);
+
+      // An agent launchd will not unload is neither replaced nor removed: one copy, everything kept.
+      await writeFile(plist, plistText.replace('<integer>600</integer>', '<integer>60</integer>'));
+      const loadedText = await readFile(plist, 'utf8');
+      run = await renewalRun([], { ...darwin, TEST_LAUNCHCTL_FAIL: 'bootout' });
+      assert.equal(run.status, 1, run.stdout);
+      assert.ok(
+        run.stderr.includes(`were kept. Run:\n  ${bootout.join(' ')}\nThen rerun`),
+        run.stderr,
+      );
+      assert.deepEqual(run.calls, [bootout, print]);
+      assert.equal(await readFile(plist, 'utf8'), loadedText);
+      assert.equal(run.saved, 'on');
+      run = await renewalRun(['--without-renewal'], { ...darwin, TEST_LAUNCHCTL_FAIL: 'bootout' });
+      assert.equal(run.status, 1, run.stdout);
+      assert.ok(
+        run.stderr.includes(`were kept. Run:\n  ${bootout.join(' ')}\nThen rerun`),
+        run.stderr,
+      );
+      assert.ok(!run.stdout.includes('Scheduled renewal removed.'), run.stdout);
+      assert.deepEqual(run.calls, [bootout, print]);
+      assert.equal(await readFile(plist, 'utf8'), loadedText);
+      assert.equal(run.saved, 'on');
+      assert.ok(await exists(agentState));
+
+      // A failed print is no proof the agent is gone, whether or not the unload failed: neither
+      // removal nor upgrade goes ahead.
+      const bootoutFails = { TEST_LAUNCHCTL_FAIL: 'bootout' };
+
+      for (const { args, failure } of [
+        { args: ['--without-renewal'], failure: bootoutFails },
+        { args: ['--without-renewal'], failure: {} },
+        { args: [], failure: bootoutFails },
+        { args: [], failure: {} },
+      ]) {
+        run = await renewalRun(args, { ...darwin, ...failure, TEST_LAUNCHCTL_PRINT: 'error' });
+        keptAfter(run, bootout.join(' '));
+        assert.deepEqual(run.calls, [bootout, print]);
+        assert.equal(await readFile(plist, 'utf8'), loadedText);
+        // A successful unload cleared the fake's state; the agent counts as loaded again.
+        await writeFile(agentState, '');
+      }
+
+      // An agent launchd no longer has (bootout fails, print answers 113) is removed.
+      await rm(agentState);
+      run = await renewalRun(['--without-renewal'], darwin);
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.saved, 'off');
+      assert.deepEqual(run.calls, [bootout, print]);
+      assert.match(run.stdout, /Scheduled renewal removed\./);
+      assert.ok(!(await exists(plist)));
+      assert.ok(!(await exists(agentState)));
+
+      const ownAgent = '<plist version="1.0"><dict/></plist>\n';
+      await writeFile(plist, ownAgent);
+      run = await renewalRun(['--with-renewal'], darwin);
+      assert.equal(run.status, 1);
+      assert.ok(run.stderr.includes(`${plist} exists and this installer did not write it`));
+      assert.deepEqual(run.calls, []);
+      run = await renewalRun(['--without-renewal'], darwin);
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(run.calls, []);
+      assert.ok(run.stdout.includes(`Left ${plist} in place: this installer did not write it.`));
+      assert.equal(await readFile(plist, 'utf8'), ownAgent);
+      await rm(plist);
+      console.log(
+        'inna-mcp: renewal off by default, systemd and launchd install, upgrade, removal, scheduler failures, lingering, no systemd, and hand-written files passed.',
+      );
+    }
 
     /** @param {string} label @param {boolean} [ignoreTerm] */
     const startOldProcess = async (label, ignoreTerm = false) => {

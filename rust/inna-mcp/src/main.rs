@@ -35,6 +35,7 @@ const HELP: &str = "inna-mcp — unofficial Inna school MCP (preview)
   inna-mcp auth login --google        Google: sign in in the browser window that opens
   inna-mcp auth import FILE           Fallback without a desktop: save a private cookie export
   inna-mcp auth status                Verify the saved session and say how it is saved
+  inna-mcp auth renew                 Renew the saved session once, for a timer; prints nothing on success
   inna-mcp auth migrate               Move an older version's plaintext session into the encrypted store
   inna-mcp auth logout                Remove the local session; retain absence evidence
   inna-mcp --version                  Print the executable version
@@ -145,6 +146,7 @@ enum Command {
         allow_account_change: bool,
     },
     Status,
+    Renew,
     Migrate,
     Logout,
 }
@@ -199,6 +201,7 @@ fn route(args: Args) -> Result<Command> {
 
     match action {
         Some("status") => Ok(Command::Status),
+        Some("renew") => Ok(Command::Renew),
         Some("migrate") => Ok(Command::Migrate),
         Some("logout") => Ok(Command::Logout),
         _ => Err(INVALID_COMMAND),
@@ -274,9 +277,68 @@ async fn session_command(command: Command) -> Result<()> {
                 .await?;
             println!("Local Inna session removed. Absence operation evidence retained.");
         }
-        Command::Serve { .. } | Command::Login { .. } => return Err(Fail::Unknown),
+        Command::Serve { .. } | Command::Login { .. } | Command::Renew => {
+            return Err(Fail::Unknown);
+        }
     }
     Ok(())
+}
+
+/// `auth renew`'s exit codes besides 0 (renewed) and 1 (an invalid command, a refused store or
+/// another failure before the renewal), as packages/inna-mcp/README.md documents them.
+const NO_SESSION: u8 = 3;
+const SIGN_IN_REQUIRED: u8 = 4;
+const NOT_RENEWED: u8 = 5;
+const PAUSED: u8 = 6;
+
+// A renewal's failures reach a scheduler's log, so none is passed on: some store messages name
+// paths. Only these fixed texts are printed. A store write that did not complete, on this renewal
+// (which then removes rotated cookies) or an earlier one, leaves no usable session.
+const RENEWAL_FAILED: &str = "Inna renewal failed, and Inna did not ask for sign-in. Run inna-mcp auth status in a terminal for details; a later run may succeed.";
+
+const SESSION_UNUSABLE: &str = "The saved Inna session cannot be used, because a write to the session store did not complete. Run inna-mcp auth status in a terminal; it says what to remove before you sign in again.";
+
+/// The exit code and fixed message for a renewal that did not renew.
+fn renewal_outcome(renewal: client::Renewal) -> Option<(u8, &'static str)> {
+    use client::Renewal;
+
+    Some(match renewal {
+        Renewal::Kept => return None,
+        Renewal::NoSession => (
+            NO_SESSION,
+            mcp_runtime::cli_text(client::NO_SESSION, FAILED),
+        ),
+        // A fresh process has refused no credentials, so `Refused` only completes the match.
+        Renewal::SignInRequired(_) | Renewal::Refused => {
+            (SIGN_IN_REQUIRED, client::SIGN_IN_REQUIRED)
+        }
+        Renewal::Failed(fail) if fail == session::UNCERTAIN => (NOT_RENEWED, SESSION_UNUSABLE),
+        // The pause Inna asked for is saved with the session.
+        Renewal::Failed(fail) if fail == client::RATE_LIMITED => {
+            (NOT_RENEWED, mcp_runtime::cli_text(fail, RENEWAL_FAILED))
+        }
+        Renewal::Failed(_) => (NOT_RENEWED, RENEWAL_FAILED),
+        Renewal::Paused { .. } => (PAUSED, client::PAUSED),
+    })
+}
+
+/// `auth renew`: one renewal, the one `serve`'s keep-alive timer makes, for a system timer to run.
+/// It reads no school data and never switches or learns a student; success prints nothing.
+async fn renew() -> Result<ExitCode> {
+    let client = Arc::new(client::Client::from_environment(false)?);
+    let renewal = client
+        .run(signal::Signal::default(), |client, signal, cancel| {
+            Ok(client.renew(signal, cancel, None))
+        })
+        .await?;
+
+    Ok(match renewal_outcome(renewal) {
+        None => ExitCode::SUCCESS,
+        Some((code, message)) => {
+            eprintln!("{message}");
+            ExitCode::from(code)
+        }
+    })
 }
 
 const LOGIN_CANCELLED: Fail = Fail::Safe("Inna login cancelled.");
@@ -485,15 +547,18 @@ async fn main_async() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    // The store is checked before anything serves or touches it; help and version never do.
-    if !tokio::task::spawn_blocking(store::check_store_at_startup)
+    // The store is checked before anything serves or touches it; help and version never do. An
+    // invalid command is refused after the check, as before `auth renew` existed.
+    let command = route(args);
+    let quiet = command == Ok(Command::Renew);
+    if !tokio::task::spawn_blocking(move || store::check_store_at_startup(quiet))
         .await
         .unwrap_or(Err(Fail::Unknown))?
     {
         return Ok(ExitCode::FAILURE);
     }
 
-    match route(args)? {
+    match command? {
         Command::Serve {
             allow_absence_writes,
             keep_alive,
@@ -504,6 +569,7 @@ async fn main_async() -> Result<ExitCode> {
             timeout,
             browser,
         } => login(google, allow_account_change, timeout, browser).await?,
+        Command::Renew => return renew().await,
         command => session_command(command).await?,
     }
     Ok(ExitCode::SUCCESS)
@@ -617,6 +683,7 @@ mod tests {
                 import(true),
             ),
             (&["auth", "status"], Command::Status),
+            (&["auth", "renew"], Command::Renew),
             (&["auth", "migrate"], Command::Migrate),
             (&["auth", "logout"], Command::Logout),
         ] {
@@ -644,8 +711,89 @@ mod tests {
             &["auth", "status", "--allow-account-change"],
             &["auth", "bogus"],
             &["auth", "", "x"],
+            &["auth", "renew", "x"],
+            &["auth", "renew", "--google"],
+            &["auth", "renew", "--allow-account-change"],
+            &["auth", "renew", "--no-keep-alive"],
+            &["auth", "renew", "--allow-absence-writes"],
+            &["renew"],
         ] {
             assert_eq!(routed(line).unwrap_err(), INVALID_COMMAND, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn each_renewal_outcome_has_its_own_exit_code_and_a_fixed_message() {
+        use client::Renewal;
+
+        assert_eq!(renewal_outcome(Renewal::Kept), None);
+        let outcomes = [
+            Renewal::NoSession,
+            Renewal::SignInRequired(Some("credentials".to_owned())),
+            Renewal::Refused,
+            Renewal::Failed(Fail::Unknown),
+            Renewal::Failed(Fail::Invalid),
+            Renewal::Failed(Fail::Safe(
+                "Inna returned an unavailable or unexpected response.",
+            )),
+            Renewal::Failed(client::RATE_LIMITED),
+            Renewal::Failed(session::UNCERTAIN),
+            Renewal::Paused { overdue: true },
+            Renewal::Paused { overdue: false },
+        ]
+        .map(|renewal| renewal_outcome(renewal).unwrap());
+        assert_eq!(
+            outcomes.map(|(code, _)| code),
+            [3, 4, 4, 5, 5, 5, 5, 5, 6, 6],
+            "codes"
+        );
+        assert_eq!(
+            outcomes.map(|(_, message)| message),
+            [
+                "No Inna session. Run inna-mcp auth login or auth import with a private cookie export.",
+                "Inna sign-in is required. Run auth login or import a fresh private cookie export.",
+                "Inna sign-in is required. Run auth login or import a fresh private cookie export.",
+                RENEWAL_FAILED,
+                RENEWAL_FAILED,
+                RENEWAL_FAILED,
+                "Inna rate limited this session. Wait before trying again.",
+                SESSION_UNUSABLE,
+                "Inna requested a pause. Wait before making another request.",
+                "Inna requested a pause. Wait before making another request.",
+            ]
+        );
+    }
+
+    /// Store messages may name paths (the write-uncertain and retired-store ones do); none reaches
+    /// a renewal's output.
+    #[test]
+    fn no_renewal_failure_prints_a_path() {
+        use family_store::{Code, Error};
+
+        let mut failures = vec![session::UNCERTAIN, client::RATE_LIMITED, Fail::Unknown];
+        for code in [
+            Code::StoreBackendRetired,
+            Code::StoreWriteUncertain,
+            Code::UnsafeFile,
+            Code::StoreUnavailable,
+            Code::StoreError,
+            Code::Busy,
+            Code::Io,
+        ] {
+            failures.push(session::store_error(&Error::new(code, "Synthetic.")));
+        }
+        assert!(failures.iter().any(|fail| match fail {
+            Fail::Safe(message) => message.contains('/'),
+            _ => false,
+        }));
+
+        for fail in failures {
+            let (code, message) = renewal_outcome(client::Renewal::Failed(fail)).unwrap();
+            assert_eq!(code, NOT_RENEWED);
+            assert!(
+                !message.contains('/') && !message.contains('~'),
+                "{message}"
+            );
         }
     }
 

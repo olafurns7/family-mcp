@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- New `inna-mcp auth renew` makes one renewal of the saved session, the
+  request the server's keep-alive makes, and exits: 0 renewed (nothing
+  printed), 3 no saved session, 4 sign-in required, 5 not renewed for a
+  network, Inna or store reason, 6 a rate-limit pause in force (nothing sent),
+  1 an invalid command or refused store. Failures print one fixed line without
+  cookies, paths or Inna text. It never switches or learns a student and never
+  submits anything. It holds the session lock across its request and
+  write-back, so a running server and a renewal each continue from the
+  cookies the other saved; offline tests check this in both orders.
+- The installer takes `--with-renewal` to run `inna-mcp auth renew` every ten
+  minutes: a systemd user timer on Linux (with the `loginctl enable-linger`
+  command to run when lingering is off) or a LaunchAgent on macOS. It is off by
+  default; the choice is saved and kept on upgrade, and `--without-renewal`
+  removes only the files the installer wrote, once the scheduler answers that
+  the job is gone; a failed status query or reload, or a job still loaded or
+  enabled, keeps them and the choice and exits with an error. Without a systemd
+  user manager a hand-written timer keeps its enablement link. Checked with fake
+  `systemctl`, `loginctl` and `launchctl`; it has not yet run on a real systemd
+  or launchd.
+- A renewal cannot run while the machine sleeps, so a sleep longer than Inna's
+  idle lifetime still needs a fresh explicit login. That lifetime is unmeasured;
+  one observation lost a session about 2 to 2.7 hours after its last renewal.
+
 ## 0.4.2
 
 Released 2026-10-12.

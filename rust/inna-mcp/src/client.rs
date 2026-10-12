@@ -45,8 +45,13 @@ const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// `Date.parse('9999-12-31T23:59:59.999Z')`: the latest pause saved.
 const LATEST: f64 = 253_402_300_799_999.0;
 
-const SIGN_IN_REQUIRED: &str =
+pub const SIGN_IN_REQUIRED: &str =
     "Inna sign-in is required. Run auth login or import a fresh private cookie export.";
+
+pub const PAUSED: &str = "Inna requested a pause. Wait before making another request.";
+
+pub const RATE_LIMITED: Fail =
+    Fail::Safe("Inna rate limited this session. Wait before trying again.");
 
 const SESSION_EXPIRED: &str = "Inna session expired. Run inna-mcp auth login or import a fresh private browser cookie export.";
 
@@ -63,7 +68,7 @@ const UNKNOWN_STUDENT: Fail = Fail::Safe(
 
 const UNEXPECTED: Fail = Fail::Safe("Inna returned an unavailable or unexpected response.");
 
-const NO_SESSION: Fail = Fail::Safe(
+pub const NO_SESSION: Fail = Fail::Safe(
     "No Inna session. Run inna-mcp auth login or auth import with a private cookie export.",
 );
 
@@ -471,9 +476,7 @@ impl<'a> Connection<'a> {
 
     fn check_pause(&self) -> Result<()> {
         match self.pause_until > js::client_now() {
-            true => Err(Fail::Safe(
-                "Inna requested a pause. Wait before making another request.",
-            )),
+            true => Err(Fail::Safe(PAUSED)),
             false => Ok(()),
         }
     }
@@ -522,7 +525,7 @@ impl<'a> Connection<'a> {
             false => 60_000.0,
         };
         self.pause_until = LATEST.min(now + wait);
-        Fail::Safe("Inna rate limited this session. Wait before trying again.")
+        RATE_LIMITED
     }
 
     /// `request`: an Inna API read (or, with a body, a write) parsed as JSON.
@@ -859,6 +862,25 @@ fn stamp(output: &mut Map<String, Value>) -> Result<()> {
 /// `KeepAlive`'s status.
 pub type KeepAlive = &'static str;
 
+/// What one renewal did: the keep-alive's steps, which `serve`'s timer reports as its status and
+/// `auth renew` as its exit code.
+#[derive(Debug, PartialEq)]
+pub enum Renewal {
+    /// Inna verified the saved session, and the cookies it set are saved.
+    Kept,
+    /// No saved session; nothing was sent.
+    NoSession,
+    /// The saved credentials are the ones Inna last refused; nothing was sent.
+    Refused,
+    /// A saved rate-limit pause is in force; nothing was sent. `overdue` is the server's own
+    /// renewal age at that moment.
+    Paused { overdue: bool },
+    /// Inna asked for sign-in. The refused credentials, from the cookies as written back.
+    SignInRequired(Option<String>),
+    /// The network, Inna or the store failed; Inna did not ask for sign-in.
+    Failed(Fail),
+}
+
 pub struct Client {
     path: PathBuf,
     net: Net,
@@ -1040,48 +1062,57 @@ impl Client {
     /// never switches or learns a student, and reports every failure as a status. It never
     /// resets the store.
     pub fn keep_alive(&self, signal: &Signal, cancel: &Cancel) -> KeepAlive {
-        let refused = || {
-            self.refused
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone()
-        };
+        let refused = self
+            .refused
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+
+        match self.renew(signal, cancel, refused.as_deref()) {
+            Renewal::Kept => "kept",
+            Renewal::NoSession | Renewal::Refused | Renewal::Paused { overdue: false } => "skipped",
+            Renewal::SignInRequired(credentials) => {
+                *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = credentials;
+                "signInRequired"
+            }
+            Renewal::Paused { overdue: true } | Renewal::Failed(_) => "failed",
+        }
+    }
+
+    /// One renewal, inside one hold of both store locks: the user request, verified, and the
+    /// cookies it set written back before the hold ends. Nothing is sent without a session, for
+    /// the credentials in `refused`, or during a saved pause.
+    pub fn renew(&self, signal: &Signal, cancel: &Cancel, refused: Option<&str>) -> Renewal {
         let mut seen: Option<Saved> = None;
         let outcome = locked(&self.path, cancel, |held| {
             let Some(saved) = held.read()? else {
-                return Ok("skipped");
+                return Ok(Renewal::NoSession);
             };
             let saved = seen.insert(saved);
 
-            if Some(credentials(saved)?) == refused() {
-                return Ok("skipped");
+            if refused == Some(credentials(saved)?.as_str()) {
+                return Ok(Renewal::Refused);
             }
             if saved.pause_until > js::client_now() {
-                return if self.renewal_overdue() {
-                    Err(Fail::Safe(
-                        "Inna requested a pause. Wait before making another request.",
-                    ))
-                } else {
-                    Ok("skipped")
-                };
+                return Ok(Renewal::Paused {
+                    overdue: self.renewal_overdue(),
+                });
             }
             self.persisting(held, saved, signal, |connection, _| {
                 connection.user_once().map(drop)
             })?;
-            Ok("kept")
+            Ok(Renewal::Kept)
         });
 
         match outcome {
-            Ok(status) => status,
+            Ok(renewal) => renewal,
             Err(Fail::Safe(message))
                 if message == SIGN_IN_REQUIRED || message == SESSION_EXPIRED =>
             {
                 // Taken from the jar as written back, so a cookie set by the refusal counts.
-                *self.refused.lock().unwrap_or_else(PoisonError::into_inner) =
-                    seen.as_ref().and_then(|saved| credentials(saved).ok());
-                "signInRequired"
+                Renewal::SignInRequired(seen.as_ref().and_then(|saved| credentials(saved).ok()))
             }
-            Err(_) => "failed",
+            Err(fail) => Renewal::Failed(fail),
         }
     }
 

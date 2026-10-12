@@ -94,6 +94,9 @@ await test('release generation, version tags, and package-specific assets stay c
       assert.ok(generated.includes('tar -xOzf'));
       assert.ok(!generated.includes('tar -xzf'));
       assert.ok(generated.includes(`_VERSION:-9.8.7`));
+      // Scheduled renewal is inna-mcp's alone.
+      assert.equal(generated.includes('--with-renewal'), name === 'inna-mcp');
+      assert.equal(generated.includes('install_renewal'), name === 'inna-mcp');
       assert.equal(spawnSync('/bin/sh', ['-n'], { input: generated }).status, 0);
 
       for (const file of docs)
