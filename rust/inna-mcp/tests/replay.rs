@@ -4,11 +4,16 @@
 //! fake Inna, which serves the recorded responses in order and requires each request to equal the
 //! recorded one (method, URL with its query, the eight headers fake-inna.ts compared, body), so
 //! every step checks the full request list, its count and its order, not only the output. The one
-//! allowance is parity.ts's own: right after a GET answered 401 the binary may renew once and then
-//! retry that URL once (renewal.rs executes that recovery); the fake answers those hops as the
-//! TypeScript fake's state would have, and the replay counts them. Each CLI run compares its exit
-//! code, stdout and stderr; each tool call its raw JSON-RPC answer, key order included; each step
-//! the text of every absence record; each case ends by comparing the decrypted stored session and
+//! difference is parity.ts's own: right after a GET answered 401 the binary renews, then retries
+//! after a 200 (renewal.rs executes that recovery). Those hops are required, in that order, and
+//! compared whole like a recorded request: the renewal is the 401 request's headers with an empty
+//! body sent to the renewal URL, and the retry is the 401 request again, as inna-parity.ts
+//! forwarded them. The fake answers them as the TypeScript fake's state would have; a missing,
+//! extra or different hop fails, and each case checks the count its recorded 401s require
+//! (the_fake_rejects_a_recovery_unlike_the_recorded_request checks the fake). Each CLI run
+//! compares its exit code, stdout and stderr; each tool call its raw JSON-RPC answer, key order
+//! included; each step the text
+//! of every absence record; each case ends by comparing the decrypted stored session and
 //! every path left with its mode. A `swap` step first plants the home exactly as the TypeScript
 //! side had written it, so the binary continues from TypeScript-written records and previews. A
 //! cancelled call holds the fake's reply to the awaited request until the cancel, end of input or
@@ -25,7 +30,9 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use support::{Answer, Home, Mcp, Names, Script, Upstream, cli, ended, no_leak, unpack};
+use support::{
+    Answer, Home, Mcp, Names, RENEWAL, Request, Script, Upstream, cli, ended, no_leak, unpack,
+};
 
 /// The drop-in cases the ledger names `inna/contract/*`, one file each, and the case that freezes an
 /// invalid input for every tool no other case gives one.
@@ -297,6 +304,7 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage, tz: Option<&str>)
         case["requests"].as_u64().unwrap(),
         "{name}: requests"
     );
+    assert_eq!(hops, script.required_hops(), "{name}: recovery hops");
     assert_eq!(
         upstream.count(),
         served + hops,
@@ -556,5 +564,78 @@ fn reads_are_identical_under_another_host_timezone() {
             replay_case(set, name, &mut coverage, Some(tz));
         }
         assert!(coverage.structured > 20, "{tz}: {coverage:?}");
+    }
+}
+
+/// The fake's own check (review of PR #27, finding 1): after a recorded 401 the renewal and the
+/// retry are compared whole, in order, and a missing or extra one fails, like a recorded request.
+#[test]
+fn the_fake_rejects_a_recovery_unlike_the_recorded_request() {
+    let get = |url: &str| Request {
+        method: "GET".into(),
+        url: url.into(),
+        headers: [("cookie".to_owned(), json!("SESSION=synthetic-school"))]
+            .into_iter()
+            .collect(),
+        body: String::new(),
+    };
+    let first = get("https://nam.inna.is/api/Announcements/GetStudentAnnouncements");
+    let renewal = get(RENEWAL);
+    let response = |status: u16| json!({"status": status, "headers": {}, "body": "{}"});
+    // Plays `requests` against one recorded 401 with its recovery; whether `finish` passed.
+    let play = |label: &str, requests: &[Request]| {
+        let home = Home::new(&format!("fake-recovery-{label}"));
+        let script = Script::new(Names::new(&home, false));
+        script.expect(&json!([{
+            "request": first.json(),
+            "response": response(401),
+            "recovery": {"renewal": response(200), "retry": response(200)},
+        }]));
+
+        for request in requests {
+            script.answer(request);
+        }
+        let counts = (script.served(), script.required_hops());
+        let finished =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| script.finish(label)));
+        (finished.is_ok(), counts.0, counts.1)
+    };
+    assert_eq!(
+        play("recorded", &[first.clone(), renewal.clone(), first.clone()]),
+        (true, (1, 2), 2)
+    );
+
+    let mut headers = renewal.clone();
+    headers
+        .headers
+        .insert("authorization".into(), json!("Bearer synthetic-unexpected"));
+    let mut cookie = renewal.clone();
+    cookie
+        .headers
+        .insert("cookie".into(), json!("synthetic-wrong-cookie"));
+    let mut body = first.clone();
+    body.body = "unexpected synthetic GET body".into();
+    let rejected: [(&str, Vec<Request>); 6] = [
+        (
+            "renewal-header",
+            vec![first.clone(), headers, first.clone()],
+        ),
+        ("renewal-cookie", vec![first.clone(), cookie, first.clone()]),
+        ("retry-body", vec![first.clone(), renewal.clone(), body]),
+        ("no-retry", vec![first.clone(), renewal.clone()]),
+        ("no-recovery", vec![first.clone()]),
+        (
+            "extra-renewal",
+            vec![
+                first.clone(),
+                renewal.clone(),
+                first.clone(),
+                renewal.clone(),
+            ],
+        ),
+    ];
+
+    for (label, requests) in rejected {
+        assert!(!play(label, &requests).0, "{label} passed");
     }
 }

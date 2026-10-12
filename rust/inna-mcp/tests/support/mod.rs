@@ -767,15 +767,18 @@ fn serve(
 struct Expected {
     request: Value,
     reply: Reply,
-    /// The renewal's reply and, when it renewed, the one retry's (a GET answered 401 only).
-    recovery: Option<(Reply, Option<Reply>)>,
+    /// The recovery the binary owes after this request (a GET answered 401 only).
+    recovery: Option<Recovery>,
 }
 
 /// After a GET answered 401: the request it answered, and the renewal and retry still allowed.
+/// The binary's recovery from a recorded 401 on a GET, which the freeze answered from a copy of the
+/// fake (tooling/ts-freeze/inna-parity.ts): a renewal, the 401 request's own compared headers and
+/// an empty body sent to [`RENEWAL`], then, after a 200, the original request again. Each is
+/// compared whole, in that order, like a recorded request.
 struct Recovery {
-    url: String,
-    renewal: Option<Reply>,
-    retry: Option<Reply>,
+    renewal: Option<(Value, Reply)>,
+    retry: Option<(Value, Reply)>,
 }
 
 #[derive(Default)]
@@ -785,6 +788,8 @@ struct ScriptState {
     failures: Vec<String>,
     served: usize,
     hops: usize,
+    /// The recovery hops the recorded exchanges given to `expect` require.
+    required: usize,
 }
 
 /// A held reply: the fake has received the request to `path` and waits for `release`.
@@ -822,12 +827,13 @@ impl Script {
         Upstream::new(move |request| script.answer(request))
     }
 
-    fn answer(&self, request: &Request) -> Reply {
+    /// What the fake answers `request`; the upstream's handler, public for the fake's own check.
+    pub fn answer(&self, request: &Request) -> Reply {
         let seen: Value =
             serde_json::from_str(&self.names.fresh(&request.json().to_string())).unwrap();
         let reply = {
             let mut state = self.state.lock().unwrap();
-            self.decide(&mut state, request, &seen)
+            self.decide(&mut state, &seen)
         };
         let (lock, changed) = &*self.gate;
         let mut gate = lock.lock().unwrap();
@@ -844,41 +850,34 @@ impl Script {
         reply
     }
 
-    fn decide(&self, state: &mut ScriptState, request: &Request, seen: &Value) -> Reply {
+    fn decide(&self, state: &mut ScriptState, seen: &Value) -> Reply {
         if let Some(recovery) = state.recovery.as_mut() {
-            if request.method == "GET"
-                && request.url == RENEWAL
-                && let Some(renewal) = recovery.renewal.take()
-            {
-                if renewal.status != 200 {
-                    recovery.retry = None;
-                }
-                state.hops += 1;
-                return renewal;
-            }
-            if recovery.renewal.is_none()
-                && request.method == "GET"
-                && request.url == recovery.url
-                && let Some(retry) = recovery.retry.take()
-            {
+            let (hop, retry) = match recovery.renewal.take() {
+                Some(renewal) => (renewal, false),
+                None => (recovery.retry.take().unwrap(), true),
+            };
+            let (expected, reply) = hop;
+
+            if &expected != seen {
                 state.recovery = None;
-                state.hops += 1;
-                return retry;
+                state.failures.push(format!(
+                    "expected the recovery's {} {expected}\n     got {seen}",
+                    if retry { "retry" } else { "renewal" }
+                ));
+                return Reply::empty(599);
             }
+            // A renewal other than 200 ends the recovery: no retry follows.
+            if retry || reply.status != 200 || recovery.retry.is_none() {
+                state.recovery = None;
+            }
+            state.hops += 1;
+            return reply;
         }
-        state.recovery = None;
 
         match state.queue.pop_front() {
             Some(expected) if &expected.request == seen => {
                 state.served += 1;
-
-                if let Some((renewal, retry)) = expected.recovery {
-                    state.recovery = Some(Recovery {
-                        url: request.url.clone(),
-                        renewal: Some(renewal),
-                        retry,
-                    });
-                }
+                state.recovery = expected.recovery;
                 expected.reply
             }
             Some(expected) => {
@@ -899,11 +898,20 @@ impl Script {
         let mut state = self.state.lock().unwrap();
 
         for exchange in exchanges.as_array().unwrap() {
+            let request = &exchange["request"];
             let recovery = exchange.get("recovery").map(|recovery| {
-                (
-                    Reply::frozen(&recovery["renewal"]),
-                    recovery.get("retry").map(Reply::frozen),
-                )
+                let mut renewal = request.clone();
+                renewal["method"] = json!("GET");
+                renewal["url"] = json!(RENEWAL);
+                renewal["body"] = json!("");
+                let retry = recovery
+                    .get("retry")
+                    .map(|retry| (request.clone(), Reply::frozen(retry)));
+                state.required += 1 + usize::from(retry.is_some());
+                Recovery {
+                    renewal: Some((renewal, Reply::frozen(&recovery["renewal"]))),
+                    retry,
+                }
             });
             state.queue.push_back(Expected {
                 request: exchange["request"].clone(),
@@ -950,8 +958,9 @@ impl Script {
         let failures = std::mem::take(&mut state.failures);
         let left = state.queue.len();
         state.queue.clear();
-        state.recovery = None;
+        let pending = state.recovery.take().is_some();
         assert!(failures.is_empty(), "{context}:\n{}", failures.join("\n"));
+        assert!(!pending, "{context}: a recovery hop never came");
         assert_eq!(left, 0, "{context}: {left} expected requests never came");
     }
 
@@ -959,6 +968,11 @@ impl Script {
     pub fn served(&self) -> (usize, usize) {
         let state = self.state.lock().unwrap();
         (state.served, state.hops)
+    }
+
+    /// The recovery hops the recorded exchanges required.
+    pub fn required_hops(&self) -> usize {
+        self.state.lock().unwrap().required
     }
 }
 
