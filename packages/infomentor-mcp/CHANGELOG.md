@@ -2,6 +2,8 @@
 
 ## 0.9.2
 
+Released 2026-10-12.
+
 - `serve` now ends when the connection to the host breaks, as the TypeScript
   server does: when a write to stdout fails because the host closed its end,
   or when one input line passes 10 MiB, its newline included. That limit is
