@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
+
+Released 2026-10-12.
 
 - New `inna-mcp auth renew` makes one renewal of the saved session, the
   request the server's keep-alive makes, and exits: 0 renewed (nothing
