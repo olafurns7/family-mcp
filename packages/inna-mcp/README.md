@@ -332,14 +332,19 @@ between conversations, such as an always-on home server.
 
 The installer replaces or removes only the files it wrote, which carry its
 marker. A hand-written file at one of those paths stops `--with-renewal` before
-anything changes, and `--without-renewal` leaves it in place. It deletes a file
-only once the scheduler no longer runs it: `launchctl print` no longer finds the
-agent, or `systemctl --user` reports the timer neither active nor enabled and
-reloads without the units. Otherwise it keeps the files and the saved choice,
-prints the command to run, and exits with an error; upgrades likewise never load
-a second copy of the agent. The job runs with
-the scheduler's environment, not your MCP host's: it uses the default store and
-session paths, not an `INNA_SESSION_FILE` set only in the host configuration.
+anything changes, and `--without-renewal` leaves it in place. Before it deletes
+or replaces a file, the scheduler must answer that the job is gone: `launchctl
+print` that it has no such agent, or `systemctl --user` that the timer is
+inactive and disabled; on Linux systemd must then also reload without the units.
+That answer decides, not the unload or disable command itself. Without it,
+whether a status query failed or the job is still there, or when the reload
+fails, the installer keeps the files and the saved choice, prints the command to
+run, and exits with an error, so upgrades never load a second copy of the agent.
+Without a systemd user manager it removes the marked units, and the timer's
+enablement link only when the timer is marked; a hand-written timer keeps its
+link. The job runs with the scheduler's environment, not your MCP host's: it
+uses the default store and session paths, not an `INNA_SESSION_FILE` set only in
+the host configuration.
 
 A timer does not run while the machine sleeps or is off. On waking it renews
 once, but a session that idled out during a longer sleep is gone, and you must
