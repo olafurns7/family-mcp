@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2
 
 - `serve` now ends when the connection to the host breaks, as the TypeScript
   server does: when a write to stdout fails because the host closed its end,
