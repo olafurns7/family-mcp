@@ -685,8 +685,14 @@ async function runCli(side: 'ts' | 'rust', home: string, env: Record<string, str
   ]);
 
   const hidden = (text: string) => text.replaceAll(home, '<home>');
-  // Rust: `auth renew` has no TypeScript counterpart; tests/renew.rs covers it.
-  const help = side === 'rust' ? stdout.replace(RENEW_HELP, '') : stdout;
+  // Rust: `auth renew` has no TypeScript counterpart; tests/renew.rs covers it. Its help line is
+  // removed once, only from a help invocation's stdout, where it must appear exactly once.
+  let help = stdout;
+  if (side === 'rust' && ['--help', '-h', '-hv'].includes(args[0] ?? '')) {
+    const count = stdout.split(RENEW_HELP).length - 1;
+    if (count !== 1) failures.push(`rust ${JSON.stringify(args)}: auth renew help line ${count} times`);
+    help = stdout.replace(RENEW_HELP, '');
+  }
 
   return { args: args.map(hidden), code, stdout: hidden(help), stderr: hidden(stderr) };
 }

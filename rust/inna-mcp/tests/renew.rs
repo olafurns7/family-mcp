@@ -21,13 +21,13 @@ const NO_SESSION: &str =
 const SIGN_IN_REQUIRED: &str =
     "Inna sign-in is required. Run auth login or import a fresh private cookie export.\n";
 
-const NOT_RENEWED: &str = "Inna renewal failed, and Inna did not ask for sign-in. The saved session was kept; try again later.\n";
+const NOT_RENEWED: &str = "Inna renewal failed, and Inna did not ask for sign-in. Run inna-mcp auth status in a terminal for details; a later run may succeed.\n";
+
+const SESSION_UNUSABLE: &str = "The saved Inna session cannot be used, because a write to the session store did not complete. Run inna-mcp auth status in a terminal; it says what to remove before you sign in again.\n";
 
 const PAUSED: &str = "Inna requested a pause. Wait before making another request.\n";
 
 const RATE_LIMITED: &str = "Inna rate limited this session. Wait before trying again.\n";
-
-const UNEXPECTED: &str = "Inna returned an unavailable or unexpected response.\n";
 
 const REFUSED_STORE: &str = "Cannot use the Inna session store. Run inna-mcp auth status in a terminal; it shows what is wrong and where. Do not delete the store first.\n";
 
@@ -175,7 +175,7 @@ fn network_and_service_failures_exit_5_and_keep_the_session() {
 
     for (reply, message) in [
         (Reply::dropped(), NOT_RENEWED),
-        (Reply::empty(503), UNEXPECTED),
+        (Reply::empty(503), NOT_RENEWED),
         (Reply::json(200, &json!({"no": "user"})), NOT_RENEWED),
     ] {
         let upstream = Upstream::new(move |_| reply.clone());
@@ -193,6 +193,37 @@ fn network_and_service_failures_exit_5_and_keep_the_session() {
         assert_eq!(without_jar(&after), without_jar(&before));
         assert_eq!(session_cookie(&after), session_cookie(&before));
     }
+}
+
+/// Inna rotates the cookies but the write-back fails: the rotated credentials must not be offered
+/// again, so the record goes; the output says the session cannot be used, without the store's paths.
+#[test]
+fn a_failed_write_back_of_rotated_cookies_says_the_session_is_unusable_without_a_path() {
+    let case = Case::new("write-back", false);
+    let marker = case.store().with_extension("enc.marker");
+    let provider = case.provider.clone();
+    let upstream = Upstream::new(move |request: &Request| {
+        // The store's marker becomes a directory, so the write after this answer fails.
+        std::fs::remove_file(&marker).unwrap();
+        std::fs::create_dir(&marker).unwrap();
+        provider.state().rotation = "synthetic-unsaved".into();
+        provider.answer(request)
+    });
+    let run = support::cli(
+        &case.home,
+        &upstream.origin,
+        &case.env(),
+        &["auth", "renew"],
+        None,
+    );
+    expect(&run, 5, SESSION_UNUSABLE);
+    clean(&case, &run);
+    assert!(!run.stderr.contains("Library") && !run.stderr.contains(".config"));
+    assert!(!case.store().exists());
+    // In a terminal, auth status names the store file that is in the way.
+    let status = case.cli(&["auth", "status"]);
+    assert_eq!(status.code, Some(1), "{status:?}");
+    assert!(status.stderr.contains("session.enc.marker"), "{status:?}");
 }
 
 /// The renewal never switches or learns a student, even when Inna's own selection has moved:

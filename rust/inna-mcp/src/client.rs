@@ -50,6 +50,9 @@ pub const SIGN_IN_REQUIRED: &str =
 
 pub const PAUSED: &str = "Inna requested a pause. Wait before making another request.";
 
+pub const RATE_LIMITED: Fail =
+    Fail::Safe("Inna rate limited this session. Wait before trying again.");
+
 const SESSION_EXPIRED: &str = "Inna session expired. Run inna-mcp auth login or import a fresh private browser cookie export.";
 
 const SWITCH_REFUSED: Fail = Fail::Safe(
@@ -522,7 +525,7 @@ impl<'a> Connection<'a> {
             false => 60_000.0,
         };
         self.pause_until = LATEST.min(now + wait);
-        Fail::Safe("Inna rate limited this session. Wait before trying again.")
+        RATE_LIMITED
     }
 
     /// `request`: an Inna API read (or, with a body, a write) parsed as JSON.

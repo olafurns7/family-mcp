@@ -291,7 +291,12 @@ const SIGN_IN_REQUIRED: u8 = 4;
 const NOT_RENEWED: u8 = 5;
 const PAUSED: u8 = 6;
 
-const RENEWAL_FAILED: &str = "Inna renewal failed, and Inna did not ask for sign-in. The saved session was kept; try again later.";
+// A renewal's failures reach a scheduler's log, so none is passed on: some store messages name
+// paths. Only these fixed texts are printed. A store write that did not complete, on this renewal
+// (which then removes rotated cookies) or an earlier one, leaves no usable session.
+const RENEWAL_FAILED: &str = "Inna renewal failed, and Inna did not ask for sign-in. Run inna-mcp auth status in a terminal for details; a later run may succeed.";
+
+const SESSION_UNUSABLE: &str = "The saved Inna session cannot be used, because a write to the session store did not complete. Run inna-mcp auth status in a terminal; it says what to remove before you sign in again.";
 
 /// The exit code and fixed message for a renewal that did not renew.
 fn renewal_outcome(renewal: client::Renewal) -> Option<(u8, &'static str)> {
@@ -307,7 +312,12 @@ fn renewal_outcome(renewal: client::Renewal) -> Option<(u8, &'static str)> {
         Renewal::SignInRequired(_) | Renewal::Refused => {
             (SIGN_IN_REQUIRED, client::SIGN_IN_REQUIRED)
         }
-        Renewal::Failed(fail) => (NOT_RENEWED, mcp_runtime::cli_text(fail, RENEWAL_FAILED)),
+        Renewal::Failed(fail) if fail == session::UNCERTAIN => (NOT_RENEWED, SESSION_UNUSABLE),
+        // The pause Inna asked for is saved with the session.
+        Renewal::Failed(fail) if fail == client::RATE_LIMITED => {
+            (NOT_RENEWED, mcp_runtime::cli_text(fail, RENEWAL_FAILED))
+        }
+        Renewal::Failed(_) => (NOT_RENEWED, RENEWAL_FAILED),
         Renewal::Paused { .. } => (PAUSED, client::PAUSED),
     })
 }
@@ -726,13 +736,15 @@ mod tests {
             Renewal::Failed(Fail::Safe(
                 "Inna returned an unavailable or unexpected response.",
             )),
+            Renewal::Failed(client::RATE_LIMITED),
+            Renewal::Failed(session::UNCERTAIN),
             Renewal::Paused { overdue: true },
             Renewal::Paused { overdue: false },
         ]
         .map(|renewal| renewal_outcome(renewal).unwrap());
         assert_eq!(
             outcomes.map(|(code, _)| code),
-            [3, 4, 4, 5, 5, 5, 6, 6],
+            [3, 4, 4, 5, 5, 5, 5, 5, 6, 6],
             "codes"
         );
         assert_eq!(
@@ -743,11 +755,46 @@ mod tests {
                 "Inna sign-in is required. Run auth login or import a fresh private cookie export.",
                 RENEWAL_FAILED,
                 RENEWAL_FAILED,
-                "Inna returned an unavailable or unexpected response.",
+                RENEWAL_FAILED,
+                "Inna rate limited this session. Wait before trying again.",
+                SESSION_UNUSABLE,
                 "Inna requested a pause. Wait before making another request.",
                 "Inna requested a pause. Wait before making another request.",
             ]
         );
+    }
+
+    /// Store messages may name paths (the write-uncertain and retired-store ones do); none reaches
+    /// a renewal's output.
+    #[test]
+    fn no_renewal_failure_prints_a_path() {
+        use family_store::{Code, Error};
+
+        let mut failures = vec![session::UNCERTAIN, client::RATE_LIMITED, Fail::Unknown];
+        for code in [
+            Code::StoreBackendRetired,
+            Code::StoreWriteUncertain,
+            Code::UnsafeFile,
+            Code::StoreUnavailable,
+            Code::StoreError,
+            Code::Busy,
+            Code::Io,
+        ] {
+            failures.push(session::store_error(&Error::new(code, "Synthetic.")));
+        }
+        assert!(failures.iter().any(|fail| match fail {
+            Fail::Safe(message) => message.contains('/'),
+            _ => false,
+        }));
+
+        for fail in failures {
+            let (code, message) = renewal_outcome(client::Renewal::Failed(fail)).unwrap();
+            assert_eq!(code, NOT_RENEWED);
+            assert!(
+                !message.contains('/') && !message.contains('~'),
+                "{message}"
+            );
+        }
     }
 
     #[test]
