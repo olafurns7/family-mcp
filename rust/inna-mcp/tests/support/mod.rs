@@ -1300,20 +1300,31 @@ impl Mcp {
     }
 
     /// Waits, at most `patience`, until stderr holds `text` at least `times` times; whether it did.
+    /// Waits for `times` whole lines holding `text`. Unbuffered stderr may write a line in
+    /// pieces, so a line counts once its newline is there.
     pub fn until_stderr(&self, text: &str, times: usize, patience: Duration) -> bool {
         self.stderr.until(patience, |written, _| {
-            written.matches(text).count() >= times
+            whole_lines(written)
+                .filter(|line| line.contains(text))
+                .count()
+                >= times
         })
     }
 
-    /// The keep-alive statuses the server reported (INNA_TEST_KEEP_ALIVE), in order.
+    /// The keep-alive statuses the server reported (INNA_TEST_KEEP_ALIVE), in order, from whole
+    /// lines only.
     pub fn statuses(&self) -> Vec<String> {
-        self.stderr()
-            .lines()
+        whole_lines(&self.stderr())
             .filter_map(|line| line.strip_prefix("keep-alive: "))
             .map(str::to_owned)
             .collect()
     }
+}
+
+/// The lines of `text` its newline has ended, without the newline.
+fn whole_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.split_inclusive('\n')
+        .filter_map(|line| line.strip_suffix('\n'))
 }
 
 impl Drop for Mcp {

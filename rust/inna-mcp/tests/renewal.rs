@@ -64,7 +64,7 @@ impl Fixture {
         fixture.import();
         fixture.started = Instant::now();
         let (mcp, _) = Mcp::start(&fixture.home, &fixture.upstream.origin, &fixture.env, args);
-        let ready = mcp.until_stderr("keep-alive: kept\n", 1, ms(bound / 30 + 2_000));
+        let ready = mcp.until_stderr("keep-alive: kept", 1, ms(bound / 30 + 2_000));
         assert!(ready, "no startup renewal: {}", mcp.stderr());
         fixture.mcp = Some(mcp);
         fixture

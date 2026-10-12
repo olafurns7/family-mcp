@@ -181,6 +181,13 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage, tz: Option<&str>)
     if let Some(tz) = tz {
         extra.push(("TZ".into(), tz.into()));
     }
+
+    // The scenarios were frozen on macOS, where Google sign-in needs no desktop session. On Linux
+    // a display name (nothing connects to it) keeps the same path; the missing-display refusal is
+    // browser_login.rs::a_missing_display_on_linux_fails_before_anything_is_launched.
+    if cfg!(target_os = "linux") {
+        extra.push(("DISPLAY".into(), ":0".into()));
+    }
     let mut serving: Option<Mcp> = None;
 
     for (index, step) in case["steps"].as_array().unwrap().iter().enumerate() {
