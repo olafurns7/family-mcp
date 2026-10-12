@@ -1097,6 +1097,11 @@ impl Mcp {
         (status, stderr)
     }
 
+    /// Wait for the exit with standard input still open (a signal's exit, not end of input's).
+    pub fn exit(&mut self) -> ExitStatus {
+        wait(&mut self.child, PATIENCE).expect("serve did not exit with its input open")
+    }
+
     /// Close standard input and wait for the exit: the exit code and what went to stderr.
     pub fn close(self) -> (Option<i32>, String) {
         let (status, stderr) = self.finish();

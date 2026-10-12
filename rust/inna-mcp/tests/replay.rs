@@ -25,7 +25,7 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use support::{Home, Mcp, Names, Script, cli, ended, no_leak, unpack};
+use support::{Home, Mcp, Names, Script, Upstream, cli, ended, no_leak, unpack};
 
 /// tests/ts/parity.ts's scenarios, one file each, under their ledger names.
 const SCENARIOS: [&str; 38] = [
@@ -84,13 +84,15 @@ fn frozen(set: &str, name: &str) -> Value {
     unpack(serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap())
 }
 
-/// What the replay covered: CLI runs, tool results, those with structured content, requests.
+/// What the replay covered: CLI runs, tool results, those with structured content, recorded
+/// requests, and the recovery hops the binary added.
 #[derive(Default, Debug, PartialEq)]
 struct Coverage {
     cli: usize,
     tools: usize,
     structured: usize,
     requests: usize,
+    hops: usize,
 }
 
 /// One output as the freeze named it.
@@ -264,7 +266,7 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
                 "{at} exit"
             );
         } else if step.get("cancel").is_some() {
-            cancel(&home, &names, &script, &origin, &extra, step, &at);
+            cancel(&home, &names, &script, &upstream, &extra, step, &at);
         } else if let Some(file) = step["file"].as_str() {
             let mode = step
                 .get("permissions")
@@ -290,6 +292,7 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage) {
         "{name}: requests and recovery hops"
     );
     coverage.requests += served;
+    coverage.hops += hops;
     assert_eq!(home.files(&names), case["files"], "{name}: files");
     let stored = home.stored(&names);
     let frozen_store = match case.get("record") {
@@ -308,7 +311,7 @@ fn cancel(
     home: &Home,
     names: &Names,
     script: &Script,
-    origin: &str,
+    upstream: &Upstream,
     extra: &[(String, String)],
     step: &Value,
     at: &str,
@@ -319,9 +322,10 @@ fn cancel(
         .map(|args| args.iter().map(|arg| arg.as_str().unwrap()).collect())
         .unwrap_or_default();
     let call = &step["cancel"];
+    let before = upstream.count();
     script.expect(&step["exchanges"]);
     script.hold(step["when"].as_str().unwrap());
-    let (mut mcp, _) = Mcp::start(home, origin, extra, &args);
+    let (mut mcp, _) = Mcp::start(home, &upstream.origin, extra, &args);
     let id = mcp.begin(
         "tools/call",
         json!({"name": call[0], "arguments": names.placed(&call[1])}),
@@ -350,21 +354,16 @@ fn cancel(
         signal => {
             mcp.signal(signal.trim_start_matches("SIG"));
             script.release();
-            ended(mcp.finish().0)
+            // Input stays open, so only the signal can have ended the server.
+            ended(mcp.exit())
         }
     };
     script.finish(at);
     assert_eq!(outcome, step["outcome"], "{at}: outcome");
-    let writes = step["exchanges"]
-        .as_array()
-        .unwrap()
+    // What reached the fake, not what the fixture lists.
+    let writes = upstream.seen()[before..]
         .iter()
-        .filter(|exchange| {
-            exchange["request"]["url"]
-                .as_str()
-                .unwrap()
-                .ends_with("/api/RegisterAbsence/AddNewLeave")
-        })
+        .filter(|request| request.url.ends_with("/api/RegisterAbsence/AddNewLeave"))
         .count();
     assert_eq!(
         writes as u64,
@@ -409,7 +408,8 @@ fn every_frozen_parity_scenario_replays() {
             cli: 132,
             tools: 230,
             structured: 119,
-            requests: 558
+            requests: 558,
+            hops: 6,
         }
     );
 }
