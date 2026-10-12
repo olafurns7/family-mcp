@@ -137,18 +137,26 @@ fn is_error(result: &Value) -> bool {
     result["isError"] == true
 }
 
-/// renewal.test.ts:126: with the session expiring 3 s after each renewal, 9.3 s of idle serve
+/// The idle test's scale, coupled as renewal.test.ts:126 couples them (TTL = 2B, window = 6.2B),
+/// at B = 6 s instead of 1.5 s: the slower cadence (`--no-keep-alive`) waits 2B/3 after each
+/// renewal, which leaves B/3 for the request, the store and the scheduler. At 1.5 s that was
+/// 0.5 s, and Linux containers took up to 0.88 s (review of PR #27, timing ruling (b)).
+const IDLE_BOUND_MS: u64 = 6_000;
+const IDLE_TTL_MS: u64 = 2 * IDLE_BOUND_MS;
+const IDLE_WINDOW_MS: u64 = IDLE_BOUND_MS * 62 / 10;
+
+/// renewal.test.ts:126: with the session expiring 2B after each renewal, 6.2B of idle serve
 /// renew it more than six times, never more than the bound apart, with nothing but renewals.
 #[test]
 fn idle_serve_survives_several_ttls_within_the_bound_including_the_flag() {
     for args in [&[][..], &["--no-keep-alive"][..]] {
-        let mut f = Fixture::new(1_500, args);
+        let mut f = Fixture::new(IDLE_BOUND_MS, args);
         {
             let mut state = f.state();
-            state.ttl = Some(ms(3_000));
+            state.ttl = Some(ms(IDLE_TTL_MS));
             state.renewal_gaps = Some(Vec::new());
         }
-        f.window(ms(9_300));
+        f.window(ms(IDLE_WINDOW_MS));
         {
             let state = f.state();
             assert!(
@@ -158,7 +166,7 @@ fn idle_serve_survives_several_ttls_within_the_bound_including_the_flag() {
             );
             let gaps = state.renewal_gaps.as_ref().unwrap();
             assert!(
-                gaps.iter().max().unwrap() < &ms(1_500),
+                gaps.iter().max().unwrap() < &ms(IDLE_BOUND_MS),
                 "{args:?}: {gaps:?}"
             );
         }
