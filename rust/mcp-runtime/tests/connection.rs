@@ -6,7 +6,8 @@
 
 mod support;
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use support::{exits_within, send};
@@ -79,4 +80,33 @@ fn a_line_of_10_mib_with_its_newline_is_read_and_one_byte_more_ends_the_process(
     assert_eq!(example.stderr.rest(), "");
     assert_eq!(example.reply(), "");
     drop(example.stdin);
+}
+
+/// A stdout the process cannot write, such as a read-only file: every write fails with EBADF,
+/// which `std::io::stdout` would report as success, so the answer to initialize breaks the
+/// connection, as the TypeScript server exits 0 there.
+#[test]
+fn a_stdout_that_cannot_be_written_ends_the_process() {
+    let path = std::env::temp_dir().join(format!("mcp-runtime-read-only-{}", std::process::id()));
+    std::fs::write(&path, b"").unwrap();
+    let mut child = Command::new(support::example())
+        .stdin(Stdio::piped())
+        .stdout(std::fs::File::open(&path).unwrap())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+    );
+    let code = exits_within(&mut child, Duration::from_secs(5));
+    let mut written = String::new();
+    stderr.read_to_string(&mut written).unwrap();
+    // Held open until the process has exited.
+    drop(stdin);
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(code, Some(0), "{written}");
+    assert_eq!(written, "CLOSE\n");
 }

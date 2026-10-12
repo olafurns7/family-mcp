@@ -1,6 +1,7 @@
 //! `startStdio`: serve over stdio until stdin ends, the connection breaks, or SIGINT or SIGTERM
 //! arrives, then close.
 
+use std::os::fd::AsFd;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -69,8 +70,11 @@ impl<S: Server> AsyncRead for Input<S> {
 
 /// Standard output that breaks the connection when a write fails, as the TypeScript SDK's
 /// transport closes on stdout's `error`. rmcp only logs the failure and keeps serving.
+///
+/// It writes to its own copy of descriptor 1, not through `std::io::stdout`, which reports a
+/// write to a descriptor that cannot be written (EBADF, such as a read-only file) as success.
 struct Output {
-    stdout: tokio::io::Stdout,
+    stdout: tokio::fs::File,
     broken: Arc<Notify>,
 }
 
@@ -114,6 +118,7 @@ impl AsyncWrite for Output {
 /// the server's `close`. The connection breaks, as the TypeScript SDK closes it, when a write to
 /// stdout fails or an input line passes the SDK's 10 MiB read buffer; serving then stops at once,
 /// as on a signal, which cancels the calls in flight, and nothing is written to stderr.
+/// Without a descriptor 1 to copy, it closes at once without serving.
 /// Fails, before serving and without closing, only when the signal handler cannot be installed.
 ///
 /// The caller must end its runtime with `shutdown_background` after this returns, not with
@@ -123,6 +128,11 @@ pub async fn serve_stdio<S: Server>(server: S) -> std::io::Result<()> {
     let server = Arc::new(server);
     let mut terminate = signal(SignalKind::terminate())?;
     let broken = Arc::new(Notify::new());
+    let Ok(stdout) = std::io::stdout().as_fd().try_clone_to_owned() else {
+        server.close().await;
+        return Ok(());
+    };
+    let stdout = tokio::fs::File::from_std(std::fs::File::from(stdout));
 
     tokio::select! {
         _ = async {
@@ -132,7 +142,7 @@ pub async fn serve_stdio<S: Server>(server: S) -> std::io::Result<()> {
                 broken: broken.clone(),
                 line: 0,
             };
-            let output = Output { stdout: tokio::io::stdout(), broken: broken.clone() };
+            let output = Output { stdout, broken: broken.clone() };
 
             if let Ok(running) = Handler::new(server.clone())
                 .serve((input, output))

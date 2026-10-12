@@ -13,7 +13,7 @@ const PATIENCE: Duration = Duration::from_secs(15);
 
 /// `cargo test` builds the examples next to the test binaries' `deps` directory; a run limited
 /// to `--test signals` does not rebuild it.
-fn example() -> PathBuf {
+pub fn example() -> PathBuf {
     let deps = std::env::current_exe().unwrap();
     let path = deps
         .parent()
