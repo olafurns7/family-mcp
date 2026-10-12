@@ -102,7 +102,7 @@ with patch.object(route.socket, "getaddrinfo", return_value=[
 ]), patch.object(route, "verify", side_effect=[OSError("unreachable"), None]) as verify:
     failures = []
     assert route.discover(failures) == "1.1.1.1"
-    assert failures == ["8.8.8.8: OSError: unreachable"]
+    assert failures == ["127.0.0.1: skipped: not a public address (a local proxy or VPN DNS may be answering)", "8.8.8.8: OSError: unreachable"]
     assert [call.args[0] for call in verify.call_args_list] == ["8.8.8.8", "1.1.1.1"]
 
 # Existing-entry parsing: one address for both names, or a refusal.
@@ -251,6 +251,15 @@ with tempfile.TemporaryDirectory() as directory:
         "  existing managed entry 198.51.100.20: ValueError: Frontend did not return the school login form (HTTP 503).",
         f"  8.8.4.4: ConnectionRefusedError: [Errno {errno.ECONNREFUSED}] {os.strerror(errno.ECONNREFUSED)}",
     ], f"Case 2: {error}"
+
+    # A fake-IP answer from a local proxy or VPN DNS is skipped and named, not pinned.
+    content, written, error = install(managed("198.51.100.20"), discovery("198.18.0.1"))
+    assert error is not None and content == managed("198.51.100.20") and not written, "Fake-IP: hosts file changed"
+    assert error.splitlines()[1:] == [
+        "  existing managed entry 198.51.100.20: ValueError: Frontend did not return the school login form (HTTP 503).",
+        "  198.18.0.1: skipped: not a public address (a local proxy or VPN DNS may be answering)",
+        "  api-im.infomentor.net lookup: no public IPv4 address",
+    ], f"Fake-IP: {error}"
 
     # Case 3: a working hand-written entry is kept as it is, with no marker.
     content, written, error = install(by_hand("198.51.100.10"), dns_down)

@@ -64,7 +64,9 @@ left byte-for-byte unchanged. Otherwise it looks up the current alternate
 address and replaces a marked entry, but it never replaces a hand-written
 override, and it refuses entries that map the two hostnames to different
 addresses. Failed network checks leave the hosts file and previous command
-unchanged, and the error lists each address tried with its error. There is no background address refresh; rerun the
+unchanged, and the error lists each address tried with its error. Resolved
+addresses that are not public, such as a local proxy's or VPN's placeholder
+answer, are never used; the error names each one as skipped. There is no background address refresh; rerun the
 installer if the upstream address changes.
 
 To remove the managed entry and return to ordinary DNS:

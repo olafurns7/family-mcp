@@ -8,7 +8,8 @@
   cannot be found again. A working hand-written entry is kept as written, not
   refused; a failing one is still never replaced. Entries that map the two
   names to different addresses are refused. When the checks fail, the message
-  lists each address tried with its error.
+  lists each address tried with its error, and each looked-up address skipped
+  because it is not public.
 
 ## 0.9.2
 

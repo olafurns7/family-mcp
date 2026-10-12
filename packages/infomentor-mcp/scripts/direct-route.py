@@ -51,7 +51,14 @@ def discover(failures):
     except OSError as error:
         failures.append(f"api-im.infomentor.net lookup: {type(error).__name__}: {error}")
         return None
-    addresses = dict.fromkeys(item[4][0] for item in found if ipaddress.ip_address(item[4][0]).is_global)
+    addresses = {}
+    for resolved in dict.fromkeys(item[4][0] for item in found):
+        if ipaddress.ip_address(resolved).is_global:
+            addresses[resolved] = None
+        else:
+            failures.append(
+                f"{resolved}: skipped: not a public address (a local proxy or VPN DNS may be answering)"
+            )
     if not addresses:
         failures.append("api-im.infomentor.net lookup: no public IPv4 address")
     for address in list(addresses)[:4]:
