@@ -435,6 +435,12 @@ fn cancel(
     let outcome = match step["by"].as_str().unwrap() {
         "host" => {
             mcp.send(&json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": id, "reason": "AbortError"}}));
+            // TypeScript acts on the cancel at once. The server reads its input in order, so a ping
+            // answered (the held call cannot answer yet) shows the cancel was taken before the fake
+            // replies; without this, Linux saw the reply win.
+            let taken = mcp.begin("ping", json!({}));
+            let next = mcp.answer("ping").value();
+            assert_eq!(next["id"], json!(taken), "{at}: {next}");
             script.release();
             // A ping answered before any answer to the call shows the call was dropped.
             let ping = mcp.begin("ping", json!({}));
