@@ -138,7 +138,8 @@ fn serve(close: &tokio::sync::mpsc::UnboundedSender<()>) {
     let mut input = BufReader::new(std::io::stdin().lock());
     let mut polls = 0;
     let mut target_polls = 0;
-    let current_target = "fake-page";
+    let mut current_target = "fake-page";
+    let detach = flag("INNA_FAKE_DETACH_ON_EMPTY_POLL");
     let students = "https://nam.inna.is/Components/Students/Students.html#!/home";
     let session = |name: &str, value: &str, domain: &str| {
         json!({
@@ -196,6 +197,13 @@ fn serve(close: &tokio::sync::mpsc::UnboundedSender<()>) {
             "Target.attachToTarget" => {
                 json!({"sessionId": command["params"]["targetId"].as_str().unwrap_or(current_target)})
             }
+            "Network.getCookies" if detach && command["sessionId"] != current_target => {
+                write(&json!({
+                    "id": command["id"],
+                    "error": {"code": -32001, "message": "Session with given id not found."},
+                }));
+                continue;
+            }
             "Network.getCookies" => {
                 polls += 1;
                 match polls <= number("INNA_FAKE_EMPTY_POLLS") {
@@ -205,12 +213,15 @@ fn serve(close: &tokio::sync::mpsc::UnboundedSender<()>) {
             }
             _ => json!({}),
         };
-        let reply = json!({"id": command["id"], "result": result});
-        let mut output = std::io::stderr().lock();
-        output
-            .write_all(format!("{reply}\0").as_bytes())
-            .and_then(|()| output.flush())
-            .unwrap();
+        write(&json!({"id": command["id"], "result": result}));
+
+        if method == "Network.getCookies" && detach && polls == 1 {
+            current_target = "replacement-page";
+            write(&json!({
+                "method": "Target.detachedFromTarget",
+                "params": {"sessionId": "fake-page"},
+            }));
+        }
 
         if method == "Browser.close" && !flag("INNA_FAKE_IGNORE_BROWSER_CLOSE") {
             let close = close.clone();
@@ -220,6 +231,15 @@ fn serve(close: &tokio::sync::mpsc::UnboundedSender<()>) {
             });
         }
     }
+}
+
+/// One frame on the pipe.
+fn write(frame: &Value) {
+    let mut output = std::io::stderr().lock();
+    output
+        .write_all(format!("{frame}\0").as_bytes())
+        .and_then(|()| output.flush())
+        .unwrap();
 }
 
 /// browser-harness.ts's `browserStateSchema`.

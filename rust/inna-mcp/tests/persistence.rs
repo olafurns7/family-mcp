@@ -374,3 +374,62 @@ fn a_record_without_its_marker_is_uncertain_not_a_reason_to_read_plaintext() {
     assert_eq!(case.provider.state().calls.len(), calls);
     assert_eq!(case.store_files(), files);
 }
+
+/// integration.test.ts:2367's `worst`: the largest record the saved-session schema accepts, as
+/// `JSON.stringify` wrote it (each control character is 6 bytes; names are cut to 256 units).
+fn worst_record() -> String {
+    let control = "\\u0001";
+    let digits = |index: usize| format!("{index:9>32}");
+    let students: Vec<String> = (0..64)
+        .map(|index| {
+            format!(
+                r#""{key}":{{"userId":9007199254740991,"studentId":"{key}","schoolId":"{key}","studentName":"{name}"}}"#,
+                key = digits(index),
+                name = control.repeat(256),
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"version":2,"jar":"{jar}","account":{{"userId":9007199254740991,"studentId":"{zero}","schoolId":"{zero}"}},"students":{{{students}}},"pauseUntil":-1.7976931348623157e+308}}"#,
+        jar = control.repeat(262_144),
+        zero = digits(0),
+        students = students.join(","),
+    )
+}
+
+/// integration.test.ts:2367. The store's bound is exactly the worst record: the binary reads
+/// it (and fails only at its jar of control characters, which is no cookie jar) and refuses one
+/// byte more as an unusable store. That the schema refuses a longer jar is
+/// src/session.rs::saved_names_are_cut_but_held_names_are_not; through the binary that refusal
+/// and the jar's own failure have one generic text.
+#[test]
+fn the_record_limit_is_exactly_the_largest_session_the_schema_accepts() {
+    let worst = worst_record();
+    let parsed: Value = serde_json::from_str(&worst).unwrap();
+    assert_eq!(parsed["students"].as_object().unwrap().len(), 64);
+    // packages/inna-mcp/src/client.ts RECORD_MAX_BYTES, evaluated by Bun.
+    assert_eq!(worst.len(), 1_682_444);
+    let refused = "Cannot use the Inna session store.";
+
+    let case = Case::new("record-limit", false);
+    case.home.update_record(|_| worst.clone());
+    assert_eq!(case.home.record().as_deref(), Some(worst.as_str()));
+    let exact = case
+        .client()
+        .call("inna_session_status", json!({}))
+        .unwrap_err();
+    assert!(!exact.contains(refused), "{exact}");
+    assert_eq!(case.home.record().as_deref(), Some(worst.as_str()));
+
+    // One byte more: a record past the bound, written by a store that allows it.
+    let mut options = case.home.store_options();
+    options.max_bytes += 1;
+    let over = worst.replacen(r#"","account""#, r#"x","account""#, 1);
+    assert_eq!(over.len(), worst.len() + 1);
+    family_store::with_secret_store(&options, |store| store.write(&over)).unwrap();
+    let past = case
+        .client()
+        .call("inna_session_status", json!({}))
+        .unwrap_err();
+    assert!(past.starts_with(refused), "{past}");
+}

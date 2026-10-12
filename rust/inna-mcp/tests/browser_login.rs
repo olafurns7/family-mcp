@@ -491,3 +491,104 @@ fn google_login_errors_when_an_ignored_launcher_child_may_still_be_running() {
     // Login's drop kills it.
     assert!(pid_is_running(state.pid));
 }
+
+/// browser-login.test.ts:616. The sweep runs before the browser is looked for, and only on this
+/// server's own profiles in its TMPDIR.
+#[test]
+fn google_login_sweeps_abandoned_profiles_but_preserves_recent_and_live_profiles() {
+    let login = Login::new("google-sweep");
+    let profile = |name: &str| {
+        let path = login.temporary.join(name);
+        fs::create_dir(&path).unwrap();
+        path
+    };
+    let (abandoned, recent, active, foreign) = (
+        profile("inna-login-abandonedX"),
+        profile("inna-login-recentX"),
+        profile("inna-login-activeX"),
+        profile("abler-login-abandonedX"),
+    );
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
+    let age = |path: &std::path::Path| fs::File::open(path).unwrap().set_modified(old).unwrap();
+    std::os::unix::fs::symlink(
+        format!("test-host-{}", std::process::id()),
+        active.join("SingletonLock"),
+    )
+    .unwrap();
+
+    for path in [&abandoned, &foreign, &active] {
+        age(path);
+    }
+    let missing = login.home.path("missing-browser");
+    let env = login.environment(&[]);
+    let (exit, stdout, stderr) = collect(login.spawn(&missing, &env, 20, None, &[]));
+
+    assert_eq!(exit, Some(1));
+    assert_eq!(stdout, "");
+    assert_eq!(
+        stderr,
+        "Google sign-in requires Google Chrome or Chromium, and none was found. Install one, or give its executable with --browser or INNA_BROWSER. Electronic ID (`inna-mcp auth login`) needs no browser.\n"
+    );
+    assert!(!abandoned.exists());
+    assert!(recent.is_dir() && active.is_dir() && foreign.is_dir());
+}
+
+/// browser-login.test.ts:687
+#[test]
+fn google_login_rediscovers_the_student_tab_after_its_pipe_session_detaches() {
+    let login = Login::new("google-detached");
+    let (upstream, seen) = upstream(&login, true);
+    let env = login.environment(&[
+        ("INNA_FAKE_EMPTY_POLLS", "1"),
+        ("INNA_FAKE_DETACH_ON_EMPTY_POLL", "1"),
+    ]);
+    let child = login.spawn(&login.browser, &env, 10, Some(&upstream.origin), &[]);
+    let state = login.state();
+    let (exit, _, stderr) = collect(child);
+
+    assert_eq!(stderr, START_MESSAGE);
+    assert_eq!(exit, Some(0));
+    let saved: serde_json::Value = serde_json::from_str(&login.home.record().unwrap()).unwrap();
+    let jar: serde_json::Value = serde_json::from_str(saved["jar"].as_str().unwrap()).unwrap();
+    let mut keys: Vec<&str> = jar["cookies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cookie| cookie["key"].as_str().unwrap())
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["JSESSIONID", "SESSION", "XSRF-TOKEN"]);
+    let paths: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|seen| seen.path.clone())
+        .collect();
+    assert_eq!(paths, [USER_PATH]);
+    profile_removed(&state);
+    assert!(!pid_is_running(state.pid));
+}
+
+/// packages/inna-mcp/test/browser-login.test.ts:176, its `loginInBrowser` half through the
+/// binary: on Linux without a display the sign-in fails before anything is launched. Its
+/// `requireDisplay` table is src/google.rs::a_missing_display_on_linux_fails_first.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_missing_display_on_linux_fails_before_anything_is_launched() {
+    let login = Login::new("google-display");
+    let marker = login.home.path("launched");
+    login.home.write(
+        "marker-browser",
+        &format!("#!/bin/sh\n: > '{}'\n", marker.display()),
+        0o700,
+    );
+    let env = login.environment(&[("DISPLAY", ""), ("WAYLAND_DISPLAY", "")]);
+    let (exit, stdout, stderr) =
+        collect(login.spawn(&login.home.path("marker-browser"), &env, 5, None, &[]));
+
+    assert_eq!(exit, Some(1));
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("needs a desktop session"), "{stderr}");
+    assert!(!marker.exists());
+    assert_eq!(login.temporary_entries(), Vec::<String>::new());
+}
