@@ -5,6 +5,9 @@
 //! here needs Bun.
 #![allow(dead_code)]
 
+pub mod case;
+pub mod provider;
+
 use std::collections::VecDeque;
 use std::fs::{self, DirBuilder};
 use std::io::{BufRead, BufReader, Read, Write};
