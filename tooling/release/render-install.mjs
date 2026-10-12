@@ -95,9 +95,10 @@ export async function renderInstall(pkg) {
       ? `  printf '%s\\n' "$network" > "$temporary/network"
   mv -f "$temporary/network" "$prefix/share/${pkg.name}/network"`
       : renewal
-        ? `  printf '%s\\n' "$renewal" > "$temporary/renewal"
-  mv -f "$temporary/renewal" "$package_dir/renewal"
-  if [ "$renewal" = on ]; then install_renewal; else remove_renewal; fi`
+        ? `  # Saved only once the scheduler matches it, so a failed change is retried by the next run.
+  if [ "$renewal" = on ]; then install_renewal; else remove_renewal; fi
+  printf '%s\\n' "$renewal" > "$temporary/renewal"
+  mv -f "$temporary/renewal" "$package_dir/renewal"`
         : '',
   };
 
