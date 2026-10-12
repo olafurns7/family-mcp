@@ -58,10 +58,13 @@ credentials for login and automatic renewal, then check `infomentor-mcp status`
 and an overview through the MCP host. No setup tools need to be enabled.
 
 The network selection is saved as `direct-route`. Rerunning the ordinary
-installer remembers it and revalidates the current alternate address. It safely
-adopts the marked entry from the earlier manual recipe, but refuses to replace
-an unmanaged hostname override. Failed network checks leave the hosts file and
-previous command unchanged. There is no background address refresh; rerun the
+installer remembers it and first verifies the address already in `/etc/hosts`
+for both hostnames, marked or hand-written. If that passes, the hosts file is
+left byte-for-byte unchanged. Otherwise it looks up the current alternate
+address and replaces a marked entry, but it never replaces a hand-written
+override, and it refuses entries that map the two hostnames to different
+addresses. Failed network checks leave the hosts file and previous command
+unchanged, and the error lists each address tried with its error. There is no background address refresh; rerun the
 installer if the upstream address changes.
 
 To remove the managed entry and return to ordinary DNS:
