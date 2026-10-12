@@ -150,7 +150,7 @@ Per suite:
 | bun runner dominos-mcp | 12 | 0 | 2 | 0 | 10 |
 | bun runner family-store | 11 | 0 | 0 | 8 | 3 |
 | bun runner infomentor-mcp | 5 | 0 | 0 | 0 | 5 |
-| bun runner inna-mcp | 8 | 0 | 2 | 0 | 6 |
+| bun runner inna-mcp | 11 | 0 | 4 | 0 | 7 |
 | bun runner kronan-mcp | 8 | 0 | 2 | 0 | 6 |
 | drop-in abler-mcp | 43 | 11 | 6 | 26 | 0 |
 | drop-in dominos-mcp | 25 | 4 | 0 | 21 | 0 |
@@ -169,7 +169,7 @@ Per suite:
 | package kronan-mcp | 37 | 1 | 3 | 0 | 33 |
 | package mcp-runtime | 2 | 0 | 1 | 1 | 0 |
 | package session-store | 73 | 0 | 52 | 18 | 3 |
-| **all** | 712 | 200 | 83 | 200 | 229 |
+| **all** | 715 | 200 | 85 | 200 | 230 |
 
 Per category:
 
@@ -177,7 +177,7 @@ Per category:
 | --- | --- | --- | --- | --- |
 | money | 46 | 3 | 34 | 27 |
 | auth/renewal | 37 | 2 | 47 | 42 |
-| pty/signal | 9 | 11 | 28 | 26 |
+| pty/signal | 9 | 13 | 28 | 27 |
 | lock/store | 26 | 59 | 82 | 59 |
 | contract | 82 | 8 | 8 | 43 |
 | other | 0 | 0 | 1 | 32 |
@@ -385,8 +385,10 @@ the lead checks before fixtures are generated.
 | drop-in infomentor-mcp | `rust/infomentor-mcp/tests/ts/signals.test.ts:112` | a second SIGTERM ends a logout waiting for the lock and keeps the plaintext session | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | planned rust/infomentor-mcp/tests/signals.rs::a_second_sigterm_ends_a_logout_waiting_for_the_lock_and_keeps_the_plaintext_session |
 | drop-in infomentor-mcp | `rust/infomentor-mcp/tests/ts/signals.test.ts:124` | one SIGINT changes nothing: migrate still moves the session once the lock frees | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | planned rust/infomentor-mcp/tests/signals.rs::one_sigint_changes_nothing_and_migrate_moves_the_session_once_the_lock_frees |
 | drop-in infomentor-mcp | `rust/infomentor-mcp/tests/ts/signals.test.ts:136` | a SIGINT then a SIGTERM are two first signals: migrate still moves the session | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | planned rust/infomentor-mcp/tests/signals.rs::a_sigint_then_a_sigterm_are_two_first_signals |
-| bun runner inna-mcp | `rust/inna-mcp/tests/prompt.rs:187` | the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/inna-mcp/tests/prompt.rs::the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli: the Rust PTY driver stays; only its TypeScript run is replaced by the frozen per-platform outcomes planned inna/pty/the-hidden-phone-prompt-reads-keystrokes-like-the-typescript-cli |
-| bun runner inna-mcp | `rust/inna-mcp/tests/prompt.rs:343` | a_key_typed_as_the_prompt_shows_is_read_raw_and_not_echoed | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/inna-mcp/tests/prompt.rs::a_key_typed_as_the_prompt_shows_is_read_raw_and_not_echoed: the Rust PTY driver stays; only its TypeScript run is replaced by the frozen per-platform outcomes planned inna/pty/a-key-typed-as-the-prompt-shows-is-read-raw-and-not-echoed |
+| bun runner inna-mcp | `rust/inna-mcp/tests/prompt.rs:380` | the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/inna-mcp/tests/prompt.rs::the_hidden_phone_prompt_reads_keystrokes_like_the_typescript_cli: the Rust PTY driver stays; its TypeScript run is replaced by the frozen per-platform outcomes planned inna/pty/the-hidden-phone-prompt-reads-keystrokes-like-the-typescript-cli in rust/inna-mcp/tests/prompt.rs::the_hidden_phone_prompt_reads_keystrokes_like_the_frozen_typescript_cli (macOS frozen; Linux freeze pending in 1c, as Q1 81106; on Linux the hang-up checks the failed-read or input-end pair, of which the binary must give one) |
+| bun runner inna-mcp | `rust/inna-mcp/tests/prompt.rs:533` | a_key_typed_as_the_prompt_shows_is_read_raw_and_not_echoed | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/inna-mcp/tests/prompt.rs::a_key_typed_as_the_prompt_shows_is_read_raw_and_not_echoed: the Rust PTY driver stays; its TypeScript run is replaced by the frozen per-platform outcomes planned inna/pty/a-key-typed-as-the-prompt-shows-is-read-raw-and-not-echoed in rust/inna-mcp/tests/prompt.rs::a_key_typed_as_the_prompt_shows_is_read_raw_like_the_frozen_typescript_cli (macOS frozen; Linux freeze pending in 1c, as Q1 81106; on Linux the hang-up checks the failed-read or input-end pair, of which the binary must give one) |
+| bun runner inna-mcp | `rust/inna-mcp/tests/prompt.rs:671` | the_hidden_phone_prompt_reads_keystrokes_like_the_frozen_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/inna-mcp/tests/prompt.rs::the_hidden_phone_prompt_reads_keystrokes_like_the_frozen_typescript_cli: the replacement itself, without Bun; listed only while prompt.rs reads FAMILY_MCP_BUN |
+| bun runner inna-mcp | `rust/inna-mcp/tests/prompt.rs:696` | a_key_typed_as_the_prompt_shows_is_read_raw_like_the_frozen_typescript_cli | cargo test --all-features (test-origin) | pty/signal | existing Rust test | rust/inna-mcp/tests/prompt.rs::a_key_typed_as_the_prompt_shows_is_read_raw_like_the_frozen_typescript_cli: the replacement itself, without Bun; listed only while prompt.rs reads FAMILY_MCP_BUN |
 | drop-in inna-mcp | `rust/inna-mcp/tests/ts/browser-login.test.ts:337` | auth login --google closes a launcher-spawned browser child before removing its profile | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | rust/inna-mcp/tests/browser_login.rs::google_login_closes_a_launcher_spawned_browser_child_before_removing_its_profile |
 | drop-in inna-mcp | `rust/inna-mcp/tests/ts/browser-login.test.ts:375` | auth login --google timeout closes a launcher-spawned browser child | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | rust/inna-mcp/tests/browser_login.rs::google_login_timeout_closes_a_launcher_spawned_browser_child |
 | drop-in inna-mcp | `rust/inna-mcp/tests/ts/browser-login.test.ts:407` | auth login --google cancelled while waiting closes the browser and saves nothing | cargo test --all-features (test-origin) | pty/signal | new executing Rust test | rust/inna-mcp/tests/browser_login.rs::google_login_cancelled_while_waiting_closes_the_browser_and_saves_nothing |
@@ -890,6 +892,7 @@ runners, helpers).
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:215` | siblings-refused | cargo test --all-features (test-origin) | contract | fixture row | inna/parity/siblings-refused (replay: outputs, exit codes, request list, store and files) |
 | parity inna-mcp | `rust/inna-mcp/tests/ts/parity.ts:228` | failures | cargo test --all-features (test-origin) | contract | fixture row | inna/parity/failures (replay: outputs, exit codes, request list, store and files) |
 | bun runner inna-mcp | `rust/inna-mcp/tests/parity.rs:13` | every_scenario_matches_the_typescript_package | cargo test --all-features (test-origin) | other | obsolete | runner of the parity rows of inna-mcp; replaced by rust/inna-mcp/tests/replay.rs::every_frozen_parity_scenario_replays (asserts the loaded scenario count) |
+| bun runner inna-mcp | `rust/inna-mcp/tests/prompt.rs:638` | freeze_the_typescript_prompt_outcomes | cargo test --all-features (test-origin); ignored helper (run by another case) | pty/signal | obsolete | ignored freeze helper, not a case: writes planned inna/pty/the-hidden-phone-prompt-reads-keystrokes-like-the-typescript-cli and planned inna/pty/a-key-typed-as-the-prompt-shows-is-read-raw-and-not-echoed (tests/fixtures/pty/PROVENANCE.md); PR 3 deletes it with the TypeScript CLI |
 | bun runner inna-mcp | `rust/inna-mcp/tests/typescript.rs:46` | the_integration_cases_pass_against_this_binary | cargo test --all-features (test-origin) | other | obsolete | runner of the drop-in rows of rust/inna-mcp/tests/ts; each case has its own row |
 | bun runner inna-mcp | `rust/inna-mcp/tests/typescript.rs:51` | the_electronic_id_login_cases_pass_against_this_binary | cargo test --all-features (test-origin) | other | obsolete | runner of the drop-in rows of rust/inna-mcp/tests/ts; each case has its own row |
 | bun runner inna-mcp | `rust/inna-mcp/tests/typescript.rs:56` | the_fake_browser_cases_pass_against_this_binary | cargo test --all-features (test-origin) | other | obsolete | runner of the drop-in rows of rust/inna-mcp/tests/ts; each case has its own row |
