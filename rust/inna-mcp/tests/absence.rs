@@ -269,6 +269,92 @@ fn a_kill_mid_send_leaves_the_operation_uncertain_without_another_post() {
     assert_eq!(case.provider.state().posts, 1);
 }
 
+/// A host cancel of the submit while Inna holds its one write, in both orders (lead 82367; the
+/// replay's absence-cancel-post takes only the cancel first). Taken before the reply, the cancel
+/// leaves the operation uncertain (`unknown`) with no answer. A reply taken first leaves it
+/// `submitted` with Inna's id, whatever the cancel does after. Either way the record survives a
+/// restart, is never sent again, and Inna got exactly one POST.
+#[test]
+fn a_cancelled_submit_is_unknown_or_submitted_by_order_and_never_sent_again() {
+    for reply_first in [false, true] {
+        let case = Case::new(&format!("cancel-submit-{reply_first}"), true);
+        let preview = case.client().prepare(request()).unwrap();
+        let id = preview["operationId"].as_str().unwrap().to_owned();
+        let gate = Gate::default();
+        let (provider, held) = (case.provider.clone(), gate.clone());
+        let mut sending = case.client_with(move |request| {
+            if path_of(request) == "/api/RegisterAbsence/AddNewLeave" {
+                held.hold();
+            }
+            provider.answer(request)
+        });
+        let call = sending.mcp.begin(
+            "tools/call",
+            json!({"name": "inna_submit_absence", "arguments": {"operationId": id, "confirm": true}}),
+        );
+        gate.reached();
+        assert!(case.journal().unwrap().contains(r#""state":"submitting""#));
+        let cancel = json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": call, "reason": "AbortError"}});
+        let mut answers = Vec::new();
+
+        if reply_first {
+            gate.release();
+            // The reply is taken once the record says so; only then does the cancel come.
+            let deadline = std::time::Instant::now() + support::PATIENCE;
+
+            while !case.journal().unwrap().contains(r#""state":"submitted""#) {
+                assert!(std::time::Instant::now() < deadline, "{:?}", case.journal());
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            sending.mcp.send(&cancel);
+        } else {
+            sending.mcp.send(&cancel);
+            // The server reads its input in order: a ping answered means the cancel was taken.
+            let ping = sending.mcp.begin("ping", json!({}));
+            assert_eq!(sending.mcp.answer("ping").value()["id"], json!(ping));
+            gate.release();
+        }
+        let ping = sending.mcp.begin("ping", json!({}));
+
+        loop {
+            let answer = sending.mcp.answer("ping").value();
+
+            if answer["id"] == json!(ping) {
+                break;
+            }
+            answers.push(answer);
+        }
+        let (code, _) = sending.mcp.close();
+        assert_eq!(code, Some(0));
+        let journal: Value = serde_json::from_str(&case.journal().unwrap()).unwrap();
+
+        if reply_first {
+            assert_eq!(journal["state"], "submitted", "{journal}");
+            assert_eq!(journal["upstreamId"], 123, "{journal}");
+        } else {
+            assert_eq!(journal["state"], "unknown", "{journal}");
+            assert!(answers.is_empty(), "{answers:?}");
+        }
+
+        let mut restarted = case.client();
+        let state = if reply_first { "submitted" } else { "unknown" };
+        assert_eq!(
+            restarted.status()["operation"]["state"],
+            state,
+            "{reply_first}"
+        );
+        if reply_first {
+            // A submitted operation answers with its record; nothing is sent.
+            let again = restarted.submit(&id).unwrap();
+            assert_eq!(again["state"], "submitted", "{again}");
+            assert_eq!(again["upstreamId"], 123, "{again}");
+        } else {
+            refused(restarted.submit(&id), "will not be replayed");
+        }
+        assert_eq!(case.provider.state().posts, 1, "{reply_first}");
+    }
+}
+
 /// integration.test.ts:1077
 #[test]
 fn a_student_switch_during_preflight_prevents_the_post() {
