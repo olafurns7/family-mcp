@@ -78,7 +78,7 @@ impl Case {
         let (mcp, _) = Mcp::start(&self.home, &self.upstream.origin, &self.env(), &[]);
         Client {
             mcp,
-            _upstream: None,
+            upstream: None,
         }
     }
 
@@ -89,10 +89,12 @@ impl Case {
             false => &[],
         };
         let (mcp, _) = Mcp::start(&self.home, &origin, &self.env(), args);
-        Client {
-            mcp,
-            _upstream: upstream,
-        }
+        Client { mcp, upstream }
+    }
+
+    /// integration.test.ts's `savedFile`: the stored session record.
+    pub fn saved(&self) -> Value {
+        serde_json::from_str(&self.home.record().expect("a stored record")).unwrap()
     }
 
     /// The text of the absence record beside the session file, if any.
@@ -112,7 +114,7 @@ impl Drop for Case {
 /// One `serve`, as a drop-in `InnaClient`.
 pub struct Client {
     pub mcp: Mcp,
-    _upstream: Option<Upstream>,
+    upstream: Option<Upstream>,
 }
 
 impl Client {
@@ -127,6 +129,13 @@ impl Client {
         answer.outcome()
     }
 
+    /// The client's own upstream (`Case::client_with`).
+    pub fn upstream(&self) -> &Upstream {
+        self.upstream
+            .as_ref()
+            .expect("a client with its own upstream")
+    }
+
     /// `prepareAbsence(input)`.
     pub fn prepare(&mut self, input: Value) -> Result<Value, String> {
         self.call("inna_prepare_absence", input)
@@ -138,6 +147,19 @@ impl Client {
             "inna_submit_absence",
             json!({"operationId": operation_id, "confirm": true}),
         )
+    }
+
+    /// `keepAlive()`: one tick of the server's own keep-alive (SIGUSR1), and the status it
+    /// reports next.
+    pub fn keep_alive(&mut self) -> String {
+        let before = self.mcp.statuses().len();
+        self.mcp.signal("USR1");
+        assert!(
+            self.mcp.until_stderr("keep-alive: ", before + 1, PATIENCE),
+            "no keep-alive status: {}",
+            self.mcp.stderr()
+        );
+        self.mcp.statuses()[before].clone()
     }
 
     /// `absenceStatus()`.

@@ -182,6 +182,21 @@ impl Home {
         }
     }
 
+    /// The decrypted record text as the binary left it (`null` once logged out), if any.
+    pub fn record(&self) -> Option<String> {
+        with_secret_store(&self.store_options(), |store| store.read()).unwrap()
+    }
+
+    /// integration.test.ts's `updateStored`: rewrites the decrypted record with `change`.
+    pub fn update_record(&self, change: impl FnOnce(String) -> String) {
+        let options = self.store_options();
+        with_secret_store(&options, |store| {
+            let text = store.read()?.expect("a stored record");
+            store.write(&change(text))
+        })
+        .unwrap();
+    }
+
     /// The store marker's generation, when there is a marker.
     pub fn generation(&self) -> Option<u64> {
         let marker = fs::read_to_string(self.path(".config/inna-mcp/session.enc.marker")).ok()?;
@@ -516,7 +531,7 @@ type Handler = Box<dyn Fn(&Request) -> Reply + Send + Sync>;
 pub struct Upstream {
     pub origin: String,
     seen: Arc<Mutex<Vec<Request>>>,
-    abandoned: Arc<Mutex<Vec<String>>>,
+    abandoned: Arc<(Mutex<Vec<String>>, Condvar)>,
 }
 
 impl Upstream {
@@ -524,7 +539,7 @@ impl Upstream {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let abandoned = Arc::new(Mutex::new(Vec::new()));
+        let abandoned = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
         let handler: Arc<Handler> = Arc::new(Box::new(handler));
         let (record, gone) = (seen.clone(), abandoned.clone());
 
@@ -544,7 +559,16 @@ impl Upstream {
 
     /// `METHOD /path` of each request whose client closed its connection before the answer.
     pub fn abandoned(&self) -> Vec<String> {
-        self.abandoned.lock().unwrap().clone()
+        self.abandoned.0.lock().unwrap().clone()
+    }
+
+    /// Waits, at most `patience`, until `count` requests were abandoned; whether they were.
+    pub fn until_abandoned(&self, count: usize, patience: Duration) -> bool {
+        let (lock, changed) = &*self.abandoned;
+        let (_gone, timeout) = changed
+            .wait_timeout_while(lock.lock().unwrap(), patience, |gone| gone.len() < count)
+            .unwrap();
+        !timeout.timed_out()
     }
 
     /// Every request so far, in arrival order.
@@ -565,7 +589,7 @@ impl Upstream {
 fn serve(
     stream: TcpStream,
     seen: &Mutex<Vec<Request>>,
-    abandoned: &Mutex<Vec<String>>,
+    abandoned: &(Mutex<Vec<String>>, Condvar),
     handler: &Handler,
 ) {
     let mut reader = BufReader::new(stream);
@@ -647,7 +671,8 @@ fn serve(
     stream.set_nonblocking(true).unwrap();
 
     if matches!(stream.read(&mut [0u8; 1]), Ok(0)) {
-        abandoned.lock().unwrap().push(request.line());
+        abandoned.0.lock().unwrap().push(request.line());
+        abandoned.1.notify_all();
     }
     stream.set_nonblocking(false).unwrap();
 
@@ -1009,6 +1034,15 @@ impl Mcp {
         extra: &[(String, String)],
         args: &[&str],
     ) -> (Self, Answer) {
+        let mut mcp = Self::spawn(home, origin, extra, args);
+        mcp.next = 0;
+        let initialized = mcp.request("initialize", initialize_params());
+        mcp.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        (mcp, initialized)
+    }
+
+    /// Start `serve` with `args`, uninitialized; its requests are numbered from 1.
+    pub fn spawn(home: &Home, origin: &str, extra: &[(String, String)], args: &[&str]) -> Self {
         let mut all = vec!["serve"];
         all.extend_from_slice(args);
         let mut child = home
@@ -1049,16 +1083,13 @@ impl Mcp {
             sink.changed.notify_all();
         });
         let stdin = child.stdin.take();
-        let mut mcp = Self {
+        Self {
             child,
             stdin,
             lines,
             stderr,
-            next: 0,
-        };
-        let initialized = mcp.request("initialize", initialize_params());
-        mcp.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
-        (mcp, initialized)
+            next: 1,
+        }
     }
 
     /// Write one message without waiting for an answer.
@@ -1139,6 +1170,11 @@ impl Mcp {
         // All of stderr: the reader may still be draining the pipe.
         self.stderr.until(PATIENCE, |_, ended| ended);
         (status, self.stderr.text())
+    }
+
+    /// The exit within `patience`, if it came.
+    pub fn exit_within(&mut self, patience: Duration) -> Option<ExitStatus> {
+        wait(&mut self.child, patience)
     }
 
     /// Wait for the exit with standard input still open (a signal's exit, not end of input's).
