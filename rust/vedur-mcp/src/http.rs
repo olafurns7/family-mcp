@@ -14,6 +14,12 @@ pub const WEATHER_API: &str = "https://api.vedur.is/weather";
 
 pub const CAP_API: &str = "https://api.vedur.is/cap";
 
+/// The `x-vi-api-version` each api.vedur.is API is pinned to: the OpenAPI document versions the
+/// response shapes were checked against.
+const API_VERSIONS: [(&str, &str); 2] = [(WEATHER_API, "2026-02-17"), (CAP_API, "2026-04-14")];
+
+const API_VERSION: &str = "x-vi-api-version";
+
 pub const GOTTVEDUR: &str = "https://gottvedur.is";
 
 const USER_AGENT: &str = concat!(
@@ -130,6 +136,15 @@ enum Attempt {
     Retry,
 }
 
+/// The pinned API version for a URL on one of the versioned api.vedur.is APIs.
+fn api_version(url: &str) -> Option<&'static str> {
+    API_VERSIONS.iter().find_map(|(api, version)| {
+        url.strip_prefix(api)
+            .is_some_and(|rest| rest.starts_with('/'))
+            .then_some(*version)
+    })
+}
+
 fn is_no_data(body: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(body)
         .is_ok_and(|body| body == serde_json::json!({ "message": NO_DATA }))
@@ -205,12 +220,18 @@ impl Http {
 
     async fn attempt(
         &self,
+        url: &str,
         target: &str,
         accept: &str,
         max_bytes: usize,
         no_data: bool,
     ) -> Attempt {
-        let response = match self.client.get(target).header(ACCEPT, accept).send().await {
+        let mut request = self.client.get(target).header(ACCEPT, accept);
+
+        if let Some(version) = api_version(url) {
+            request = request.header(API_VERSION, version);
+        }
+        let response = match request.send().await {
             Ok(response) => response,
             Err(_) => return Attempt::Retry,
         };
@@ -286,7 +307,7 @@ impl Http {
                 tokio::time::sleep(wait).await;
             }
 
-            match self.attempt(&target, accept, max_bytes, no_data).await {
+            match self.attempt(url, &target, accept, max_bytes, no_data).await {
                 Attempt::Retry => continue,
                 Attempt::Done(Err(error)) => return Err(error),
                 Attempt::Done(Ok(Answer::NoData)) => return Ok(None),
@@ -344,6 +365,20 @@ mod tests {
         );
         assert_eq!(ttl(&headers("max-age=86400")), MAX_TTL);
         assert_eq!(ttl(&headers("no-store")), MIN_TTL);
+    }
+
+    #[test]
+    fn only_the_versioned_apis_get_a_pinned_version() {
+        assert_eq!(
+            api_version("https://api.vedur.is/weather/stations?keyword=x"),
+            Some("2026-02-17")
+        );
+        assert_eq!(
+            api_version("https://api.vedur.is/cap/capbroker/active/detailed/all"),
+            Some("2026-04-14")
+        );
+        assert_eq!(api_version("https://api.vedur.is/weatherx/stations"), None);
+        assert_eq!(api_version("https://gottvedur.is/rss.xml/vaktin/"), None);
     }
 
     #[test]

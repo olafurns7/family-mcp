@@ -83,6 +83,7 @@ type Handler = Box<dyn Fn(&str, usize) -> Reply + Send + Sync>;
 pub struct Upstream {
     pub origin: String,
     seen: Arc<Mutex<Vec<String>>>,
+    versions: Arc<Mutex<Vec<(String, Option<String>)>>>,
 }
 
 impl Upstream {
@@ -90,17 +91,28 @@ impl Upstream {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let versions = Arc::new(Mutex::new(Vec::new()));
         let handler: Arc<Handler> = Arc::new(Box::new(handler));
-        let record = seen.clone();
+        let (record, record_versions) = (seen.clone(), versions.clone());
 
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
-                let (record, handler) = (record.clone(), handler.clone());
-                std::thread::spawn(move || serve(stream, &record, &handler));
+                let (record, record_versions, handler) =
+                    (record.clone(), record_versions.clone(), handler.clone());
+                std::thread::spawn(move || serve(stream, &record, &record_versions, &handler));
             }
         });
-        Self { origin, seen }
+        Self {
+            origin,
+            seen,
+            versions,
+        }
+    }
+
+    /// Each request's path with its `x-vi-api-version` header, in arrival order.
+    pub fn api_versions(&self) -> Vec<(String, Option<String>)> {
+        self.versions.lock().unwrap().clone()
     }
 
     /// Every request path so far, in arrival order.
@@ -109,7 +121,12 @@ impl Upstream {
     }
 }
 
-fn serve(stream: TcpStream, seen: &Mutex<Vec<String>>, handler: &Handler) {
+fn serve(
+    stream: TcpStream,
+    seen: &Mutex<Vec<String>>,
+    versions: &Mutex<Vec<(String, Option<String>)>>,
+    handler: &Handler,
+) {
     let mut reader = BufReader::new(stream);
     let mut head = Vec::new();
 
@@ -136,7 +153,13 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<String>>, handler: &Handler) {
             && agent.contains("github.com/olafurns7/family-mcp")),
         "polite user agent"
     );
+    let version = head.split("\r\n").find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("x-vi-api-version")
+            .then(|| value.trim().to_owned())
+    });
     let reply = {
+        versions.lock().unwrap().push((path.clone(), version));
         let mut seen = seen.lock().unwrap();
         seen.push(path.clone());
         handler(&path, seen.len() - 1)

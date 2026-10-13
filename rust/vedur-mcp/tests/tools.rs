@@ -700,6 +700,33 @@ fn invalid_arguments_are_refused_before_any_request() {
 }
 
 #[test]
+fn api_vedur_is_requests_pin_their_api_version_and_gottvedur_ones_send_none() {
+    let upstream = fixtures();
+    let mut mcp = Mcp::start(&upstream);
+    mcp.ok("search_stations", json!({"query": "Reykjavík"}));
+    mcp.ok("get_forecast", json!({"station_id": 1}));
+    mcp.ok("get_observations", json!({"station_id": 1}));
+    mcp.ok("get_weather_alerts", json!({}));
+    mcp.ok("get_weather_watch", json!({}));
+    assert_eq!(mcp.finish(), "");
+
+    let versions = upstream.api_versions();
+    assert_eq!(versions.len(), 6);
+
+    for (path, version) in versions {
+        let expected = if path.starts_with("/api.vedur.is/weather/") {
+            Some("2026-02-17")
+        } else if path.starts_with("/api.vedur.is/cap/") {
+            Some("2026-04-14")
+        } else {
+            assert!(path.starts_with("/gottvedur.is/"), "{path}");
+            None
+        };
+        assert_eq!(version.as_deref(), expected, "{path}");
+    }
+}
+
+#[test]
 fn every_fixture_parses() {
     for name in [
         "stations.json",

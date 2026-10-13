@@ -103,6 +103,9 @@ IMO's sites are dropped, and every string is bounded.
 
 - One HTTP client sends only GET requests, with a 10-second timeout per attempt
   and a `vedur-mcp/<version> (+https://github.com/olafurns7/family-mcp)` User-Agent.
+- Requests to api.vedur.is pin `x-vi-api-version`: `2026-02-17` for the Weather
+  API and `2026-04-14` for the CAP API, the OpenAPI versions the response shapes
+  were checked against. gottvedur.is requests send no version header.
 - Server errors (5xx), timeouts, and connection failures are retried twice, after
   0.3 and 0.9 seconds. A 4xx answer, a redirect, or unexpected data is not retried.
 - Successful responses are cached in memory for 60 seconds, or for the upstream
