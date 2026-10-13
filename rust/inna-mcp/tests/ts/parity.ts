@@ -745,7 +745,6 @@ async function runServe(
         'Inna sign-in is required. Run auth login or import a fresh private cookie export.',
         'Inna session expired. Run inna-mcp auth login or import a fresh private browser cookie export.',
         'No Inna session. Run inna-mcp auth login or auth import with a private cookie export.',
-        'Inna refused the student switch and asked for sign-in. The session may have ended; sign in again and report this.',
       ])
         if (normalized.isError === true && normalized.content?.[0]?.text === old) {
           normalized.content[0].text = 'signed out: call inna_sign_in';

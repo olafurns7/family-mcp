@@ -147,10 +147,9 @@ impl Saved {
             account: Binding::parse(object.get("account")?)?,
             students,
             pause_until,
-            sign_in: match object.get("signIn") {
-                None => None,
-                Some(value) => Some(crate::sign_in::Guard::parse(value)?),
-            },
+            sign_in: object.get("signIn").map(|value| {
+                crate::sign_in::Guard::parse(value).unwrap_or_else(crate::sign_in::Guard::blocked)
+            }),
         })
     }
 
@@ -544,6 +543,25 @@ pub fn locked<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_sign_in_metadata_keeps_the_session_and_blocks_sign_in() {
+        let value = json!({"version": 2, "jar": "{}", "account": {"userId": 1, "studentId": "2", "schoolId": "3"}});
+        for malformed in [
+            Value::Null,
+            json!({"phone": "invalid"}),
+            json!({"starts": ["bad"]}),
+        ] {
+            let mut value = value.clone();
+            value["signIn"] = malformed;
+            let saved = Saved::parse(&value).unwrap();
+            assert_eq!(saved.jar, "{}");
+            assert_eq!(saved.account.user_id, 1);
+            let guard = saved.sign_in.unwrap().to_json();
+            assert!(guard.get("phone").is_none());
+            assert_eq!(guard["starts"].as_array().unwrap().len(), 10);
+        }
+    }
 
     #[test]
     fn saved_sessions_parse_and_write_as_the_typescript_schema() {

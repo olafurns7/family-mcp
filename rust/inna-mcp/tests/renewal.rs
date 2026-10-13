@@ -353,7 +353,7 @@ fn a_switch_401_recovers_once_and_a_persistent_401_refuses_after_two_switches() 
 
         if persistent {
             assert!(
-                result.to_string().contains("signed out: call inna_sign_in"),
+                result.to_string().contains("Inna refused the student switch and asked for sign-in. The session may have ended; sign in again and report this."),
                 "{result}"
             );
         }

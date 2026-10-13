@@ -489,13 +489,13 @@ test('every read tool round-trips through MCP without marking read or fetching e
       [...calls.map(([name]) => name), 'inna_sign_in', 'inna_sign_in_status'].toSorted(),
     );
 
-    // Only the two tools that never select a student may claim to be read-only.
+    // These tools never select a student.
     expect(
       tools.tools
         .filter((tool) => tool.annotations?.readOnlyHint)
         .map((tool) => tool.name)
         .toSorted(),
-    ).toEqual(['inna_absence_status', 'inna_list_students']);
+    ).toEqual(['inna_absence_status', 'inna_list_students', 'inna_sign_in_status']);
 
     for (const [name, args] of calls) {
       const result = await client.callTool({ name, arguments: args });
@@ -957,7 +957,10 @@ test('failed and stalled response bodies are cancelled without returning a false
       },
     });
 
-    await assert.rejects(client.messages(), /signed out: call inna_sign_in|denied|rate limited|unexpected response/);
+    await assert.rejects(
+      client.messages(),
+      /signed out: call inna_sign_in|denied|rate limited|unexpected response/,
+    );
     expect(cancelled).toBe(true);
 
     if (status === 429) {
@@ -1391,7 +1394,10 @@ test('an ignored, misdirected, or rate-limited switch returns no data', async ()
   ]) {
     const f = await fixture();
     f.provider.switchLocation = location;
-    await assert.rejects(f.client.overview(undefined, SIBLING), /signed out: call inna_sign_in/);
+    await assert.rejects(
+      f.client.overview(undefined, SIBLING),
+      /Inna refused the student switch and asked for sign-in/,
+    );
     expect(f.provider.paths().slice(-1)).toEqual(['/auth/system']);
   }
 
@@ -1399,7 +1405,7 @@ test('an ignored, misdirected, or rate-limited switch returns no data', async ()
   refused.provider.switchUnauthorized = true;
   await assert.rejects(
     refused.client.overview(undefined, SIBLING),
-    /^SafeError: signed out: call inna_sign_in$/,
+    /^SafeError: Inna refused the student switch and asked for sign-in\. The session may have ended; sign in again and report this\.$/,
   );
   expect(refused.provider.paths().slice(-1)).toEqual(['/auth/system']);
   refused.provider.unauthorized = true;

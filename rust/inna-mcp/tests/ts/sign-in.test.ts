@@ -27,6 +27,7 @@ const user = {
   defaultTermId: '4',
   isGuardian: true,
   logInType: '2',
+  access: [],
   olderThan18: false,
   registerAbsenceGuardian: '1',
   registerAbsenceUnder18: '0',
@@ -178,6 +179,36 @@ async function fixture(timeout = 3000) {
       await client?.close();
       client = undefined;
     },
+    closeOnly: async () => {
+      const gone = pid;
+      await client?.close();
+      client = undefined;
+      const end = performance.now() + 5000;
+      for (;;) {
+        try {
+          process.kill(gone!, 0);
+        } catch {
+          return;
+        }
+        if (performance.now() > end) throw new Error('serve did not exit');
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      }
+    },
+    second: async () => {
+      const transport = new StdioClientTransport({
+        command: binary,
+        args: ['serve'],
+        env,
+        stderr: 'pipe',
+      });
+      transport.stderr?.on('data', (data: Buffer) => {
+        errors += data.toString();
+      });
+      const other = new Client({ name: 'sign-in-test-b', version: '1' });
+      await other.connect(transport);
+      return other;
+    },
+    now: () => now,
     dispose: async () => {
       release?.();
       await client?.close();
@@ -187,8 +218,8 @@ async function fixture(timeout = 3000) {
   };
 }
 
-test('code with leading zeros reaches MCP immediately, pending is reused, approval saves the default under the locks', async () => {
-  const f = await fixture();
+test('code reaches MCP immediately; approval saves the default even when the lock wait outlasts the login deadline', async () => {
+  const f = await fixture(2000);
   try {
     f.user(5);
     f.p.setAccess([
@@ -218,16 +249,14 @@ test('code with leading zeros reaches MCP immediately, pending is reused, approv
     }
     // Hold the same legacy lock used by verified save until approval has reached the provider.
     const { withFileLock } = await import('@family-mcp/session-store');
-    let unlock: (() => void) | undefined;
     let entered: (() => void) | undefined;
     const held = new Promise<void>((resolve) => {
       entered = resolve;
     });
     const lock = withFileLock(join(f.home, 'legacy.json'), {}, async () => {
       entered!();
-      await new Promise<void>((resolve) => {
-        unlock = resolve;
-      });
+      // Scaled equivalent of a save lock held beyond the production 180-second login deadline.
+      await new Promise<void>((resolve) => setTimeout(resolve, 2800));
     });
     await held;
     f.release();
@@ -245,7 +274,6 @@ test('code with leading zeros reaches MCP immediately, pending is reused, approv
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
     }
     expect((await f.status()).status).toBe('pending');
-    unlock!();
     await lock;
     await f.until('approved');
     const saved = JSON.parse(await readStored(f.store));
@@ -379,6 +407,103 @@ test('saved rate-limit pause and unreadable store fail closed without an eID sta
     expect((await f.call('inna_get_overview')).isError).toBe(true);
     expect((await f.call('inna_sign_in')).isError).toBe(true);
     expect(f.starts()).toBe(1);
+  } finally {
+    await f.dispose();
+  }
+});
+
+async function polled(f: Awaited<ReturnType<typeof fixture>>) {
+  const end = performance.now() + 2000;
+  while (!f.polls()) {
+    if (performance.now() > end) throw new Error('poll not reached');
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+test('P1 shutdown during a pending sign-in exits and clears its lease with cooldown', async () => {
+  const f = await fixture(30_000);
+  try {
+    expect((await f.cli(['auth', 'login'], `${PHONE}\n`)).code).toBe(0);
+    f.mode('pending');
+    await f.open();
+    await f.call('inna_sign_in');
+    await polled(f);
+    await f.closeOnly();
+    const guard = JSON.parse(await readStored(f.store)).signIn;
+    expect(guard.pendingUntil).toBe(0);
+    expect(guard.cooldownUntil).toBe(f.now() + 60_000);
+    expect(guard.starts).toHaveLength(1);
+    await f.open();
+    expect((await f.status()).status).toBe('none');
+    expect((await f.call('inna_sign_in')).isError).toBe(true);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test('P2 second serve reuses a foreign lease and its later lease survives the first process cleanup', async () => {
+  const f = await fixture(30_000);
+  let b: Client | undefined;
+  try {
+    expect((await f.cli(['auth', 'login'], `${PHONE}\n`)).code).toBe(0);
+    f.mode('pending');
+    await f.open();
+    await f.call('inna_sign_in');
+    await polled(f);
+    b = await f.second();
+    const pendingMessage =
+      'A sign-in started by another inna-mcp process is pending; approve with the code shown there or wait up to 4 minutes.';
+    for (const name of ['inna_sign_in', 'inna_sign_in_status']) {
+      const pending = (await b.callTool({ name, arguments: {} })).structuredContent!;
+      expect(pending.status).toBe('pending');
+      expect(pending.code).toBeUndefined();
+      expect(pending.message).toBe(pendingMessage);
+    }
+    expect(f.starts()).toBe(2);
+    // Model a suspended first process returning after its saved lease and cooldown elapsed.
+    f.tick(301_000);
+    const next = await b.callTool({ name: 'inna_sign_in', arguments: {} });
+    expect(next.structuredContent?.code).toBe('0123');
+    const lease = JSON.parse(await readStored(f.store)).signIn.pendingUntil;
+    expect(lease).toBe(f.now() + 240_000);
+    expect(f.starts()).toBe(3);
+    await f.closeOnly();
+    const guard = JSON.parse(await readStored(f.store)).signIn;
+    expect(guard.pendingUntil).toBe(lease);
+    expect(guard.cooldownUntil).toBeLessThan(f.now());
+    f.release();
+    const end = performance.now() + 5000;
+    for (;;) {
+      const current = (await b.callTool({ name: 'inna_sign_in_status', arguments: {} }))
+        .structuredContent!;
+      if (current.status === 'approved') break;
+      if (performance.now() > end) throw new Error('second serve did not approve');
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    expect(JSON.parse(await readStored(f.store)).signIn.pendingUntil).toBe(0);
+    expect(f.errors()).not.toContain(PHONE);
+  } finally {
+    f.release();
+    await b?.close();
+    await f.dispose();
+  }
+});
+
+test('malformed optional sign-in guard preserves session reads and never starts eID', async () => {
+  const f = await fixture();
+  try {
+    expect((await f.cli(['auth', 'login'], `${PHONE}\n`)).code).toBe(0);
+    await updateStored(f.store, (text) =>
+      JSON.stringify({ ...JSON.parse(text), signIn: { starts: ['bad'] } }),
+    );
+    await f.open();
+    expect((await f.call('inna_list_students')).isError).not.toBe(true);
+    expect((await f.call('inna_session_status')).structuredContent?.authenticated).toBe(true);
+    expect(JSON.stringify(await f.call('inna_sign_in'))).toContain('auth login once in a terminal');
+    expect(f.starts()).toBe(1);
+    const guard = JSON.parse(await readStored(f.store)).signIn;
+    expect(guard.phone).toBeUndefined();
+    expect(guard.starts).toHaveLength(10);
   } finally {
     await f.dispose();
   }

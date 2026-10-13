@@ -305,7 +305,7 @@ test('a switch 401 recovers once and a persistent 401 refuses after exactly two 
       expect(paths.slice(first, first + 3)).toEqual([SWITCH, USER, SWITCH]);
       if (persistent)
         expect(JSON.stringify(result)).toContain(
-          'signed out: call inna_sign_in',
+          'Inna refused the student switch and asked for sign-in. The session may have ended; sign in again and report this.',
         );
     } finally {
       await f.close();

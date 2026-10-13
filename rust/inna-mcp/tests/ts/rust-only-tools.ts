@@ -26,10 +26,10 @@ export const rustOnlyTools = [
       additionalProperties: false,
     },
     annotations: {
-      readOnlyHint: false,
+      readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
-      openWorldHint: true,
+      openWorldHint: false,
     },
   },
 ];

@@ -397,7 +397,7 @@ fn an_ignored_misdirected_or_rate_limited_switch_returns_no_data() {
         refused(
             case.client()
                 .call("inna_get_overview", json!({"studentKey": SIBLING})),
-            "signed out: call inna_sign_in",
+            "Inna refused the student switch and asked for sign-in. The session may have ended; sign in again and report this.",
         );
         assert_eq!(case.provider.paths(0).last().unwrap(), SWITCH, "{location}");
     }
@@ -409,7 +409,10 @@ fn an_ignored_misdirected_or_rate_limited_switch_returns_no_data() {
         client.call("inna_get_overview", json!({"studentKey": SIBLING})),
         "",
     );
-    assert_eq!(text, "signed out: call inna_sign_in");
+    assert_eq!(
+        text,
+        "Inna refused the student switch and asked for sign-in. The session may have ended; sign in again and report this."
+    );
     assert_eq!(refusing.provider.paths(0).last().unwrap(), SWITCH);
     refusing.provider.state().unauthorized = true;
     starts(

@@ -75,7 +75,6 @@ pub const NO_SESSION: Fail = Fail::Safe(
 pub fn signed_out(fail: Fail) -> bool {
     fail == NO_SESSION
         || matches!(fail, Fail::Safe(message) if message == SIGN_IN_REQUIRED || message == SESSION_EXPIRED)
-        || fail == SWITCH_REFUSED
 }
 
 const WRITES_NOT_ALLOWED: Fail = Fail::Safe("Absence writes require --allow-absence-writes.");
