@@ -27,9 +27,19 @@ const pkg = await readPackage(values.package);
 
 assert.ok(['fake', 'real', 'both'].includes(values.mode), 'Use --mode fake|real|both.');
 
-const script = await readFile(join(pkg.root, 'install.sh'), 'utf8');
+let script = await readFile(join(pkg.root, 'install.sh'), 'utf8');
 
 const directory = await mkdtemp(join(tmpdir(), `${pkg.name}-installer-`));
+
+// Redirect host probes to fixtures, so fake tests are independent of the test host.
+const pid1 = join(directory, 'pid1');
+
+const dockerenv = join(directory, 'dockerenv');
+
+if (pkg.name === 'inna-mcp' && values.mode !== 'real') {
+  await writeFile(pid1, 'systemd\n');
+  script = script.replaceAll('/proc/1/comm', pid1).replaceAll('/.dockerenv', dockerenv);
+}
 
 const fakeBin = join(directory, 'commands');
 
@@ -340,7 +350,7 @@ fi
         `${failure === 'checksum' ? '0'.repeat(64) : digest}  ${failure === 'filename' ? 'wrong.tar.gz' : archive}\n`,
       );
 
-      const result = spawnSync('/bin/sh', [], {
+      const result = spawnSync(process.env.FAMILY_MCP_INSTALLER_SHELL ?? '/bin/sh', [], {
         input: script,
         encoding: 'utf8',
         timeout: 20_000,
@@ -394,12 +404,16 @@ fi
 
     /** @param {string[]} [args] @param {NodeJS.ProcessEnv} [extraEnv] */
     const runInstaller = (args = [], extraEnv = {}) =>
-      spawnSync('/bin/sh', args.length ? ['-s', '--', ...args] : [], {
-        input: script,
-        encoding: 'utf8',
-        timeout: 20_000,
-        env: { ...env, ...extraEnv },
-      });
+      spawnSync(
+        process.env.FAMILY_MCP_INSTALLER_SHELL ?? '/bin/sh',
+        args.length ? ['-s', '--', ...args] : [],
+        {
+          input: script,
+          encoding: 'utf8',
+          timeout: 20_000,
+          env: { ...env, ...extraEnv },
+        },
+      );
 
     if (pkg.name === 'infomentor-mcp') {
       const calls = join(directory, 'network-admin-calls');
@@ -664,16 +678,34 @@ cat >/dev/null
       // No systemd user manager: a clear message, nothing written; the choice is still saved.
       run = await renewalRun(['--with-renewal'], { TEST_NO_SYSTEMD: '1' });
       assert.equal(run.status, 0, run.stderr);
-      assert.match(
-        run.stderr,
-        /No systemd user manager is available, so scheduled renewal was not set up/,
-      );
+      assert.match(run.stderr, /No systemd user manager is available/);
       assert.equal(run.saved, 'on');
       assert.deepEqual(run.calls, [show]);
       assert.ok(!(await exists(timer)) && !(await exists(service)));
       run = await renewalRun(['--without-renewal'], { TEST_NO_SYSTEMD: '1' });
       assert.equal(run.status, 0, run.stderr);
       assert.deepEqual(run.calls, []);
+
+      for (const init of ['tini', 'dumb-init', 'sh']) {
+        await writeFile(pid1, `${init}\n`);
+        run = await renewalRun(['--with-renewal']);
+        assert.equal(run.status, 0, run.stderr);
+        assert.match(run.stderr, /No renewal timer was installed.*PID 1 is not systemd/s);
+        assert.match(run.stderr, /inna_sign_in/);
+        assert.match(run.stderr, /3\|4\).*break/);
+        assert.match(run.stderr, /cannot survive pauses/);
+        assert.deepEqual(run.calls, []);
+        assert.ok(!(await exists(timer)) && !(await exists(service)));
+      }
+
+      await writeFile(pid1, 'systemd\n');
+      await writeFile(dockerenv, '');
+      run = await renewalRun(['--with-renewal']);
+      assert.equal(run.status, 0, run.stderr);
+      assert.match(run.stderr, /No renewal timer was installed.*container/s);
+      assert.deepEqual(run.calls, []);
+      assert.ok(!(await exists(timer)) && !(await exists(service)));
+      await rm(dockerenv);
 
       // Without a user manager nothing runs the timer: its marked units and enablement link go.
       run = await renewalRun(['--with-renewal']);
@@ -990,7 +1022,7 @@ cat >/dev/null
     }
 
     // A piped truncation must not begin installation before the final main invocation.
-    const truncated = spawnSync('/bin/sh', [], {
+    const truncated = spawnSync(process.env.FAMILY_MCP_INSTALLER_SHELL ?? '/bin/sh', [], {
       input: script.slice(0, script.lastIndexOf('main "$@"')),
       env,
       encoding: 'utf8',
@@ -1023,7 +1055,11 @@ cat >/dev/null
       pkg.version,
     );
     assert.notEqual(
-      spawnSync('/bin/sh', [join(pkg.root, 'install.sh'), '--unknown'], { env }).status,
+      spawnSync(
+        process.env.FAMILY_MCP_INSTALLER_SHELL ?? '/bin/sh',
+        [join(pkg.root, 'install.sh'), '--unknown'],
+        { env },
+      ).status,
       0,
     );
 
@@ -1092,7 +1128,11 @@ cat >/dev/null
 
     execFileSync('/bin/sh', [], { input: script, env, stdio: ['pipe', 'pipe', 'pipe'] });
     await writeFile(join(directory, archive + '.sha256'), `${'0'.repeat(64)}  ${archive}\n`);
-    assert.notEqual(spawnSync('/bin/sh', [], { input: script, env }).status, 0);
+    assert.notEqual(
+      spawnSync(process.env.FAMILY_MCP_INSTALLER_SHELL ?? '/bin/sh', [], { input: script, env })
+        .status,
+      0,
+    );
     assert.equal(
       execFileSync(binary, ['--version'], { env, encoding: 'utf8' }).trim(),
       pkg.version,

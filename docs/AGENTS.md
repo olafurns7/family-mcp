@@ -55,6 +55,15 @@ attendance state from a failed request or undocumented value.
 
 ### Inna
 
+- When a read or session status says `signed out: call inna_sign_in`, call
+  `inna_sign_in` once for the user's requested recovery. Never start it
+  automatically on a failed read or call it in a loop. Show the returned code
+  verbatim, including leading zeros, before asking for phone approval; never
+  ask for the PIN. Call `inna_sign_in_status` to check completion. A pending
+  call reuses the attempt; respect the one-minute failure cooldown, persistent
+  10-start rolling 24-hour cap, and Inna's rate-limit pause. If no phone is
+  stored, direct the owner to `inna-mcp auth login` once in a terminal.
+
 - Electronic-ID login uses `inna-mcp auth login` with hidden phone input. Any
   agent running the CLI must immediately show the user the exact security code
   printed by the CLI, including leading zeros, before waiting for phone approval.
@@ -95,9 +104,8 @@ attendance state from a failed request or undocumented value.
 - While `serve` runs, it touches the saved session every ten minutes unless
   started with `--no-keep-alive`. This only prevents an idle timeout: session
   lifetime is unmeasured, and an ended session needs the owner to sign in again.
-  "Inna refused the student switch and asked for sign-in" is a different error
-  from "Inna sign-in is required"; report which one occurred. This requires a
-  release after Inna 0.2.1.
+  Signed-out read tools now say `signed out: call inna_sign_in`; follow the
+  explicit recovery steps above. The keep-alive requires a release after Inna 0.2.1.
 - School dates and times are UTC, including timestamps without a zone. Use
   `dates[field].iso` only when its status is `parsed`; preserve date-only values
   as dates. Missing or unrecognized dates are unavailable. Check `retrievedAt`
@@ -196,7 +204,7 @@ attendance state from a failed request or undocumented value.
   times rather than calling every step hourly. A shape-change error is not a
   missing forecast to fill from elsewhere.
 - In `get_observations`, `null` means not measured, never zero; `observation:
-  null` means no recent report, not calm or dry weather.
+null` means no recent report, not calm or dry weather.
 - Results are cached for at least 60 seconds; avoid polling faster than that.
 
 ## Working on this repository
