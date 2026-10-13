@@ -2027,10 +2027,7 @@ test('auth migrate moves a plaintext session once; later plaintext files are nev
     },
   });
 
-  expect(await client.status()).toEqual({
-    authenticated: false,
-    message: 'signed out: call inna_sign_in',
-  });
+  expect(await client.status()).toEqual({ authenticated: false });
   await assert.rejects(client.migrate(), /^SafeError: No Inna session\./);
   await assert.rejects(stat(`${store.path}.marker`), /ENOENT/);
 
@@ -2059,10 +2056,7 @@ test('auth migrate moves a plaintext session once; later plaintext files are nev
   await client.logout();
   await writeFile(f.path, planted, { mode: 0o600 });
   const calls = f.provider.calls.length;
-  expect(await client.status()).toEqual({
-    authenticated: false,
-    message: 'signed out: call inna_sign_in',
-  });
+  expect(await client.status()).toEqual({ authenticated: false });
   expect(await client.keepAlive()).toEqual({ status: 'skipped' });
   expect(await client.defaultUserId()).toBeUndefined();
   await assert.rejects(client.overview(), /^SafeError: signed out: call inna_sign_in/);
@@ -2270,10 +2264,7 @@ test('a store with a marker but no record never reads the plaintext file, and mi
   await resetStored(f.store);
   await writeFile(f.path, legacy, { mode: 0o600 });
   const calls = f.provider.calls.length;
-  expect(await f.client.status()).toEqual({
-    authenticated: false,
-    message: 'signed out: call inna_sign_in',
-  });
+  expect(await f.client.status()).toEqual({ authenticated: false });
   expect(await f.client.keepAlive()).toEqual({ status: 'skipped' });
   await assert.rejects(f.client.overview(), /^SafeError: signed out: call inna_sign_in/);
   expect(f.provider.calls).toHaveLength(calls);

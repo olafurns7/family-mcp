@@ -288,10 +288,6 @@ impl Server for Inna {
             Err(fail) if crate::client::signed_out(fail) => {
                 Err(Fail::Safe("signed out: call inna_sign_in"))
             }
-            Ok(mut value) if name == "inna_session_status" && value["authenticated"] == false => {
-                value["message"] = serde_json::json!("signed out: call inna_sign_in");
-                Ok(value)
-            }
             result => result,
         })
     }

@@ -131,6 +131,10 @@ async function fixture(timeout = 3000) {
     });
     client = new Client({ name: 'sign-in-test', version: '1' });
     await client.connect(transport);
+
+    if ((await client.listTools()).tools.some((tool) => !tool.outputSchema))
+      throw new Error('Every tool must declare an output schema.');
+
     pid = transport.pid;
   };
   const call = async (name: string, args: Record<string, unknown> = {}) => {
@@ -206,6 +210,10 @@ async function fixture(timeout = 3000) {
       });
       const other = new Client({ name: 'sign-in-test-b', version: '1' });
       await other.connect(transport);
+
+      if ((await other.listTools()).tools.some((tool) => !tool.outputSchema))
+        throw new Error('Every tool must declare an output schema.');
+
       return other;
     },
     now: () => now,
@@ -367,7 +375,9 @@ test('old records without a phone and absent sessions do not start eID; inputs a
   try {
     await f.open();
     expect(JSON.stringify(await f.call('inna_sign_in'))).toContain('auth login once in a terminal');
-    expect(JSON.stringify(await f.call('inna_session_status'))).toContain('call inna_sign_in');
+    expect((await f.call('inna_session_status')).structuredContent).toEqual({
+      authenticated: false,
+    });
     expect((await f.call('inna_sign_in', { phone: PHONE })).isError).toBe(true);
     await f.close();
     // Import exercises the old schema, without phone metadata.

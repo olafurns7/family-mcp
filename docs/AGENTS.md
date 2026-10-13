@@ -55,8 +55,9 @@ attendance state from a failed request or undocumented value.
 
 ### Inna
 
-- When a read or session status says `signed out: call inna_sign_in`, call
-  `inna_sign_in` once for the user's requested recovery. Never start it
+- When a read says `signed out: call inna_sign_in`, or `inna_session_status`
+  returns `{"authenticated": false}`, call `inna_sign_in` once for the user's
+  requested recovery. Never start it
   automatically on a failed read or call it in a loop. Show the returned code
   verbatim, including leading zeros, before asking for phone approval; never
   ask for the PIN. Call `inna_sign_in_status` to check completion. A pending

@@ -558,8 +558,9 @@ See the [release process](docs/RELEASING.md) for packaging and publication gates
 ## Signed out? Sign in from the chat
 
 After one terminal `inna-mcp auth login`, the encrypted session record keeps your
-phone number. When a tool says `signed out: call inna_sign_in`, call
-`inna_sign_in` with no arguments. It returns a four-digit verification code;
+phone number. Signed-out `inna_session_status` returns only `{"authenticated": false}`.
+When a read says `signed out: call inna_sign_in`, or status reports unauthenticated,
+call `inna_sign_in` with no arguments. It returns a four-digit verification code;
 compare it verbatim, including leading zeros, with your phone and approve there.
 Enter your PIN only on your phone. Then call `inna_sign_in_status`: `pending`,
 `approved` (signed in), `failed`, `expired`, or `none`.

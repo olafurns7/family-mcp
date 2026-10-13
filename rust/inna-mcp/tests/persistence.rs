@@ -146,7 +146,7 @@ fn auth_migrate_moves_a_plaintext_session_once_and_later_plaintext_is_never_read
 
     assert_eq!(
         client.call("inna_session_status", json!({})).unwrap(),
-        json!({"authenticated": false, "message": "signed out: call inna_sign_in"})
+        json!({"authenticated": false})
     );
     starts(migrate(&case), "No Inna session.");
     assert!(!store_paths(&root).1.exists());
@@ -186,7 +186,7 @@ fn auth_migrate_moves_a_plaintext_session_once_and_later_plaintext_is_never_read
     let calls = case.provider.state().calls.len();
     assert_eq!(
         client.call("inna_session_status", json!({})).unwrap(),
-        json!({"authenticated": false, "message": "signed out: call inna_sign_in"})
+        json!({"authenticated": false})
     );
     assert_eq!(client.keep_alive(), "skipped");
     starts(overview(&mut client, None), "signed out: call inna_sign_in");
@@ -299,7 +299,7 @@ fn a_marker_without_a_record_never_reads_plaintext_and_migrate_resumes() {
     let mut client = case.client();
     assert_eq!(
         client.call("inna_session_status", json!({})).unwrap(),
-        json!({"authenticated": false, "message": "signed out: call inna_sign_in"})
+        json!({"authenticated": false})
     );
     assert_eq!(client.keep_alive(), "skipped");
     starts(overview(&mut client, None), "signed out: call inna_sign_in");

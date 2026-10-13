@@ -415,11 +415,6 @@ fn signed_out_answer(recorded: &Value) -> Value {
             }
         }
     }
-    if answer["result"]["structuredContent"]["authenticated"] == false {
-        answer["result"]["structuredContent"]["message"] = json!("signed out: call inna_sign_in");
-        answer["result"]["content"][0]["text"] =
-            json!(serde_json::to_string(&answer["result"]["structuredContent"]).unwrap());
-    }
     json!(answer.to_string())
 }
 

@@ -749,10 +749,6 @@ async function runServe(
         if (normalized.isError === true && normalized.content?.[0]?.text === old) {
           normalized.content[0].text = 'signed out: call inna_sign_in';
         }
-      if ((step.swap ? other(side) : side) === 'ts' && name === 'inna_session_status' && normalized.structuredContent?.authenticated === false) {
-        normalized.structuredContent.message = 'signed out: call inna_sign_in';
-        normalized.content[0].text = JSON.stringify(normalized.structuredContent);
-      }
       results.push(normalized);
     } catch (error) {
       results.push({ protocolError: error instanceof Error ? error.message : String(error) });

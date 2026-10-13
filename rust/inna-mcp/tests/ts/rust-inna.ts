@@ -432,6 +432,9 @@ export class InnaClient {
       });
       await client.connect(served.transport);
 
+      if ((await client.listTools()).tools.some((tool) => !tool.outputSchema))
+        throw new Error('Every tool must declare an output schema.');
+
       return { client, transport: served.transport, waiting };
     })();
 
