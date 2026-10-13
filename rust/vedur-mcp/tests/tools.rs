@@ -30,11 +30,17 @@ fn routes(path: &str) -> Reply {
     } else if path.starts_with("/api.vedur.is/weather/observations/aws/hour/latest?station_id=1475")
     {
         Reply::fixture("official-observations.json")
+    } else if path.starts_with("/api.vedur.is/weather/observations/synop/latest?station_id=1")
+        && !path["/api.vedur.is/weather/observations/synop/latest?station_id=1".len()..]
+            .starts_with(char::is_numeric)
+    {
+        Reply::fixture("synop-latest.json")
     } else if path.starts_with("/api.vedur.is/weather/observations/") {
-        Reply::json(b"[]".to_vec())
+        // What the Weather API answers for a station without recent data on a route.
+        Reply::body(404, "application/json", fixture("aws-no-data.json"))
     } else if path == CAP {
         Reply::fixture("cap-active.json")
-    } else if path == "/gottvedur.is/rss.xml/vaktin" {
+    } else if path == "/gottvedur.is/rss.xml/vaktin/" {
         Reply::fixture("vaktin.xml").header("Cache-Control", "public, max-age=30, must-revalidate")
     } else {
         Reply::status(404)
@@ -277,13 +283,7 @@ fn get_observations_reads_the_automatic_station_record() {
 
 #[test]
 fn get_observations_falls_back_to_the_synop_route_and_says_when_there_is_nothing() {
-    let upstream = Upstream::new(|path, _| {
-        if path.starts_with("/api.vedur.is/weather/observations/synop/latest?station_id=1") {
-            Reply::fixture("synop-schema-sample.json")
-        } else {
-            routes(path)
-        }
-    });
+    let upstream = fixtures();
     let mut mcp = Mcp::start(&upstream);
     let output = mcp.ok("get_observations", json!({"station_id": 1}));
     assert_eq!(
@@ -294,8 +294,23 @@ fn get_observations_falls_back_to_the_synop_route_and_says_when_there_is_nothing
         ]
     );
     assert_eq!(output["kind"], "manned (synop)");
-    assert_eq!(output["observation"]["values"]["d_txt_en"], "WNW");
-    assert_eq!(output["observation"]["values"]["tx"], Value::Null);
+    let observation = &output["observation"];
+    assert_eq!(observation["name"], "Reykjavík");
+    assert_eq!(observation["time"], "2026-10-13T09:00:00");
+    let values = &observation["values"];
+    assert_eq!(values["t"], 5.8);
+    assert_eq!(values["d_txt_en"], "ESE");
+    assert_eq!(values["sun"], Value::Null);
+    assert_eq!(
+        values["w_txt_en"],
+        "Precipitation within sight, not reaching the ground or the surface of the sea"
+    );
+    let recorded = fixture_json("synop-latest.json");
+    assert_eq!(
+        values.as_object().unwrap().len(),
+        recorded[0].as_object().unwrap().len() - 7,
+        "every reported value is kept"
+    );
     assert_eq!(output["source"]["urls"].as_array().unwrap().len(), 2);
 
     let output = mcp.ok("get_observations", json!({"station_id": 99}));
@@ -314,6 +329,36 @@ fn get_observations_falls_back_to_the_synop_route_and_says_when_there_is_nothing
             .contains("not a measurement of calm or dry weather")
     );
     assert_eq!(mcp.finish(), "");
+}
+
+#[test]
+fn an_empty_automatic_list_also_falls_back_and_other_404s_are_refusals() {
+    let upstream = Upstream::new(|path, _| {
+        if path.contains("/aws/") {
+            Reply::json(b"[]".to_vec())
+        } else {
+            routes(path)
+        }
+    });
+    let mut mcp = Mcp::start(&upstream);
+    let output = mcp.ok("get_observations", json!({"station_id": 1}));
+    assert_eq!(output["kind"], "manned (synop)");
+    assert_eq!(upstream.seen().len(), 2);
+    assert_eq!(mcp.finish(), "");
+
+    for body in [
+        &br#"{"message":"Station not found"}"#[..],
+        br#"{"detail":"Not Found"}"#,
+        b"SECRET-UPSTREAM-TEXT",
+    ] {
+        let reply = Reply::body(404, "application/json", body.to_vec());
+        let upstream = Upstream::new(move |_, _| reply.clone());
+        let mut mcp = Mcp::start(&upstream);
+        let text = mcp.error("get_observations", json!({"station_id": 1}));
+        assert!(text.contains("refused"), "{text}");
+        assert_eq!(upstream.seen().len(), 1, "no fallback after a real refusal");
+        assert_eq!(mcp.finish(), "");
+    }
 }
 
 #[test]
@@ -504,7 +549,7 @@ fn get_weather_watch_returns_veðurvakt_posts_as_plain_text() {
     let upstream = fixtures();
     let mut mcp = Mcp::start(&upstream);
     let output = mcp.ok("get_weather_watch", json!({}));
-    assert_eq!(upstream.seen(), ["/gottvedur.is/rss.xml/vaktin"]);
+    assert_eq!(upstream.seen(), ["/gottvedur.is/rss.xml/vaktin/"]);
     assert!(
         output["note"]
             .as_str()
@@ -661,7 +706,8 @@ fn every_fixture_parses() {
         "forecast.json",
         "official-observations.json",
         "cap-active.json",
-        "synop-schema-sample.json",
+        "synop-latest.json",
+        "aws-no-data.json",
     ] {
         let _: Value = serde_json::from_slice(&fixture(name)).unwrap();
     }

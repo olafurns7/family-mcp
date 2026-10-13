@@ -26,8 +26,10 @@ const MAX_TEXT: usize = 2000;
 
 const NOTE: &str = "Editorial commentary from IMO's duty forecasters (category Veðurvakt), not an official warning. An old post does not mean a warning is active; use get_weather_alerts for official warnings.";
 
+/// With its trailing slash: the address without one answers 308 to this one, and redirects are
+/// not followed.
 pub fn url() -> String {
-    format!("{GOTTVEDUR}/rss.xml/vaktin")
+    format!("{GOTTVEDUR}/rss.xml/vaktin/")
 }
 
 fn child_text<'a>(item: Node<'a, '_>, name: &str, namespace: Option<&str>) -> Option<&'a str> {

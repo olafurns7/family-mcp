@@ -113,9 +113,26 @@ pub fn ttl(headers: &HeaderMap) -> Duration {
     max_age(headers).unwrap_or(MIN_TTL).clamp(MIN_TTL, MAX_TTL)
 }
 
+/// The Weather API's whole 404 body when a station has no recent data on a route.
+const NO_DATA: &str = "No data found.";
+
+/// The most of a 404 body read to look for [`NO_DATA`].
+const NO_DATA_BYTES: usize = 4 * 1024;
+
+enum Answer {
+    Body(Vec<u8>, Duration),
+    /// A 404 whose body is exactly `{"message":"No data found."}`.
+    NoData,
+}
+
 enum Attempt {
-    Done(Result<(Vec<u8>, Duration), FetchError>),
+    Done(Result<Answer, FetchError>),
     Retry,
+}
+
+fn is_no_data(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .is_ok_and(|body| body == serde_json::json!({ "message": NO_DATA }))
 }
 
 impl Http {
@@ -186,7 +203,13 @@ impl Http {
         );
     }
 
-    async fn attempt(&self, target: &str, accept: &str, max_bytes: usize) -> Attempt {
+    async fn attempt(
+        &self,
+        target: &str,
+        accept: &str,
+        max_bytes: usize,
+        no_data: bool,
+    ) -> Attempt {
         let response = match self.client.get(target).header(ACCEPT, accept).send().await {
             Ok(response) => response,
             Err(_) => return Attempt::Retry,
@@ -195,6 +218,16 @@ impl Http {
 
         if status.is_server_error() {
             return Attempt::Retry;
+        }
+
+        if status == StatusCode::NOT_FOUND && no_data {
+            return match mcp_runtime::read_capped(response, NO_DATA_BYTES).await {
+                Ok(body) if is_no_data(&body) => Attempt::Done(Ok(Answer::NoData)),
+                Ok(_) | Err(mcp_runtime::BodyError::TooLarge) => {
+                    Attempt::Done(Err(FetchError::Refused(404)))
+                }
+                Err(mcp_runtime::BodyError::Failed) => Attempt::Retry,
+            };
         }
 
         if status.is_client_error() {
@@ -207,7 +240,7 @@ impl Http {
         let ttl = ttl(response.headers());
 
         match mcp_runtime::read_capped(response, max_bytes).await {
-            Ok(body) => Attempt::Done(Ok((body, ttl))),
+            Ok(body) => Attempt::Done(Ok(Answer::Body(body, ttl))),
             Err(mcp_runtime::BodyError::TooLarge) => Attempt::Done(Err(FetchError::TooLarge)),
             Err(mcp_runtime::BodyError::Failed) => Attempt::Retry,
         }
@@ -220,8 +253,31 @@ impl Http {
         accept: &str,
         max_bytes: usize,
     ) -> Result<Fetched, FetchError> {
+        self.fetch(url, accept, max_bytes, false)
+            .await?
+            .ok_or(FetchError::Refused(404))
+    }
+
+    /// As [`get`](Self::get), but the Weather API's "No data found." 404 is `None`. That answer
+    /// is not cached.
+    pub async fn get_or_no_data(
+        &self,
+        url: &str,
+        accept: &str,
+        max_bytes: usize,
+    ) -> Result<Option<Fetched>, FetchError> {
+        self.fetch(url, accept, max_bytes, true).await
+    }
+
+    async fn fetch(
+        &self,
+        url: &str,
+        accept: &str,
+        max_bytes: usize,
+        no_data: bool,
+    ) -> Result<Option<Fetched>, FetchError> {
         if let Some(fetched) = self.cached(url) {
-            return Ok(fetched);
+            return Ok(Some(fetched));
         }
         let target = self.target(url);
 
@@ -230,18 +286,19 @@ impl Http {
                 tokio::time::sleep(wait).await;
             }
 
-            match self.attempt(&target, accept, max_bytes).await {
+            match self.attempt(&target, accept, max_bytes, no_data).await {
                 Attempt::Retry => continue,
                 Attempt::Done(Err(error)) => return Err(error),
-                Attempt::Done(Ok((body, ttl))) => {
+                Attempt::Done(Ok(Answer::NoData)) => return Ok(None),
+                Attempt::Done(Ok(Answer::Body(body, ttl))) => {
                     let body = Arc::new(body);
                     let fetched_at = now();
                     self.store(url, body.clone(), fetched_at, ttl);
-                    return Ok(Fetched {
+                    return Ok(Some(Fetched {
                         body,
                         fetched_at,
                         cached: false,
-                    });
+                    }));
                 }
             }
         }
@@ -287,6 +344,22 @@ mod tests {
         );
         assert_eq!(ttl(&headers("max-age=86400")), MAX_TTL);
         assert_eq!(ttl(&headers("no-store")), MIN_TTL);
+    }
+
+    #[test]
+    fn only_the_exact_no_data_answer_counts_as_no_data() {
+        assert!(is_no_data(br#"{"message":"No data found."}"#));
+        assert!(is_no_data(br#"{ "message": "No data found." }"#));
+
+        for body in [
+            &br#"{"message":"Not found"}"#[..],
+            br#"{"message":"No data found.","detail":1}"#,
+            br#"{"detail":"Not Found"}"#,
+            b"No data found.",
+            b"",
+        ] {
+            assert!(!is_no_data(body), "{}", String::from_utf8_lossy(body));
+        }
     }
 
     #[tokio::test]

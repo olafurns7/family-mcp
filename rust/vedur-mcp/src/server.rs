@@ -48,29 +48,33 @@ impl Vedur {
                 let failure = |error| fetch_failure(error, observations::REFUSED);
                 let aws = self
                     .http
-                    .get(
+                    .get_or_no_data(
                         &observations::aws_url(station_id),
                         JSON,
                         observations::MAX_BYTES,
                     )
                     .await
                     .map_err(failure)?;
-                let automatic = observations::record(&aws, station_id)?;
+                let automatic = observations::record(aws.as_ref(), station_id)?;
 
                 if automatic.is_some() {
-                    return observations::shape(station_id, (&aws, automatic), None);
+                    return observations::shape(station_id, (aws.as_ref(), automatic), None);
                 }
                 let synop = self
                     .http
-                    .get(
+                    .get_or_no_data(
                         &observations::synop_url(station_id),
                         JSON,
                         observations::MAX_BYTES,
                     )
                     .await
                     .map_err(failure)?;
-                let manned = observations::record(&synop, station_id)?;
-                observations::shape(station_id, (&aws, None), Some((&synop, manned)))
+                let manned = observations::record(synop.as_ref(), station_id)?;
+                observations::shape(
+                    station_id,
+                    (aws.as_ref(), None),
+                    Some((synop.as_ref(), manned)),
+                )
             }
             Call::Alerts { area_id, english } => {
                 // Every failure, a refusal included, says that warnings may exist.

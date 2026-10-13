@@ -1,6 +1,7 @@
 //! `get_observations`: the latest measurement of one station from the documented Weather API.
-//! Automatic stations answer on `observations/aws/hour/latest`; when that has nothing, the
-//! OpenAPI document's `observations/synop/latest` is asked for a manned (synop) report.
+//! Automatic stations answer on `observations/aws/hour/latest`; when that has nothing (an empty
+//! list, or a 404 whose whole body is `{"message":"No data found."}`), the OpenAPI document's
+//! `observations/synop/latest` is asked for a manned (synop) report.
 
 use mcp_runtime::Fail;
 use serde_json::{Map, Value, json};
@@ -31,8 +32,14 @@ pub fn synop_url(station_id: i64) -> String {
     format!("{WEATHER_API}/observations/synop/latest?station_id={station_id}")
 }
 
+/// A route's answer: the response, or `None` for its "No data found." 404.
+pub type Route<'a> = Option<&'a Fetched>;
+
 /// One station's latest record from either route: `None` when the route has none for it.
-pub fn record(fetched: &Fetched, station_id: i64) -> Result<Option<Value>, Fail> {
+pub fn record(route: Route, station_id: i64) -> Result<Option<Value>, Fail> {
+    let Some(fetched) = route else {
+        return Ok(None);
+    };
     let body = json_body(fetched, SHAPE)?;
     let list = body.as_array().ok_or(SHAPE)?;
     let mut found = None;
@@ -89,16 +96,14 @@ fn legend() -> Value {
 /// `aws` is the automatic route's response; `synop` is present only when that had nothing.
 pub fn shape(
     station_id: i64,
-    aws: (&Fetched, Option<Value>),
-    synop: Option<(&Fetched, Option<Value>)>,
+    aws: (Route, Option<Value>),
+    synop: Option<(Route, Option<Value>)>,
 ) -> Output {
     let aws_url = aws_url(station_id);
     let synop_url = synop_url(station_id);
-    let (kind, observation, urls, fetched): (Value, Value, Vec<&str>, Vec<&Fetched>) =
+    let (kind, observation, urls, routes): (Value, Value, Vec<&str>, Vec<Route>) =
         match (aws, synop) {
-            ((fetched, Some(record)), _) => {
-                (json!("automatic"), record, vec![&aws_url], vec![fetched])
-            }
+            ((aws, Some(record)), _) => (json!("automatic"), record, vec![&aws_url], vec![aws]),
             ((aws, None), Some((synop, Some(record)))) => (
                 json!("manned (synop)"),
                 record,
@@ -113,6 +118,7 @@ pub fn shape(
             ),
             ((aws, None), None) => (Value::Null, Value::Null, vec![&aws_url], vec![aws]),
         };
+    let fetched: Vec<&Fetched> = routes.into_iter().flatten().collect();
     let note = match kind {
         Value::Null => format!(
             "No automatic or manned observations from the last 24 hours for station {station_id}. The id may be a forecast place, a precipitation or climate station, or a station that is not reporting; this is not a measurement of calm or dry weather."
