@@ -3276,6 +3276,33 @@
     "properties": {},
     "additionalProperties": false
    },
+   "outputSchema": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string",
+      "enum": [
+       "none",
+       "pending",
+       "approved",
+       "failed",
+       "expired"
+      ]
+     },
+     "message": {
+      "type": "string"
+     },
+     "code": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "status",
+     "message"
+    ],
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false
+   },
    "annotations": {
     "readOnlyHint": false,
     "destructiveHint": false,
@@ -3289,6 +3316,33 @@
    "inputSchema": {
     "type": "object",
     "properties": {},
+    "additionalProperties": false
+   },
+   "outputSchema": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string",
+      "enum": [
+       "none",
+       "pending",
+       "approved",
+       "failed",
+       "expired"
+      ]
+     },
+     "message": {
+      "type": "string"
+     },
+     "code": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "status",
+     "message"
+    ],
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false
    },
    "annotations": {

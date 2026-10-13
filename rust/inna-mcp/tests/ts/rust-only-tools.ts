@@ -1,4 +1,16 @@
 // Documented Rust-only surface; auth renew likewise has no TS counterpart.
+const outputSchema = {
+  type: 'object',
+  properties: {
+    status: { type: 'string', enum: ['none', 'pending', 'approved', 'failed', 'expired'] },
+    message: { type: 'string' },
+    code: { type: 'string' },
+  },
+  required: ['status', 'message'],
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  additionalProperties: false,
+};
+
 export const rustOnlyTools = [
   {
     name: 'inna_sign_in',
@@ -9,6 +21,7 @@ export const rustOnlyTools = [
       properties: {},
       additionalProperties: false,
     },
+    outputSchema,
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -25,6 +38,7 @@ export const rustOnlyTools = [
       properties: {},
       additionalProperties: false,
     },
+    outputSchema,
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,

@@ -573,15 +573,16 @@ sign-in automatically. Old records without a phone number still work; run
 a number is stored but never displays it. Google login and cookie import do not
 collect a phone number. Local logout removes it with the session.
 
-These two tools are Rust-only additions. They change local session state, never
-school records. Absence writes still require the existing opt-in and approval.
+These two tools are Rust-only additions. `inna_sign_in` changes the local session;
+`inna_sign_in_status` is read-only. Neither changes school records. Absence writes
+still require the existing opt-in and approval.
 
 ## No systemd (containers)
 
-With `--with-renewal`, the installer reports when it cannot install a timer:
-a container marker, PID 1 other than systemd, or an absent or failing
-`systemctl --user`. Use `inna_sign_in` in chat when signed out. An external
-scheduler can instead run this loop:
+With `--with-renewal`, only a missing or failing `systemctl --user` prevents the
+renewal timer. Container markers and PID 1 other than systemd explain a failure;
+a container with a working user manager can install the timer. Use `inna_sign_in`
+in chat when signed out. An external scheduler can instead run this loop:
 
 ```sh
 while :; do
