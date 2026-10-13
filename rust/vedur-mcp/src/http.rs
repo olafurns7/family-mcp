@@ -1,5 +1,6 @@
 //! The one HTTP client: GET only, bounded bodies, a small retry for server errors and timeouts,
-//! and a short in-memory cache of successful responses. Failures are never cached.
+//! and a short in-memory cache of responses that a tool read successfully ([`Http::keep`]).
+//! Failures, and responses that did not parse, are never cached.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -90,6 +91,8 @@ pub struct Fetched {
     pub body: Arc<Vec<u8>>,
     pub fetched_at: DateTime<Utc>,
     pub cached: bool,
+    /// The cache key and lifetime of a fresh response, until [`Http::keep`] stores it.
+    pending: Option<(String, Duration)>,
 }
 
 struct Entry {
@@ -190,6 +193,7 @@ impl Http {
             body: entry.body.clone(),
             fetched_at: entry.fetched_at,
             cached: true,
+            pending: None,
         })
     }
 
@@ -267,7 +271,15 @@ impl Http {
         }
     }
 
-    /// GET `url` (a public https URL), from the cache when fresh.
+    /// Caches a fresh response once its tool has read it successfully.
+    pub fn keep(&self, fetched: &Fetched) {
+        if let Some((url, ttl)) = &fetched.pending {
+            self.store(url, fetched.body.clone(), fetched.fetched_at, *ttl);
+        }
+    }
+
+    /// GET `url` (a public https URL), from the cache when fresh. A fresh response is cached only
+    /// when passed to [`keep`](Self::keep).
     pub async fn get(
         &self,
         url: &str,
@@ -312,13 +324,11 @@ impl Http {
                 Attempt::Done(Err(error)) => return Err(error),
                 Attempt::Done(Ok(Answer::NoData)) => return Ok(None),
                 Attempt::Done(Ok(Answer::Body(body, ttl))) => {
-                    let body = Arc::new(body);
-                    let fetched_at = now();
-                    self.store(url, body.clone(), fetched_at, ttl);
                     return Ok(Some(Fetched {
-                        body,
-                        fetched_at,
+                        body: Arc::new(body),
+                        fetched_at: now(),
                         cached: false,
+                        pending: Some((url.to_owned(), ttl)),
                     }));
                 }
             }

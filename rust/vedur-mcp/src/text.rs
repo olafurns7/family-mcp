@@ -116,9 +116,11 @@ fn decode_entities(text: &str, out: &mut String) {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         rest = &rest[at..];
-        let decoded = rest[1..]
-            .find(';')
-            .filter(|end| *end <= 10)
+        // Only the longest name allowed is searched, so the scan stays linear in the text.
+        let decoded = rest.as_bytes()[1..]
+            .iter()
+            .take(11)
+            .position(|byte| *byte == b';')
             .and_then(|end| Some((entity(&rest[1..=end])?, end + 2)));
 
         match decoded {
@@ -285,6 +287,24 @@ mod tests {
             "R&D &bogus; &#0x; 😀 &"
         );
         assert_eq!(plain_text("x]]>y", 100).0, "x]]›y");
+    }
+
+    #[test]
+    fn many_ampersands_take_linear_time() {
+        // Searching the whole remainder for `;` after every `&` took seconds here.
+        let ampersands = "&".repeat(512 * 1024);
+        let started = std::time::Instant::now();
+        let (text, truncated) = plain_text(&ampersands, 100);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!((text.chars().count(), truncated), (101, true));
+        assert_eq!(
+            plain_text(&format!("{ampersands}&amp;"), 10).0,
+            "&&&&&&&&&&…"
+        );
+        assert_eq!(
+            plain_text("&abcdefghij; &abcdefghijk;", 100).0,
+            "&abcdefghij; &abcdefghijk;"
+        );
     }
 
     #[test]

@@ -55,6 +55,44 @@ fn localized(
     Ok((Value::Null, Value::Null))
 }
 
+/// The CAP 1.2 `category` values.
+const CATEGORIES: [&str; 12] = [
+    "Geo",
+    "Met",
+    "Safety",
+    "Security",
+    "Rescue",
+    "Fire",
+    "Health",
+    "Env",
+    "Transport",
+    "Infra",
+    "CBRNE",
+    "Other",
+];
+
+/// Whether a warning is weather (category Met). The category list must be present, nonempty, no
+/// longer than the CAP list, and only CAP values; anything else is a changed feed, so an entry
+/// is never skipped on a category that could not be read.
+fn is_weather(value: Option<&Value>) -> Result<bool, Fail> {
+    let categories = value.and_then(Value::as_array).ok_or(SHAPE)?;
+
+    if categories.is_empty() || categories.len() > CATEGORIES.len() {
+        return Err(SHAPE);
+    }
+    let mut weather = false;
+
+    for category in categories {
+        let category = category.as_str().ok_or(SHAPE)?;
+
+        if !CATEGORIES.contains(&category) {
+            return Err(SHAPE);
+        }
+        weather |= category == "Met";
+    }
+    Ok(weather)
+}
+
 fn strings(value: Option<&Value>, max_items: usize) -> Result<Vec<String>, Fail> {
     match value {
         None | Some(Value::Null) => Ok(Vec::new()),
@@ -97,9 +135,9 @@ enum Classified {
 
 fn warning(value: &Value, english: bool, now: DateTime<Utc>) -> Result<Classified, Fail> {
     let fields = Fields::of(value, SHAPE)?;
-    let categories = strings(fields.object.get("category"), 20)?;
+    let identifier = text::clean(fields.string("identifier")?, 200);
 
-    if !categories.iter().any(|category| category == "Met") {
+    if !is_weather(fields.object.get("category"))? {
         return Ok(Classified::NotWeather);
     }
     let (onset, onset_at) = when(&fields, "onset")?;
@@ -125,7 +163,7 @@ fn warning(value: &Value, english: bool, now: DateTime<Utc>) -> Result<Classifie
 
     Ok(Classified::Keep(
         json!({
-            "identifier": text::clean(fields.string("identifier")?, 200),
+            "identifier": identifier,
             "area_id": fields.integer("area_id")?,
             "area_names": area_names(&fields, english)?,
             "status": status,

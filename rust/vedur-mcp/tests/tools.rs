@@ -5,6 +5,8 @@
 
 mod support;
 
+use std::collections::HashSet;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -478,9 +480,28 @@ fn a_failed_warning_fetch_never_reads_as_no_warnings() {
         .as_object_mut()
         .unwrap()
         .remove("identifier");
-    let mut no_category = fixture_json("cap-active.json");
-    no_category[0]["category"] = json!("Met");
-    let cases: Vec<(Reply, usize)> = vec![
+    // A category that cannot be read never lets an entry be skipped as "not weather".
+    let mut categories: Vec<Value> = vec![json!([{}])];
+
+    for category in [
+        None,
+        Some(Value::Null),
+        Some(json!("Met")),
+        Some(json!([])),
+        Some(json!(["Geo", null])),
+        Some(json!(["Weather"])),
+        Some(json!(vec!["Geo"; 13])),
+    ] {
+        let mut recorded = fixture_json("cap-active.json");
+        match category {
+            Some(category) => recorded[0]["category"] = category,
+            None => {
+                recorded[0].as_object_mut().unwrap().remove("category");
+            }
+        }
+        categories.push(recorded);
+    }
+    let mut cases: Vec<(Reply, usize)> = vec![
         (Reply::status(503), 3),
         (Reply::status(500), 3),
         (Reply::dropped(), 3),
@@ -500,9 +521,13 @@ fn a_failed_warning_fetch_never_reads_as_no_warnings() {
         ),
         (Reply::json(b"{}".to_vec()), 1),
         (Reply::json(missing_identifier.to_string().into_bytes()), 1),
-        (Reply::json(no_category.to_string().into_bytes()), 1),
         (Reply::json(vec![b' '; 9 * 1024 * 1024]), 1),
     ];
+    cases.extend(
+        categories
+            .iter()
+            .map(|body| (Reply::json(body.to_string().into_bytes()), 1)),
+    );
 
     for (reply, requests) in cases {
         let upstream = Upstream::new(move |_, _| reply.clone());
@@ -541,6 +566,60 @@ fn server_errors_are_retried_and_failures_are_not_cached() {
     let output = mcp.ok("get_weather_watch", json!({}));
     assert_eq!(output["cached"], false);
     assert_eq!(upstream.seen().len(), 4);
+    assert_eq!(mcp.finish(), "");
+}
+
+#[test]
+fn a_response_that_does_not_read_is_not_cached() {
+    // Every address answers `{}` the first time and its recording after that; station 1's
+    // automatic route keeps answering "No data found." once it has answered `{}`.
+    let answered = Mutex::new(HashSet::new());
+    let upstream =
+        Upstream::new(
+            move |path, _| match answered.lock().unwrap().insert(path.to_owned()) {
+                true => Reply::json(b"{}".to_vec()),
+                false => routes(path),
+            },
+        );
+    let mut mcp = Mcp::start(&upstream);
+
+    mcp.error("get_weather_alerts", json!({}));
+    let output = mcp.ok("get_weather_alerts", json!({}));
+    assert_eq!(output["cached"], false);
+    assert_eq!(output["warnings"].as_array().unwrap().len(), 11);
+    assert_eq!(mcp.ok("get_weather_alerts", json!({}))["cached"], true);
+    assert_eq!(upstream.seen().len(), 2);
+
+    mcp.error("get_observations", json!({"station_id": 1475}));
+    let output = mcp.ok("get_observations", json!({"station_id": 1475}));
+    assert_eq!(
+        (&output["kind"], &output["cached"]),
+        (&json!("automatic"), &json!(false))
+    );
+    assert_eq!(upstream.seen().len(), 4);
+
+    // Automatic route unreadable, then the synop route unreadable, then both read.
+    mcp.error("get_observations", json!({"station_id": 1}));
+    mcp.error("get_observations", json!({"station_id": 1}));
+    let output = mcp.ok("get_observations", json!({"station_id": 1}));
+    assert_eq!(
+        (&output["kind"], &output["cached"]),
+        (&json!("manned (synop)"), &json!(false))
+    );
+    assert_eq!(upstream.seen().len(), 9);
+    assert_eq!(
+        mcp.ok("get_observations", json!({"station_id": 1}))["cached"],
+        true
+    );
+    assert_eq!(
+        upstream.seen().len(),
+        10,
+        "only the uncached no-data answer is asked again"
+    );
+
+    mcp.error("get_weather_watch", json!({}));
+    assert_eq!(mcp.ok("get_weather_watch", json!({}))["cached"], false);
+    assert_eq!(upstream.seen().len(), 12);
     assert_eq!(mcp.finish(), "");
 }
 
@@ -627,6 +706,22 @@ fn hostile_feed_content_is_neutralised() {
     assert_eq!(posts[2]["published_utc"], Value::Null);
     assert_eq!(posts[2]["link"], Value::Null);
     assert_eq!(mcp.finish(), "");
+}
+
+#[test]
+fn an_imo_link_cannot_carry_markdown() {
+    let feed = r#"<rss><channel><item><title>t</title><category>Veðurvakt</category><link>https://gottvedur.is/![x](https://evil.example/pixel)</link><description>d</description></item></channel></rss>"#;
+    let upstream =
+        Upstream::new(move |_, _| Reply::body(200, "text/xml", feed.as_bytes().to_vec()));
+    let mut mcp = Mcp::start(&upstream);
+    let result = mcp.call("get_weather_watch", json!({}));
+    assert_eq!(mcp.finish(), "");
+    assert_eq!(
+        result["structuredContent"]["posts"][0]["link"],
+        "https://gottvedur.is/!%5Bx%5D%28https://evil.example/pixel%29"
+    );
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("](") && !text.contains("!["), "{text}");
 }
 
 #[test]

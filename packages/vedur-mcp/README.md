@@ -97,7 +97,8 @@ not mean a warning is active.
 
 All upstream text (names, warning text, posts) is treated as untrusted data: HTML
 is reduced to plain text, Markdown links and images are broken up, links outside
-IMO's sites are dropped, and every string is bounded.
+IMO's sites are dropped, brackets and parentheses in IMO links are
+percent-encoded, and every string is bounded.
 
 ## Requests, caching, and failures
 
@@ -110,7 +111,9 @@ IMO's sites are dropped, and every string is bounded.
   0.3 and 0.9 seconds. A 4xx answer, a redirect, or unexpected data is not retried.
 - Successful responses are cached in memory for 60 seconds, or for the upstream
   `max-age` when that is longer (at most 10 minutes). `cached: true` and the
-  original `fetched_at` show a cached answer. Failures are never cached.
+  original `fetched_at` show a cached answer. A response is cached only after
+  the tool has read it: failures and responses that do not parse are never
+  cached.
 - Errors are fixed messages; upstream bodies never appear in them.
 
 ## Attribution and licence

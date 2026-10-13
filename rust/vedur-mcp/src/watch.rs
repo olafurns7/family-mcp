@@ -42,7 +42,10 @@ fn child_text<'a>(item: Node<'a, '_>, name: &str, namespace: Option<&str>) -> Op
         .and_then(|child| child.text())
 }
 
-/// Only links to IMO's own sites are passed on.
+/// Characters that can start or end a Markdown link or image, percent-encoded in a passed link.
+const MARKDOWN: [(char, &str); 4] = [('[', "%5B"), (']', "%5D"), ('(', "%28"), (')', "%29")];
+
+/// Only links to IMO's own sites are passed on, with no Markdown-active brackets or parentheses.
 fn imo_link(link: &str) -> Value {
     let Ok(url) = reqwest::Url::parse(link.trim()) else {
         return Value::Null;
@@ -55,10 +58,15 @@ fn imo_link(link: &str) -> Value {
             url.host_str(),
             Some("gottvedur.is" | "www.gottvedur.is" | "vedur.is" | "www.vedur.is" | "en.vedur.is")
         );
-    match own && link.len() <= 500 {
-        true => json!(String::from(url)),
-        false => Value::Null,
+    if !own || link.len() > 500 {
+        return Value::Null;
     }
+    let mut serialized = String::from(url);
+
+    for (character, encoded) in MARKDOWN {
+        serialized = serialized.replace(character, encoded);
+    }
+    json!(serialized)
 }
 
 pub fn shape(fetched: &Fetched, limit: i64) -> Output {
@@ -154,5 +162,9 @@ mod tests {
         ] {
             assert_eq!(imo_link(link), Value::Null, "{link}");
         }
+        assert_eq!(
+            imo_link("https://gottvedur.is/[a](b)?q=[c]#[d]"),
+            json!("https://gottvedur.is/%5Ba%5D%28b%29?q=%5Bc%5D#%5Bd%5D")
+        );
     }
 }

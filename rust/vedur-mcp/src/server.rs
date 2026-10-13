@@ -2,7 +2,7 @@ use mcp_runtime::{Cancelled, Fail, Server, Surface};
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
-use crate::http::Http;
+use crate::http::{Fetched, Http};
 use crate::input::{self, Call};
 use crate::output::{CANCELLED, Output, fetch_failure};
 use crate::{alerts, forecast, observations, stations, watch};
@@ -24,6 +24,16 @@ impl Vedur {
         })
     }
 
+    /// Caches the responses behind a successful output; one that did not read is fetched again.
+    fn kept(&self, output: Output, read: &[&Fetched]) -> Output {
+        if output.is_ok() {
+            for fetched in read {
+                self.http.keep(fetched);
+            }
+        }
+        output
+    }
+
     async fn run(&self, call: Call) -> Output {
         match call {
             Call::SearchStations { query, active } => {
@@ -33,7 +43,7 @@ impl Vedur {
                     .get(&url, JSON, stations::MAX_BYTES)
                     .await
                     .map_err(|error| fetch_failure(error, stations::REFUSED))?;
-                stations::shape(&fetched, &url, &query, active)
+                self.kept(stations::shape(&fetched, &url, &query, active), &[&fetched])
             }
             Call::Forecast { station_id, days } => {
                 let url = forecast::url(station_id);
@@ -42,7 +52,10 @@ impl Vedur {
                     .get(&url, JSON, forecast::MAX_BYTES)
                     .await
                     .map_err(|error| fetch_failure(error, forecast::REFUSED))?;
-                forecast::shape(&fetched, &url, station_id, days)
+                self.kept(
+                    forecast::shape(&fetched, &url, station_id, days),
+                    &[&fetched],
+                )
             }
             Call::Observations { station_id } => {
                 let failure = |error| fetch_failure(error, observations::REFUSED);
@@ -58,7 +71,11 @@ impl Vedur {
                 let automatic = observations::record(aws.as_ref(), station_id)?;
 
                 if automatic.is_some() {
-                    return observations::shape(station_id, (aws.as_ref(), automatic), None);
+                    let output = observations::shape(station_id, (aws.as_ref(), automatic), None);
+                    return self.kept(
+                        output,
+                        &[aws.as_ref()].into_iter().flatten().collect::<Vec<_>>(),
+                    );
                 }
                 let synop = self
                     .http
@@ -70,11 +87,16 @@ impl Vedur {
                     .await
                     .map_err(failure)?;
                 let manned = observations::record(synop.as_ref(), station_id)?;
-                observations::shape(
+                let output = observations::shape(
                     station_id,
                     (aws.as_ref(), None),
                     Some((synop.as_ref(), manned)),
-                )
+                );
+                let read: Vec<&Fetched> = [aws.as_ref(), synop.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                self.kept(output, &read)
             }
             Call::Alerts { area_id, english } => {
                 // Every failure, a refusal included, says that warnings may exist.
@@ -83,7 +105,8 @@ impl Vedur {
                     .get(&alerts::url(), JSON, alerts::MAX_BYTES)
                     .await
                     .map_err(|_| alerts::FAILED)?;
-                alerts::shape(&fetched, area_id, english, crate::http::now())
+                let output = alerts::shape(&fetched, area_id, english, crate::http::now());
+                self.kept(output, &[&fetched])
             }
             Call::Watch { limit } => {
                 let fetched = self
@@ -91,7 +114,7 @@ impl Vedur {
                     .get(&watch::url(), RSS, watch::MAX_BYTES)
                     .await
                     .map_err(|error| fetch_failure(error, watch::REFUSED))?;
-                watch::shape(&fetched, limit)
+                self.kept(watch::shape(&fetched, limit), &[&fetched])
             }
         }
     }
