@@ -83,8 +83,11 @@ type Handler = Box<dyn Fn(&str, usize) -> Reply + Send + Sync>;
 pub struct Upstream {
     pub origin: String,
     seen: Arc<Mutex<Vec<String>>>,
-    versions: Arc<Mutex<Vec<(String, Option<String>)>>>,
+    versions: Arc<Mutex<Versions>>,
 }
+
+/// Each request's path with its `x-vi-api-version` header.
+type Versions = Vec<(String, Option<String>)>;
 
 impl Upstream {
     pub fn new(handler: impl Fn(&str, usize) -> Reply + Send + Sync + 'static) -> Self {
@@ -111,7 +114,7 @@ impl Upstream {
     }
 
     /// Each request's path with its `x-vi-api-version` header, in arrival order.
-    pub fn api_versions(&self) -> Vec<(String, Option<String>)> {
+    pub fn api_versions(&self) -> Versions {
         self.versions.lock().unwrap().clone()
     }
 
@@ -124,7 +127,7 @@ impl Upstream {
 fn serve(
     stream: TcpStream,
     seen: &Mutex<Vec<String>>,
-    versions: &Mutex<Vec<(String, Option<String>)>>,
+    versions: &Mutex<Versions>,
     handler: &Handler,
 ) {
     let mut reader = BufReader::new(stream);
