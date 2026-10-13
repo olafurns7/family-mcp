@@ -15,6 +15,7 @@ export const PACKAGE_NAMES = /** @type {const} */ ([
   'inna-mcp',
   'kronan-mcp',
   'dominos-mcp',
+  'vedur-mcp',
 ]);
 
 /** Package documentation files that pin the release version alongside README.md. */
@@ -24,6 +25,7 @@ export const DOCUMENTATION_FILES = /** @type {const} */ ({
   'inna-mcp': ['docs/RELEASING.md'],
   'kronan-mcp': ['docs/RELEASING.md'],
   'dominos-mcp': ['docs/RELEASING.md'],
+  'vedur-mcp': ['docs/RELEASING.md'],
 });
 
 const manifestSchema = z.object({

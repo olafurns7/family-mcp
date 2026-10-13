@@ -1,7 +1,8 @@
 # family-mcp
 
 Local MCP servers provide Abler sports schedules and messages, an Icelandic InfoMentor school
-account, Inna school accounts, a Krónan grocery account, and Domino’s Iceland ordering. Each release
+account, Inna school accounts, a Krónan grocery account, Domino’s Iceland ordering, and Icelandic
+weather from Veðurstofa Íslands. Each release
 is a standalone native executable, so the MCP host does not need Node, npm, or Bun
 at runtime.
 
@@ -15,6 +16,7 @@ in English and Icelandic.
 | **Inna** ([inna.is](https://www.inna.is)) | Inna school portal (preview) | Timetables, assignments, grades, attendance, messages, and opt-in whole-day absence requests | Electronic ID with phone approval, or `inna-mcp auth login --google` in a browser window | macOS or glibc Linux, arm64/x64 |
 | **Krónan** ([kronan.is](https://kronan.is))         | Icelandic grocery shopping          | Products, recipes, purchase history, shopping-note and basket edits, and confirmed orders | Personal API token saved locally with `kronan-mcp auth set`                     | macOS or glibc Linux, arm64/x64 |
 | **Domino’s** ([dominos.is](https://www.dominos.is)) | Pizza ordering (preview) | Menu, quotes, receipts, tracking, and confirmed saved-card checkout                       | SMS code entered locally with `dominos-mcp auth login`                          | macOS or glibc Linux, arm64/x64 |
+| **Veður** ([gottvedur.is](https://gottvedur.is)) | Icelandic weather (preview) | IMO station search, forecasts, latest observations, official warnings, and forecaster commentary (read only) | None | macOS or Linux, arm64/x64 |
 
 ## Abler
 
@@ -250,6 +252,26 @@ Live login, refresh, account reads, quotes, and unpaid saved-card retrieval have
 been verified. Charging remains untested; bank-verification continuation is not
 implemented. Payment requires explicit approval of the exact order, total, and card.
 
+## Veður
+
+Install the preview release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/vedur-mcp@0.1.0/packages/vedur-mcp/install.sh | sh
+```
+
+No login is needed. Configure the MCP host to run the absolute path to
+`~/.local/bin/vedur-mcp` with `serve`. For Claude Code:
+
+```sh
+claude mcp add vedur -- /absolute/path/to/.local/bin/vedur-mcp serve
+```
+
+See [tools, data sources, and attribution](packages/vedur-mcp/README.md). Data comes
+from Veðurstofa Íslands (IMO); forecasts use the gottvedur.is site's internal,
+unversioned API, which may change without notice. A failed warning request is an
+error, never “no warnings”.
+
 ## Security
 
 Credentials and authentication secrets—including passwords, cookies, refresh
@@ -265,7 +287,8 @@ not edit school records. Krónan also edits the shopping note and basket, and ca
 place and change orders on the saved card after explicit confirmation. The Krónan
 token is a personal API credential and must remain private to the host user.
 Domino’s also creates unpaid orders and can charge a saved card after explicit
-confirmation. Its outputs include masked card metadata.
+confirmation. Its outputs include masked card metadata. Veður only reads public
+IMO weather data and sends no account data.
 
 ## For agents and contributors
 
@@ -285,6 +308,6 @@ See [CLAUDE.md](CLAUDE.md) for the full gate.
 
 ## Releases
 
-Read the [Abler publishing guide](packages/abler-mcp/docs/PUBLISHING.md), [InfoMentor releasing guide](packages/infomentor-mcp/docs/RELEASING.md), [Krónan releasing guide](packages/kronan-mcp/docs/RELEASING.md), or [Domino’s releasing guide](packages/dominos-mcp/docs/RELEASING.md).
+Read the [Abler publishing guide](packages/abler-mcp/docs/PUBLISHING.md), [InfoMentor releasing guide](packages/infomentor-mcp/docs/RELEASING.md), [Krónan releasing guide](packages/kronan-mcp/docs/RELEASING.md), [Domino’s releasing guide](packages/dominos-mcp/docs/RELEASING.md), or [Veður releasing guide](packages/vedur-mcp/docs/RELEASING.md).
 
-Read the [Abler changelog](packages/abler-mcp/CHANGELOG.md), [InfoMentor changelog](packages/infomentor-mcp/CHANGELOG.md), [Krónan changelog](packages/kronan-mcp/CHANGELOG.md), or [Domino’s changelog](packages/dominos-mcp/CHANGELOG.md).
+Read the [Abler changelog](packages/abler-mcp/CHANGELOG.md), [InfoMentor changelog](packages/infomentor-mcp/CHANGELOG.md), [Krónan changelog](packages/kronan-mcp/CHANGELOG.md), [Domino’s changelog](packages/dominos-mcp/CHANGELOG.md), or [Veður changelog](packages/vedur-mcp/CHANGELOG.md).
