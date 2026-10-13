@@ -162,10 +162,12 @@ export async function smoke(bin, expectedTools, version, standalone, packageName
     if (packageName === 'vedur-mcp') {
       assert.ok(tools.every((tool) => tool.annotations?.readOnlyHint === true));
       assert.match(client.getInstructions() ?? '', /never an empty result/);
+
       const error = await client.callTool({
         name: 'get_forecast',
         arguments: { station_id: 1, days: 11 },
       });
+
       assert.equal(error.isError, true);
       assert.equal(error.structuredContent, undefined);
     }

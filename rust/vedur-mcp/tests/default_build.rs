@@ -20,7 +20,14 @@ const VARIABLES: [&[u8]; 3] = [
 fn the_default_build_ignores_the_test_variables() {
     let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("default-features");
     let status = Command::new(env!("CARGO"))
-        .args(["build", "--offline", "--locked", "-p", "vedur-mcp", "--target-dir"])
+        .args([
+            "build",
+            "--offline",
+            "--locked",
+            "-p",
+            "vedur-mcp",
+            "--target-dir",
+        ])
         .arg(&target)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .status()
