@@ -228,7 +228,7 @@ fn private_import_principal_binding_redirect_refusal_and_shared_pause() {
     case.provider.state().redirect = true;
     refused(
         client.call("inna_get_overview", json!({})),
-        "sign-in is required",
+        "signed out: call inna_sign_in",
     );
     case.provider.state().redirect = false;
     case.provider.state().rate_limit = true;
@@ -397,7 +397,7 @@ fn an_ignored_misdirected_or_rate_limited_switch_returns_no_data() {
         refused(
             case.client()
                 .call("inna_get_overview", json!({"studentKey": SIBLING})),
-            "refused the student switch",
+            "signed out: call inna_sign_in",
         );
         assert_eq!(case.provider.paths(0).last().unwrap(), SWITCH, "{location}");
     }
@@ -409,15 +409,12 @@ fn an_ignored_misdirected_or_rate_limited_switch_returns_no_data() {
         client.call("inna_get_overview", json!({"studentKey": SIBLING})),
         "",
     );
-    assert_eq!(
-        text,
-        "Inna refused the student switch and asked for sign-in. The session may have ended; sign in again and report this."
-    );
+    assert_eq!(text, "signed out: call inna_sign_in");
     assert_eq!(refusing.provider.paths(0).last().unwrap(), SWITCH);
     refusing.provider.state().unauthorized = true;
     starts(
         client.call("inna_get_overview", json!({})),
-        "Inna sign-in is required.",
+        "signed out: call inna_sign_in",
     );
 
     let limited = Case::new("limited-switch", false);

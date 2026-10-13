@@ -158,6 +158,17 @@ impl Client {
         signal: &Signal,
         cancel: &Cancel,
     ) -> Result<SavedSession> {
+        self.save_sign_in(jar, allow_account_change, None, signal, cancel)
+    }
+
+    pub fn save_sign_in(
+        &self,
+        jar: Jar,
+        allow_account_change: bool,
+        phone: Option<String>,
+        signal: &Signal,
+        cancel: &Cancel,
+    ) -> Result<SavedSession> {
         locked(self.path(), cancel, |held| {
             // Only this explicit sign-in or import may replace a store whose key is lost.
             let lost = key_lost(held.store)?;
@@ -208,6 +219,7 @@ impl Client {
                 account: binding,
                 students: kept,
                 pause_until: connection.pause_until,
+                sign_in: prior.as_ref().and_then(|prior| prior.sign_in.clone()),
             };
 
             if student_entries(&user).is_some_and(|entries| !entries.is_empty()) {
@@ -229,7 +241,19 @@ impl Client {
                     None => candidate.students.push((key, learned)),
                 }
             }
-            commit(held, &candidate, lost, signal)
+            if let Some(phone) = phone {
+                candidate.sign_in.get_or_insert_with(Default::default).phone = Some(phone);
+            } else if allow_account_change
+                && prior
+                    .as_ref()
+                    .is_some_and(|prior| prior.account != candidate.account)
+                && let Some(guard) = &mut candidate.sign_in
+            {
+                guard.phone = None;
+            }
+            let saved = commit(held, &candidate, lost, signal)?;
+            self.forget_refusal();
+            Ok(saved)
         })
     }
 
@@ -360,6 +384,7 @@ mod tests {
             },
             students: Vec::new(),
             pause_until: 0.0,
+            sign_in: None,
         }
     }
 

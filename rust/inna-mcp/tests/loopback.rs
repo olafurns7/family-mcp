@@ -42,9 +42,14 @@ fn failed_and_stalled_bodies_are_cancelled_without_a_false_empty_feed() {
         // Refused at its head, well inside the request's 30 s deadline: the body was never read.
         assert!(started.elapsed() < PROMPT, "{status}");
         assert!(
-            ["sign-in", "denied", "rate limited", "unexpected response"]
-                .iter()
-                .any(|part| text.contains(part)),
+            [
+                "signed out: call inna_sign_in",
+                "denied",
+                "rate limited",
+                "unexpected response"
+            ]
+            .iter()
+            .any(|part| text.contains(part)),
             "{status}: {text}"
         );
         // A 401 is refreshed once and retried once, so both bodies are given up.

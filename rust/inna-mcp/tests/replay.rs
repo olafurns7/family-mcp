@@ -339,6 +339,14 @@ fn replay_case(set: &str, name: &str, coverage: &mut Coverage, tz: Option<&str>)
             None => json!({ "store": case["store"] }),
         },
     };
+    let mut frozen_store = frozen_store;
+    if name == "phone-login-student-context" {
+        let mut record: Value =
+            serde_json::from_str(frozen_store["record"].as_str().unwrap()).unwrap();
+        record["signIn"] =
+            json!({"starts":[], "pendingUntil":0.0, "cooldownUntil":0.0, "phone":"5550000"});
+        frozen_store["record"] = json!(record.to_string());
+    }
     assert_eq!(stored, frozen_store, "{name}: store");
 }
 
@@ -356,11 +364,64 @@ fn surface(names: &Names, mcp: &mut Mcp, initialized: &Answer, step: &Value, at:
         same_answer(
             names,
             &listed.line,
-            &step["list"],
+            &with_sign_in_tools(&step["list"]),
             &format!("{at} tools/list"),
             false,
         );
     }
+}
+
+/// The two explicitly documented Rust-only tools are added; every original tool stays exact.
+fn with_sign_in_tools(recorded: &Value) -> Value {
+    let mut answer: Value = serde_json::from_str(recorded.as_str().unwrap()).unwrap();
+    let surface: Value = serde_json::from_str(include_str!("../src/surface.json")).unwrap();
+    let extra: Vec<Value> = surface["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|tool| {
+            matches!(
+                tool["name"].as_str(),
+                Some("inna_sign_in" | "inna_sign_in_status")
+            )
+        })
+        .cloned()
+        .collect();
+    assert_eq!(extra.len(), 2);
+    answer["result"]["tools"]
+        .as_array_mut()
+        .unwrap()
+        .splice(14..14, extra);
+    json!(answer.to_string())
+}
+
+/// Adapt only the specified signed-out tool wording, without changing CLI or other failures.
+fn signed_out_answer(recorded: &Value) -> Value {
+    let mut answer: Value = serde_json::from_str(recorded.as_str().unwrap()).unwrap();
+    if let Some(content) = answer
+        .pointer_mut("/result/content")
+        .and_then(Value::as_array_mut)
+    {
+        for item in content {
+            if let Some(text) = item["text"].as_str()
+                && matches!(
+                    text,
+                    "Inna sign-in is required. Run auth login or import a fresh private cookie export."
+                        | "Inna session expired. Run inna-mcp auth login or import a fresh private browser cookie export."
+                        | "No Inna session. Run inna-mcp auth login or auth import with a private cookie export."
+                        | "Inna refused the student switch and asked for sign-in. The session may have ended; sign in again and report this."
+                )
+            {
+                item["text"] = json!("signed out: call inna_sign_in");
+            }
+        }
+    }
+    if answer["result"]["structuredContent"]["authenticated"] == false {
+        answer["result"]["structuredContent"]["message"] = json!("signed out: call inna_sign_in");
+        answer["result"]["content"][0]["text"] =
+            json!(serde_json::to_string(&answer["result"]["structuredContent"]).unwrap());
+    }
+    json!(answer.to_string())
 }
 
 /// One recorded tool call on the open `serve`: its requests, notifications and answer.
@@ -392,7 +453,13 @@ fn one_call(
         frozen_notifications,
         "{at}: notifications"
     );
-    same_answer(names, &got.line, &result["answer"], at, true);
+    same_answer(
+        names,
+        &got.line,
+        &signed_out_answer(&result["answer"]),
+        at,
+        true,
+    );
     let answer: Value = serde_json::from_str(result["answer"].as_str().unwrap()).unwrap();
 
     if answer["result"].get("content").is_some() {

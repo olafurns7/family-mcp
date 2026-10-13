@@ -99,7 +99,7 @@ fn an_expired_session_stops_the_keep_alive_until_a_new_import() {
     assert_eq!(case.provider.state().calls.len(), count + 1);
     // The same refusal reaches a tool call with the existing message.
     let text = refused(client.call("inna_get_overview", json!({})), "");
-    assert!(text.starts_with("Inna sign-in is required."), "{text}");
+    assert!(text.starts_with("signed out: call inna_sign_in"), "{text}");
 
     case.provider.state().unauthorized = false;
     case.provider.state().rotation = "synthetic-renewed".into();
@@ -161,7 +161,7 @@ fn two_servers_sharing_a_refused_session_stop_asking_and_replaced_credentials_re
     assert_eq!(case.provider.state().calls.len(), start + 2);
     // A tool call on the dead session rewrites the jar without changing the credentials.
     let text = refused(clients[0].call("inna_get_overview", json!({})), "");
-    assert!(text.starts_with("Inna sign-in is required."), "{text}");
+    assert!(text.starts_with("signed out: call inna_sign_in"), "{text}");
     let after_tool = case.provider.state().calls.len();
 
     for client in &mut clients {

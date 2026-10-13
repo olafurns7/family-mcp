@@ -114,6 +114,7 @@ pub struct Saved {
     /// By student key, in the order they were learned (written in JavaScript key order).
     pub students: Vec<(String, Learned)>,
     pub pause_until: f64,
+    pub sign_in: Option<crate::sign_in::Guard>,
 }
 
 impl Saved {
@@ -146,6 +147,10 @@ impl Saved {
             account: Binding::parse(object.get("account")?)?,
             students,
             pause_until,
+            sign_in: match object.get("signIn") {
+                None => None,
+                Some(value) => Some(crate::sign_in::Guard::parse(value)?),
+            },
         })
     }
 
@@ -157,13 +162,17 @@ impl Saved {
             .iter()
             .map(|(key, learned)| (key.clone(), learned.to_json(saved)))
             .collect();
-        json!({
+        let mut value = json!({
             "version": 2,
             "jar": self.jar,
             "account": self.account.to_json(),
             "students": js::order(students),
             "pauseUntil": js::number(self.pause_until),
-        })
+        });
+        if saved && let Some(guard) = &self.sign_in {
+            value["signIn"] = guard.to_json();
+        }
+        value
     }
 
     pub fn student(&self, key: &str) -> Option<&Learned> {
@@ -579,6 +588,7 @@ mod tests {
             },
             students: Vec::new(),
             pause_until: 0.0,
+            sign_in: None,
         };
         let long = "é".repeat(MAX_NAME_LENGTH + 1);
         saved.students.push((
@@ -611,6 +621,7 @@ mod tests {
             },
             students: Vec::new(),
             pause_until: 0.0,
+            sign_in: None,
         };
         // createHash('sha256').update('SESSION=a\nXSRF-TOKEN=').digest('hex').
         assert_eq!(

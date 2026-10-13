@@ -15,6 +15,7 @@ mod login;
 mod server;
 mod session;
 mod shapes;
+mod sign_in;
 mod signal;
 mod store;
 mod terminal;
@@ -251,6 +252,18 @@ async fn session_command(command: Command) -> Result<()> {
                 })
                 .await?;
 
+            let stored_phone = client
+                .run(signal::Signal::default(), |client, _, cancel| {
+                    session::locked(client.path(), cancel, |held| {
+                        Ok(held.read()?.is_some_and(|saved| {
+                            saved.sign_in.is_some_and(|guard| guard.phone.is_some())
+                        }))
+                    })
+                })
+                .await?;
+            if stored_phone {
+                println!("An electronic-ID phone number is stored.");
+            }
             match status.get("storage").and_then(|storage| storage.as_str()) {
                 Some(storage) => println!("Inna session is authenticated. {storage}"),
                 None => println!("No saved Inna session."),
@@ -372,6 +385,7 @@ async fn sign_in_steps(
                 .await?
         }
     };
+    let saved_phone = js::trim(&phone).to_owned();
     let (net, login_signal) = (client.net().clone(), signal.clone());
     let jar = tokio::task::spawn_blocking(move || {
         login::login_with_electronic_id(
@@ -392,7 +406,7 @@ async fn sign_in_steps(
     report_saved(
         &client
             .run(signal, move |client, signal, cancel| {
-                client.save_verified_session(jar, allow_account_change, signal, cancel)
+                client.save_sign_in(jar, allow_account_change, Some(saved_phone), signal, cancel)
             })
             .await?,
     );

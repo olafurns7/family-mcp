@@ -3269,6 +3269,36 @@
    }
   },
   {
+   "name": "inna_sign_in",
+   "description": "Start electronic-ID sign-in using the locally stored phone number. Show the returned verification code verbatim, including leading zeros, and ask the user to approve on their phone; then call inna_sign_in_status. Never call automatically after a failed read or in a loop. Changes only the local session; at most 10 starts per rolling 24 hours.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": true
+   }
+  },
+  {
+   "name": "inna_sign_in_status",
+   "description": "Check explicit electronic-ID sign-in: pending, approved, failed, expired, or none. Changes no school record.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": true
+   }
+  },
+  {
    "name": "inna_prepare_absence",
    "description": "Prepare a whole-day sick registration (one date) or leave/vacation application (inclusive date range) for the default student or studentKey, after checking Inna permissions and overlapping records. Stores a private preview for 10 minutes. Show its exact student, school, dates, kind, and reason and obtain approval to transmit these to the school before submit. Does not create a school record.",
    "inputSchema": {

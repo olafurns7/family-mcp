@@ -175,7 +175,7 @@ test('401 and 5xx renewals fail closed past the bound without a school request',
       const result = await f.call();
       expect(result.isError).toBe(true);
       expect(JSON.stringify(result)).toContain(
-        status === 401 ? 'sign-in is required' : 'unavailable or unexpected',
+        status === 401 ? 'signed out: call inna_sign_in' : 'unavailable or unexpected',
       );
       expect(f.paths(from).every((path) => path === USER)).toBe(true);
       delete f.state.planted[USER];
@@ -202,7 +202,7 @@ test('read 401 refreshes once and retries once; a second 401 has no third school
       expect(paths.filter((path) => path === SCHOOL)).toHaveLength(2);
       const first = paths.indexOf(SCHOOL);
       expect(paths.slice(first, first + 3)).toEqual([SCHOOL, USER, SCHOOL]);
-      if (failures === 2) expect(JSON.stringify(result)).toContain('sign-in is required');
+      if (failures === 2) expect(JSON.stringify(result)).toContain('signed out: call inna_sign_in');
     } finally {
       await f.close();
     }
@@ -305,7 +305,7 @@ test('a switch 401 recovers once and a persistent 401 refuses after exactly two 
       expect(paths.slice(first, first + 3)).toEqual([SWITCH, USER, SWITCH]);
       if (persistent)
         expect(JSON.stringify(result)).toContain(
-          'Inna refused the student switch and asked for sign-in.',
+          'signed out: call inna_sign_in',
         );
     } finally {
       await f.close();
