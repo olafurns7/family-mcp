@@ -26,6 +26,7 @@ export const author = {
 
 interface AgentSetup {
   service: string;
+  /** Step 2, worded for the server: the first line follows "2. ". */
   signIn: string[];
   register: string[];
   rules: string[];
@@ -40,7 +41,7 @@ const placeholders =
 const abler: AgentSetup = {
   service: 'Abler',
   signIn: [
-    'Ask me to run this and sign in to Abler in the browser window that opens:',
+    'Sign-in is mine to do, in my own terminal or browser. Ask me to run this and sign in to Abler in the browser window that opens:',
     '   abler-mcp auth login',
   ],
   register: [
@@ -55,7 +56,7 @@ const abler: AgentSetup = {
 const infomentor: AgentSetup = {
   service: 'InfoMentor',
   signIn: [
-    'Ask me to put my InfoMentor username and password in a private JSON file (the README shows the format) and to run these. Never read that file or ask what is in it.',
+    'Sign-in is mine to do, in my own terminal or browser. Ask me to put my InfoMentor username and password in a private JSON file (the README shows the format) and to run these. Never read that file or ask what is in it.',
     '   chmod 600 /absolute/path/credentials.json',
     '   infomentor-mcp login --credentials /absolute/path/credentials.json',
   ],
@@ -71,7 +72,7 @@ const infomentor: AgentSetup = {
 const inna: AgentSetup = {
   service: 'Inna',
   signIn: [
-    'Ask me to run one of these. The first uses electronic ID: I enter my phone number at a hidden prompt and approve on my phone. The second uses a Google account already linked in Inna, needs a desktop with Chrome or Chromium, and is not yet tested live.',
+    'Sign-in is mine to do, in my own terminal or browser. Ask me to run one of these. The first uses electronic ID: I enter my phone number at a hidden prompt and approve on my phone. The second uses a Google account already linked in Inna, needs a desktop with Chrome or Chromium, and is not yet tested live.',
     '   inna-mcp auth login',
     '   inna-mcp auth login --google',
   ],
@@ -90,7 +91,7 @@ const inna: AgentSetup = {
 const kronan: AgentSetup = {
   service: 'Krónan',
   signIn: [
-    'Ask me to create a personal access token in my Krónan settings, then to run this and enter the token at its hidden prompt:',
+    'Sign-in is mine to do, in my own terminal or browser. Ask me to create a personal access token in my Krónan settings, then to run this and enter the token at its hidden prompt:',
     '   kronan-mcp auth set',
   ],
   register: [
@@ -107,7 +108,7 @@ const kronan: AgentSetup = {
 const dominos: AgentSetup = {
   service: 'Domino’s Iceland',
   signIn: [
-    'Ask me to run this and enter my Icelandic phone number and the SMS code at its hidden prompts:',
+    'Sign-in is mine to do, in my own terminal or browser. Ask me to run this and enter my Icelandic phone number and the SMS code at its hidden prompts:',
     '   dominos-mcp auth login',
   ],
   register: [
@@ -123,7 +124,9 @@ const dominos: AgentSetup = {
 
 const vedur: AgentSetup = {
   service: 'Veður (Icelandic Meteorological Office data)',
-  signIn: ['This server needs no sign-in, key or account; skip this step.'],
+  signIn: [
+    'Nothing to sign in to: this server needs no sign-in, key or account, so skip this step.',
+  ],
   register: [
     claudeCode,
     '   claude mcp add vedur -- /absolute/path/to/.local/bin/vedur-mcp serve',
@@ -140,7 +143,7 @@ function agentPrompt(setup: AgentSetup, command: string, readme: string): string
     `Set up the ${setup.service} MCP server from family-mcp for me. It is an unofficial local server for macOS or glibc Linux on arm64/x64.`,
     '1. Install it:',
     `   ${command}`,
-    `2. Sign-in is mine to do, in my own terminal or browser. ${setup.signIn[0]}`,
+    `2. ${setup.signIn[0]}`,
     ...setup.signIn.slice(1),
     `3. Register it with the MCP client you are running in, using the binary’s absolute path with serve. ${setup.register[0]}`,
     ...setup.register.slice(1),
