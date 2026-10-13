@@ -158,6 +158,20 @@ export async function smoke(bin, expectedTools, version, standalone, packageName
       );
     }
 
+    // vedur-mcp needs no sign-in; only calls refused before any request run here.
+    if (packageName === 'vedur-mcp') {
+      assert.ok(tools.every((tool) => tool.annotations?.readOnlyHint === true));
+      assert.match(client.getInstructions() ?? '', /never an empty result/);
+
+      const error = await client.callTool({
+        name: 'get_forecast',
+        arguments: { station_id: 1, days: 11 },
+      });
+
+      assert.equal(error.isError, true);
+      assert.equal(error.structuredContent, undefined);
+    }
+
     if (packageName === 'infomentor-mcp') {
       assert.ok(tools.every((tool) => tool.outputSchema));
       const status = await client.callTool({ name: 'infomentor_session_status', arguments: {} });

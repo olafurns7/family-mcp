@@ -19,7 +19,7 @@ const packageNames = PACKAGE_NAMES;
 await test('release package constants stay pinned', () => {
   assert.deepEqual(
     [...PACKAGE_NAMES],
-    ['abler-mcp', 'infomentor-mcp', 'inna-mcp', 'kronan-mcp', 'dominos-mcp'],
+    ['abler-mcp', 'infomentor-mcp', 'inna-mcp', 'kronan-mcp', 'dominos-mcp', 'vedur-mcp'],
   );
   assert.deepEqual(DOCUMENTATION_FILES, {
     'abler-mcp': ['docs/AGENTS.md', 'docs/PUBLISHING.md'],
@@ -27,6 +27,7 @@ await test('release package constants stay pinned', () => {
     'inna-mcp': ['docs/RELEASING.md'],
     'kronan-mcp': ['docs/RELEASING.md'],
     'dominos-mcp': ['docs/RELEASING.md'],
+    'vedur-mcp': ['docs/RELEASING.md'],
   });
 });
 
@@ -60,6 +61,7 @@ await test('release generation, version tags, and package-specific assets stay c
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/inna-mcp@0.0.1/packages/inna-mcp/install.sh | sh',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.0.1/packages/kronan-mcp/install.sh | sh',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/dominos-mcp@0.0.1/packages/dominos-mcp/install.sh | sh',
+    'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/vedur-mcp@0.0.1/packages/vedur-mcp/install.sh | sh',
     'curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/kronan-mcp@0.0.1/packages/kronan-mcp/install.sh | sh',
   ].join('\n');
 
@@ -228,7 +230,8 @@ await test('release generation, version tags, and package-specific assets stay c
         .replaceAll('infomentor-mcp@0.0.1', 'infomentor-mcp@9.8.7')
         .replaceAll('inna-mcp@0.0.1', 'inna-mcp@9.8.7')
         .replaceAll('kronan-mcp@0.0.1', 'kronan-mcp@9.8.7')
-        .replaceAll('dominos-mcp@0.0.1', 'dominos-mcp@9.8.7'),
+        .replaceAll('dominos-mcp@0.0.1', 'dominos-mcp@9.8.7')
+        .replaceAll('vedur-mcp@0.0.1', 'vedur-mcp@9.8.7'),
     );
     assert.equal(spawnSync(process.execPath, [rootSync, '--check'], { cwd: directory }).status, 0);
   } finally {
@@ -246,9 +249,10 @@ await test('shared source changes invalidate server quality task hashes', async 
 
     const turbo = join(repository, 'node_modules', '.bin', 'turbo');
 
-    const qualityTaskIds = packageNames.flatMap((name) =>
-      ['test', 'typecheck', 'lint'].map((task) => `${name}#${task}`),
-    );
+    // vedur-mcp has no TypeScript sources, so it has no test, typecheck or lint task.
+    const qualityTaskIds = packageNames
+      .filter((name) => name !== 'vedur-mcp')
+      .flatMap((name) => ['test', 'typecheck', 'lint'].map((task) => `${name}#${task}`));
 
     const releaseTaskIds = packageNames.map((name) => `${name}#release:check`);
     const taskIds = [...qualityTaskIds, ...releaseTaskIds];
@@ -327,6 +331,7 @@ await test('Turbo release synchronization preserves root README pins', async () 
           '--filter=inna-mcp',
           '--filter=kronan-mcp',
           '--filter=dominos-mcp',
+          '--filter=vedur-mcp',
           '--force',
         ],
         { cwd: workspace, encoding: 'utf8' },

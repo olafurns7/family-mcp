@@ -3,6 +3,7 @@ import infomentorManifest from '../../../../packages/infomentor-mcp/package.json
 import innaManifest from '../../../../packages/inna-mcp/package.json';
 import kronanManifest from '../../../../packages/kronan-mcp/package.json';
 import dominosManifest from '../../../../packages/dominos-mcp/package.json';
+import vedurManifest from '../../../../packages/vedur-mcp/package.json';
 
 export type Locale = 'en' | 'is';
 export const repository = 'https://github.com/olafurns7/family-mcp';
@@ -25,6 +26,7 @@ export const author = {
 
 interface AgentSetup {
   service: string;
+  /** Step 2, worded for the server: the first line follows "2. ". */
   signIn: string[];
   register: string[];
   rules: string[];
@@ -39,7 +41,7 @@ const placeholders =
 const abler: AgentSetup = {
   service: 'Abler',
   signIn: [
-    'Ask me to run this and sign in to Abler in the browser window that opens:',
+    'Sign-in is mine to do, in my own terminal or browser. Ask me to run this and sign in to Abler in the browser window that opens:',
     '   abler-mcp auth login',
   ],
   register: [
@@ -54,7 +56,7 @@ const abler: AgentSetup = {
 const infomentor: AgentSetup = {
   service: 'InfoMentor',
   signIn: [
-    'Ask me to put my InfoMentor username and password in a private JSON file (the README shows the format) and to run these. Never read that file or ask what is in it.',
+    'Sign-in is mine to do, in my own terminal or browser. Ask me to put my InfoMentor username and password in a private JSON file (the README shows the format) and to run these. Never read that file or ask what is in it.',
     '   chmod 600 /absolute/path/credentials.json',
     '   infomentor-mcp login --credentials /absolute/path/credentials.json',
   ],
@@ -70,7 +72,7 @@ const infomentor: AgentSetup = {
 const inna: AgentSetup = {
   service: 'Inna',
   signIn: [
-    'Ask me to run one of these. The first uses electronic ID: I enter my phone number at a hidden prompt and approve on my phone. The second uses a Google account already linked in Inna, needs a desktop with Chrome or Chromium, and is not yet tested live.',
+    'Sign-in is mine to do, in my own terminal or browser. Ask me to run one of these. The first uses electronic ID: I enter my phone number at a hidden prompt and approve on my phone. The second uses a Google account already linked in Inna, needs a desktop with Chrome or Chromium, and is not yet tested live.',
     '   inna-mcp auth login',
     '   inna-mcp auth login --google',
   ],
@@ -89,7 +91,7 @@ const inna: AgentSetup = {
 const kronan: AgentSetup = {
   service: 'Krónan',
   signIn: [
-    'Ask me to create a personal access token in my Krónan settings, then to run this and enter the token at its hidden prompt:',
+    'Sign-in is mine to do, in my own terminal or browser. Ask me to create a personal access token in my Krónan settings, then to run this and enter the token at its hidden prompt:',
     '   kronan-mcp auth set',
   ],
   register: [
@@ -106,7 +108,7 @@ const kronan: AgentSetup = {
 const dominos: AgentSetup = {
   service: 'Domino’s Iceland',
   signIn: [
-    'Ask me to run this and enter my Icelandic phone number and the SMS code at its hidden prompts:',
+    'Sign-in is mine to do, in my own terminal or browser. Ask me to run this and enter my Icelandic phone number and the SMS code at its hidden prompts:',
     '   dominos-mcp auth login',
   ],
   register: [
@@ -120,12 +122,28 @@ const dominos: AgentSetup = {
   ],
 };
 
+const vedur: AgentSetup = {
+  service: 'Veður (Icelandic Meteorological Office data)',
+  signIn: [
+    'Nothing to sign in to: this server needs no sign-in, key or account, so skip this step.',
+  ],
+  register: [
+    claudeCode,
+    '   claude mcp add vedur -- /absolute/path/to/.local/bin/vedur-mcp serve',
+    `   ${placeholders}`,
+    `   ${otherClients}`,
+  ],
+  rules: [
+    'Never tell me there are no weather warnings unless get_weather_alerts succeeded and said so; a failed check means warnings may exist. Forecaster commentary from get_weather_watch is not an official warning.',
+  ],
+};
+
 function agentPrompt(setup: AgentSetup, command: string, readme: string): string {
   return [
     `Set up the ${setup.service} MCP server from family-mcp for me. It is an unofficial local server for macOS or glibc Linux on arm64/x64.`,
     '1. Install it:',
     `   ${command}`,
-    `2. Sign-in is mine to do, in my own terminal or browser. ${setup.signIn[0]}`,
+    `2. ${setup.signIn[0]}`,
     ...setup.signIn.slice(1),
     `3. Register it with the MCP client you are running in, using the binary’s absolute path with serve. ${setup.register[0]}`,
     ...setup.register.slice(1),
@@ -146,6 +164,7 @@ export const servers = [
   { id: 'inna', name: 'Inna', manifest: innaManifest, setup: inna },
   { id: 'kronan', name: 'Krónan', manifest: kronanManifest, setup: kronan },
   { id: 'dominos', name: 'Domino’s', manifest: dominosManifest, setup: dominos },
+  { id: 'vedur', name: 'Veður', manifest: vedurManifest, setup: vedur },
 ].map(({ id, name, manifest, setup }) => {
   const tag = `${manifest.name}@${manifest.version}`;
   const raw = `https://raw.githubusercontent.com/olafurns7/family-mcp/${tag}/packages/${manifest.name}`;
@@ -154,7 +173,7 @@ export const servers = [
     id,
     name,
     version: manifest.version,
-    preview: id === 'inna' || id === 'kronan' || id === 'dominos',
+    preview: id === 'inna' || id === 'kronan' || id === 'dominos' || id === 'vedur',
     command,
     agentPrompt: agentPrompt(setup, command, `${raw}/README.md`),
     documentation: `${repository}/tree/${tag}/packages/${manifest.name}#readme`,
@@ -166,13 +185,13 @@ export const content = {
   en: {
     title: 'Family MCP: Icelandic apps for your AI assistant',
     description:
-      'Unofficial MCP servers for Abler, InfoMentor, Inna, Krónan and Domino’s Iceland. Install them on your computer and connect them to an AI app that supports MCP.',
+      'Unofficial MCP servers for Abler, InfoMentor, Inna, Krónan, Domino’s Iceland and Icelandic weather. Install them on your computer and connect them to an AI app that supports MCP.',
     skip: 'Skip to the servers',
     language: 'Language',
     source: 'Source on GitHub',
     headline: ['Connect Icelandic apps', 'to your AI assistant.'],
     introduction:
-      'Unofficial MCP servers for Abler, InfoMentor, Inna, Krónan and Domino’s Iceland. Install them on your computer and connect them to an AI app that supports MCP.',
+      'Unofficial MCP servers for Abler, InfoMentor, Inna, Krónan, Domino’s Iceland and Icelandic weather. Install them on your computer and connect them to an AI app that supports MCP.',
     servers: 'MCP servers',
     install: 'Install in your terminal',
     copy: 'Copy command',
@@ -228,18 +247,25 @@ export const content = {
         limitation:
           'Card charging is untested. Bank verification (3-D Secure) isn’t supported yet; payment requires explicit confirmation.',
       },
+      vedur: {
+        description:
+          'Get forecasts, the latest observations, official weather warnings and forecaster commentary from the Icelandic Meteorological Office (Veðurstofa Íslands).',
+        login: 'No sign-in',
+        limitation:
+          'Forecasts come from the gottvedur.is website’s internal API, which may change without notice. Read only.',
+      },
     },
   },
   is: {
     title: 'Family MCP: tengdu íslensk öpp við gervigreind',
     description:
-      'Óopinberir MCP-þjónar fyrir Abler, InfoMentor, Innu, Krónuna og Domino’s. Settu þá upp á tölvunni þinni og tengdu við gervigreindarforrit sem styður MCP.',
+      'Óopinberir MCP-þjónar fyrir Abler, InfoMentor, Innu, Krónuna, Domino’s og veðrið. Settu þá upp á tölvunni þinni og tengdu við gervigreindarforrit sem styður MCP.',
     skip: 'Fara beint í uppsetningu',
     language: 'Tungumál',
     source: 'Kóðinn á GitHub',
     headline: ['Tengdu íslensk öpp', 'við gervigreind.'],
     introduction:
-      'Óopinberir MCP-þjónar fyrir Abler, InfoMentor, Innu, Krónuna og Domino’s. Settu þá upp á tölvunni þinni og tengdu við gervigreindarforrit sem styður MCP.',
+      'Óopinberir MCP-þjónar fyrir Abler, InfoMentor, Innu, Krónuna, Domino’s og veðrið. Settu þá upp á tölvunni þinni og tengdu við gervigreindarforrit sem styður MCP.',
     servers: 'MCP-þjónar',
     install: 'Uppsetning',
     copy: 'Afrita skipun',
@@ -293,6 +319,13 @@ export const content = {
         login: 'Innskráning með SMS',
         limitation:
           'Kortagreiðslur hafa ekki verið prófaðar og bankastaðfesting með 3-D Secure er enn ekki studd. Engin greiðsla fer fram án skýrs samþykkis þíns.',
+      },
+      vedur: {
+        description:
+          'Sæktu veðurspár, nýjustu mælingar, opinberar veðurviðvaranir og hugleiðingar veðurfræðings frá Veðurstofu Íslands.',
+        login: 'Engin innskráning',
+        limitation:
+          'Spárnar koma úr innri forritaskilum gottvedur.is, sem geta breyst án fyrirvara. Aðeins lestur.',
       },
     },
   },
