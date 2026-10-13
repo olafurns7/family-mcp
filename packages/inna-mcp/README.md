@@ -550,7 +550,8 @@ verified phone login, private session reuse, and the 13 read/status tools of
 0.1.1 using an isolated temporary session. A user confirmed switching between
 two students on a real account on 2026-10-03. Real absence submission, a
 measurement of whether the keep-alive extends a session, and persistent
-registration in an MCP host have not been performed.
+registration in an MCP host have not been performed. In-chat sign-in ran only
+against a synthetic eID provider, with no live Inna or real phone approval.
 
 See the [release process](docs/RELEASING.md) for packaging and publication gates.
 

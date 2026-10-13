@@ -248,17 +248,17 @@ EOF
       return 0
     fi
     renewal_unavailable=''
-    if [ -e /.dockerenv ]; then
-      renewal_unavailable='This host is a container (/.dockerenv exists).'
-    elif [ -r /proc/1/comm ]; then
-      IFS= read -r renewal_pid1 < /proc/1/comm || renewal_pid1='unknown'
-      [ "$renewal_pid1" = systemd ] || renewal_unavailable='PID 1 is not systemd on this host.'
-    fi
-    if [ -z "$renewal_unavailable" ] && ! renewal_systemd; then
+    if ! renewal_systemd; then
       renewal_unavailable='No systemd user manager is available (systemctl --user is absent or failed).'
+      if [ -e /.dockerenv ]; then
+        renewal_unavailable="$renewal_unavailable This host is a container (/.dockerenv exists)."
+      elif [ -r /proc/1/comm ]; then
+        IFS= read -r renewal_pid1 < /proc/1/comm || renewal_pid1='unknown'
+        [ "$renewal_pid1" = systemd ] || renewal_unavailable="$renewal_unavailable PID 1 is not systemd on this host."
+      fi
     fi
     if [ -n "$renewal_unavailable" ]; then
-      printf 'No renewal timer was installed. %s\nSigned out? Call inna_sign_in in the chat and approve on your phone.\nAn external renewal loop can run every 10 minutes; stop on exit 3 or 4:\n  while :; do "%s" auth renew; rc=$?; case $rc in 0|5|6) ;; 3|4) echo "Inna sign-in needed (exit $rc)"; break ;; *) echo "renew exit $rc" ;; esac; sleep 600; done\nA loop cannot survive pauses longer than Inna idle limit.\n' "$renewal_unavailable" "$renewal_command" >&2
+      printf 'No renewal timer was installed. %s\nSigned out? Call inna_sign_in in the chat and approve on your phone.\nAn external renewal loop can run every 10 minutes; stop on exit 3 or 4:\n  while :; do "%s" auth renew; rc=$?; case $rc in 0|5|6) ;; 3|4) echo "Inna sign-in needed (exit $rc)"; break ;; *) echo "renew exit $rc" ;; esac; sleep 600; done\nA loop cannot survive pauses longer than Inna'\''s idle limit.\n' "$renewal_unavailable" "$renewal_command" >&2
       return 0
     fi
     mkdir -p "$renewal_units"

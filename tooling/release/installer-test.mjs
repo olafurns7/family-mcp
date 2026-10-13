@@ -688,24 +688,34 @@ cat >/dev/null
 
       for (const init of ['tini', 'dumb-init', 'sh']) {
         await writeFile(pid1, `${init}\n`);
-        run = await renewalRun(['--with-renewal']);
+        run = await renewalRun(['--with-renewal'], { TEST_NO_SYSTEMD: '1' });
         assert.equal(run.status, 0, run.stderr);
         assert.match(run.stderr, /No renewal timer was installed.*PID 1 is not systemd/s);
         assert.match(run.stderr, /inna_sign_in/);
         assert.match(run.stderr, /3\|4\).*break/);
         assert.match(run.stderr, /cannot survive pauses/);
-        assert.deepEqual(run.calls, []);
+        assert.deepEqual(run.calls, [show]);
         assert.ok(!(await exists(timer)) && !(await exists(service)));
       }
 
       await writeFile(pid1, 'systemd\n');
       await writeFile(dockerenv, '');
-      run = await renewalRun(['--with-renewal']);
+      run = await renewalRun(['--with-renewal'], { TEST_NO_SYSTEMD: '1' });
       assert.equal(run.status, 0, run.stderr);
       assert.match(run.stderr, /No renewal timer was installed.*container/s);
-      assert.deepEqual(run.calls, []);
+      assert.deepEqual(run.calls, [show]);
+      assert.ok(!(await exists(timer)) && !(await exists(service)));
+      // Container markers do not prevent a working user manager from installing the timer.
+      await writeFile(pid1, 'tini\n');
+      run = await renewalRun(['--with-renewal']);
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(run.calls, enabled);
+      assert.ok((await exists(timer)) && (await exists(service)));
+      run = await renewalRun(['--without-renewal']);
+      assert.equal(run.status, 0, run.stderr);
       assert.ok(!(await exists(timer)) && !(await exists(service)));
       await rm(dockerenv);
+      await writeFile(pid1, 'systemd\n');
 
       // Without a user manager nothing runs the timer: its marked units and enablement link go.
       run = await renewalRun(['--with-renewal']);
@@ -1049,7 +1059,11 @@ cat >/dev/null
         join(pkg.root, 'release', archive + suffix),
         join(directory, archive + suffix),
       );
-    execFileSync('/bin/sh', [], { input: script, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync(process.env.FAMILY_MCP_INSTALLER_SHELL ?? '/bin/sh', [], {
+      input: script,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     assert.equal(
       execFileSync(binary, ['--version'], { env, encoding: 'utf8' }).trim(),
       pkg.version,
@@ -1126,7 +1140,11 @@ cat >/dev/null
       ]);
     }
 
-    execFileSync('/bin/sh', [], { input: script, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync(process.env.FAMILY_MCP_INSTALLER_SHELL ?? '/bin/sh', [], {
+      input: script,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     await writeFile(join(directory, archive + '.sha256'), `${'0'.repeat(64)}  ${archive}\n`);
     assert.notEqual(
       spawnSync(process.env.FAMILY_MCP_INSTALLER_SHELL ?? '/bin/sh', [], { input: script, env })
