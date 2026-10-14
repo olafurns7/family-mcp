@@ -36,11 +36,20 @@ The owner runs these steps in their own terminal, outside this repository.
 No API tokens or dashboard passwords belong in the repo or site configuration.
 These instructions were checked against [Counterscale v3.4.1](https://github.com/benvinegar/counterscale/releases/tag/v3.4.1).
 
-1. Use macOS or Linux with Node 20 or newer. In the owner's Cloudflare account,
-   set up a Workers subdomain and enable **Storage & Databases → Analytics
-   Engine**. Create a token scoped to that account with **Account → Account
-   Analytics → Read**. This is the dashboard's query token; Wrangler's separate
-   login grants deployment access.
+1. In the owner's Cloudflare **Workers & Pages**, first check for an existing
+   `counterscale` Worker. **If one exists, do not run the installer**: reuse its
+   origin and skip to step 4. Site id `mcp-olinn` keeps these counts separate from
+   `olinn.is` in the same deployment.
+
+   For a new deployment, use macOS or Linux with Node 20 or newer. Set up a
+   Workers subdomain and enable **Storage & Databases → Analytics Engine**. On a
+   first-time Workers account, create a Hello World Worker (named something other
+   than `counterscale`) before enabling Analytics Engine. Create a token scoped
+   to that account with **Account → Account Analytics → Read**. This is the
+   dashboard's query token; Wrangler's separate login grants deployment access.
+   R2 long-term storage is on by default; check that R2 is enabled in the owner's
+   account before approving deployment.
+
 2. In the owner's terminal:
 
    ```sh
@@ -49,14 +58,14 @@ These instructions were checked against [Counterscale v3.4.1](https://github.com
    ```
 
    Select the owner's account if prompted. Enter the token only at the
-   installer's prompt, enable dashboard password protection, then approve the
-   deployment. Defaults are Worker `counterscale`, Analytics Engine dataset
+   installer's prompt and enable dashboard password protection. **If either the
+   token or password prompt is skipped, it found an existing deployment: answer
+   No at the deploy prompt and stop.** Otherwise approve the deployment.
+   Defaults are Worker `counterscale`, Analytics Engine dataset
    `metricsDataset`, and R2 rollup storage (`counterscale-daily-rollups` with a
-   development bucket binding); the rollup cron runs daily at 02:00 UTC. If those
-   names already belong to another deployment, stop before replacing it; use
-   `npx @counterscale/cli@3.4.1 install --advanced` to choose separate Worker and
-   dataset names. The installer prints the dashboard's `https://…workers.dev`
-   origin. Log in there with the dashboard password.
+   development bucket binding); the rollup cron runs daily at 02:00 UTC.
+   The installer prints the dashboard's
+   `https://…workers.dev` origin. Log in there with the dashboard password.
 
 3. Optionally add `stats.olinn.is`: in Cloudflare **Workers & Pages → counterscale
    → Settings → Domains & Routes → Add → Custom Domain**, enter `stats.olinn.is`
@@ -83,9 +92,10 @@ These instructions were checked against [Counterscale v3.4.1](https://github.com
    the Worker serves `/tracker.js`, and reports go to its `/cache` and `/collect`.
 
 5. Run `bun run check` in this app before the usual site deployment. It rejects
-   invalid/example origins or a CSP mismatch and checks both built pages for
+   IP-literal/placeholder origins or any CSP mismatch and checks both built pages for
    exactly one deferred tracker with site id `mcp-olinn` when enabled, and none
-   when off. Leave the constant empty to keep tracking off and the CSP at
+   when off. The analytics privacy sentence appears only when tracking is enabled.
+   Leave the constant empty to keep tracking off and the CSP at
    `script-src 'self'; connect-src 'self'`. To disable later, empty the constant
    and remove its origin from both directives together. After the owner deploys
    the site, visits appear under `mcp-olinn` in the Counterscale dashboard.

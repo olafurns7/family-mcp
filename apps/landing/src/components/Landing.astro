@@ -147,7 +147,7 @@ const image = new URL('/og.png', Astro.site);
         <h2 id="next-title">{text.nextHeading}</h2>
         <div>
           <p>{text.nextText}</p>
-          <p class="privacy-note">{text.privacy}</p>
+          <p class="privacy-note">{text.privacy}{counterscaleOrigin && ` ${text.analyticsPrivacy}`}</p>
         </div>
       </section>
     </main>
