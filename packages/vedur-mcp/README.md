@@ -68,7 +68,10 @@ forecast place that is not found there may still exist on gottvedur.is.
 `get_weather_alerts` filters to the IMO warning areas: 1 Höfuðborgarsvæðið,
 2 Suðurland, 3 Faxaflói, 4 Breiðafjörður, 5 Vestfirðir, 6 Strandir og
 norðurland vestra, 7 Norðurland eystra, 8 Austurland að Glettingi, 9 Austfirðir,
-10 Suðausturland, 11 Miðhálendi. These are not gottvedur.is forecast-region ids,
+10 Suðausturland, 11 Miðhálendi. The feed also contains other ids, including
+21–23 for Geo warnings; unfamiliar ids are accepted. Only category `Met`
+(weather) is returned. Other category strings, including unfamiliar ones, are
+counted in `other_categories_skipped`. These are not gottvedur.is forecast-region ids,
 which are a different numbering. Warnings default to IMO's Icelandic text;
 `language: "en"` selects the English text.
 
@@ -89,9 +92,21 @@ switches silently to another source. Its times have no UTC offset (Iceland keeps
 UTC all year, but the API does not state the zone), and the source does not
 document how precipitation is aggregated per step or per day.
 
-**Warnings and commentary.** A failed or unreadable warning request is always an
-error that says warnings may exist; only a successful read can return an empty
-list, and that list says when it was checked. `get_weather_watch` is the duty
+Warning `references` is null or bounded plain text: upstream strings are cleaned
+and limited to 2,000 characters; an object becomes its identifier (at most 200
+characters), followed by its `sent` time in parentheses when present (at most
+40 characters). The raw reference object, sender, source and polygon are never returned.
+
+**Warnings and commentary.** Each unreadable warning is skipped and counted in
+`unreadable`. Counts (`unreadable`, `expired_skipped`, `other_categories_skipped`)
+cover the entire feed, before the area filter. When `unreadable` is greater than
+zero, the summary says how many warnings could not be read and points to
+<https://gottvedur.is/vidvaranir/>, even if readable warnings are listed. An unreadable
+item may belong to the requested area: an empty partial result does not mean
+that area is clear. Only a complete read (`unreadable: 0`) can say “No active or
+upcoming IMO weather warnings”, with the time it was checked. An entirely unreadable
+feed, invalid JSON, a non-array response or a failed fetch returns an error that
+says warnings may exist. `get_weather_watch` is the duty
 forecasters' editorial commentary, not an official warning, and an old post does
 not mean a warning is active.
 

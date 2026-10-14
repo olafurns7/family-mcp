@@ -1,5 +1,5 @@
-//! `get_weather_alerts`: IMO's official CAP warnings. A failed or unreadable fetch is always an
-//! error, never an empty list; an empty list says when it was checked.
+//! `get_weather_alerts`: IMO's official CAP warnings. Unreadable entries are counted; a partial
+//! read never claims there are no warnings. An entirely unreadable feed is an error.
 
 use chrono::{DateTime, Utc};
 use mcp_runtime::Fail;
@@ -55,29 +55,11 @@ fn localized(
     Ok((Value::Null, Value::Null))
 }
 
-/// The CAP 1.2 `category` values.
-const CATEGORIES: [&str; 12] = [
-    "Geo",
-    "Met",
-    "Safety",
-    "Security",
-    "Rescue",
-    "Fire",
-    "Health",
-    "Env",
-    "Transport",
-    "Infra",
-    "CBRNE",
-    "Other",
-];
-
-/// Whether a warning is weather (category Met). The category list must be present, nonempty, no
-/// longer than the CAP list, and only CAP values; anything else is a changed feed, so an entry
-/// is never skipped on a category that could not be read.
+/// Only Met is weather; unfamiliar category strings are counted as other categories.
 fn is_weather(value: Option<&Value>) -> Result<bool, Fail> {
     let categories = value.and_then(Value::as_array).ok_or(SHAPE)?;
 
-    if categories.is_empty() || categories.len() > CATEGORIES.len() {
+    if categories.is_empty() {
         return Err(SHAPE);
     }
     let mut weather = false;
@@ -85,12 +67,26 @@ fn is_weather(value: Option<&Value>) -> Result<bool, Fail> {
     for category in categories {
         let category = category.as_str().ok_or(SHAPE)?;
 
-        if !CATEGORIES.contains(&category) {
-            return Err(SHAPE);
-        }
         weather |= category == "Met";
     }
     Ok(weather)
+}
+
+/// CAP updates reference an object; expose only its bounded identifier and optional sent time.
+fn references(fields: &Fields) -> Result<Value, Fail> {
+    match fields.object.get("references") {
+        Some(value @ Value::Object(_)) => {
+            let reference = Fields::of(value, SHAPE)?;
+            // clean adds an ellipsis on truncation; reserve one character for it.
+            let identifier = text::clean(reference.string("identifier")?, 199);
+            let sent = reference.text("sent", 39)?;
+            Ok(json!(match sent.as_str() {
+                Some(sent) => format!("{identifier} ({sent})"),
+                None => identifier,
+            }))
+        }
+        _ => fields.text("references", 1999),
+    }
 }
 
 fn strings(value: Option<&Value>, max_items: usize) -> Result<Vec<String>, Fail> {
@@ -137,15 +133,10 @@ fn warning(value: &Value, english: bool, now: DateTime<Utc>) -> Result<Classifie
     let fields = Fields::of(value, SHAPE)?;
     let identifier = text::clean(fields.string("identifier")?, 200);
 
-    if !is_weather(fields.object.get("category"))? {
-        return Ok(Classified::NotWeather);
-    }
+    let weather = is_weather(fields.object.get("category"))?;
     let (onset, onset_at) = when(&fields, "onset")?;
     let (expires, expires_at) = when(&fields, "expires")?;
 
-    if expires_at.is_some_and(|expires| expires <= now) {
-        return Ok(Classified::Expired);
-    }
     let status = match (onset_at, expires_at) {
         (Some(onset), _) if onset > now => "upcoming",
         (Some(_), Some(_)) => "in effect",
@@ -161,28 +152,33 @@ fn warning(value: &Value, english: bool, now: DateTime<Utc>) -> Result<Classifie
         Some(_) => return Err(SHAPE),
     };
 
-    Ok(Classified::Keep(
-        json!({
-            "identifier": identifier,
-            "area_id": fields.integer("area_id")?,
-            "area_names": area_names(&fields, english)?,
-            "status": status,
-            "onset": onset,
-            "expires": expires,
-            "sent": when(&fields, "sent")?.0,
-            "msgtype": fields.text("msgtype", 40)?,
-            "references": fields.text("references", 2000)?,
-            "severity": fields.text("severity", 40)?,
-            "certainty": fields.text("certainty", 40)?,
-            "urgency": fields.text("urgency", 40)?,
-            "colour": colour,
-            "event": event,
-            "headline": headline,
-            "description": description,
-            "text_language": language,
-        }),
-        onset_at,
-    ))
+    let warning = json!({
+        "identifier": identifier,
+        "area_id": fields.integer("area_id")?,
+        "area_names": area_names(&fields, english)?,
+        "status": status,
+        "onset": onset,
+        "expires": expires,
+        "sent": when(&fields, "sent")?.0,
+        "msgtype": fields.text("msgtype", 40)?,
+        "references": references(&fields)?,
+        "severity": fields.text("severity", 40)?,
+        "certainty": fields.text("certainty", 40)?,
+        "urgency": fields.text("urgency", 40)?,
+        "colour": colour,
+        "event": event,
+        "headline": headline,
+        "description": description,
+        "text_language": language,
+    });
+    // Validate the entire item before counting it as expired or outside the weather category.
+    if !weather {
+        Ok(Classified::NotWeather)
+    } else if expires_at.is_some_and(|expires| expires <= now) {
+        Ok(Classified::Expired)
+    } else {
+        Ok(Classified::Keep(warning, onset_at))
+    }
 }
 
 pub fn shape(fetched: &Fetched, area_id: Option<i64>, english: bool, now: DateTime<Utc>) -> Output {
@@ -191,17 +187,22 @@ pub fn shape(fetched: &Fetched, area_id: Option<i64>, english: bool, now: DateTi
     let mut kept = Vec::new();
     let mut expired = 0;
     let mut other_categories = 0;
+    let mut unreadable = 0;
 
     for value in list {
-        match warning(value, english, now)? {
-            Classified::NotWeather => other_categories += 1,
-            Classified::Expired => expired += 1,
-            Classified::Keep(warning, onset) => {
+        match warning(value, english, now) {
+            Err(_) => unreadable += 1,
+            Ok(Classified::NotWeather) => other_categories += 1,
+            Ok(Classified::Expired) => expired += 1,
+            Ok(Classified::Keep(warning, onset)) => {
                 if area_id.is_none_or(|area| warning["area_id"] == json!(area)) {
                     kept.push((onset, warning));
                 }
             }
         }
+    }
+    if !list.is_empty() && unreadable == list.len() {
+        return Err(SHAPE);
     }
     kept.sort_by(|(a, left), (b, right)| {
         a.cmp(b)
@@ -216,20 +217,32 @@ pub fn shape(fetched: &Fetched, area_id: Option<i64>, english: bool, now: DateTi
     );
     let checked = output["fetched_at"].as_str().unwrap_or_default().to_owned();
     let place = area_id.map_or(String::new(), |area| format!(" for warning area {area}"));
-    let summary = match kept.len() {
+    let mut summary = match kept.len() {
+        0 if unreadable > 0 => {
+            format!("No readable active or upcoming IMO weather warnings{place} at {checked}.")
+        }
         0 => format!("No active or upcoming IMO weather warnings{place} at {checked}."),
         1 => format!("1 active or upcoming IMO weather warning{place} at {checked}."),
         count => format!("{count} active or upcoming IMO weather warnings{place} at {checked}."),
     };
+    if unreadable > 0 {
+        let noun = if unreadable == 1 {
+            "warning"
+        } else {
+            "warnings"
+        };
+        summary.push_str(&format!(" {unreadable} {noun} could not be read; warnings may exist{place}. Check https://gottvedur.is/vidvaranir/."));
+    }
     output.insert("summary".into(), json!(summary));
     output.insert("area_id".into(), json!(area_id));
     output.insert("language".into(), json!(if english { "en" } else { "is" }));
     output.insert("checked_at".into(), json!(timestamp(now)));
     output.insert("expired_skipped".into(), json!(expired));
     output.insert("other_categories_skipped".into(), json!(other_categories));
+    output.insert("unreadable".into(), json!(unreadable));
     output.insert(
         "note".into(),
-        json!("Official IMO warnings (CAP, category Met). Warning area ids are IMO warning areas (1 Höfuðborgarsvæðið, 2 Suðurland, 3 Faxaflói, 4 Breiðafjörður, 5 Vestfirðir, 6 Strandir og norðurland vestra, 7 Norðurland eystra, 8 Austurland að Glettingi, 9 Austfirðir, 10 Suðausturland, 11 Miðhálendi); they are not gottvedur.is forecast-region ids. Times keep the source's UTC offsets."),
+        json!("Official IMO warnings (CAP, category Met). Warning area ids are IMO warning areas (1 Höfuðborgarsvæðið, 2 Suðurland, 3 Faxaflói, 4 Breiðafjörður, 5 Vestfirðir, 6 Strandir og norðurland vestra, 7 Norðurland eystra, 8 Austurland að Glettingi, 9 Austfirðir, 10 Suðausturland, 11 Miðhálendi); other ids, including 21–23 for Geo warnings, can occur. They are not gottvedur.is forecast-region ids. Times keep the source's UTC offsets. Skipped counts cover the entire feed, before the area filter."),
     );
     output.insert(
         "warnings".into(),
@@ -284,6 +297,45 @@ mod tests {
             classify(onset, Value::Null, "2026-10-14T12:00:00Z"),
             "unknown"
         );
+    }
+
+    #[test]
+    fn reference_objects_are_bounded_clean_text_without_source_fields() {
+        for sent in [None, Some(Value::Null), Some(json!("<b>sent</b>"))] {
+            let mut value = json!({"references": {
+                "identifier": "<b>prior</b>", "sender": "ignored",
+                "source": {"identifier": "ignored", "polygon": ["ignored"]},
+            }});
+            if let Some(sent) = sent {
+                value["references"]["sent"] = sent;
+            }
+            let result = references(&Fields::of(&value, SHAPE).unwrap()).unwrap();
+            let expected = if value["references"]["sent"].is_string() {
+                "prior (sent)"
+            } else {
+                "prior"
+            };
+            assert_eq!(result, expected);
+        }
+        let value =
+            json!({"references": {"identifier": "a".repeat(1000), "sent": "b".repeat(1000)}});
+        let result = references(&Fields::of(&value, SHAPE).unwrap()).unwrap();
+        assert!(result.as_str().unwrap().chars().count() <= 243);
+        let value = json!({"references": "<b>string</b>".repeat(1000)});
+        let result = references(&Fields::of(&value, SHAPE).unwrap()).unwrap();
+        assert!(result.as_str().unwrap().chars().count() <= 2000);
+        for reference in [
+            json!({}),
+            json!({"identifier": 1}),
+            json!({"identifier": "x", "sent": []}),
+            json!([]),
+        ] {
+            let value = json!({"references": reference});
+            assert_eq!(
+                references(&Fields::of(&value, SHAPE).unwrap()).err(),
+                Some(SHAPE)
+            );
+        }
     }
 
     #[test]
