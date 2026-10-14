@@ -65,10 +65,14 @@ pub fn alive_after(child: &mut Child, limit: Duration) -> bool {
 pub struct Stderr(Receiver<String>);
 
 impl Stderr {
-    /// The next line with its newline, or an empty string once stderr has ended or `PATIENCE`
-    /// has passed.
+    /// The next line with its newline; fails distinctly on stderr's end or after `PATIENCE`.
+    #[track_caller]
     pub fn next(&self) -> String {
-        self.0.recv_timeout(PATIENCE).unwrap_or_default()
+        match self.0.recv_timeout(PATIENCE) {
+            Ok(line) => line,
+            Err(RecvTimeoutError::Disconnected) => panic!("stderr ended before the expected line"),
+            Err(RecvTimeoutError::Timeout) => panic!("no stderr line within {PATIENCE:?}"),
+        }
     }
 
     /// Everything stderr writes until it ends.

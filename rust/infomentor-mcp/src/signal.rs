@@ -179,8 +179,12 @@ mod tests {
         // A dropped controller never aborts.
         let dropped = Controller::default().signal();
         assert!(!dropped.aborted());
-        let bridge = Signal::timeout(Duration::from_millis(20)).store_cancel(&Handle::current());
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        let mut bridge =
+            Signal::timeout(Duration::from_millis(20)).store_cancel(&Handle::current());
+        tokio::time::timeout(Duration::from_secs(15), &mut bridge.task)
+            .await
+            .expect("the cancellation bridge did not finish")
+            .expect("the cancellation bridge panicked");
         assert!(bridge.cancel.is_cancelled());
     }
 }

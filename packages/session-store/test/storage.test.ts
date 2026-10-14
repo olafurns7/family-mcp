@@ -331,10 +331,8 @@ test('ancestors that another user could replace are refused, also above a missin
     await mkdir(join(open, 'inner'), { recursive: true, mode: 0o700 });
     await chmod(open, 0o777);
     await symlink(join(open, 'inner'), join(root, 'alias'));
-    await assert.rejects(
-      checkSecretStore(layout(join(root, 'alias'))),
-      refused(E4, await realpath(open)),
-    );
+    const resolvedOpen = await realpath(open);
+    await assert.rejects(checkSecretStore(layout(join(root, 'alias'))), refused(E4, resolvedOpen));
 
     // Sticky and shared like /tmp: only this user can move the entry below it.
     await chmod(open, 0o1777);
@@ -367,24 +365,26 @@ test('every link above the store is followed, also links inside a link’s targe
       const open = join(outside, 'open');
       await mkdir(open, { mode: 0o700 });
       await chmod(open, 0o777);
+      // Resolve before starting a rejection: awaiting it as an argument leaves that rejection unhandled.
+      const resolvedOpen = await realpath(open);
       await mkdir(join(root, 'safe'), { mode: 0o700 });
       await symlink(join(root, 'safe'), join(open, 'hop'));
       await symlink(join(open, 'hop'), join(root, 'alias'));
       const store = layout(join(root, 'alias'));
 
-      await assert.rejects(checkSecretStore(store), refused(E4, await realpath(open)));
+      await assert.rejects(checkSecretStore(store), refused(E4, resolvedOpen));
       await assert.rejects(
         withSecretStore(store, async () => assert.fail()),
-        refused(E4, await realpath(open)),
+        refused(E4, resolvedOpen),
       );
-      await assert.rejects(store.keys.createKey(), refused(E4, await realpath(open)));
+      await assert.rejects(store.keys.createKey(), refused(E4, resolvedOpen));
       expect(await readdir(join(root, 'safe'))).toEqual([]);
 
       // The same hop through a relative link.
       await symlink('safe', join(root, 'relative'));
       await rm(join(open, 'hop'));
       await symlink(join(root, 'relative'), join(open, 'hop'));
-      await assert.rejects(checkSecretStore(store), refused(E4, await realpath(open)));
+      await assert.rejects(checkSecretStore(store), refused(E4, resolvedOpen));
 
       // Once the hop's directory is safe, the route is.
       await chmod(open, 0o755);

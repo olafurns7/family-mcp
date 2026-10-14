@@ -504,7 +504,8 @@ test('auth login --keep-browser exits while the browser and profile remain open'
     );
     state = await waitForBrowserState(stateFile);
     await waitForFile(store.record);
-    const exit = await Promise.race([child.exited, Bun.sleep(2000).then(() => undefined)]);
+    // Exit is the event under test; a deadline catches waiting for the kept browser forever.
+    const exit = await Promise.race([child.exited, Bun.sleep(15_000).then(() => undefined)]);
 
     expect(exit).toBe(0);
     expect(state.transport).toBe('pipe');

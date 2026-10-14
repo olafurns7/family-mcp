@@ -148,21 +148,23 @@ async function fixture(bound = 1_500, args: string[] = []) {
 }
 
 test('idle serve survives several TTLs within the scaled 30-minute bound, including the flag', async () => {
+  // Match renewal.rs: keep TTL = 2B and the window = 6.2B, with room for CI scheduling.
+  const bound = 6_000;
   for (const args of [[], ['--no-keep-alive']]) {
-    const f = await fixture(1_500, args);
+    const f = await fixture(bound, args);
     try {
-      f.state.ttl = 3_000;
+      f.state.ttl = 2 * bound;
       f.state.renewalGaps = [];
-      await Bun.sleep(9_300);
+      await Bun.sleep((bound * 62) / 10);
       expect(f.state.rotations).toBeGreaterThan(6);
-      expect(Math.max(...f.state.renewalGaps)).toBeLessThan(1_500);
+      expect(Math.max(...f.state.renewalGaps)).toBeLessThan(bound);
       expect(f.paths().every((path) => path === USER)).toBe(true);
       expect((await f.call()).isError).not.toBe(true);
     } finally {
       await f.close();
     }
   }
-});
+}, 120_000);
 
 test('401 and 5xx renewals fail closed past the bound without a school request', async () => {
   for (const status of [401, 500]) {
