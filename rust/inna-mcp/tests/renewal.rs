@@ -190,7 +190,7 @@ fn renewal_401_and_5xx_fail_closed_past_the_bound_without_a_school_request() {
         let result = f.overview();
         assert!(is_error(&result), "{status}: {result}");
         let expected = match status {
-            401 => "sign-in is required",
+            401 => "signed out: call inna_sign_in",
             _ => "unavailable or unexpected",
         };
         assert!(result.to_string().contains(expected), "{result}");
@@ -221,7 +221,7 @@ fn read_401_refreshes_once_and_retries_once_and_a_second_401_sends_no_third() {
 
         if failures == 2 {
             assert!(
-                result.to_string().contains("sign-in is required"),
+                result.to_string().contains("signed out: call inna_sign_in"),
                 "{result}"
             );
         }
@@ -353,9 +353,7 @@ fn a_switch_401_recovers_once_and_a_persistent_401_refuses_after_two_switches() 
 
         if persistent {
             assert!(
-                result
-                    .to_string()
-                    .contains("Inna refused the student switch and asked for sign-in."),
+                result.to_string().contains("Inna refused the student switch and asked for sign-in. The session may have ended; sign in again and report this."),
                 "{result}"
             );
         }

@@ -114,6 +114,7 @@ pub struct Saved {
     /// By student key, in the order they were learned (written in JavaScript key order).
     pub students: Vec<(String, Learned)>,
     pub pause_until: f64,
+    pub sign_in: Option<crate::sign_in::Guard>,
 }
 
 impl Saved {
@@ -146,6 +147,9 @@ impl Saved {
             account: Binding::parse(object.get("account")?)?,
             students,
             pause_until,
+            sign_in: object.get("signIn").map(|value| {
+                crate::sign_in::Guard::parse(value).unwrap_or_else(crate::sign_in::Guard::blocked)
+            }),
         })
     }
 
@@ -157,13 +161,17 @@ impl Saved {
             .iter()
             .map(|(key, learned)| (key.clone(), learned.to_json(saved)))
             .collect();
-        json!({
+        let mut value = json!({
             "version": 2,
             "jar": self.jar,
             "account": self.account.to_json(),
             "students": js::order(students),
             "pauseUntil": js::number(self.pause_until),
-        })
+        });
+        if saved && let Some(guard) = &self.sign_in {
+            value["signIn"] = guard.to_json();
+        }
+        value
     }
 
     pub fn student(&self, key: &str) -> Option<&Learned> {
@@ -537,6 +545,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn malformed_sign_in_metadata_keeps_the_session_and_blocks_sign_in() {
+        let value = json!({"version": 2, "jar": "{}", "account": {"userId": 1, "studentId": "2", "schoolId": "3"}});
+        for malformed in [
+            Value::Null,
+            json!({"phone": "invalid"}),
+            json!({"starts": ["bad"]}),
+        ] {
+            let mut value = value.clone();
+            value["signIn"] = malformed;
+            let saved = Saved::parse(&value).unwrap();
+            assert_eq!(saved.jar, "{}");
+            assert_eq!(saved.account.user_id, 1);
+            let guard = saved.sign_in.unwrap().to_json();
+            assert!(guard.get("phone").is_none());
+            assert_eq!(guard["starts"].as_array().unwrap().len(), 10);
+        }
+    }
+
+    #[test]
     fn saved_sessions_parse_and_write_as_the_typescript_schema() {
         let text = r#"{"x":1,"pauseUntil":5.5,"students":{"9":{"studentName":"n","schoolId":"3","studentId":"2","userId":9,"z":0},"10":{"userId":10,"studentId":"4","schoolId":"3","studentName":"m"}},"account":{"schoolId":"3","studentId":"2","userId":1},"jar":"{}","version":1}"#;
         let saved = Saved::parse(&js::parse(text.as_bytes()).unwrap()).unwrap();
@@ -579,6 +606,7 @@ mod tests {
             },
             students: Vec::new(),
             pause_until: 0.0,
+            sign_in: None,
         };
         let long = "é".repeat(MAX_NAME_LENGTH + 1);
         saved.students.push((
@@ -611,6 +639,7 @@ mod tests {
             },
             students: Vec::new(),
             pause_until: 0.0,
+            sign_in: None,
         };
         // createHash('sha256').update('SESSION=a\nXSRF-TOKEN=').digest('hex').
         assert_eq!(

@@ -74,7 +74,7 @@ fn both_absence_tools_round_trip_including_confirmed_inclusive_leave_dates() {
     let case = Case::new("round-trip", true);
     let mut client = case.client();
     let tools = client.mcp.request("tools/list", json!({})).value();
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 16);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 18);
 
     let preview = client
         .prepare(with(

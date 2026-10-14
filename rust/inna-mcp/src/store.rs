@@ -31,7 +31,8 @@ pub const RECORD_MAX_BYTES: usize =
         + 6 * MAX_SESSION_BYTES
         + BINDING_BYTES
         + (MAX_STUDENTS * STUDENT_BYTES - 1)
-        + 24;
+        + 24
+        + 512; // Bounded Rust-only phone and ten sign-in timestamps.
 
 /// Where the store is: this process's environment, or in a unit test the scratch store
 /// `tests::scratch` chose for its thread.
@@ -145,8 +146,8 @@ pub mod tests {
     }
 
     #[test]
-    fn the_record_bound_is_the_typescript_one() {
+    fn the_record_bound_includes_the_rust_only_sign_in_guard() {
         // packages/inna-mcp/src/client.ts RECORD_MAX_BYTES, evaluated by Bun.
-        assert_eq!(RECORD_MAX_BYTES, 1_682_444);
+        assert_eq!(RECORD_MAX_BYTES, 1_682_444 + 512);
     }
 }

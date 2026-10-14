@@ -189,7 +189,7 @@ fn auth_migrate_moves_a_plaintext_session_once_and_later_plaintext_is_never_read
         json!({"authenticated": false})
     );
     assert_eq!(client.keep_alive(), "skipped");
-    starts(overview(&mut client, None), "No Inna session.");
+    starts(overview(&mut client, None), "signed out: call inna_sign_in");
     assert_eq!(case.provider.state().calls.len(), calls);
     assert_eq!(migrate(&case).unwrap(), ALREADY_REMOVED);
     assert_eq!(case.home.record_at(&root).as_deref(), Some("null"));
@@ -302,7 +302,7 @@ fn a_marker_without_a_record_never_reads_plaintext_and_migrate_resumes() {
         json!({"authenticated": false})
     );
     assert_eq!(client.keep_alive(), "skipped");
-    starts(overview(&mut client, None), "No Inna session.");
+    starts(overview(&mut client, None), "signed out: call inna_sign_in");
     assert_eq!(case.provider.state().calls.len(), calls);
     assert_eq!(fs::read_to_string(case.session()).unwrap(), legacy);
     assert_eq!(outcome(case.cli(&["auth", "migrate"])).unwrap(), MIGRATED);
@@ -403,12 +403,12 @@ fn worst_record() -> String {
 /// src/session.rs::saved_names_are_cut_but_held_names_are_not; through the binary that refusal
 /// and the jar's own failure have one generic text.
 #[test]
-fn the_record_limit_is_exactly_the_largest_session_the_schema_accepts() {
-    let worst = worst_record();
+fn the_record_limit_reserves_space_for_sign_in_and_refuses_one_byte_more() {
+    let worst = worst_record() + &" ".repeat(512);
     let parsed: Value = serde_json::from_str(&worst).unwrap();
     assert_eq!(parsed["students"].as_object().unwrap().len(), 64);
     // packages/inna-mcp/src/client.ts RECORD_MAX_BYTES, evaluated by Bun.
-    assert_eq!(worst.len(), 1_682_444);
+    assert_eq!(worst.len(), 1_682_444 + 512);
     let refused = "Cannot use the Inna session store.";
 
     let case = Case::new("record-limit", false);

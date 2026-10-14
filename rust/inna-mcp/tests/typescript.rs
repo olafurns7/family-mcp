@@ -72,3 +72,8 @@ fn the_startup_cases_pass_against_this_binary() {
 fn renewal_and_bounded_recovery_pass_against_this_binary() {
     bun_test("renewal.test.ts", 11);
 }
+
+#[test]
+fn explicit_sign_in_lifecycle_passes_against_this_binary() {
+    bun_test("sign-in.test.ts", 8);
+}

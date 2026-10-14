@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add Rust-only `inna_sign_in` and `inna_sign_in_status` for explicit in-chat
+  electronic-ID recovery, with encrypted phone storage, a persistent rolling
+  24-hour cap, pending reuse, and a failure cooldown. Signed-out MCP reads name
+  `inna_sign_in`; old sessions remain compatible.
+- Explain when `--with-renewal` cannot install a systemd timer in containers or
+  without a user manager, and document the in-chat and external-loop fallbacks.
+
 ## 0.5.0
 
 Released 2026-10-12.

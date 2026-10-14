@@ -486,16 +486,16 @@ test('every read tool round-trips through MCP without marking read or fetching e
     ] satisfies [string, object][];
 
     expect(tools.tools.map((tool) => tool.name).toSorted()).toEqual(
-      calls.map(([name]) => name).toSorted(),
+      [...calls.map(([name]) => name), 'inna_sign_in', 'inna_sign_in_status'].toSorted(),
     );
 
-    // Only the two tools that never select a student may claim to be read-only.
+    // These tools never select a student.
     expect(
       tools.tools
         .filter((tool) => tool.annotations?.readOnlyHint)
         .map((tool) => tool.name)
         .toSorted(),
-    ).toEqual(['inna_absence_status', 'inna_list_students']);
+    ).toEqual(['inna_absence_status', 'inna_list_students', 'inna_sign_in_status']);
 
     for (const [name, args] of calls) {
       const result = await client.callTool({ name, arguments: args });
@@ -539,7 +539,7 @@ test('both opt-in absence tools round-trip through MCP, including confirmed incl
   await client.connect(server.transport);
 
   try {
-    expect((await client.listTools()).tools).toHaveLength(16);
+    expect((await client.listTools()).tools).toHaveLength(18);
 
     const prepared = await client.callTool({
       name: 'inna_prepare_absence',
@@ -957,7 +957,10 @@ test('failed and stalled response bodies are cancelled without returning a false
       },
     });
 
-    await assert.rejects(client.messages(), /sign-in|denied|rate limited|unexpected response/);
+    await assert.rejects(
+      client.messages(),
+      /signed out: call inna_sign_in|denied|rate limited|unexpected response/,
+    );
     expect(cancelled).toBe(true);
 
     if (status === 429) {
@@ -1005,7 +1008,7 @@ test('private import, principal binding, redirect refusal, and shared rate-limit
   await assert.rejects(f.client.overview(), /changed account/);
   f.provider.user = { ...f.provider.user, studentId: '2' };
   f.provider.redirect = true;
-  await assert.rejects(f.client.overview(), /sign-in is required/);
+  await assert.rejects(f.client.overview(), /signed out: call inna_sign_in/);
   f.provider.redirect = false;
   f.provider.rateLimit = true;
   await assert.rejects(f.client.overview(), /rate limited/);
@@ -1391,7 +1394,10 @@ test('an ignored, misdirected, or rate-limited switch returns no data', async ()
   ]) {
     const f = await fixture();
     f.provider.switchLocation = location;
-    await assert.rejects(f.client.overview(undefined, SIBLING), /refused the student switch/);
+    await assert.rejects(
+      f.client.overview(undefined, SIBLING),
+      /Inna refused the student switch and asked for sign-in/,
+    );
     expect(f.provider.paths().slice(-1)).toEqual(['/auth/system']);
   }
 
@@ -1403,7 +1409,7 @@ test('an ignored, misdirected, or rate-limited switch returns no data', async ()
   );
   expect(refused.provider.paths().slice(-1)).toEqual(['/auth/system']);
   refused.provider.unauthorized = true;
-  await assert.rejects(refused.client.overview(), /^SafeError: Inna sign-in is required\./);
+  await assert.rejects(refused.client.overview(), /^SafeError: signed out: call inna_sign_in/);
 
   const limited = await fixture();
   limited.provider.switchRateLimit = true;
@@ -1669,14 +1675,25 @@ test('all 16 tools round-trip through MCP for the sibling studentKey', async () 
     ] satisfies [string, object][];
 
     expect(tools.tools.map((tool) => tool.name).toSorted()).toEqual(
-      [...calls.map(([name]) => name), 'inna_submit_absence'].toSorted(),
+      [
+        ...calls.map(([name]) => name),
+        'inna_submit_absence',
+        'inna_sign_in',
+        'inna_sign_in_status',
+      ].toSorted(),
     );
 
     for (const tool of tools.tools) {
       const accepts = JSON.stringify(tool.inputSchema).includes('studentKey');
 
       expect(accepts, tool.name).toBe(
-        !['inna_list_students', 'inna_absence_status', 'inna_submit_absence'].includes(tool.name),
+        ![
+          'inna_list_students',
+          'inna_absence_status',
+          'inna_submit_absence',
+          'inna_sign_in',
+          'inna_sign_in_status',
+        ].includes(tool.name),
       );
     }
 
@@ -1832,7 +1849,7 @@ test('an expired session stops the keep-alive until a new import replaces it', a
   expect(await s.tick()).toEqual({ status: 'skipped' });
   expect(f.provider.calls).toHaveLength(count + 1);
   // The same refusal reaches a tool call with the existing message.
-  await assert.rejects(f.client.overview(), /^SafeError: Inna sign-in is required\./);
+  await assert.rejects(f.client.overview(), /^SafeError: signed out: call inna_sign_in/);
 
   f.provider.unauthorized = false;
   f.provider.rotation = 'synthetic-renewed';
@@ -1884,7 +1901,7 @@ test('two servers sharing a refused session stop asking, and replaced credential
   ]);
   expect(f.provider.calls).toHaveLength(start + 2);
   // A tool call on the dead session rewrites the jar without changing the credentials.
-  await assert.rejects(f.client.overview(), /^SafeError: Inna sign-in is required\./);
+  await assert.rejects(f.client.overview(), /^SafeError: signed out: call inna_sign_in/);
   const afterTool = f.provider.calls.length;
 
   for (const client of clients) expect(await client.keepAlive()).toEqual({ status: 'skipped' });
@@ -2042,7 +2059,7 @@ test('auth migrate moves a plaintext session once; later plaintext files are nev
   expect(await client.status()).toEqual({ authenticated: false });
   expect(await client.keepAlive()).toEqual({ status: 'skipped' });
   expect(await client.defaultUserId()).toBeUndefined();
-  await assert.rejects(client.overview(), /^SafeError: No Inna session\./);
+  await assert.rejects(client.overview(), /^SafeError: signed out: call inna_sign_in/);
   expect(f.provider.calls).toHaveLength(calls);
   expect(await client.migrate()).toBe('already-removed-legacy');
   expect(await readStored(store)).toBe('null');
@@ -2249,7 +2266,7 @@ test('a store with a marker but no record never reads the plaintext file, and mi
   const calls = f.provider.calls.length;
   expect(await f.client.status()).toEqual({ authenticated: false });
   expect(await f.client.keepAlive()).toEqual({ status: 'skipped' });
-  await assert.rejects(f.client.overview(), /^SafeError: No Inna session\./);
+  await assert.rejects(f.client.overview(), /^SafeError: signed out: call inna_sign_in/);
   expect(f.provider.calls).toHaveLength(calls);
   expect(await bytes(f.path)).toBe(legacy);
   expect(await f.client.migrate()).toBe('migrated');

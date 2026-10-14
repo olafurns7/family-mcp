@@ -168,7 +168,9 @@ const safeMessages = (() => {
 
 /** A reviewed message becomes a `SafeError` again; any other text stays an `Error`. */
 export function failure(message: string): Error {
-  return safeMessages.has(message) ? new SafeError(message) : new Error(message);
+  return message === 'signed out: call inna_sign_in' || safeMessages.has(message)
+    ? new SafeError(message)
+    : new Error(message);
 }
 
 /**
@@ -429,6 +431,9 @@ export class InnaClient {
         }
       });
       await client.connect(served.transport);
+
+      if ((await client.listTools()).tools.some((tool) => !tool.outputSchema))
+        throw new Error('Every tool must declare an output schema.');
 
       return { client, transport: served.transport, waiting };
     })();

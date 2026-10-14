@@ -55,7 +55,7 @@ pub const NOW: i64 = 2_209_118_400_000;
 pub const RENEWAL: &str = "https://nam.inna.is/api/UserData/GetLoggedInUser";
 
 /// The store's own record bound (src/store.rs `RECORD_MAX_BYTES`).
-pub const RECORD_MAX_BYTES: usize = 1_682_444;
+pub const RECORD_MAX_BYTES: usize = 1_682_444 + 512;
 
 /// fake-inna.ts `COMPARED_HEADERS`: what each request carried that both sides must agree on.
 pub const COMPARED: [&str; 8] = [

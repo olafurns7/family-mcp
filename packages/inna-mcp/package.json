@@ -53,7 +53,9 @@
         "inna_get_messages",
         "inna_get_message",
         "inna_get_absences",
-        "inna_absence_status"
+        "inna_absence_status",
+        "inna_sign_in",
+        "inna_sign_in_status"
       ]
     }
   }

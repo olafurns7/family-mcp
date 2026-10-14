@@ -72,6 +72,11 @@ pub const NO_SESSION: Fail = Fail::Safe(
     "No Inna session. Run inna-mcp auth login or auth import with a private cookie export.",
 );
 
+pub fn signed_out(fail: Fail) -> bool {
+    fail == NO_SESSION
+        || matches!(fail, Fail::Safe(message) if message == SIGN_IN_REQUIRED || message == SESSION_EXPIRED)
+}
+
 const WRITES_NOT_ALLOWED: Fail = Fail::Safe("Absence writes require --allow-absence-writes.");
 
 /// `noPreview`.
@@ -936,6 +941,11 @@ impl Client {
 
     pub fn net(&self) -> &Net {
         &self.net
+    }
+
+    /// An explicit verified save may revive even the same cookie values.
+    pub fn forget_refusal(&self) {
+        *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
     /// Wait for every operation in flight.
@@ -1813,6 +1823,7 @@ mod tests {
             account: user(json!({})).binding(),
             students: Vec::new(),
             pause_until: 0.0,
+            sign_in: None,
         };
         let sibling = user(json!({"userId": 5, "studentId": "6", "schoolId": "8"}));
         assert_eq!(learn(&mut saved, "5", &sibling).unwrap(), sibling.binding());

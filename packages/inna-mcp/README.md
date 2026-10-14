@@ -550,6 +550,54 @@ verified phone login, private session reuse, and the 13 read/status tools of
 0.1.1 using an isolated temporary session. A user confirmed switching between
 two students on a real account on 2026-10-03. Real absence submission, a
 measurement of whether the keep-alive extends a session, and persistent
-registration in an MCP host have not been performed.
+registration in an MCP host have not been performed. In-chat sign-in ran only
+against a synthetic eID provider, with no live Inna or real phone approval.
 
 See the [release process](docs/RELEASING.md) for packaging and publication gates.
+
+## Signed out? Sign in from the chat
+
+After one terminal `inna-mcp auth login`, the encrypted session record keeps your
+phone number. Signed-out `inna_session_status` returns only `{"authenticated": false}`.
+When a read says `signed out: call inna_sign_in`, or status reports unauthenticated,
+call `inna_sign_in` with no arguments. It returns a four-digit verification code;
+compare it verbatim, including leading zeros, with your phone and approve there.
+Enter your PIN only on your phone. Then call `inna_sign_in_status`: `pending`,
+`approved` (signed in), `failed`, `expired`, or `none`.
+
+Sign-in runs in the background while the MCP server stays connected. A repeated
+call while pending reuses that sign-in. Starts are capped at 10 per rolling
+24 hours, saved across restarts; rejection or failure adds a one-minute cooldown.
+An existing Inna rate-limit pause also blocks sign-in. Failed reads never start
+sign-in automatically. Old records without a phone number still work; run
+`inna-mcp auth login` once to enable this recovery. `auth status` may report that
+a number is stored but never displays it. Google login and cookie import do not
+collect a phone number. Local logout removes it with the session.
+
+These two tools are Rust-only additions. `inna_sign_in` changes the local session;
+`inna_sign_in_status` is read-only. Neither changes school records. Absence writes
+still require the existing opt-in and approval.
+
+## No systemd (containers)
+
+With `--with-renewal`, only a missing or failing `systemctl --user` prevents the
+renewal timer. Container markers and PID 1 other than systemd explain a failure;
+a container with a working user manager can install the timer. Use `inna_sign_in`
+in chat when signed out. An external scheduler can instead run this loop:
+
+```sh
+while :; do
+  inna-mcp auth renew
+  rc=$?
+  case $rc in
+    0|5|6) ;;
+    3|4) echo "Inna sign-in needed (exit $rc)"; break ;;
+    *) echo "renew exit $rc" ;;
+  esac
+  sleep 600
+done
+```
+
+Exit 5 is transient; run `auth status` if it persists. Exit 6 means paused.
+Exit 3 or 4 stops the loop for explicit sign-in. A loop cannot survive pauses
+longer than Inna's idle limit; that limit remains unmeasured.

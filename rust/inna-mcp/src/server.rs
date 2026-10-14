@@ -1,6 +1,6 @@
 //! The MCP surface of packages/inna-mcp/src/server.ts. tools/list replays the TypeScript server's
 //! advertised tools (src/surface.json, generated with absence writes allowed and checked by a
-//! test), so names, descriptions, schemas and annotations match exactly. Without
+//! test), plus the two documented Rust-only local sign-in tools. Without
 //! `--allow-absence-writes` the two write tools are neither listed nor callable, as there.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +44,7 @@ pub struct Inna {
     /// Aborts every call in flight once the server closes, as the TypeScript SDK's close aborts
     /// each handler's signal.
     closing: Controller,
+    sign_in: crate::sign_in::SignIn,
 }
 
 impl Inna {
@@ -96,6 +97,7 @@ impl Inna {
             client,
             keep_alive,
             closing: Controller::default(),
+            sign_in: Default::default(),
         }
     }
 
@@ -160,7 +162,17 @@ impl Server for Inna {
             host.abort();
         });
 
-        Ok(match name {
+        let result = match name {
+            "inna_sign_in" => {
+                input::empty(arguments)?;
+                self.sign_in
+                    .start(client.clone(), self.closing.signal())
+                    .await
+            }
+            "inna_sign_in_status" => {
+                input::empty(arguments)?;
+                self.sign_in.status(client, signal).await
+            }
             "inna_session_status" => {
                 let key = input::student(arguments)?;
                 client
@@ -271,6 +283,12 @@ impl Server for Inna {
             }
             // The runtime lists and accepts only the surface's tools.
             _ => Err(Fail::Unknown),
+        };
+        Ok(match result {
+            Err(fail) if crate::client::signed_out(fail) => {
+                Err(Fail::Safe("signed out: call inna_sign_in"))
+            }
+            result => result,
         })
     }
 
@@ -287,6 +305,7 @@ impl Server for Inna {
     async fn close(&self) {
         self.stop_keep_alive();
         self.closing.abort();
+        self.sign_in.close().await;
         self.client.idle().await;
     }
 }
@@ -304,10 +323,10 @@ mod tests {
                 .map(|tool| tool.name.to_string())
                 .collect()
         };
-        assert_eq!(names(true).len(), 16);
-        assert_eq!(names(false).len(), 14);
-        assert_eq!(names(true)[14..], WRITE_TOOLS);
-        assert_eq!(names(true)[..14], names(false));
+        assert_eq!(names(true).len(), 18);
+        assert_eq!(names(false).len(), 16);
+        assert_eq!(names(true)[16..], WRITE_TOOLS);
+        assert_eq!(names(true)[..16], names(false));
         assert_eq!(surface(true).instructions, surface(false).instructions);
     }
 }

@@ -9,6 +9,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, sta
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
+import assert from 'node:assert/strict';
+import { rustOnlyTools } from './rust-only-tools.ts';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 
@@ -703,24 +705,51 @@ async function runServe(
   env: Record<string, string>,
   step: { serve: [string, unknown][]; args?: string[]; surface?: boolean; swap?: boolean },
 ) {
-  const [executable, ...args] = command(step.swap ? other(side) : side, ['serve', ...(step.args ?? [])]);
-  const transport = new StdioClientTransport({ command: executable!, args, cwd: home, env: environment(home, env), stderr: 'pipe' });
+  const [executable, ...args] = command(step.swap ? other(side) : side, [
+    'serve',
+    ...(step.args ?? []),
+  ]);
+  const transport = new StdioClientTransport({
+    command: executable!,
+    args,
+    cwd: home,
+    env: environment(home, env),
+    stderr: 'pipe',
+  });
   const client = new Client({ name: 'inna-parity', version: '1.0.0' });
   const results: unknown[] = [];
   await client.connect(transport);
 
   if (step.surface) {
+    const tools = (await client.listTools()).tools;
+    if ((step.swap ? other(side) : side) === 'rust') {
+      assert.deepEqual(
+        tools.filter((tool) => rustOnlyTools.some((extra) => extra.name === tool.name)),
+        rustOnlyTools,
+      );
+    }
     results.push({
       server: client.getServerVersion(),
       capabilities: client.getServerCapabilities(),
       instructions: client.getInstructions(),
-      tools: (await client.listTools()).tools,
+      tools: tools.filter((tool) => !rustOnlyTools.some((extra) => extra.name === tool.name)),
     });
   }
 
   for (const [name, args] of step.serve) {
     try {
-      results.push(hiddenOperation(await client.callTool({ name, arguments: placed(args) })));
+      const answer = hiddenOperation(await client.callTool({ name, arguments: placed(args) }));
+      // Only the documented signed-out MCP wording differs; CLI/store errors remain exact.
+      const normalized = JSON.parse(JSON.stringify(answer));
+      for (const old of [
+        'Inna sign-in is required. Run auth login or import a fresh private cookie export.',
+        'Inna session expired. Run inna-mcp auth login or import a fresh private browser cookie export.',
+        'No Inna session. Run inna-mcp auth login or auth import with a private cookie export.',
+      ])
+        if (normalized.isError === true && normalized.content?.[0]?.text === old) {
+          normalized.content[0].text = 'signed out: call inna_sign_in';
+        }
+      results.push(normalized);
     } catch (error) {
       results.push({ protocolError: error instanceof Error ? error.message : String(error) });
     }
