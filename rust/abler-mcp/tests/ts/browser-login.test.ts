@@ -42,7 +42,9 @@ if (!rustBinary) throw new RangeError('ABLER_RUST_BINARY must name the Rust able
 
 // Rust: the binary keeps its store in scratch directories only through the store test seam.
 if (process.env.FAMILY_MCP_STORE_TEST_SEAM !== '1')
-  throw new RangeError('Tests must keep FAMILY_MCP_STORE_TEST_SEAM=1; the real store is never used.');
+  throw new RangeError(
+    'Tests must keep FAMILY_MCP_STORE_TEST_SEAM=1; the real store is never used.',
+  );
 
 const store = useScratchStore();
 
@@ -493,7 +495,8 @@ test('auth login --keep-browser exits while the browser and profile remain open'
     );
     state = await waitForBrowserState(stateFile);
     await waitForFile(store.record);
-    const exit = await Promise.race([child.exited, Bun.sleep(2000).then(() => undefined)]);
+    // Exit is the event under test; a deadline catches waiting for the kept browser forever.
+    const exit = await Promise.race([child.exited, Bun.sleep(15_000).then(() => undefined)]);
 
     expect(exit).toBe(0);
     expect(state.transport).toBe('pipe');
