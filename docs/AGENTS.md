@@ -64,6 +64,7 @@ attendance state from a failed request or undocumented value.
   call reuses the attempt; respect the one-minute failure cooldown, persistent
   10-start rolling 24-hour cap, and Inna's rate-limit pause. If no phone is
   stored, direct the owner to `inna-mcp auth login` once in a terminal.
+  If sign-in says "Inna found no active school access for this electronic ID", do not retry `inna_sign_in`; tell the user the message and its browser/school recovery steps.
 
 - Electronic-ID login uses `inna-mcp auth login` with hidden phone input. Any
   agent running the CLI must immediately show the user the exact security code

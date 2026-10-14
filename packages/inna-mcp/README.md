@@ -206,15 +206,16 @@ Machine backups made before the exclusion; indexers such as Spotlight; the key i
 crash dumps, swap or hibernation images. Disk encryption (FileVault on macOS, LUKS
 on Linux) protects a stolen computer that is switched off.
 
-| Message                                | Action                                                                                                                                                                                                                                                              |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Saved in a plaintext file              | Run `inna-mcp auth migrate`.                                                                                                                                                                                                                                        |
-| `inna-mcp: cannot start.`              | The store is unsafe, or Time Machine did not confirm that it skips it. The next lines name the path and, for most problems, the command that fixes it (for example `chmod 700`, `chmod 600`, or `tmutil addexclusion`). Nothing is changed for you.                 |
-| Leftover of an earlier test build      | That build kept the key in the macOS Keychain. Remove `session.enc` and `session.enc.marker` from `~/Library/Application Support/family-mcp/inna-mcp`, then run `inna-mcp auth login` again.                                                                        |
-| The Inna store key is missing          | The key was deleted. The record cannot be decrypted; `inna-mcp auth login` or `auth import` replaces it with a new key and record.                                                                                                                                  |
-| The last write … did not complete      | `session.enc` and `session.enc.marker` disagree, or the record was removed after a failed write. Remove both files (see the table above), then sign in again.                                                                                                       |
-| Cannot use the Inna session store      | Run `inna-mcp auth status` in a terminal: an unsafe store gets what is wrong and its path there. Otherwise the record, marker, or key is damaged or from another key; nothing is reset automatically. Restore the key, or remove the record and marker and sign in. |
-| INNA_SESSION_FILE overlaps the … store | Point `INNA_SESSION_FILE` away from the encrypted record, its marker and lock, and the key file.                                                                                                                                                                    |
+| Message                                                   | Action                                                                                                                                                                                                                                                              |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Saved in a plaintext file                                 | Run `inna-mcp auth migrate`.                                                                                                                                                                                                                                        |
+| `inna-mcp: cannot start.`                                 | The store is unsafe, or Time Machine did not confirm that it skips it. The next lines name the path and, for most problems, the command that fixes it (for example `chmod 700`, `chmod 600`, or `tmutil addexclusion`). Nothing is changed for you.                 |
+| Leftover of an earlier test build                         | That build kept the key in the macOS Keychain. Remove `session.enc` and `session.enc.marker` from `~/Library/Application Support/family-mcp/inna-mcp`, then run `inna-mcp auth login` again.                                                                        |
+| The Inna store key is missing                             | The key was deleted. The record cannot be decrypted; `inna-mcp auth login` or `auth import` replaces it with a new key and record.                                                                                                                                  |
+| The last write … did not complete                         | `session.enc` and `session.enc.marker` disagree, or the record was removed after a failed write. Remove both files (see the table above), then sign in again.                                                                                                       |
+| Cannot use the Inna session store                         | Run `inna-mcp auth status` in a terminal: an unsafe store gets what is wrong and its path there. Otherwise the record, marker, or key is damaged or from another key; nothing is reset automatically. Restore the key, or remove the record and marker and sign in. |
+| INNA_SESSION_FILE overlaps the … store                    | Point `INNA_SESSION_FILE` away from the encrypted record, its marker and lock, and the key file.                                                                                                                                                                    |
+| Inna found no active school access for this electronic ID | Do not retry `inna_sign_in`. Check at [inna.is](https://inna.is) in a browser. If it shows no access there either, ask the school to link your national ID as a guardian. Google login (`inna-mcp auth login --google`) or `inna-mcp auth import` may still work.   |
 
 Never remove the absence record to fix a session-store message.
 
@@ -564,6 +565,14 @@ call `inna_sign_in` with no arguments. It returns a four-digit verification code
 compare it verbatim, including leading zeros, with your phone and approve there.
 Enter your PIN only on your phone. Then call `inna_sign_in_status`: `pending`,
 `approved` (signed in), `failed`, `expired`, or `none`.
+
+If electronic-ID approval succeeds but Inna lists no school access, terminal
+login and the `failed` status say "Inna found no active school access for this
+electronic ID." Do not retry `inna_sign_in`. Check at [inna.is](https://inna.is)
+in a browser; if it shows no access there either, ask the school to link your
+national ID as a guardian. Google login (`inna-mcp auth login --google`) or
+`inna-mcp auth import` may still work. A failed chat attempt still counts toward
+the start cap and adds the usual cooldown.
 
 Sign-in runs in the background while the MCP server stays connected. A repeated
 call while pending reuses that sign-in. Starts are capped at 10 per rolling
