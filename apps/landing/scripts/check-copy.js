@@ -5,7 +5,11 @@
     if (!condition) throw new Error(message);
   };
   const buttons = [...document.querySelectorAll('[data-copy]')];
-  const prompts = buttons.filter((button) => button.dataset.copy.endsWith('-agent'));
+  const start = document.querySelector('[data-copy="start-agent"]');
+  const installs = buttons.filter((button) => !button.dataset.copy.endsWith('-agent'));
+  const prompts = buttons.filter(
+    (button) => button !== start && button.dataset.copy.endsWith('-agent'),
+  );
   const disclosures = [...document.querySelectorAll('details.agent-setup')];
   const opened = disclosures.map((disclosure) => disclosure.open);
   const status = document.querySelector('.copy-status');
@@ -13,10 +17,28 @@
   const original = Object.getOwnPropertyDescriptor(clipboard, 'writeText');
   const labels = buttons.map((button) => button.querySelector('span').textContent);
   const copied = [];
-  check(buttons.length === 10 && status, 'Expected ten copy buttons and status');
-  check(prompts.length === 5, 'Expected five install and five agent-prompt buttons');
+  check(buttons.length === 13 && status && start, 'Expected thirteen copy buttons and status');
+  check(installs.length === 6 && prompts.length === 6, 'Expected six server button pairs');
+  const startText = document.getElementById('start-agent-command').textContent;
   check(
-    disclosures.length === 5 && prompts.every((button) => button.closest('details.agent-setup')),
+    startText.endsWith(
+      'Use your questions tool to ask me which of the MCP servers I want to install.',
+    ),
+    'Start prompt must end with the questions instruction',
+  );
+  for (const button of installs) {
+    const command = document.getElementById(`${button.dataset.copy}-command`).textContent;
+    const prompt = document.getElementById(`${button.dataset.copy}-agent-command`).textContent;
+    const readme = prompt.match(/https:\/\/raw\.githubusercontent\.com\/[^\s]+\/README\.md/)?.[0];
+    check(startText.includes(command), 'Start prompt is missing a server install command');
+    check(readme && startText.includes(readme), 'Start prompt is missing a release README');
+  }
+  check(
+    document.querySelector('.start-here').nextElementSibling.id === 'servers',
+    'Start block must precede the server list',
+  );
+  check(
+    disclosures.length === 7 && prompts.every((button) => button.closest('details.agent-setup')),
     'Each agent prompt belongs in its own disclosure',
   );
   check(
@@ -25,7 +47,8 @@
   );
   try {
     // A closed disclosure hides its prompt, so its text could not be selected.
-    disclosures.forEach((disclosure) => (disclosure.open = true));
+    prompts.forEach((button) => (button.closest('details').open = true));
+    document.querySelector('details.start-prompt').open = false;
     Object.defineProperty(clipboard, 'writeText', {
       configurable: true,
       value: async (text) => copied.push(text),
@@ -56,14 +79,21 @@
         throw new DOMException('Permission denied', 'NotAllowedError');
       },
     });
-    for (const button of [buttons[0], prompts[0]]) {
+    for (const button of [installs[0], prompts[0], start]) {
+      if (button === start) document.querySelector('details.start-prompt').open = false;
       button.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
       const command = document.getElementById(`${button.dataset.copy}-command`).textContent;
       check(window.getSelection()?.toString() === command, 'Fallback did not select the full text');
       check(status.textContent === button.dataset.error, 'Missing translated recovery message');
+      if (button === start) {
+        check(
+          document.querySelector('details.start-prompt').open,
+          'Fallback must reveal the prompt',
+        );
+      }
     }
-    return 'PASS: five install and five agent-prompt copy buttons, reset, and permission-denied fallback';
+    return 'PASS: six install, six server prompts and start prompt; content, reset and permission-denied fallback';
   } finally {
     disclosures.forEach((disclosure, index) => (disclosure.open = opened[index]));
     if (original) Object.defineProperty(clipboard, 'writeText', original);
