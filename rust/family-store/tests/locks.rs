@@ -344,7 +344,11 @@ fn concurrent_dead_owner_recoveries_let_exactly_one_in_and_keep_its_owner() {
         // Every attempt but the one that entered gives up as BUSY while it holds the lock.
         for _ in 0..11 {
             let result = outcomes.recv_timeout(Duration::from_secs(10)).unwrap();
-            assert_eq!(code(result), Some(Code::Busy));
+            assert!(
+                matches!(&result, Err(error) if error.code == Code::Busy),
+                "{:?}",
+                result.as_ref().err()
+            );
         }
         assert_eq!(entered.load(Ordering::SeqCst), 1);
         release.send(()).unwrap();
