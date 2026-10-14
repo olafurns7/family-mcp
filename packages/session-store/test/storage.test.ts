@@ -331,10 +331,8 @@ test('ancestors that another user could replace are refused, also above a missin
     await mkdir(join(open, 'inner'), { recursive: true, mode: 0o700 });
     await chmod(open, 0o777);
     await symlink(join(open, 'inner'), join(root, 'alias'));
-    await assert.rejects(
-      checkSecretStore(layout(join(root, 'alias'))),
-      refused(E4, await realpath(open)),
-    );
+    const resolvedOpen = await realpath(open);
+    await assert.rejects(checkSecretStore(layout(join(root, 'alias'))), refused(E4, resolvedOpen));
 
     // Sticky and shared like /tmp: only this user can move the entry below it.
     await chmod(open, 0o1777);
