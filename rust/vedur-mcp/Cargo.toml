@@ -1,6 +1,6 @@
 [package]
 name = "vedur-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Read-only Icelandic weather MCP server for Veðurstofa Íslands (IMO) forecasts, observations and warnings"
 edition.workspace = true
 rust-version.workspace = true

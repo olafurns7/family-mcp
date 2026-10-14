@@ -4,14 +4,14 @@ Read-only Icelandic weather MCP for data from Veðurstofa Íslands (the Icelandi
 Meteorological Office, IMO): station search, point forecasts, the latest
 observations, official weather warnings, and the duty forecasters' commentary.
 No account, key, or saved session is needed. This is a **preview**
-(`vedur-mcp@0.1.0`); it is not affiliated with or endorsed by IMO.
+(`vedur-mcp@0.1.1`); it is not affiliated with or endorsed by IMO.
 
 ## Install
 
 Install the standalone executable for macOS or Linux, arm64/x64:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/vedur-mcp@0.1.0/packages/vedur-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/vedur-mcp@0.1.1/packages/vedur-mcp/install.sh | sh
 vedur-mcp --version
 ```
 
