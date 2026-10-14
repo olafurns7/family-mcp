@@ -131,6 +131,8 @@ impl Fail {
             Fail::Invalid | Fail::Unknown => Fail::new(Code::UnexpectedPage, message),
         }
     }
+
+    /// Attach the failing response's status.
     pub fn with_http_status(self, status: u16) -> Self {
         match self {
             Fail::Im {
@@ -150,6 +152,7 @@ impl Fail {
         }
     }
 
+    /// Attach the login step without changing cancellation or timeout failures.
     pub fn at_login_step(self, step: LoginStep) -> Self {
         match self {
             Fail::Im {
