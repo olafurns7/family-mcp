@@ -220,6 +220,8 @@ export const content = {
       'Run the command for the server you want, then follow its setup guide to sign in and add it to your MCP client. Or copy the prompt under the command into a coding agent and let it take you through the same steps.',
     privacy:
       'Sign-in credentials are stored on your machine. Account data returned by the tools is shared with your chosen MCP client.',
+    analyticsPrivacy:
+      'Counterscale records page views (page, referrer, browser, device and country) without cookies in the site owner’s Cloudflare account; it collects no sign-in or account data and shares nothing with ad networks.',
     footer: 'Made by',
     profileOn: 'on',
     affiliation: 'Not affiliated with or endorsed by the services above.',
@@ -300,6 +302,8 @@ export const content = {
       'Afritaðu skipunina og keyrðu hana í skipanalínu. Fylgdu svo leiðbeiningunum til að skrá þig inn og tengja þjóninn við gervigreindarforritið þitt. Þú getur líka afritað fyrirmælin undir skipuninni, límt þau inn í gervigreindarforrit sem keyrir skipanir á tölvunni þinni og látið það leiða þig í gegnum sömu skrefin.',
     privacy:
       'Innskráningarupplýsingarnar eru geymdar á tölvunni þinni. Gögnin sem þú sækir með þjónunum fara til gervigreindarforritsins sem þú notar.',
+    analyticsPrivacy:
+      'Counterscale skráir síðuflettingar (síðu, hvaðan komið er, vafra, tæki og land) án vafrakaka á Cloudflare-reikningi eiganda síðunnar; mælingarnar safna ekki innskráningar- eða aðgangsgögnum og engin mæligögn fara til auglýsinganeta.',
     footer: 'Höfundur:',
     profileOn: 'á',
     affiliation:
