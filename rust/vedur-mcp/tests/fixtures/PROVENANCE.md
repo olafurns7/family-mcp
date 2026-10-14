@@ -7,6 +7,15 @@ vedur-mcp research run. They are unmodified except where noted. Licence: CC BY 4
 declare; gottvedur.is is operated by IMO, whose website terms permit reuse with attribution.
 Tests serve these files from a loopback fake; they never contact a live service.
 
+`cap-updates-synthetic.json` is hand-written synthetic data, not a recorded
+response. Its Alert/Update, references-object (identifier, sender, sent, source),
+and Geo area 21–23 structures reproduce the public CAP feed shapes observed on
+2026-10-14 at 09:31 UTC at
+`https://api.vedur.is/cap/capbroker/active/detailed/all`, with
+`x-vi-api-version: 2026-04-14`. All identifiers and free text are synthetic;
+polygons are shortened and resources omitted. It also includes a string reference
+and a deliberately malformed item for regression tests.
+
 | File                         | URL                                                                                          | Notes                                                                                                                                                                                                                                                                       |
 | ---------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `stations.json`              | `https://api.vedur.is/weather/stations?keyword=Reykjav%C3%ADk&active=true`                   | Full response.                                                                                                                                                                                                                                                              |

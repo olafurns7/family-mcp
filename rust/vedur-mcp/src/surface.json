@@ -212,7 +212,7 @@
     {
       "name": "get_weather_alerts",
       "title": "Get official weather warnings",
-      "description": "IMO's official weather warnings (CAP, api.vedur.is/cap), current and upcoming, with validity (onset, expires), status, severity, colour, event, headline, description and area names. area_id filters to one IMO warning area: 1 Höfuðborgarsvæðið, 2 Suðurland, 3 Faxaflói, 4 Breiðafjörður, 5 Vestfirðir, 6 Strandir og norðurland vestra, 7 Norðurland eystra, 8 Austurland að Glettingi, 9 Austfirðir, 10 Suðausturland, 11 Miðhálendi (not gottvedur.is forecast-region ids). language is is (default, IMO's original text) or en. A failed fetch is an error, never an empty list; an empty list means IMO listed no active or upcoming weather warnings when fetched_at says.",
+      "description": "IMO's official weather warnings (CAP, category Met, api.vedur.is/cap), current and upcoming, with validity (onset, expires), status, severity, colour, event, headline, description and area names. area_id filters to one IMO warning area: 1 Höfuðborgarsvæðið, 2 Suðurland, 3 Faxaflói, 4 Breiðafjörður, 5 Vestfirðir, 6 Strandir og norðurland vestra, 7 Norðurland eystra, 8 Austurland að Glettingi, 9 Austfirðir, 10 Suðausturland, 11 Miðhálendi; other ids can occur, including 21–23 for Geo warnings (not gottvedur.is forecast-region ids). language is is (default, IMO's original text) or en. Items containing Met are weather; only known non-Met CAP 1.2 categories count as other. Without Met, any unfamiliar category makes the item unreadable, to avoid an all-clear if weather is renamed. Unreadable items are skipped and counted in unreadable for the whole feed, before area filtering. If any item could not be read, the summary says more warnings may exist when readable warnings are listed, or warnings may exist when none are listed, including in the requested area: check https://gottvedur.is/vidvaranir/. Only unreadable = 0 permits a no-warnings summary. An entirely unreadable feed or failed fetch is an error.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -243,6 +243,7 @@
           "checked_at": { "type": "string" },
           "expired_skipped": { "type": "integer" },
           "other_categories_skipped": { "type": "integer" },
+          "unreadable": { "type": "integer", "minimum": 0 },
           "note": { "type": "string" },
           "warnings": {
             "type": "array",
@@ -257,7 +258,7 @@
                 "expires": { "type": ["string", "null"] },
                 "sent": { "type": ["string", "null"] },
                 "msgtype": { "type": ["string", "null"] },
-                "references": { "type": ["string", "null"] },
+                "references": { "type": ["string", "null"], "description": "Bounded plain text: a cleaned string (at most 2000 characters), or a referenced identifier (200) with optional sent time (40) in parentheses. Raw objects are never returned." },
                 "severity": { "type": ["string", "null"] },
                 "certainty": { "type": ["string", "null"] },
                 "urgency": { "type": ["string", "null"] },
@@ -271,7 +272,7 @@
             }
           }
         },
-        "required": ["source", "fetched_at", "cached", "attribution", "summary", "warnings"]
+        "required": ["source", "fetched_at", "cached", "attribution", "summary", "unreadable", "warnings"]
       },
       "annotations": {
         "title": "Get official weather warnings",

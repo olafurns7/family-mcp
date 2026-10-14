@@ -1,0 +1,73 @@
+[
+  {
+    "identifier": "alert-1",
+    "area_id": 1,
+    "category": ["Met"],
+    "msgtype": "Alert",
+    "references": null,
+    "sent": "2026-10-12T10:00:00Z",
+    "onset": "2026-10-14T10:00:00Z",
+    "expires": "2026-10-15T10:00:00Z",
+    "headline_is": "Synthetic alert",
+    "headline_en": "Synthetic alert",
+    "description_is": "Synthetic text",
+    "description_en": "Synthetic text",
+    "parameter": {"Color": ["Yellow"]}
+  },
+  {
+    "identifier": "update-3",
+    "area_id": 3,
+    "category": ["Met"],
+    "msgtype": "Update",
+    "references": {
+      "identifier": "prior-3",
+      "sender": "Synthetic sender",
+      "sent": "2026-10-12T10:00:00Z",
+      "source": {"identifier": "source-only", "polygon": ["0,0 1,1"]}
+    },
+    "sent": "2026-10-13T10:00:00Z",
+    "onset": "2026-10-14T11:00:00Z",
+    "expires": "2026-10-15T10:00:00Z",
+    "headline_is": "Synthetic update",
+    "headline_en": "Synthetic update"
+  },
+  {
+    "identifier": "string-99",
+    "area_id": 99,
+    "category": ["Met"],
+    "msgtype": "Update",
+    "references": "Synthetic reference",
+    "onset": "2026-10-14T12:00:00Z",
+    "expires": "2026-10-15T10:00:00Z"
+  },
+  {
+    "identifier": "geo-21",
+    "area_id": 21,
+    "category": ["Geo"],
+    "msgtype": "Update",
+    "references": {"identifier": "prior-21"},
+    "headline_is": "Synthetic geo"
+  },
+  {
+    "identifier": "geo-22",
+    "area_id": 22,
+    "category": ["Geo"],
+    "msgtype": "Alert",
+    "references": null,
+    "headline_is": "Synthetic geo"
+  },
+  {
+    "identifier": "geo-23",
+    "area_id": 23,
+    "category": ["Geo"],
+    "msgtype": "Update",
+    "references": {"identifier": "prior-23", "sent": null},
+    "headline_is": "Synthetic geo"
+  },
+  {
+    "identifier": "unreadable",
+    "area_id": 1,
+    "category": ["Met"],
+    "headline_is": 42
+  }
+]

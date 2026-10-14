@@ -474,9 +474,111 @@ fn an_empty_warning_list_says_when_it_was_checked() {
 }
 
 #[test]
+fn cap_updates_and_partial_reads_keep_readable_weather_warnings() {
+    let upstream = Upstream::new(|_, _| Reply::fixture("cap-updates-synthetic.json"));
+    let mut mcp = Mcp::start(&upstream);
+    for language in ["is", "en"] {
+        let output = mcp.ok("get_weather_alerts", json!({"language": language}));
+        let warnings = output["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 3);
+        assert_eq!(warnings[0]["references"], Value::Null);
+        assert_eq!(warnings[1]["references"], "prior-3 (2026-10-12T10:00:00Z)");
+        assert_eq!(warnings[2]["references"], "Synthetic reference");
+        assert_eq!(output["unreadable"], 1);
+        assert_eq!(output["other_categories_skipped"], 3);
+        let summary = output["summary"].as_str().unwrap();
+        assert!(summary.contains("1 warning could not be read"), "{summary}");
+        assert!(summary.contains("more warnings may exist"), "{summary}");
+        assert!(summary.contains("https://gottvedur.is/vidvaranir/"));
+        assert!(!summary.contains(NO_WARNINGS_CLAIM));
+        assert!(!output.to_string().contains("source-only"));
+        assert!(!output.to_string().contains("polygon"));
+    }
+    let area = mcp.ok("get_weather_alerts", json!({"area_id": 1}));
+    assert_eq!(area["warnings"].as_array().unwrap().len(), 1);
+    assert_eq!(area["warnings"][0]["identifier"], "alert-1");
+    assert_eq!(area["unreadable"], 1);
+    let geo = mcp.ok("get_weather_alerts", json!({"area_id": 21}));
+    assert_eq!(geo["warnings"], json!([]));
+    assert_eq!(geo["other_categories_skipped"], 3);
+    assert_eq!(geo["unreadable"], 1);
+    let summary = geo["summary"].as_str().unwrap();
+    assert!(summary.contains("warnings may exist for warning area 21"));
+    assert!(summary.contains("could not be read"));
+    assert!(!summary.contains(NO_WARNINGS_CLAIM));
+    let unknown = mcp.ok("get_weather_alerts", json!({"area_id": 99}));
+    assert_eq!(unknown["warnings"][0]["identifier"], "string-99");
+    assert_eq!(upstream.seen(), [CAP]);
+    assert_eq!(mcp.finish(), "");
+}
+
+#[test]
+fn cap_reads_accept_other_areas_and_flag_unfamiliar_categories() {
+    for (category, unreadable) in [
+        (json!(["Geo", "Safety"]), 0),
+        (json!(["Unfamiliar"]), 1),
+        (json!(["Geo", "Unfamiliar"]), 1),
+    ] {
+        let mut body = fixture_json("cap-updates-synthetic.json");
+        body.as_array_mut().unwrap().pop();
+        body[3]["category"] = category;
+        body[4]["category"] = json!(["Unfamiliar", "Met"]);
+        body[5]["area_id"] = json!(1234);
+        body[5]["category"] = json!(["Met"]);
+        let upstream = Upstream::new(move |_, _| Reply::json(body.to_string().into_bytes()));
+        let mut mcp = Mcp::start(&upstream);
+        let output = mcp.ok("get_weather_alerts", json!({}));
+        assert_eq!(output["unreadable"], unreadable);
+        assert_eq!(output["other_categories_skipped"], 1 - unreadable);
+        let warnings = output["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 5);
+        assert!(warnings.iter().any(|warning| warning["area_id"] == 1234));
+        assert!(warnings.iter().any(|warning| warning["area_id"] == 22));
+        let geo = mcp.ok("get_weather_alerts", json!({"area_id": 21}));
+        assert_eq!(geo["warnings"], json!([]));
+        assert_eq!(geo["unreadable"], unreadable);
+        assert_eq!(geo["other_categories_skipped"], 1 - unreadable);
+        let summary = geo["summary"].as_str().unwrap();
+        if unreadable == 0 {
+            assert!(summary.contains(NO_WARNINGS_CLAIM), "{summary}");
+        } else {
+            assert!(!summary.contains(NO_WARNINGS_CLAIM), "{summary}");
+            assert!(summary.contains("1 warning could not be read"), "{summary}");
+            assert!(summary.contains("warnings may exist for warning area 21"));
+            assert!(!summary.contains("more warnings may exist"));
+            assert!(summary.contains("https://gottvedur.is/vidvaranir/"));
+            assert!(
+                output["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("more warnings may exist")
+            );
+        }
+        assert_eq!(mcp.finish(), "");
+    }
+}
+
+#[test]
+fn malformed_non_weather_and_expired_items_are_still_counted_as_unreadable() {
+    let mut body = fixture_json("cap-updates-synthetic.json");
+    body[3]["area_id"] = json!("21");
+    body[4]["references"] = json!(false);
+    body[5]["expires"] = json!(42);
+    body[6]["expires"] = json!("2000-01-01T00:00:00Z");
+    let upstream = Upstream::new(move |_, _| Reply::json(body.to_string().into_bytes()));
+    let mut mcp = Mcp::start(&upstream);
+    let output = mcp.ok("get_weather_alerts", json!({}));
+    assert_eq!(output["warnings"].as_array().unwrap().len(), 3);
+    assert_eq!(output["unreadable"], 4);
+    assert_eq!(output["other_categories_skipped"], 0);
+    assert_eq!(output["expired_skipped"], 0);
+    assert_eq!(mcp.finish(), "");
+}
+
+#[test]
 fn a_failed_warning_fetch_never_reads_as_no_warnings() {
-    let mut missing_identifier = fixture_json("cap-active.json");
-    missing_identifier[4]
+    let mut missing_identifier = json!([fixture_json("cap-updates-synthetic.json")[0].clone()]);
+    missing_identifier[0]
         .as_object_mut()
         .unwrap()
         .remove("identifier");
@@ -490,9 +592,9 @@ fn a_failed_warning_fetch_never_reads_as_no_warnings() {
         Some(json!([])),
         Some(json!(["Geo", null])),
         Some(json!(["Weather"])),
-        Some(json!(vec!["Geo"; 13])),
+        Some(json!(["Geo", "Unfamiliar"])),
     ] {
-        let mut recorded = fixture_json("cap-active.json");
+        let mut recorded = json!([fixture_json("cap-updates-synthetic.json")[0].clone()]);
         match category {
             Some(category) => recorded[0]["category"] = category,
             None => {
@@ -828,6 +930,7 @@ fn every_fixture_parses() {
         "forecast.json",
         "official-observations.json",
         "cap-active.json",
+        "cap-updates-synthetic.json",
         "synop-latest.json",
         "aws-no-data.json",
     ] {
