@@ -257,7 +257,7 @@ implemented. Payment requires explicit approval of the exact order, total, and c
 Install the preview release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/vedur-mcp@0.1.0/packages/vedur-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/vedur-mcp@0.1.1/packages/vedur-mcp/install.sh | sh
 ```
 
 No login is needed. Configure the MCP host to run the absolute path to

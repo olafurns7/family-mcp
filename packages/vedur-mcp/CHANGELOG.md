@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
+
+Released 2026-10-14.
 
 - Read CAP update references in object form as bounded text instead of rejecting
   the warning feed. String and null references remain supported.

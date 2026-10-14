@@ -1,6 +1,6 @@
 {
   "name": "vedur-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Read-only Icelandic weather MCP: IMO (Veðurstofa Íslands) forecasts, observations, official warnings, and forecaster commentary",
   "license": "MIT",
   "author": "Ólafur Nils Sigurðsson",

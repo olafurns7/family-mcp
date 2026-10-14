@@ -4,7 +4,7 @@ set -eu
 
 # Do not execute a partial script when invoked through curl | sh.
 main() {
-  version=${VEDUR_VERSION:-0.1.0}
+  version=${VEDUR_VERSION:-0.1.1}
   prefix=${VEDUR_PREFIX:-${HOME:?Set HOME or VEDUR_PREFIX}/.local}
   case "$version" in ''|*[!0-9A-Za-z.+-]*) echo 'Invalid VEDUR_VERSION.' >&2; exit 1 ;; esac
   case "$prefix" in /*) ;; *) echo 'VEDUR_PREFIX must be an absolute path.' >&2; exit 1 ;; esac

@@ -1,6 +1,6 @@
 # Release process
 
-The first version is `vedur-mcp@0.1.0`. Native binaries are the only
+Tags use `vedur-mcp@<version>`; the current version is `vedur-mcp@0.1.1`. Native binaries are the only
 distribution. The executable is built from `rust/vedur-mcp`, using the pinned
 Rust compiler, locked dependencies and rustls, with default features only.
 There is no TypeScript implementation. Never enable `test-origin` in a release
@@ -33,7 +33,7 @@ it. Wait for the draft release, verify all four archives, checksums, and install
 then publish it as a prerelease.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/vedur-mcp@0.1.0/packages/vedur-mcp/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/olafurns7/family-mcp/vedur-mcp@0.1.1/packages/vedur-mcp/install.sh | sh
 ```
 
 Archives contain the executable, README, LICENSE, and generated dependency
