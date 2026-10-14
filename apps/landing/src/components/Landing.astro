@@ -2,6 +2,7 @@
 import '@fontsource-variable/archivo/wght.css';
 import '../styles/global.css';
 import { author, content, repository, servers, startPrompt, type Locale } from '../data/content';
+import { counterscaleOrigin } from '../data/analytics.mjs';
 
 interface Props { locale: Locale }
 const { locale } = Astro.props;
@@ -38,6 +39,7 @@ const image = new URL('/og.png', Astro.site);
     <link rel="alternate" hreflang="is" href="https://mcp.olinn.is/is/" />
     <link rel="alternate" hreflang="x-default" href="https://mcp.olinn.is/" />
     <title>{text.title}</title>
+    {counterscaleOrigin && <script is:inline id="counterscale-script" data-site-id="mcp-olinn" src={`${counterscaleOrigin}/tracker.js`} defer></script>}
   </head>
   <body>
     <a class="skip-link" href="#servers">{text.skip}</a>
