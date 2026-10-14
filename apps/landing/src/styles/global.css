@@ -116,6 +116,19 @@
   .service-install {
     align-self: center;
   }
+  .start-here {
+    margin-bottom: 24px;
+    background: #ddf0e8;
+    color: #174c40;
+    align-items: start;
+  }
+  .start-here > .command-box {
+    min-width: 0;
+  }
+  .start-prompt pre {
+    max-height: 20rem;
+    overflow: auto;
+  }
   .next-steps {
     display: grid;
     grid-template-columns: 0.92fr 1.08fr;

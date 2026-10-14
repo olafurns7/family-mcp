@@ -49,9 +49,17 @@ Archivo is self-hosted through Fontsource; its OFL license is included in
 `public/archivo-license.txt`. The only client script handles copying commands
 and agent prompts, including visible feedback and a manual-copy fallback.
 
+The "Start here" block above the server list offers one beginner setup prompt,
+including optional read-only morning and evening-before routines. It uses the
+same server data and setup instructions as the individual prompts. Its labels
+are translated; the prompt stays English and asks the assistant to reply in the
+user's language.
+
 For the browser smoke check, paste `scripts/check-copy.js` into the developer
-console on each language route. It checks all ten copy buttons (five install
-commands and five agent prompts), their reset, and the permission-denied fallback
-without changing the system clipboard.
+console on each language route. It checks all thirteen copy buttons (six install
+commands, six server prompts and the start prompt), their reset, and the
+permission-denied fallback without changing the system clipboard. It also checks
+that the start prompt includes every install command and release README and ends
+with the questions-tool instruction.
 
 Design context lives in `PRODUCT.md`, `DESIGN.md`, and `.impeccable/`.

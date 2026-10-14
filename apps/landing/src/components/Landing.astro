@@ -1,7 +1,7 @@
 ---
 import '@fontsource-variable/archivo/wght.css';
 import '../styles/global.css';
-import { author, content, repository, servers, type Locale } from '../data/content';
+import { author, content, repository, servers, startPrompt, type Locale } from '../data/content';
 
 interface Props { locale: Locale }
 const { locale } = Astro.props;
@@ -62,6 +62,29 @@ const image = new URL('/og.png', Astro.site);
       <section class="intro container" aria-labelledby="intro-title">
         <h1 id="intro-title"><span>{text.headline[0]}</span><span>{text.headline[1]}</span></h1>
         <p class="introduction">{text.introduction}</p>
+      </section>
+
+      <section class="start-here service container" aria-labelledby="start-title">
+        <div class="service-description">
+          <h2 id="start-title">{text.startHeading}</h2>
+          <p>{text.startLead}</p>
+        </div>
+        <div class="command-box">
+          <div class="command-header">
+            <span>{text.startLabel}</span>
+            <button type="button" class="copy-button" data-copy="start-agent" data-name={text.startName} data-copied={text.copied} data-confirmation={text.copyPromptConfirmation} data-error={text.copyPromptError} aria-label={`${text.copyPrompt}: ${text.startHeading}`}>
+              <svg class="copy-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3" /></svg>
+              <span>{text.copyPrompt}</span>
+            </button>
+          </div>
+          <details class="agent-setup start-prompt">
+            <summary>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+              <span>{text.showStartPrompt}</span>
+            </summary>
+            <pre tabindex="0" aria-label={text.startLabel}><code id="start-agent-command" lang="en">{startPrompt}</code></pre>
+          </details>
+        </div>
       </section>
 
       <section class="servers container" id="servers" aria-label={text.servers}>
@@ -169,6 +192,8 @@ const image = new URL('/og.png', Astro.site);
               button.disabled = false;
             }, 1800);
           } catch {
+            const disclosure = code.closest('details');
+            if (disclosure) disclosure.open = true;
             const selection = window.getSelection();
             const range = document.createRange();
             range.selectNodeContents(code);
