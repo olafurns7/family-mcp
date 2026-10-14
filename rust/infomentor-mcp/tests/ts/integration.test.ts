@@ -2138,7 +2138,7 @@ for (const authAnswer of ['false', '401'] as const) {
         }
 
         return new Response(
-          '<form method=post action="./?URL_PRIVATE"><input name=__VIEWSTATE value=FORM_PRIVATE><input name=__EVENTVALIDATION value=state></form>',
+          '<form method=post action="./?URL_PRIVATE"><input type=hidden name=__VIEWSTATE value=FORM_PRIVATE><input type=hidden name=__EVENTVALIDATION value=state></form>',
         );
       }
 

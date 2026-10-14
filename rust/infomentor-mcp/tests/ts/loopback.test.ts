@@ -210,7 +210,7 @@ for (const scenario of diagnosticCases) {
           return new Response('BODY_PRIVATE', { status: 500, headers });
 
         return new Response(
-          `<form method=post action="${failureEnabled && scenario.mode === 'form-action' ? 'https://minn.infomentor.is/FORM_PRIVATE' : './?URL_PRIVATE'}"><input name=__VIEWSTATE value=FORM_PRIVATE><input name=__EVENTVALIDATION value=state></form>`,
+          `<form method=post action="${failureEnabled && scenario.mode === 'form-action' ? 'https://minn.infomentor.is/FORM_PRIVATE' : './?URL_PRIVATE'}"><input type=hidden name=__VIEWSTATE value=FORM_PRIVATE><input type=hidden name=__EVENTVALIDATION value=state></form>`,
         );
       }
 
@@ -230,7 +230,7 @@ for (const scenario of diagnosticCases) {
           return new Response(null, { status: 307, headers });
 
         return new Response(
-          '<form id=openid_message method=post action="./relay?URL_PRIVATE"><input name=oauth_token value=FORM_PRIVATE></form>',
+          '<form id=openid_message method=post action="./relay?URL_PRIVATE"><input type=hidden name=oauth_token value=FORM_PRIVATE></form>',
         );
       }
 

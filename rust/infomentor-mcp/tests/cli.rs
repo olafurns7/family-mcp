@@ -192,14 +192,29 @@ fn login_411_stderr_is_exact_and_contains_no_upstream_markers() {
     let home = Home::new();
     let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = ["http://", &upstream.local_addr().unwrap().to_string()].concat();
+    upstream.set_nonblocking(true).unwrap();
     let served = std::thread::spawn(move || {
         let responses = [
-            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n<form method=post action='./?URL_PRIVATE'><input name=__VIEWSTATE value=FORM_PRIVATE><input name=__EVENTVALIDATION value=state></form>",
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n<form method=post action='./?URL_PRIVATE'><input type=hidden name=__VIEWSTATE value=FORM_PRIVATE><input type=hidden name=__EVENTVALIDATION value=state></form>",
             "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nBODY_PRIVATE",
             "HTTP/1.1 411 Length Required\r\nX-Private: HEADER_PRIVATE\r\nLocation: https://minn.infomentor.is/LOCATION_PRIVATE\r\nConnection: close\r\n\r\nBODY_PRIVATE",
         ];
         for (index, response) in responses.iter().enumerate() {
-            let (stream, _) = upstream.accept().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let (stream, _) = loop {
+                match upstream.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "Missing login request."
+                        );
+                        std::thread::park_timeout(std::time::Duration::from_millis(10));
+                    }
+                    Err(_) => panic!("Cannot accept the synthetic login request."),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
@@ -209,7 +224,10 @@ fn login_411_stderr_is_exact_and_contains_no_upstream_markers() {
             let mut length = None;
             loop {
                 let mut header = String::new();
-                request.read_line(&mut header).unwrap();
+                assert!(
+                    request.read_line(&mut header).unwrap() > 0,
+                    "Incomplete request headers."
+                );
                 if header == "\r\n" {
                     break;
                 }
