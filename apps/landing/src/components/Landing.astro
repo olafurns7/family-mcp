@@ -72,7 +72,7 @@ const image = new URL('/og.png', Astro.site);
         <div class="command-box">
           <div class="command-header">
             <span>{text.startLabel}</span>
-            <button type="button" class="copy-button" data-copy="start-agent" data-name={text.startHeading} data-copied={text.copied} data-confirmation={text.copyPromptConfirmation} data-error={text.copyPromptError} aria-label={`${text.copyPrompt}: ${text.startHeading}`}>
+            <button type="button" class="copy-button" data-copy="start-agent" data-name={text.startName} data-copied={text.copied} data-confirmation={text.copyPromptConfirmation} data-error={text.copyPromptError} aria-label={`${text.copyPrompt}: ${text.startHeading}`}>
               <svg class="copy-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2" /><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3" /></svg>
               <span>{text.copyPrompt}</span>
             </button>
@@ -82,7 +82,7 @@ const image = new URL('/og.png', Astro.site);
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
               <span>{text.showStartPrompt}</span>
             </summary>
-            <pre tabindex="0" aria-label={text.showStartPrompt}><code id="start-agent-command" lang="en">{startPrompt}</code></pre>
+            <pre tabindex="0" aria-label={text.startLabel}><code id="start-agent-command" lang="en">{startPrompt}</code></pre>
           </details>
         </div>
       </section>

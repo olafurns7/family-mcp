@@ -21,6 +21,24 @@
   check(installs.length === 6 && prompts.length === 6, 'Expected six server button pairs');
   const startText = document.getElementById('start-agent-command').textContent;
   check(
+    startText.includes('Only set up a scheduled task if my AI app can run it ON THIS COMPUTER') &&
+      startText.includes('If its scheduler runs in the cloud or cannot use these MCP servers') &&
+      startText.includes('A task that runs without me may use only the read tools it needs.'),
+    'Scheduled routines need local MCP access, a cloud fallback and read-only permissions',
+  );
+  check(
+    !startText
+      .split('\n')
+      .find((line) => line.startsWith('MORNING:'))
+      .includes('shopping note'),
+    'Morning routine must not offer the shopping note',
+  );
+  check(
+    document.getElementById('start-agent-command').parentElement.getAttribute('aria-label') ===
+      document.querySelector('.start-here .command-header > span').textContent,
+    'Start prompt text needs its content label',
+  );
+  check(
     startText.endsWith(
       'Use your questions tool to ask me which of the MCP servers I want to install.',
     ),
