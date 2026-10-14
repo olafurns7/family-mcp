@@ -331,6 +331,47 @@ test('rejection and binding mismatch fail with cooldown; cap survives restart an
   }
 });
 
+test('empty school access reaches terminal and chat unchanged and counts as a failed start with cooldown', async () => {
+  const f = await fixture();
+
+  const message =
+    'Inna found no active school access for this electronic ID. Check at inna.is in a browser; if it shows no access there either, ask the school to link your national ID as a guardian. Google login or `inna-mcp auth import` may still work.';
+
+  try {
+    expect((await f.cli(['auth', 'login'], `${PHONE}\n`)).code).toBe(0);
+    f.p.setAccess([]);
+    const terminal = await f.cli(['auth', 'login'], `${PHONE}\n`);
+    expect(terminal.code).toBe(1);
+    expect(terminal.stdout).toBe('');
+    expect(terminal.stderr.trimEnd().split('\n').at(-1)).toBe(message);
+    await f.open();
+    const started = await f.call('inna_sign_in');
+    expect(started.structuredContent).toEqual({
+      status: 'pending',
+      message:
+        'Approve on your phone; then call inna_sign_in_status. Compare the verification code and enter your PIN only on your phone.',
+      code: '0123',
+    });
+    expect(await f.until('failed')).toEqual({ status: 'failed', message });
+    expect(await f.status()).toEqual({ status: 'failed', message });
+    const saved = JSON.parse(await readStored(f.store));
+    expect(saved.account.userId).toBe(2);
+    expect(saved.signIn.starts).toHaveLength(1);
+    expect(saved.signIn.pendingUntil).toBe(0);
+    expect(saved.signIn.cooldownUntil).toBe(f.now() + 60_000);
+    expect((await f.call('inna_sign_in')).isError).toBe(true);
+    expect(f.starts()).toBe(3);
+    // The same persistent cooldown blocks a new server process as well.
+    await f.close();
+    await f.open();
+    expect(JSON.stringify(await f.call('inna_sign_in'))).toContain('cooling down');
+    expect(f.starts()).toBe(3);
+    expect(f.p.selections).toHaveLength(1);
+  } finally {
+    await f.dispose();
+  }
+});
+
 test('timeout is expired and a failed read never starts eID; signed-out reads direct recovery', async () => {
   const f = await fixture(1000);
   try {

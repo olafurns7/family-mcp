@@ -477,3 +477,57 @@ fn phone_login_replaces_polling_completes_logout_relay_upgrades_http_keeps_schoo
         "{school:?}"
     );
 }
+
+#[test]
+fn empty_access_and_nonempty_unsupported_access_have_distinct_safe_cli_failures() {
+    for (name, access, message) in [
+        (
+            "empty-access",
+            json!([]),
+            "Inna found no active school access for this electronic ID. Check at inna.is in a browser; if it shows no access there either, ask the school to link your national ID as a guardian. Google login or `inna-mcp auth import` may still work.",
+        ),
+        (
+            "unsupported-access",
+            json!([
+                {"system": 2, "user_id": 7, "status": 1, "is_access": true},
+                {"system": 1, "user_id": 8, "status": 1, "is_access": false}
+            ]),
+            "Select the intended school in the browser and import its private session.",
+        ),
+    ] {
+        let home = Home::new(name);
+        let state = Arc::new(Mutex::new(Provider::default()));
+        let provider = state.clone();
+        let bearer = token();
+        let upstream = Upstream::new(move |request| {
+            let reply = answer(&mut provider.lock().unwrap(), request, &bearer);
+            if request.line() == "GET /auth/access" {
+                json_reply(&access, None)
+            } else {
+                reply
+            }
+        });
+        let env = vec![(
+            "INNA_TEST_WAITS".to_owned(),
+            home.path("waits").display().to_string(),
+        )];
+        let ran = support::cli(
+            &home,
+            &upstream.origin,
+            &env,
+            &["auth", "login"],
+            Some("5550000\n"),
+        );
+        assert_eq!(ran.code, Some(1), "{ran:?}");
+        assert!(ran.stdout.is_empty(), "{ran:?}");
+        assert_eq!(ran.stderr.lines().last(), Some(message), "{ran:?}");
+        assert!(!ran.stderr.contains("5550000"));
+        assert!(!home.store_options().path.exists());
+        let state = state.lock().unwrap();
+        assert!(state.problems.is_empty(), "{:?}", state.problems);
+        assert!(state.selections.is_empty());
+        if name == "empty-access" {
+            assert_eq!(state.calls.last().unwrap().0.path(), "/auth/access");
+        }
+    }
+}

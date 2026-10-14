@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Explain an empty electronic-ID school access list in terminal login and
+  in-chat sign-in status, with browser and school recovery steps.
 - Add Rust-only `inna_sign_in` and `inna_sign_in_status` for explicit in-chat
   electronic-ID recovery, with encrypted phone storage, a persistent rolling
   24-hour cap, pending reuse, and a failure cooldown. Signed-out MCP reads name

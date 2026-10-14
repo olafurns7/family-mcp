@@ -75,5 +75,5 @@ fn renewal_and_bounded_recovery_pass_against_this_binary() {
 
 #[test]
 fn explicit_sign_in_lifecycle_passes_against_this_binary() {
-    bun_test("sign-in.test.ts", 8);
+    bun_test("sign-in.test.ts", 9);
 }

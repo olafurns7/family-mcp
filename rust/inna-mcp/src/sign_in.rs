@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use crate::client::{Client, PAUSED};
 use crate::error::{Fail, Result};
 use crate::js;
-use crate::login::login_with_electronic_id;
+use crate::login::{NO_ACCESS, login_with_electronic_id};
 use crate::session::locked;
 use crate::signal::Signal;
 
@@ -236,6 +236,7 @@ impl SignIn {
                     )
                 })
                 .await;
+            let no_access = matches!(&login, Err(Fail::Safe(NO_ACCESS)));
             let final_state = match login {
                 Ok(jar) => {
                     let saved = client
@@ -268,7 +269,7 @@ impl SignIn {
                     })
                 })
                 .await;
-            *state.lock().await = status(
+            let mut result = status(
                 if saved.is_err() {
                     "failed"
                 } else {
@@ -276,6 +277,10 @@ impl SignIn {
                 },
                 None,
             );
+            if saved.is_ok() && final_state == "failed" && no_access {
+                result["message"] = json!(NO_ACCESS);
+            }
+            *state.lock().await = result;
         });
         *self.task.lock().await = Some(task);
         match code.await {

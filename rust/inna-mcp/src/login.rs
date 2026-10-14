@@ -53,6 +53,8 @@ const UNEXPECTED_RESPONSE: Fail = Fail::Safe("Inna login returned an unexpected 
 const UNEXPECTED: Fail =
     Fail::Safe("Inna login returned an unexpected response. Complete sign-in in the browser.");
 
+pub(crate) const NO_ACCESS: &str = "Inna found no active school access for this electronic ID. Check at inna.is in a browser; if it shows no access there either, ask the school to link your national ID as a guardian. Google login or `inna-mcp auth import` may still work.";
+
 /// `trustedUrl(value, base)`: an HTTPS URL on one of the sign-in's hosts, without user info or
 /// port; the school's own `http:` links are upgraded. A text that is no URL fails generically,
 /// as `new URL` throws before any check.
@@ -532,6 +534,9 @@ impl Login<'_> {
         let token = token.clone();
         let access = self.json("https://inna.is/auth/access", None, Some(&token))?;
         let access = access_shape(&access).ok_or(Fail::Unknown)?;
+        if access.is_empty() {
+            return Err(Fail::Safe(NO_ACCESS));
+        }
         let terms = self.json(
             "https://inna.is/auth/user-terms-confirmed",
             None,
