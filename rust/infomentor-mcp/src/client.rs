@@ -584,11 +584,15 @@ impl Client {
             .await;
 
         match status {
-            Err(Fail::Im {
-                code: Code::LoginRequired,
-                message,
-                ..
-            }) => Ok(json!({"authenticated": false, "nextStep": message})),
+            Err(
+                fail @ Fail::Im {
+                    code: Code::LoginRequired,
+                    ..
+                },
+            ) => Ok(json!({
+                "authenticated": false,
+                "nextStep": mcp_runtime::Failure::safe_message(fail),
+            })),
             other => other,
         }
     }
@@ -664,7 +668,7 @@ impl Client {
                     "cancelled",
                     "Setup cancelled. The previously saved session was kept.".to_owned(),
                 ),
-                Err(Fail::Im { message, .. }) => ("failed", message.to_owned()),
+                Err(fail @ Fail::Im { .. }) => ("failed", mcp_runtime::Failure::safe_message(fail).unwrap().into_owned()),
                 Err(_) => (
                     "failed",
                     "Setup failed. Check the network and session-file permissions.".to_owned(),

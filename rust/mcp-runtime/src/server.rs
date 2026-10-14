@@ -41,7 +41,7 @@ impl Surface {
     }
 }
 
-/// `toolResult`: the output as JSON text and structured content, or a fixed error text.
+/// `toolResult`: the output as JSON text and structured content, or reviewed error text.
 pub fn tool_result<F: Failure>(output: Result<Value, F>) -> CallToolResult {
     match output {
         Ok(output) => {
@@ -164,6 +164,30 @@ mod tests {
         "instructions": "Read only.",
         "tools": [{ "name": "get_item", "inputSchema": { "type": "object" } }]
     }"#;
+
+    #[test]
+    fn tool_results_render_reviewed_owned_messages() {
+        #[derive(Clone, Copy)]
+        struct Rendered;
+        impl Failure for Rendered {
+            fn safe(self) -> Option<&'static str> {
+                Some("Reviewed.")
+            }
+            fn safe_message(self) -> Option<std::borrow::Cow<'static, str>> {
+                Some(std::borrow::Cow::Owned("Reviewed diagnostic.".to_owned()))
+            }
+            fn is_invalid(self) -> bool {
+                false
+            }
+        }
+        let error = serde_json::to_value(tool_result::<Rendered>(Err(Rendered))).unwrap();
+        assert_eq!(error["isError"], true);
+        assert_eq!(
+            error["content"],
+            json!([{ "type": "text", "text": "Reviewed diagnostic." }])
+        );
+        assert_eq!(error.get("structuredContent"), None);
+    }
 
     #[test]
     fn results_match_tool_result() {

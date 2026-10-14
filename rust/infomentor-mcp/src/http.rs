@@ -34,6 +34,7 @@ const AGENT: &str = "Bun/1.4.2";
 pub struct Page {
     pub url: Url,
     pub text: String,
+    pub status: u16,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,7 +175,7 @@ fn header(text: &str) -> Option<HeaderValue> {
 /// Why the request loop stopped without an InfoMentor answer: fetch threw, or the signal aborted.
 enum Stop {
     Fail(Fail),
-    Failed,
+    Failed(Option<u16>),
 }
 
 impl From<Fail> for Stop {
@@ -221,6 +222,8 @@ impl Http {
                 code: Code::RateLimited,
                 message: "InfoMentor requested a pause. Wait before retrying.",
                 retry_after_ms: Some(self.cooldown_until - js::now_ms()),
+                login_step: None,
+                http_status: None,
             });
         }
         let deadline = Instant::now() + REQUEST_TIMEOUT;
@@ -233,14 +236,20 @@ impl Http {
             Ok(page) => Ok(page),
             Err(_) if signal.aborted() => Err(CANCELLED),
             Err(Stop::Fail(fail @ Fail::Im { .. })) => Err(fail),
-            Err(_) if Instant::now() >= deadline => Err(Fail::new(
-                Code::NetworkError,
-                "InfoMentor request timed out.",
-            )),
-            Err(_) => Err(Fail::new(
-                Code::NetworkError,
-                "InfoMentor request failed. Check the network.",
-            )),
+            Err(stop) => {
+                let fail = if Instant::now() >= deadline {
+                    Fail::new(Code::NetworkError, "InfoMentor request timed out.")
+                } else {
+                    Fail::new(
+                        Code::NetworkError,
+                        "InfoMentor request failed. Check the network.",
+                    )
+                };
+                Err(match stop {
+                    Stop::Failed(Some(status)) => fail.with_http_status(status),
+                    _ => fail,
+                })
+            }
         }
     }
 
@@ -251,11 +260,12 @@ impl Http {
         mut previous: Url,
         signal: &Signal,
     ) -> std::result::Result<Page, Stop> {
+        let mut redirect_status = None;
         for _ in 0..10 {
             signal.check()?;
             let mut headers = HeaderMap::new();
             let mut set = |name: HeaderName, value: &str| -> std::result::Result<(), Stop> {
-                headers.insert(name, header(value).ok_or(Stop::Failed)?);
+                headers.insert(name, header(value).ok_or(Stop::Failed(None))?);
                 Ok(())
             };
             set(ACCEPT, "application/json, text/html;q=0.9")?;
@@ -274,8 +284,8 @@ impl Http {
             let response = self
                 .net
                 .send(signal, &url, headers, body.clone())
-                .ok_or(Stop::Failed)?
-                .ok_or(Stop::Failed)?;
+                .ok_or(Stop::Failed(None))?
+                .ok_or(Stop::Failed(None))?;
 
             for cookie in response.headers.get_all(SET_COOKIE) {
                 self.jar.set(&latin1(cookie), &url);
@@ -284,16 +294,23 @@ impl Http {
             let status = response.status;
 
             if [301, 302, 303, 307, 308].contains(&status) {
+                redirect_status = Some(status);
                 let location = response.headers.get(LOCATION).map(latin1);
                 // The body is never read; dropping the response cancels it.
                 drop(response);
-                let location = location.ok_or(Fail::new(
-                    Code::UnexpectedPage,
-                    "InfoMentor returned a redirect without a destination.",
-                ))?;
+                let location = location.ok_or(
+                    Fail::new(
+                        Code::UnexpectedPage,
+                        "InfoMentor returned a redirect without a destination.",
+                    )
+                    .with_http_status(status),
+                )?;
                 // `new URL(location, url)` throwing is not an InfoMentorError.
-                let next = url.join(&location).map_err(|_| Stop::Failed)?;
-                let next = trusted_url(next.as_str())?;
+                let next = url
+                    .join(&location)
+                    .map_err(|_| Stop::Failed(Some(status)))?;
+                let next =
+                    trusted_url(next.as_str()).map_err(|fail| fail.with_http_status(status))?;
 
                 if [301, 302, 303].contains(&status) {
                     body = None;
@@ -306,6 +323,7 @@ impl Http {
                         Code::UnexpectedPage,
                         "InfoMentor requested an unsupported cross-origin form redirect.",
                     )
+                    .with_http_status(status)
                     .into());
                 }
                 previous = std::mem::replace(&mut url, next);
@@ -336,6 +354,8 @@ impl Http {
                     code: Code::RateLimited,
                     message: "InfoMentor is limiting requests. No automatic retry was made.",
                     retry_after_ms: Some(cooldown),
+                    login_step: None,
+                    http_status: Some(status),
                 }
                 .into());
             }
@@ -346,9 +366,10 @@ impl Http {
                         Code::UnexpectedPage,
                         "InfoMentor returned an unexpectedly large response.",
                     )
+                    .with_http_status(status)
                     .into());
                 }
-                Some(Err(BodyError::Failed)) | None => return Err(Stop::Failed),
+                Some(Err(BodyError::Failed)) | None => return Err(Stop::Failed(Some(status))),
             };
             let text = String::from_utf8_lossy(&bytes).into_owned();
 
@@ -356,33 +377,39 @@ impl Http {
                 return Err(Fail::new(
                     Code::ChallengeRequired,
                     "InfoMentor requires an interactive security check. Direct HTTP login cannot complete it; no automatic retry was made.",
-                )
+                ).with_http_status(status)
                 .into());
             }
 
             match status {
-                401 => return Err(LOGIN_REQUIRED.into()),
+                401 => return Err(LOGIN_REQUIRED.with_http_status(status).into()),
                 403 => {
                     return Err(Fail::new(
                         Code::AccessDenied,
                         "InfoMentor denied access. Check the account before retrying.",
                     )
+                    .with_http_status(status)
                     .into());
                 }
-                200..=299 => return Ok(Page { url, text }),
+                200..=299 => return Ok(Page { url, text, status }),
                 _ => {
                     return Err(Fail::new(
                         Code::NetworkError,
                         "InfoMentor returned an error. Try again later.",
                     )
+                    .with_http_status(status)
                     .into());
                 }
             }
         }
-        Err(Fail::new(
+        let fail = Fail::new(
             Code::UnexpectedPage,
             "InfoMentor returned too many redirects.",
-        )
+        );
+        Err(match redirect_status {
+            Some(status) => fail.with_http_status(status),
+            None => fail,
+        }
         .into())
     }
 
@@ -406,7 +433,8 @@ impl Http {
         Err(Fail::new(
             Code::UnexpectedPage,
             "InfoMentor returned an unsupported authentication response.",
-        ))
+        )
+        .with_http_status(page.status))
     }
 
     /// `requireAuthentication`.
@@ -449,8 +477,9 @@ impl Http {
     /// `readParent(signal, childId)`: the parent page, after selecting `child_id` when given.
     pub fn read_parent(&mut self, signal: &Signal, child_id: Option<&str>) -> Result<Parent> {
         let page = self.request(PARENT_URL, None, signal, PARENT_URL)?;
-        require_school_page(&page)?;
-        let mut parent = parse_parent(&page.text)?;
+        require_school_page(&page).map_err(|fail| fail.with_http_status(page.status))?;
+        let mut parent =
+            parse_parent(&page.text).map_err(|fail| fail.with_http_status(page.status))?;
 
         if let Some(child_id) = child_id {
             let child = parent

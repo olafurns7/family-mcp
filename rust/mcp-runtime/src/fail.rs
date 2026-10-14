@@ -1,5 +1,7 @@
 //! How a failure crosses the MCP and terminal boundaries, as the TypeScript error classes do.
 
+use std::borrow::Cow;
+
 pub const UNKNOWN_ERROR: &str = "The operation failed. Check the server logs for details.";
 
 pub const ZOD_ERROR: &str = "Invalid input or unexpected upstream data.";
@@ -9,6 +11,11 @@ pub const ZOD_ERROR: &str = "Invalid input or unexpected upstream data.";
 pub trait Failure: Copy {
     /// The message of a `SafeError` or a subclass; `None` for anything else.
     fn safe(self) -> Option<&'static str>;
+
+    /// Reviewed text, optionally rendered from a server's typed diagnostic data.
+    fn safe_message(self) -> Option<Cow<'static, str>> {
+        self.safe().map(Cow::Borrowed)
+    }
 
     /// Whether this is a `ZodError`: invalid input or unexpected upstream data.
     fn is_invalid(self) -> bool;
@@ -38,17 +45,17 @@ impl Failure for Fail {
 }
 
 /// The text of a tool error result (`toolResult`).
-pub fn tool_text(fail: impl Failure) -> &'static str {
+pub fn tool_text(fail: impl Failure) -> Cow<'static, str> {
     if fail.is_invalid() {
-        return ZOD_ERROR;
+        return Cow::Borrowed(ZOD_ERROR);
     }
-    fail.safe().unwrap_or(UNKNOWN_ERROR)
+    fail.safe_message().unwrap_or(Cow::Borrowed(UNKNOWN_ERROR))
 }
 
 /// The CLI's diagnostic: only reviewed messages cross the terminal boundary; anything else
 /// prints the server's own `fallback`.
-pub fn cli_text(fail: impl Failure, fallback: &'static str) -> &'static str {
-    fail.safe().unwrap_or(fallback)
+pub fn cli_text(fail: impl Failure, fallback: &'static str) -> Cow<'static, str> {
+    fail.safe_message().unwrap_or(Cow::Borrowed(fallback))
 }
 
 #[cfg(test)]
@@ -72,6 +79,43 @@ mod tests {
         fn is_invalid(self) -> bool {
             matches!(self, Own::Base(Fail::Invalid))
         }
+    }
+
+    #[derive(Clone, Copy)]
+    struct Rendered(bool);
+
+    impl Failure for Rendered {
+        fn safe(self) -> Option<&'static str> {
+            Some("Reviewed.")
+        }
+        fn safe_message(self) -> Option<Cow<'static, str>> {
+            Some(Cow::Owned("Reviewed diagnostic.".to_owned()))
+        }
+        fn is_invalid(self) -> bool {
+            self.0
+        }
+    }
+
+    #[test]
+    fn typed_rendering_preserves_boundary_precedence_and_default_borrows() {
+        assert_eq!(tool_text(Rendered(false)), "Reviewed diagnostic.");
+        assert_eq!(
+            cli_text(Rendered(false), "Fallback."),
+            "Reviewed diagnostic."
+        );
+        assert_eq!(tool_text(Rendered(true)), ZOD_ERROR);
+        assert!(matches!(
+            Fail::Safe("Reviewed.").safe_message(),
+            Some(Cow::Borrowed("Reviewed."))
+        ));
+        assert!(matches!(
+            tool_text(Fail::Safe("Reviewed.")),
+            Cow::Borrowed("Reviewed.")
+        ));
+        assert!(matches!(
+            cli_text(Fail::Unknown, "Fallback."),
+            Cow::Borrowed("Fallback.")
+        ));
     }
 
     #[test]

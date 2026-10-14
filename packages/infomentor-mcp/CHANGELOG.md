@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Rust login errors now name the fixed login step and failing HTTP status,
+  when available, before the existing recovery advice.
+
 ## 0.9.4
 
 Released 2026-10-12.

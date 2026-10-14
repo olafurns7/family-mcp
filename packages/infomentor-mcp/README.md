@@ -256,6 +256,17 @@ different account are rejected. Missing sessions, including after logout, never
 trigger automatic sign-in. Rate limits, network failures, and security
 challenges do not trigger login retries.
 
+### Login failure diagnostics
+
+Rust login failures prefix the existing recovery advice with a fixed step name
+(`login-page`, `credential-submit`, `relay`, `isauthenticated`, or
+`parent-bootstrap`) and the failing response's HTTP status when available:
+`InfoMentor login failed at step isauthenticated (HTTP 411).` A failure before
+any response arrives, and a false authentication answer, omit the status. An
+unsupported HTTP 200 response remains a parse failure. This prefix is Rust-only; the
+TypeScript reference keeps the original recovery advice. No upstream URLs,
+headers, bodies, or credentials appear in the prefix.
+
 ### Transfer an existing session
 
 Copy a version-2 session file privately to the other machine, then validate and

@@ -8,7 +8,7 @@ use std::time::Duration;
 use zeroize::Zeroize;
 
 use crate::client::Options;
-use crate::error::{CANCELLED, Code, Fail, Result};
+use crate::error::{CANCELLED, Code, Fail, LoginStep, Result};
 use crate::html;
 use crate::http::Http;
 use crate::jar::Jar;
@@ -113,7 +113,9 @@ fn login_origin() -> String {
 
 /// `authenticate`: one credential submission, then the observed hidden-form relay.
 pub fn authenticate(http: &mut Http, credentials: Credentials, signal: &Signal) -> Result<()> {
-    let page = http.request(LOGIN_URL, None, signal, LOGIN_URL)?;
+    let page = http
+        .request(LOGIN_URL, None, signal, LOGIN_URL)
+        .map_err(|fail| fail.at_login_step(LoginStep::LoginPage))?;
     let form = html::parse_forms(&page.text)
         .into_iter()
         .find(|form| form.has("__VIEWSTATE") && form.has("__EVENTVALIDATION"));
@@ -121,15 +123,22 @@ pub fn authenticate(http: &mut Http, credentials: Credentials, signal: &Signal) 
         return Err(Fail::new(
             Code::UnexpectedPage,
             "InfoMentor returned an unsupported login form.",
-        ));
+        )
+        .with_http_status(page.status)
+        .at_login_step(LoginStep::LoginPage));
     };
-    let action = trusted_join(&page.url, &form.action)?;
+    let action = trusted_join(&page.url, &form.action).map_err(|fail| {
+        fail.with_http_status(page.status)
+            .at_login_step(LoginStep::LoginPage)
+    })?;
 
     if origin(&action) != login_origin() {
         return Err(Fail::new(
             Code::UnexpectedPage,
             "InfoMentor changed its password form destination. Login stopped.",
-        ));
+        )
+        .with_http_status(page.status)
+        .at_login_step(LoginStep::LoginPage));
     }
     form.set("login_ascx$txtNotandanafn", &credentials.username);
     form.set(PASSWORD_FIELD, &credentials.password);
@@ -147,13 +156,16 @@ pub fn authenticate(http: &mut Http, credentials: Credentials, signal: &Signal) 
             value.zeroize();
         }
     }
-    let response = response?;
+    let response = response.map_err(|fail| fail.at_login_step(LoginStep::CredentialSubmit))?;
     let relay = html::parse_forms(&response.text)
         .into_iter()
         .find(|form| form.id == "openid_message");
 
     if let Some(relay) = relay {
-        let destination = trusted_join(&response.url, &relay.action)?;
+        let destination = trusted_join(&response.url, &relay.action).map_err(|fail| {
+            fail.with_http_status(response.status)
+                .at_login_step(LoginStep::CredentialSubmit)
+        })?;
 
         if relay.method != "post"
             || !relay.has("oauth_token")
@@ -162,21 +174,27 @@ pub fn authenticate(http: &mut Http, credentials: Credentials, signal: &Signal) 
             return Err(Fail::new(
                 Code::UnexpectedPage,
                 "InfoMentor returned an unsupported authentication handoff.",
-            ));
+            )
+            .with_http_status(response.status)
+            .at_login_step(LoginStep::CredentialSubmit));
         }
         http.request(
             destination.as_str(),
             Some(&relay.fields),
             signal,
             response.url.as_str(),
-        )?;
+        )
+        .map_err(|fail| fail.at_login_step(LoginStep::Relay))?;
     }
 
-    if !http.is_authenticated(signal)? {
+    if !http
+        .is_authenticated(signal)
+        .map_err(|fail| fail.at_login_step(LoginStep::IsAuthenticated))?
+    {
         return Err(Fail::new(
             Code::LoginRequired,
             "InfoMentor did not accept the login. Check your credentials; no automatic retry was made.",
-        ));
+        ).at_login_step(LoginStep::IsAuthenticated));
     }
     Ok(())
 }
@@ -194,7 +212,8 @@ pub fn create_authenticated_http(
         signal.check()?;
         let mut http = Http::new(Jar::default(), 0.0, net.clone());
         authenticate(&mut http, credentials, &signal)?;
-        http.read_parent(&signal, None)?;
+        http.read_parent(&signal, None)
+            .map_err(|fail| fail.at_login_step(LoginStep::ParentBootstrap))?;
         Ok(http)
     })();
     created.map_err(|fail| ended(fail, caller, deadline))

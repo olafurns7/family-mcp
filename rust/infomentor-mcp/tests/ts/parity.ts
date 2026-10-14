@@ -2,6 +2,8 @@
 // once against the TypeScript CLI (with rewrite.ts preloaded) and once against the Rust binary
 // (built with `test-origin`), each in its own scratch home and against the same local fake
 // upstream, and compares outputs and exit codes. Prints mismatches and exits 1 on any.
+import { loginDiagnostic } from './login-diagnostic.js';
+import assert from 'node:assert/strict';
 import {
   existsSync,
   lstatSync,
@@ -1374,6 +1376,21 @@ async function run(side: 'ts' | 'rust', scenario: Scenario) {
 
 const failures: string[] = [];
 
+const expectedLoginDiagnostics = new Map<string, readonly [string, number | undefined]>([
+  ['login-rejected', ['isauthenticated', undefined]],
+  ['login-unsupported-form', ['login-page', 200]],
+  ['login-cross-origin-action', ['login-page', 200]],
+  ['login-bad-relay', ['credential-submit', 200]],
+  ['renewal-rejected', ['isauthenticated', undefined]],
+]);
+
+const observedLoginDiagnostics = new Set<string>();
+
+function requireLoginDiagnostic(name: string): void {
+  if (!observedLoginDiagnostics.has(name))
+    failures.push(`${name}: missing expected login diagnostic`);
+}
+
 /** Tool counts the servers listed, so the surface comparison is not vacuous. */
 const surfaces: number[] = [];
 
@@ -1387,6 +1404,34 @@ let requests = 0;
 
 function compare(name: string, ts: unknown, rs: unknown, path = ''): void {
   if (JSON.stringify(ts) === JSON.stringify(rs)) return;
+
+  if (
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Exact string comparison at the parity output boundary.
+    typeof ts === 'string' &&
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Exact string comparison at the parity output boundary.
+    typeof rs === 'string' &&
+    /\.(?:stderr|message|nextStep|text)$/.test(path)
+  ) {
+    const diagnostic = loginDiagnostic(rs);
+
+    if (diagnostic) {
+      const expected = expectedLoginDiagnostics.get(name);
+
+      if (!expected) {
+        failures.push(`${name}${path}: unexpected login diagnostic`);
+
+        return;
+      }
+
+      if (diagnostic.message === ts) {
+        if (diagnostic.step !== expected[0] || diagnostic.status !== expected[1])
+          failures.push(`${name}${path}: wrong login diagnostic`);
+        else observedLoginDiagnostics.add(name);
+
+        return;
+      }
+    }
+  }
 
   if (
     ts &&
@@ -1415,6 +1460,27 @@ function compare(name: string, ts: unknown, rs: unknown, path = ''): void {
   const clip = (value: unknown) => String(JSON.stringify(value)).slice(0, 600);
   failures.push(`${name}${path}:\n  ts:   ${clip(ts)}\n  rust: ${clip(rs)}`);
 }
+
+// Check both negative oracles before exercising the real parity scenarios.
+const diagnosticProbe = 'InfoMentor login failed at step isauthenticated. advice';
+
+compare('login-timeout', 'advice', diagnosticProbe, '.stderr');
+
+assert.deepEqual(failures.splice(0), ['login-timeout.stderr: unexpected login diagnostic']);
+
+compare('login-rejected', 'advice', 'advice', '.stderr');
+
+requireLoginDiagnostic('login-rejected');
+
+assert.deepEqual(failures.splice(0), ['login-rejected: missing expected login diagnostic']);
+
+compare('login-rejected', 'advice', diagnosticProbe, '.stderr');
+
+requireLoginDiagnostic('login-rejected');
+
+assert.deepEqual(failures.splice(0), []);
+
+assert.equal(observedLoginDiagnostics.delete('login-rejected'), true);
 
 type Result = { structuredContent?: Record<string, unknown>; isError?: boolean };
 
@@ -1556,6 +1622,10 @@ try {
 } finally {
   await server.stop(true);
   rmSync(scratch, { recursive: true, force: true });
+}
+
+for (const name of expectedLoginDiagnostics.keys()) {
+  if (!only || name === only) requireLoginDiagnostic(name);
 }
 
 const counts = { surfaces, commands, served, requests };

@@ -56,12 +56,12 @@ fn the_startup_cases_pass_against_this_binary() {
 
 #[test]
 fn the_integration_cases_pass_against_this_binary() {
-    bun_test("integration.test.ts", 18);
+    bun_test("integration.test.ts", 20);
 }
 
 #[test]
 fn the_loopback_case_passes_against_this_binary() {
-    bun_test("loopback.test.ts", 1);
+    bun_test("loopback.test.ts", 13);
 }
 
 #[test]

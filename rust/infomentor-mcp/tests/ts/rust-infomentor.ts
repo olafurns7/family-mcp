@@ -15,6 +15,7 @@ import {
   InfoMentorError,
   type ErrorCode,
 } from '../../../../packages/infomentor-mcp/src/session.js';
+import { loginDiagnostic } from './login-diagnostic.js';
 import type { MigrateResult } from '../../../../packages/infomentor-mcp/src/store.js';
 
 const rustBinary = process.env.INFOMENTOR_RUST_BINARY;
@@ -156,7 +157,7 @@ const codes = (() => {
 
 /** A reviewed message becomes an `InfoMentorError` again; any other text stays an `Error`. */
 function failure(message: string, exit?: number): Error {
-  const code = exit === 130 ? 'CANCELLED' : codes.get(message);
+  const code = exit === 130 ? 'CANCELLED' : codes.get(loginDiagnostic(message)?.message ?? message);
 
   return code ? new InfoMentorError(code, message) : new Error(message);
 }
