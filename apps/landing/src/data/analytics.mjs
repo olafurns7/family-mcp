@@ -1,2 +1,2 @@
-// Leave empty until the owner deploys Counterscale; update public/_headers together.
-export const counterscaleOrigin = '';
+// Counterscale runs in the owner's Cloudflare account; update public/_headers together.
+export const counterscaleOrigin = 'https://stats.olinn.is';
