@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "infomentor-mcp"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "aws-lc-rs",
  "family-store",
@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "inna-mcp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aws-lc-rs",
  "browser-login",

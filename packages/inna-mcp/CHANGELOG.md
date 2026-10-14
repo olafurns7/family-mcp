@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
+
+Released 2026-10-14.
 
 - Explain an empty electronic-ID school access list in terminal login and
   in-chat sign-in status, with browser and school recovery steps.
