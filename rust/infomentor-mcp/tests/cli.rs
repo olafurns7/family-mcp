@@ -186,3 +186,57 @@ fn a_relative_path_without_a_working_directory_fails_safely() {
         "{absolute:?}"
     );
 }
+
+#[test]
+fn login_411_stderr_is_exact_and_contains_no_upstream_markers() {
+    let home = Home::new();
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = ["http://", &upstream.local_addr().unwrap().to_string()].concat();
+    let served = std::thread::spawn(move || {
+        let responses = [
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n<form method=post action='./?URL_PRIVATE'><input name=__VIEWSTATE value=FORM_PRIVATE><input name=__EVENTVALIDATION value=state></form>",
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nBODY_PRIVATE",
+            "HTTP/1.1 411 Length Required\r\nX-Private: HEADER_PRIVATE\r\nLocation: https://minn.infomentor.is/LOCATION_PRIVATE\r\nConnection: close\r\n\r\nBODY_PRIVATE",
+        ];
+        for (index, response) in responses.iter().enumerate() {
+            let (stream, _) = upstream.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            request.read_line(&mut line).unwrap();
+            let mut length = None;
+            loop {
+                let mut header = String::new();
+                request.read_line(&mut header).unwrap();
+                if header == "\r\n" {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = Some(value.trim().parse::<usize>().unwrap());
+                }
+            }
+            if index == 2 {
+                assert!(line.contains("/isauthenticated/"));
+                assert_eq!(length, Some(0));
+            }
+            let mut body = vec![0; length.unwrap_or(0)];
+            std::io::Read::read_exact(&mut request, &mut body).unwrap();
+            (&stream).write_all(response.as_bytes()).unwrap();
+        }
+    });
+    let output = home
+        .command(Some(&origin), &["login"])
+        .env("INFOMENTOR_USERNAME", "synthetic-user")
+        .env("INFOMENTOR_PASSWORD", "synthetic-password")
+        .output()
+        .unwrap();
+    served.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "InfoMentor login failed at step isauthenticated (HTTP 411). InfoMentor returned an error. Try again later.\n"
+    );
+    assert!(output.stdout.is_empty());
+}

@@ -2098,3 +2098,104 @@ test('the record bound covers the largest storable session and sign-in', async (
     await rm(tree.directory, { recursive: true, force: true });
   }
 });
+
+// Rust: failed login renewal keeps its typed diagnostic in both MCP output paths.
+const diagnosticMarkers = [
+  'URL_PRIVATE',
+  'BODY_PRIVATE',
+  'HEADER_PRIVATE',
+  'LOCATION_PRIVATE',
+  'FORM_PRIVATE',
+  'NETWORK_PRIVATE',
+];
+
+const rejectedLoginAdvice =
+  'InfoMentor did not accept the login. Check your credentials; no automatic retry was made.';
+
+for (const authAnswer of ['false', '401'] as const) {
+  test(`renewal ${authAnswer} exposes the same private diagnostic in MCP and nextStep`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'infomentor-renew-diagnostic-'));
+    const sessionFile = join(directory, 'session.json');
+    const credentialsFile = join(directory, 'credentials.json');
+    await writeFile(
+      credentialsFile,
+      JSON.stringify({ username: 'synthetic-user', password: 'synthetic-password' }),
+      { mode: 0o600 },
+    );
+    let expired = false;
+    let submitted = false;
+    let submissions = 0;
+
+    const fetcher = (url: URL, init: RequestInit): Response => {
+      if (url.pathname === '/production/mentor/') {
+        if (init.method === 'POST') {
+          submitted = true;
+          submissions++;
+
+          return new Response('BODY_PRIVATE', {
+            headers: { 'Set-Cookie': 'IMHome=synthetic; Secure; HttpOnly; Path=/' },
+          });
+        }
+
+        return new Response(
+          '<form method=post action="./?URL_PRIVATE"><input name=__VIEWSTATE value=FORM_PRIVATE><input name=__EVENTVALIDATION value=state></form>',
+        );
+      }
+
+      if (url.pathname.endsWith('/isauthenticated/')) {
+        if (expired && submitted)
+          return new Response(authAnswer === 'false' ? 'false' : 'BODY_PRIVATE', {
+            status: authAnswer === '401' ? 401 : 200,
+            headers: {
+              'X-Private': 'HEADER_PRIVATE',
+              Location: 'https://minn.infomentor.is/LOCATION_PRIVATE',
+            },
+          });
+
+        return new Response('true');
+      }
+
+      if (expired) return new Response('BODY_PRIVATE', { status: 401 });
+
+      return new Response(
+        '<script>IMHome.home.homeData = {"account":{"currentUser":{"id":"parent"},"pupils":[]},"apps":[]}; IMHome.home.init(1);</script>',
+      );
+    };
+
+    const advice =
+      authAnswer === 'false'
+        ? rejectedLoginAdvice
+        : 'Sign in first: run infomentor-mcp login on the MCP host, or call infomentor_login when the server was started with --allow-setup-tools.';
+
+    const expected = `InfoMentor login failed at step isauthenticated${authAnswer === '401' ? ' (HTTP 401)' : ''}. ${advice}`;
+    const client = new InfoMentorClient({ sessionFile, credentialsFile, fetch: fetcher });
+
+    try {
+      await login({ sessionFile, credentialsFile, fetch: fetcher });
+      const before = await readFile(store.record, 'utf8');
+      expired = true;
+      submitted = false;
+      await assert.rejects(client.getOverview(), (error: Error) => {
+        assert.equal(error.message, expected);
+
+        for (const marker of diagnosticMarkers) assert.ok(!error.message.includes(marker));
+
+        return true;
+      });
+      assert.equal(submissions, 2);
+      assert.equal(await readFile(store.record, 'utf8'), before);
+      await client.close();
+      submitted = false;
+      const status = sessionStatusSchema.parse(await client.getSessionStatus());
+      assert.equal(status.authenticated, false);
+      assert.equal(status.nextStep, expected);
+
+      for (const marker of diagnosticMarkers) assert.ok(!JSON.stringify(status).includes(marker));
+      assert.equal(submissions, 3);
+      assert.equal(await readFile(store.record, 'utf8'), before);
+    } finally {
+      await client.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

@@ -637,3 +637,12 @@ success did not hold on the replacement VM's tested US route. See the
 [current workaround, limits, and measured results](docs/CONNECTIVITY.md).
 
 License: MIT.
+
+Rust login failures prefix the existing recovery advice with a fixed step name
+(`login-page`, `credential-submit`, `relay`, `isauthenticated`, or
+`parent-bootstrap`) and the failing response's HTTP status when available:
+`InfoMentor login failed at step isauthenticated (HTTP 411).` Transport
+failures and a false authentication answer omit the status. An unsupported
+HTTP 200 response remains a parse failure. This prefix is Rust-only; the
+TypeScript reference keeps the original recovery advice. No upstream URLs,
+headers, bodies, or credentials appear in the prefix.

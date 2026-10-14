@@ -319,7 +319,7 @@ fn renewal_outcome(renewal: client::Renewal) -> Option<(u8, &'static str)> {
         Renewal::Kept => return None,
         Renewal::NoSession => (
             NO_SESSION,
-            mcp_runtime::cli_text(client::NO_SESSION, FAILED),
+            mcp_runtime::Failure::safe(client::NO_SESSION).unwrap_or(FAILED),
         ),
         // A fresh process has refused no credentials, so `Refused` only completes the match.
         Renewal::SignInRequired(_) | Renewal::Refused => {
@@ -327,9 +327,10 @@ fn renewal_outcome(renewal: client::Renewal) -> Option<(u8, &'static str)> {
         }
         Renewal::Failed(fail) if fail == session::UNCERTAIN => (NOT_RENEWED, SESSION_UNUSABLE),
         // The pause Inna asked for is saved with the session.
-        Renewal::Failed(fail) if fail == client::RATE_LIMITED => {
-            (NOT_RENEWED, mcp_runtime::cli_text(fail, RENEWAL_FAILED))
-        }
+        Renewal::Failed(fail) if fail == client::RATE_LIMITED => (
+            NOT_RENEWED,
+            mcp_runtime::Failure::safe(fail).unwrap_or(RENEWAL_FAILED),
+        ),
         Renewal::Failed(_) => (NOT_RENEWED, RENEWAL_FAILED),
         Renewal::Paused { .. } => (PAUSED, client::PAUSED),
     })

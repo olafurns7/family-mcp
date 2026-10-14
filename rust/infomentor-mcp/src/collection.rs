@@ -769,6 +769,15 @@ pub fn collect_updates(
     if let Some(original) = &original
         && let Err(restored) = restore(source, &owner, original)
     {
+        let selected = failure.unwrap_or(restored);
+        let (login_step, http_status) = match selected {
+            Fail::Im {
+                login_step,
+                http_status,
+                ..
+            } => (login_step, http_status),
+            _ => (None, None),
+        };
         failure = Some(Fail::Im {
             code: failure
                 .and_then(Fail::code)
@@ -778,6 +787,8 @@ pub fn collect_updates(
             retry_after_ms: failure
                 .and_then(Fail::retry_after_ms)
                 .or(restored.retry_after_ms()),
+            login_step,
+            http_status,
         });
     }
 

@@ -2,6 +2,7 @@
 // once against the TypeScript CLI (with rewrite.ts preloaded) and once against the Rust binary
 // (built with `test-origin`), each in its own scratch home and against the same local fake
 // upstream, and compares outputs and exit codes. Prints mismatches and exits 1 on any.
+import { loginDiagnostic } from './login-diagnostic.js';
 import {
   existsSync,
   lstatSync,
@@ -1387,6 +1388,31 @@ let requests = 0;
 
 function compare(name: string, ts: unknown, rs: unknown, path = ''): void {
   if (JSON.stringify(ts) === JSON.stringify(rs)) return;
+
+  if (
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Exact string comparison at the parity output boundary.
+    typeof ts === 'string' &&
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Exact string comparison at the parity output boundary.
+    typeof rs === 'string' &&
+    /\.(?:stderr|message|nextStep|text)$/.test(path)
+  ) {
+    const diagnostic = loginDiagnostic(rs);
+
+    if (diagnostic && diagnostic.message === ts) {
+      const expected = new Map<string, readonly [string, number | undefined]>([
+        ['login-rejected', ['isauthenticated', undefined]],
+        ['login-unsupported-form', ['login-page', 200]],
+        ['login-cross-origin-action', ['login-page', 200]],
+        ['login-bad-relay', ['credential-submit', 200]],
+        ['renewal-rejected', ['isauthenticated', undefined]],
+      ]).get(name);
+
+      if (expected && (diagnostic.step !== expected[0] || diagnostic.status !== expected[1]))
+        failures.push(`${name}${path}: wrong login diagnostic`);
+
+      return;
+    }
+  }
 
   if (
     ts &&
