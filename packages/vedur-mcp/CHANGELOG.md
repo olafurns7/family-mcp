@@ -7,8 +7,9 @@
 - Skip and count unreadable warnings individually, with a partial-read notice
   pointing to gottvedur.is; never claim no warnings when any item was unreadable.
   Entirely unreadable feeds still fail safely.
-- Accept unfamiliar category strings and warning area ids, while continuing to
-  return only weather warnings (category Met).
+- Accept unfamiliar warning area ids, while returning weather warnings (category
+  Met). Count unfamiliar categories without Met as unreadable, so a renamed
+  weather category cannot produce an all-clear.
 
 ## 0.1.0
 

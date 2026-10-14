@@ -55,7 +55,23 @@ fn localized(
     Ok((Value::Null, Value::Null))
 }
 
-/// Only Met is weather; unfamiliar category strings are counted as other categories.
+/// The CAP 1.2 `category` values.
+const CATEGORIES: [&str; 12] = [
+    "Geo",
+    "Met",
+    "Safety",
+    "Security",
+    "Rescue",
+    "Fire",
+    "Health",
+    "Env",
+    "Transport",
+    "Infra",
+    "CBRNE",
+    "Other",
+];
+
+/// Met is weather; without Met, an unfamiliar category may be renamed weather, so is unreadable.
 fn is_weather(value: Option<&Value>) -> Result<bool, Fail> {
     let categories = value.and_then(Value::as_array).ok_or(SHAPE)?;
 
@@ -63,11 +79,16 @@ fn is_weather(value: Option<&Value>) -> Result<bool, Fail> {
         return Err(SHAPE);
     }
     let mut weather = false;
+    let mut known = true;
 
     for category in categories {
         let category = category.as_str().ok_or(SHAPE)?;
 
         weather |= category == "Met";
+        known &= CATEGORIES.contains(&category);
+    }
+    if !weather && !known {
+        return Err(SHAPE);
     }
     Ok(weather)
 }
@@ -231,7 +252,8 @@ pub fn shape(fetched: &Fetched, area_id: Option<i64>, english: bool, now: DateTi
         } else {
             "warnings"
         };
-        summary.push_str(&format!(" {unreadable} {noun} could not be read; warnings may exist{place}. Check https://gottvedur.is/vidvaranir/."));
+        let more = if kept.is_empty() { "" } else { "more " };
+        summary.push_str(&format!(" {unreadable} {noun} could not be read; {more}warnings may exist{place}. Check https://gottvedur.is/vidvaranir/."));
     }
     output.insert("summary".into(), json!(summary));
     output.insert("area_id".into(), json!(area_id));
@@ -340,6 +362,16 @@ mod tests {
 
     #[test]
     fn other_categories_and_wrong_types_are_told_apart() {
+        for category in [
+            json!(["Unfamiliar"]),
+            json!(["Weather"]),
+            json!(["met"]),
+            json!(["Geo", "Unfamiliar"]),
+        ] {
+            assert_eq!(is_weather(Some(&category)), Err(SHAPE));
+        }
+        assert_eq!(is_weather(Some(&json!(["Met", "Unfamiliar"]))), Ok(true));
+        assert_eq!(is_weather(Some(&json!(["Unfamiliar", "Met"]))), Ok(true));
         let geo = json!({"identifier": "x", "area_id": 1, "category": ["Geo"]});
         assert!(matches!(
             warning(&geo, false, Utc::now()),

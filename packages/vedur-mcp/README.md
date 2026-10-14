@@ -70,8 +70,11 @@ forecast place that is not found there may still exist on gottvedur.is.
 norðurland vestra, 7 Norðurland eystra, 8 Austurland að Glettingi, 9 Austfirðir,
 10 Suðausturland, 11 Miðhálendi. The feed also contains other ids, including
 21–23 for Geo warnings; unfamiliar ids are accepted. Only category `Met`
-(weather) is returned. Other category strings, including unfamiliar ones, are
-counted in `other_categories_skipped`. These are not gottvedur.is forecast-region ids,
+(weather) is returned, including items with `Met` alongside another category.
+Items with only known non-`Met` CAP 1.2 categories count in
+`other_categories_skipped`. Without `Met`, any unfamiliar category makes the
+item `unreadable`: a renamed weather category must not produce an all-clear.
+These are not gottvedur.is forecast-region ids,
 which are a different numbering. Warnings default to IMO's Icelandic text;
 `language: "en"` selects the English text.
 
@@ -101,7 +104,8 @@ characters), followed by its `sent` time in parentheses when present (at most
 `unreadable`. Counts (`unreadable`, `expired_skipped`, `other_categories_skipped`)
 cover the entire feed, before the area filter. When `unreadable` is greater than
 zero, the summary says how many warnings could not be read and points to
-<https://gottvedur.is/vidvaranir/>, even if readable warnings are listed. An unreadable
+<https://gottvedur.is/vidvaranir/>. When readable warnings are listed, the notice
+says “more warnings may exist”; otherwise it says “warnings may exist”. An unreadable
 item may belong to the requested area: an empty partial result does not mean
 that area is clear. Only a complete read (`unreadable: 0`) can say “No active or
 upcoming IMO weather warnings”, with the time it was checked. An entirely unreadable

@@ -488,6 +488,7 @@ fn cap_updates_and_partial_reads_keep_readable_weather_warnings() {
         assert_eq!(output["other_categories_skipped"], 3);
         let summary = output["summary"].as_str().unwrap();
         assert!(summary.contains("1 warning could not be read"), "{summary}");
+        assert!(summary.contains("more warnings may exist"), "{summary}");
         assert!(summary.contains("https://gottvedur.is/vidvaranir/"));
         assert!(!summary.contains(NO_WARNINGS_CLAIM));
         assert!(!output.to_string().contains("source-only"));
@@ -512,26 +513,49 @@ fn cap_updates_and_partial_reads_keep_readable_weather_warnings() {
 }
 
 #[test]
-fn complete_cap_reads_accept_other_areas_and_unfamiliar_categories() {
-    let mut body = fixture_json("cap-updates-synthetic.json");
-    body.as_array_mut().unwrap().pop();
-    body[3]["category"] = json!(["Unfamiliar"]);
-    body[4]["category"] = json!(["Met", "Unfamiliar"]);
-    body[5]["area_id"] = json!(1234);
-    body[5]["category"] = json!(["Met"]);
-    let upstream = Upstream::new(move |_, _| Reply::json(body.to_string().into_bytes()));
-    let mut mcp = Mcp::start(&upstream);
-    let output = mcp.ok("get_weather_alerts", json!({}));
-    assert_eq!(output["unreadable"], 0);
-    assert_eq!(output["other_categories_skipped"], 1);
-    let warnings = output["warnings"].as_array().unwrap();
-    assert_eq!(warnings.len(), 5);
-    assert!(warnings.iter().any(|warning| warning["area_id"] == 1234));
-    let geo = mcp.ok("get_weather_alerts", json!({"area_id": 21}));
-    assert_eq!(geo["warnings"], json!([]));
-    assert_eq!(geo["other_categories_skipped"], 1);
-    assert!(geo["summary"].as_str().unwrap().contains(NO_WARNINGS_CLAIM));
-    assert_eq!(mcp.finish(), "");
+fn cap_reads_accept_other_areas_and_flag_unfamiliar_categories() {
+    for (category, unreadable) in [
+        (json!(["Geo", "Safety"]), 0),
+        (json!(["Unfamiliar"]), 1),
+        (json!(["Geo", "Unfamiliar"]), 1),
+    ] {
+        let mut body = fixture_json("cap-updates-synthetic.json");
+        body.as_array_mut().unwrap().pop();
+        body[3]["category"] = category;
+        body[4]["category"] = json!(["Unfamiliar", "Met"]);
+        body[5]["area_id"] = json!(1234);
+        body[5]["category"] = json!(["Met"]);
+        let upstream = Upstream::new(move |_, _| Reply::json(body.to_string().into_bytes()));
+        let mut mcp = Mcp::start(&upstream);
+        let output = mcp.ok("get_weather_alerts", json!({}));
+        assert_eq!(output["unreadable"], unreadable);
+        assert_eq!(output["other_categories_skipped"], 1 - unreadable);
+        let warnings = output["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 5);
+        assert!(warnings.iter().any(|warning| warning["area_id"] == 1234));
+        assert!(warnings.iter().any(|warning| warning["area_id"] == 22));
+        let geo = mcp.ok("get_weather_alerts", json!({"area_id": 21}));
+        assert_eq!(geo["warnings"], json!([]));
+        assert_eq!(geo["unreadable"], unreadable);
+        assert_eq!(geo["other_categories_skipped"], 1 - unreadable);
+        let summary = geo["summary"].as_str().unwrap();
+        if unreadable == 0 {
+            assert!(summary.contains(NO_WARNINGS_CLAIM), "{summary}");
+        } else {
+            assert!(!summary.contains(NO_WARNINGS_CLAIM), "{summary}");
+            assert!(summary.contains("1 warning could not be read"), "{summary}");
+            assert!(summary.contains("warnings may exist for warning area 21"));
+            assert!(!summary.contains("more warnings may exist"));
+            assert!(summary.contains("https://gottvedur.is/vidvaranir/"));
+            assert!(
+                output["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("more warnings may exist")
+            );
+        }
+        assert_eq!(mcp.finish(), "");
+    }
 }
 
 #[test]
@@ -567,6 +591,8 @@ fn a_failed_warning_fetch_never_reads_as_no_warnings() {
         Some(json!("Met")),
         Some(json!([])),
         Some(json!(["Geo", null])),
+        Some(json!(["Weather"])),
+        Some(json!(["Geo", "Unfamiliar"])),
     ] {
         let mut recorded = json!([fixture_json("cap-updates-synthetic.json")[0].clone()]);
         match category {
