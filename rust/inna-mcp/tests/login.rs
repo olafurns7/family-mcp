@@ -522,7 +522,7 @@ fn empty_access_and_nonempty_unsupported_access_have_distinct_safe_cli_failures(
         assert!(ran.stdout.is_empty(), "{ran:?}");
         assert_eq!(ran.stderr.lines().last(), Some(message), "{ran:?}");
         assert!(!ran.stderr.contains("5550000"));
-        assert!(home.record().is_none());
+        assert!(!home.store_options().path.exists());
         let state = state.lock().unwrap();
         assert!(state.problems.is_empty(), "{:?}", state.problems);
         assert!(state.selections.is_empty());
