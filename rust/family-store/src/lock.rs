@@ -1,4 +1,6 @@
+use std::ffi::OsString;
 use std::fs::{self, DirBuilder};
+use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -248,10 +250,17 @@ fn inspect(directory: &Path) -> Result<Occupant> {
         )
     };
     let owners = match fs::read_dir(directory) {
-        Ok(entries) => entries
-            .map(|entry| entry.map(|entry| entry.file_name()))
-            .collect::<std::io::Result<Vec<_>>>()
-            .map_err(failed)?,
+        Ok(entries) => {
+            let names = entries.map(|entry| entry.map(|entry| entry.file_name()));
+
+            // The lock changed under this attempt: it existed when opened, so this is not a
+            // permission miss.
+            match owner_names(names) {
+                Ok(Some(owners)) => owners,
+                Ok(None) => return Ok(Occupant::Retry),
+                Err(error) => return Err(failed(error)),
+            }
+        }
         Err(error) if errno(&error) == Some(Errno::NOENT) => return Ok(Occupant::Missing),
         Err(error) => return Err(failed(error)),
     };
@@ -275,6 +284,18 @@ fn inspect(directory: &Path) -> Result<Occupant> {
     // recovery attempts can neither rmdir it nor rename over it.
     remove_owner(directory, previous.to_str())?;
     Ok(Occupant::Retry)
+}
+
+/// The lock directory's entries, or `None` when the directory vanished while it was listed: a
+/// competing recovery removed the dead owner and the directory after this attempt opened it.
+fn owner_names(
+    entries: impl Iterator<Item = io::Result<OsString>>,
+) -> io::Result<Option<Vec<OsString>>> {
+    match entries.collect() {
+        Ok(owners) => Ok(Some(owners)),
+        Err(error) if errno(&error) == Some(Errno::NOENT) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// The pid of an owner file named `<pid>-<36 hex digits and dashes>`.
@@ -339,6 +360,31 @@ mod tests {
             assert_eq!(next_step(&occupant, Duration::ZERO, 1), Step::Retry);
             assert_eq!(next_step(&occupant, Duration::ZERO, 3), Step::Retry);
             assert_eq!(next_step(&occupant, Duration::ZERO, 4), Step::GiveUp);
+        }
+    }
+
+    #[test]
+    fn a_lock_directory_that_vanishes_while_listed_is_a_lock_change() {
+        let name = |name: &str| Ok(OsString::from(name));
+        let error = |code: Errno| Err(io::Error::from_raw_os_error(code.raw_os_error()));
+
+        assert_eq!(
+            owner_names([name("a"), name("b")].into_iter()).unwrap(),
+            Some(vec![OsString::from("a"), OsString::from("b")])
+        );
+        // A competing recovery removed the owner and the directory after it was opened.
+        assert_eq!(
+            owner_names([name("a"), error(Errno::NOENT)].into_iter()).unwrap(),
+            None
+        );
+        assert_eq!(
+            owner_names([error(Errno::NOENT)].into_iter()).unwrap(),
+            None
+        );
+        // Any other failure is still an unreadable lock.
+        for code in [Errno::ACCESS, Errno::IO] {
+            let failed = owner_names([name("a"), error(code)].into_iter()).unwrap_err();
+            assert_eq!(errno(&failed), Some(code));
         }
     }
 }
