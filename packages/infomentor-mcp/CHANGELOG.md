@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- New read-only tools `infomentor_get_news` and `infomentor_get_news_item` read
+  the selected child's school news posts, such as weekly letters, from
+  InfoMentor's `Communication/News/GetNewsList`. Bodies are returned as plain
+  text with link targets kept, and only attachment links on InfoMentor HTTPS
+  hosts are returned. Nothing is marked read.
+
 ## 0.9.5
 
 Released 2026-10-14.

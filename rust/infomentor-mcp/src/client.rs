@@ -13,14 +13,17 @@ use tokio::sync::{Mutex, watch};
 
 use crate::collection::{Source, collect_updates};
 use crate::error::{Code, Fail, Result};
+use crate::html;
 use crate::http::{Http, Parent};
-use crate::input::{CollectRequest, LoginRequest, MessagesRequest, NotificationsRequest};
+use crate::input::{
+    CollectRequest, LoginRequest, MessagesRequest, NewsRequest, NotificationsRequest,
+};
 use crate::js;
 use crate::login::{
     self, create_authenticated_http, has_configured_credentials, resolve_credentials,
     session_from_http,
 };
-use crate::session::{SavedSession, session_path};
+use crate::session::{PARENT_URL, SavedSession, origin, session_path, trusted_url};
 use crate::shapes::{self, Feed, MessagesPage};
 use crate::signal::{Controller, Signal};
 use crate::store::{self, Held, with_session};
@@ -31,6 +34,18 @@ const COLLECTION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const RENEWAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 const OVERVIEW_MAX_UNITS: usize = 40_000;
+
+/// The news list endpoint when the communication app data does not name one.
+const NEWS_LIST_PATH: &str = "Communication/News/GetNewsList";
+
+/// A news body in the list is cut to this many UTF-16 units; infomentor_get_news_item returns it
+/// up to `NEWS_ITEM_MAX_UNITS`.
+const NEWS_LIST_MAX_UNITS: usize = 2_000;
+
+const NEWS_ITEM_MAX_UNITS: usize = 40_000;
+
+/// The page size used to find one item, since no single-item endpoint is known.
+const NEWS_ITEM_PAGE_SIZE: i64 = 200;
 
 /// `SessionOptions`.
 #[derive(Default, Clone)]
@@ -228,6 +243,121 @@ fn notifications(http: &mut Http, signal: &Signal) -> Result<Feed> {
         signal,
         shapes::notifications_response,
     )
+}
+
+/// A list URL from the app data, as a path under the parent site; `None` for anything off
+/// minn.infomentor.is or carrying a query or fragment.
+fn news_path(link: &str) -> Option<String> {
+    let url = url::Url::parse(PARENT_URL).ok()?.join(link).ok()?;
+    let url = trusted_url(url.as_str()).ok()?;
+    let parent = url::Url::parse(PARENT_URL).ok()?;
+
+    if origin(&url) != origin(&parent)
+        || url.query().is_some_and(|query| !query.is_empty())
+        || url.fragment().is_some_and(|fragment| !fragment.is_empty())
+    {
+        return None;
+    }
+    let path = url.path().trim_start_matches('/');
+    (!path.is_empty()).then(|| path.to_owned())
+}
+
+/// The communication app's news access flag and list path. A failed or unexpected app-data read
+/// falls back to the known endpoint, except for authentication, rate limits and cancellation,
+/// which the caller must see.
+fn news_source(http: &mut Http, signal: &Signal) -> Result<(Option<bool>, String)> {
+    match http.read_app_data(
+        "communication/communication/appData",
+        &[],
+        signal,
+        shapes::communication_app_data,
+    ) {
+        Ok(data) => Ok((
+            data["hasNewsAccess"].as_bool(),
+            data["urls"]["getNewsList"]
+                .as_str()
+                .and_then(news_path)
+                .unwrap_or_else(|| NEWS_LIST_PATH.to_owned()),
+        )),
+        Err(fail)
+            if [
+                Code::LoginRequired,
+                Code::RateLimited,
+                Code::Cancelled,
+                Code::ChallengeRequired,
+            ]
+            .into_iter()
+            .any(|code| fail.is(code)) =>
+        {
+            Err(fail)
+        }
+        Err(_) => Ok((None, NEWS_LIST_PATH.to_owned())),
+    }
+}
+
+/// The news list of the selected child's school, and whether the account has news access.
+fn news(http: &mut Http, signal: &Signal, page_size: Option<i64>) -> Result<(Option<bool>, Feed)> {
+    let (access, path) = news_source(http, signal)?;
+
+    if access == Some(false) {
+        return Ok((
+            access,
+            Feed {
+                items: Vec::new(),
+                skipped: 0,
+            },
+        ));
+    }
+    let fields: Vec<(&str, String)> = page_size
+        .map(|size| ("pageSize", size.to_string()))
+        .into_iter()
+        .collect();
+    let feed = http.read_app_data(&path, &fields, signal, shapes::news_response)?;
+    Ok((access, feed))
+}
+
+/// A parsed news item as the tools return it: the body as plain text, cut to `max` UTF-16 units,
+/// and only attachments on an InfoMentor HTTPS host, with absolute URLs.
+fn news_output(item: &Value, max: usize) -> Value {
+    let content = html::plain_text(item["content"].as_str().unwrap_or_default());
+    let mut omitted = 0;
+    let attachments: Vec<Value> = item["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|attachment| {
+            let url = attachment["url"]
+                .as_str()
+                .and_then(|link| url::Url::parse(PARENT_URL).ok()?.join(link).ok())
+                .and_then(|url| trusted_url(url.as_str()).ok());
+
+            match url {
+                Some(url) => Some(json!({
+                    "title": attachment["title"].as_str().unwrap_or_default(),
+                    "url": url.as_str(),
+                })),
+                None => {
+                    omitted += 1;
+                    None
+                }
+            }
+        })
+        .collect();
+    let mut output = json!({
+        "id": item["id"],
+        "title": js::trim(item["title"].as_str().unwrap_or_default()),
+        "publishedDate": item["publishedDate"].as_str(),
+        "publishedDateString": item["publishedDateString"].as_str(),
+        "publishedBy": item["publishedBy"].as_str(),
+        "content": js::slice_units(&content, max),
+        "contentTruncated": js::units(&content) > max,
+        "attachments": attachments,
+    });
+
+    if omitted > 0 {
+        output["attachmentsOmitted"] = json!(omitted);
+    }
+    output
 }
 
 fn text<'v>(value: &'v Value, key: &str) -> &'v str {
@@ -556,6 +686,47 @@ impl Client {
                 "skipped": feed.skipped,
                 "selectedChildOnly": input.selected_child_only,
                 "includeCleared": input.include_cleared,
+                "retrievedAt": js::iso_string(js::now_ms()),
+            }))
+        })
+        .await
+    }
+
+    /// infomentor_get_news: the newest `limit` news items of the selected child's school.
+    pub async fn news(self: &Arc<Self>, input: NewsRequest, signal: Signal) -> Result<Value> {
+        self.read(signal, move |http, context| {
+            let (access, feed) = news(http, context.signal, input.page_size)?;
+            let total = feed.items.len();
+            let shown: Vec<Value> = feed
+                .items
+                .iter()
+                .take(usize::try_from(input.limit).unwrap_or(usize::MAX))
+                .map(|item| news_output(item, NEWS_LIST_MAX_UNITS))
+                .collect();
+            Ok(json!({
+                "news": shown,
+                "total": total,
+                "skipped": feed.skipped,
+                "hasNewsAccess": access,
+                "retrievedAt": js::iso_string(js::now_ms()),
+            }))
+        })
+        .await
+    }
+
+    /// infomentor_get_news_item: one item of the news list by id, its body in full (to a cap).
+    pub async fn news_item(self: &Arc<Self>, id: i64, signal: Signal) -> Result<Value> {
+        self.read(signal, move |http, context| {
+            let (_, feed) = news(http, context.signal, Some(NEWS_ITEM_PAGE_SIZE))?;
+            let item = feed
+                .items
+                .iter()
+                .find(|item| item["id"].as_i64() == Some(id))
+                .ok_or(Fail::config(
+                    "This news item is not in the current news list. Use an id from infomentor_get_news.",
+                ))?;
+            Ok(json!({
+                "news": news_output(item, NEWS_ITEM_MAX_UNITS),
                 "retrievedAt": js::iso_string(js::now_ms()),
             }))
         })

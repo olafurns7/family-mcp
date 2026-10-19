@@ -521,9 +521,193 @@ pub fn parent_scripts(html: &str) -> Vec<String> {
     scripts.found
 }
 
+/// Elements that stand apart as paragraphs: a blank line before and after.
+const PARAGRAPHS: &[&str] = &[
+    "blockquote",
+    "dl",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "ol",
+    "p",
+    "pre",
+    "table",
+    "ul",
+];
+
+/// Elements that start and end a line of their own.
+const LINES: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "dd",
+    "div",
+    "dt",
+    "figcaption",
+    "footer",
+    "header",
+    "li",
+    "main",
+    "nav",
+    "section",
+    "tr",
+];
+
+/// Readable plain text of an HTML fragment such as a news body: text in document order, block
+/// elements and `<br>` as line breaks, list items as `- `, and an `http(s)` link's target after
+/// its text when the text does not already show it. Script, style and template content is
+/// dropped; nothing is evaluated. Spaces collapse, lines are trimmed and at most one blank line
+/// separates paragraphs.
+pub fn plain_text(html: &str) -> String {
+    #[derive(Default)]
+    struct Text {
+        out: String,
+        hidden: usize,
+        links: Vec<(Option<String>, usize)>,
+        /// The break owed before the next text: 0 none, 1 a line, 2 a paragraph.
+        pending: u8,
+        bullet: bool,
+    }
+
+    impl Text {
+        fn owe(&mut self, level: u8) {
+            self.pending = self.pending.max(level);
+        }
+
+        fn flush(&mut self) {
+            if !self.out.is_empty() {
+                match self.pending {
+                    0 => {}
+                    1 => self.out.push('\n'),
+                    _ => self.out.push_str("\n\n"),
+                }
+            }
+            self.pending = 0;
+
+            if std::mem::take(&mut self.bullet) {
+                self.out.push_str("- ");
+            }
+        }
+    }
+
+    const HIDDEN: &[&str] = &["script", "style", "template", "noscript", "head", "title"];
+
+    impl Handler for Text {
+        fn open(&mut self, name: &str, attributes: &[(String, String)]) {
+            match name {
+                _ if HIDDEN.contains(&name) => self.hidden += 1,
+                "br" => {
+                    self.flush();
+                    self.out.push('\n');
+                }
+                "a" => {
+                    let href = attribute(attributes, "href")
+                        .map(js::trim)
+                        .filter(|href| {
+                            let lower = href.to_ascii_lowercase();
+                            lower.starts_with("https://") || lower.starts_with("http://")
+                        })
+                        .map(str::to_owned);
+                    self.links.push((href, self.out.len()));
+                }
+                "li" => {
+                    self.owe(1);
+                    self.bullet = true;
+                }
+                "td" | "th" => self.out.push(' '),
+                _ if PARAGRAPHS.contains(&name) => self.owe(2),
+                _ if LINES.contains(&name) => self.owe(1),
+                _ => {}
+            }
+        }
+
+        fn close(&mut self, name: &str) {
+            match name {
+                _ if HIDDEN.contains(&name) => self.hidden = self.hidden.saturating_sub(1),
+                "a" => {
+                    if let Some((Some(href), start)) = self.links.pop() {
+                        let shown = self.out.get(start..).unwrap_or_default();
+
+                        if !shown.contains(href.trim_end_matches('/')) {
+                            self.out.push_str(" (");
+                            self.out.push_str(&href);
+                            self.out.push(')');
+                        }
+                    }
+                }
+                _ if PARAGRAPHS.contains(&name) => self.owe(2),
+                _ if LINES.contains(&name) => self.owe(1),
+                _ => {}
+            }
+        }
+
+        fn text(&mut self, text: &str) {
+            if self.hidden > 0 {
+                return;
+            }
+
+            // Whitespace at a break is layout, not text.
+            if (self.pending > 0 || self.bullet) && text.chars().all(js::is_space) {
+                return;
+            }
+            self.flush();
+            // A line break in the source is white space; only elements break lines.
+            self.out.push_str(&text.replace('\n', " "));
+        }
+    }
+
+    let mut text = Text::default();
+    parse(html, &mut text);
+    let mut lines: Vec<String> = Vec::new();
+
+    for line in text.out.split('\n') {
+        let line = line
+            .split(js::is_space)
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if line.is_empty() {
+            if lines.last().is_some_and(|last| !last.is_empty()) {
+                lines.push(String::new());
+            }
+            continue;
+        }
+        lines.push(line);
+    }
+
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn news_html_becomes_plain_text_with_link_targets() {
+        let html = "<p>Dear parents,</p><p>See the <a href=\"https://newsletter.example/n/synthetic\">letter</a>&nbsp;&amp; more.<br>Next line</p><ul><li>One</li><li></li><li>Two</li></ul><script>alert(1)</script><style>p{}</style><p><a href=\"https://newsletter.example/n/synthetic/\">https://newsletter.example/n/synthetic</a> <a href=\"javascript:x\">x</a></p>";
+        assert_eq!(
+            plain_text(html),
+            "Dear parents,\n\nSee the letter (https://newsletter.example/n/synthetic) & more.\nNext line\n\n- One\n- Two\n\nhttps://newsletter.example/n/synthetic x"
+        );
+        assert_eq!(plain_text(""), "");
+        assert_eq!(
+            plain_text("<div>\n  one\n  two\n</div>\n<div>three</div>"),
+            "one two\nthree"
+        );
+        assert_eq!(
+            plain_text("  plain   text \n\n\n\n second "),
+            "plain text second"
+        );
+    }
 
     /// Page text is untrusted: one tag with very many attributes must not stall a call. The first
     /// of duplicate attributes still wins.

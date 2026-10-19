@@ -63,6 +63,8 @@
         "infomentor_get_messages",
         "infomentor_get_message",
         "infomentor_get_notifications",
+        "infomentor_get_news",
+        "infomentor_get_news_item",
         "infomentor_collect_updates"
       ],
       "extraFiles": [

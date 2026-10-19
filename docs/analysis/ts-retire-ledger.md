@@ -961,6 +961,7 @@ cases.
 - `rust/infomentor-mcp/tests/ts/parity.ts`
 - `rust/infomentor-mcp/tests/ts/rewrite.ts`
 - `rust/infomentor-mcp/tests/ts/rust-infomentor.ts`
+- `rust/infomentor-mcp/tests/ts/rust-only-tools.ts`
 - `rust/infomentor-mcp/tests/ts/surface.ts`
 - `rust/inna-mcp/tests/ts/browser-harness.ts`
 - `rust/inna-mcp/tests/ts/fake-inna.ts`

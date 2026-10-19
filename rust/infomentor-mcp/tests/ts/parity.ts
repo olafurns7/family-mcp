@@ -24,6 +24,8 @@ import { CookieJar } from 'tough-cookie';
 
 import { captureSession } from '../../../../packages/infomentor-mcp/src/session.js';
 
+import { rustOnlyTools } from './rust-only-tools.ts';
+
 const [rust, only] = process.argv.slice(2);
 
 if (!rust) throw new RangeError('Usage: parity.ts RUST_BINARY [SCENARIO]');
@@ -1216,7 +1218,12 @@ async function runServe(
   await client.connect(transport);
 
   if (step.surface) {
-    const { tools } = await client.listTools();
+    const listed = (await client.listTools()).tools;
+    const rustOnly = (tool: { name: string }) =>
+      rustOnlyTools.some((extra) => extra.name === tool.name);
+    // The Rust-only news tools are checked on the Rust side; the rest is compared with TypeScript.
+    assert.deepEqual(listed.filter(rustOnly), side === 'rust' ? rustOnlyTools : []);
+    const tools = listed.filter((tool) => !rustOnly(tool));
     surfaces.push(tools.length);
     results.push({
       server: client.getServerVersion(),

@@ -169,6 +169,30 @@ pub const NOTIFICATION: S = S::Obj(&[NOTIFICATION_FIELDS, &[("currentlySelectedP
 /// `notificationSchema.omit({currentlySelectedPupil: true})`.
 pub const COLLECTED_NOTIFICATION: S = S::Obj(&[NOTIFICATION_FIELDS]);
 
+/// One attachment of a news item, as GetNewsList returns it (known fields only).
+pub const NEWS_ATTACHMENT: S = S::Obj(&[&[("url", S::Nullish(&STR)), ("title", S::Nullish(&STR))]]);
+
+/// One item of `Communication/News/GetNewsList` (known fields only). Only the id and title are
+/// required; the rest pass through when present, so a missing author or date does not drop a post.
+pub const NEWS: S = S::Obj(&[&[
+    ("id", S::Int),
+    ("title", STR),
+    ("content", S::Nullish(&STR)),
+    ("publishedDate", S::Nullish(&STR)),
+    ("publishedDateString", S::Nullish(&STR)),
+    ("publishedBy", S::Nullish(&STR)),
+    ("attachments", S::Nullish(&S::List(&NEWS_ATTACHMENT))),
+]]);
+
+/// The news part of `communication/communication/appData`.
+pub const COMMUNICATION_APP_DATA: S = S::Obj(&[&[
+    ("hasNewsAccess", S::Nullish(&S::Bool)),
+    (
+        "urls",
+        S::Nullish(&S::Obj(&[&[("getNewsList", S::Nullish(&STR))]])),
+    ),
+]]);
+
 /// A feed's valid items and how many malformed ones were dropped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Feed {
@@ -209,6 +233,16 @@ pub fn messages_response(value: &Value) -> Option<MessagesPage> {
 /// `notificationsResponseSchema`.
 pub fn notifications_response(value: &Value) -> Option<Feed> {
     feed(value, "notifications", &NOTIFICATION)
+}
+
+/// `GetNewsList`: `{items: [...]}`, each item parsed with [`NEWS`].
+pub fn news_response(value: &Value) -> Option<Feed> {
+    feed(value, "items", &NEWS)
+}
+
+/// The news access flag and list URL of the communication app's data.
+pub fn communication_app_data(value: &Value) -> Option<Value> {
+    parse(&COMMUNICATION_APP_DATA, value)
 }
 
 /// `messageDetailSchema`.

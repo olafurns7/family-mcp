@@ -24,6 +24,15 @@ pub struct NotificationsRequest {
     pub include_cleared: bool,
 }
 
+/// The news list request, defaults applied.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NewsRequest {
+    /// How many items to return, newest first as InfoMentor orders them.
+    pub limit: i64,
+    /// The `pageSize` form field; `None` leaves InfoMentor's default.
+    pub page_size: Option<i64>,
+}
+
 /// `collectRequestSchema`, defaults applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CollectRequest {
@@ -194,6 +203,27 @@ pub fn notifications(arguments: &Map<String, Value>) -> Result<NotificationsRequ
         },
         |_| None,
     )
+}
+
+/// The news list request.
+pub fn news(arguments: &Map<String, Value>) -> Result<NewsRequest, String> {
+    object(
+        arguments,
+        &["limit", "pageSize"],
+        |parse, args| NewsRequest {
+            limit: parse.at("limit").int_or(args.get("limit"), (1, 100), 20),
+            page_size: match args.get("pageSize") {
+                None => None,
+                value => parse.at("pageSize").int(value, Min::AtLeast(1), Some(200)),
+            },
+        },
+        |_| None,
+    )
+}
+
+/// The news item request: the news id.
+pub fn news_item(arguments: &Map<String, Value>) -> Result<i64, String> {
+    message(arguments)
 }
 
 /// `collectRequestSchema`.
@@ -368,6 +398,33 @@ mod tests {
                 allow_account_change: None,
                 timeout_seconds: 300,
             })
+        );
+    }
+
+    #[test]
+    fn news_requests_are_validated() {
+        assert_eq!(
+            news(&args(json!({}))),
+            Ok(NewsRequest {
+                limit: 20,
+                page_size: None
+            })
+        );
+        assert_eq!(
+            news(&args(json!({"limit": 3, "pageSize": 50}))),
+            Ok(NewsRequest {
+                limit: 3,
+                page_size: Some(50)
+            })
+        );
+        assert_eq!(
+            news(&args(json!({"limit": 0, "pageSize": 201, "z": 1}))).unwrap_err(),
+            "limit: Too small: expected number to be >=1, pageSize: Too big: expected number to be <=200, Unrecognized key: \"z\""
+        );
+        assert_eq!(news_item(&args(json!({"id": 9001}))), Ok(9001));
+        assert_eq!(
+            news_item(&args(json!({"id": 0}))).unwrap_err(),
+            "id: Too small: expected number to be >0"
         );
     }
 
