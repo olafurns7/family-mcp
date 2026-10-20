@@ -169,6 +169,22 @@ pub const NOTIFICATION: S = S::Obj(&[NOTIFICATION_FIELDS, &[("currentlySelectedP
 /// `notificationSchema.omit({currentlySelectedPupil: true})`.
 pub const COLLECTED_NOTIFICATION: S = S::Obj(&[NOTIFICATION_FIELDS]);
 
+/// One row of `attendance/attendance/GetAttendanceList` (known fields only). Only the id is
+/// required, so a missing field does not drop a registration.
+pub const ATTENDANCE_FIELDS: Fields = &[
+    ("id", S::Int),
+    ("shortDate", S::Nullish(&STR)),
+    ("longDate", S::Nullish(&STR)),
+    ("time", S::Nullish(&STR)),
+    ("subject", S::Nullish(&STR)),
+    ("reason", S::Nullish(&STR)),
+    ("comment", S::Nullish(&STR)),
+    ("registeredByName", S::Nullish(&STR)),
+    ("establishmentName", S::Nullish(&STR)),
+    ("minutes", S::Nullish(&STR)),
+    ("halfDaysCount", S::Nullish(&STR)),
+];
+
 /// A feed's valid items and how many malformed ones were dropped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Feed {
@@ -209,6 +225,35 @@ pub fn messages_response(value: &Value) -> Option<MessagesPage> {
 /// `notificationsResponseSchema`.
 pub fn notifications_response(value: &Value) -> Option<Feed> {
     feed(value, "notifications", &NOTIFICATION)
+}
+
+/// One page of the attendance list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttendancePage {
+    pub items: Vec<Value>,
+    pub skipped: usize,
+    pub total: Option<i64>,
+    pub more: bool,
+}
+
+/// `GetAttendanceList`: `{items: [...], totalItems, more}`. Counts sent as numbers become text.
+pub fn attendance_response(value: &Value) -> Option<AttendancePage> {
+    let mut value = value.clone();
+
+    for item in value.get_mut("items")?.as_array_mut()? {
+        for key in ["minutes", "halfDaysCount"] {
+            if let Some(Value::Number(number)) = item.get(key).cloned() {
+                item[key] = Value::String(number.to_string());
+            }
+        }
+    }
+    let Feed { items, skipped } = feed(&value, "items", &S::Obj(&[ATTENDANCE_FIELDS]))?;
+    Some(AttendancePage {
+        items,
+        skipped,
+        total: value.get("totalItems").and_then(Value::as_i64),
+        more: value.get("more").and_then(Value::as_bool).unwrap_or(false),
+    })
 }
 
 /// `messageDetailSchema`.

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- New read-only tool `infomentor_get_attendance` reads the selected child's
+  registered absences and late arrivals from InfoMentor's
+  `attendance/attendance/GetAttendanceList`, one page at a time. The ids match
+  AbsenceRecorded notification links. Nothing is registered or changed.
+
 ## 0.9.5
 
 Released 2026-10-14.

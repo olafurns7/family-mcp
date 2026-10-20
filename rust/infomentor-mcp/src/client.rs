@@ -14,7 +14,9 @@ use tokio::sync::{Mutex, watch};
 use crate::collection::{Source, collect_updates};
 use crate::error::{Code, Fail, Result};
 use crate::http::{Http, Parent};
-use crate::input::{CollectRequest, LoginRequest, MessagesRequest, NotificationsRequest};
+use crate::input::{
+    AttendanceRequest, CollectRequest, LoginRequest, MessagesRequest, NotificationsRequest,
+};
 use crate::js;
 use crate::login::{
     self, create_authenticated_http, has_configured_credentials, resolve_credentials,
@@ -228,6 +230,40 @@ fn notifications(http: &mut Http, signal: &Signal) -> Result<Feed> {
         signal,
         shapes::notifications_response,
     )
+}
+
+/// The selected child's attendance registrations, newest first as InfoMentor lists them.
+fn attendance(http: &mut Http, signal: &Signal, input: AttendanceRequest) -> Result<Value> {
+    let page = http.read_app_data(
+        "attendance/attendance/GetAttendanceList",
+        &[
+            ("page", input.page.to_string()),
+            ("pageSize", input.page_size.to_string()),
+        ],
+        signal,
+        shapes::attendance_response,
+    )?;
+    let rows: Vec<Value> = page
+        .items
+        .iter()
+        .map(|item| {
+            let fields = shapes::ATTENDANCE_FIELDS.iter();
+            Value::Object(
+                fields
+                    .map(|(key, _)| ((*key).to_owned(), item[*key].clone()))
+                    .collect(),
+            )
+        })
+        .collect();
+    Ok(json!({
+        "attendance": rows,
+        "page": input.page,
+        "pageSize": input.page_size,
+        "totalItems": page.total,
+        "more": page.more,
+        "skipped": page.skipped,
+        "retrievedAt": js::iso_string(js::now_ms()),
+    }))
 }
 
 fn text<'v>(value: &'v Value, key: &str) -> &'v str {
@@ -558,6 +594,18 @@ impl Client {
                 "includeCleared": input.include_cleared,
                 "retrievedAt": js::iso_string(js::now_ms()),
             }))
+        })
+        .await
+    }
+
+    /// infomentor_get_attendance: one page of the selected child's attendance registrations.
+    pub async fn attendance(
+        self: &Arc<Self>,
+        input: AttendanceRequest,
+        signal: Signal,
+    ) -> Result<Value> {
+        self.read(signal, move |http, context| {
+            attendance(http, context.signal, input)
         })
         .await
     }

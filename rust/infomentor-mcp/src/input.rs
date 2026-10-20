@@ -24,6 +24,13 @@ pub struct NotificationsRequest {
     pub include_cleared: bool,
 }
 
+/// The attendance list request, defaults applied.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AttendanceRequest {
+    pub page: i64,
+    pub page_size: i64,
+}
+
 /// `collectRequestSchema`, defaults applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CollectRequest {
@@ -191,6 +198,21 @@ pub fn notifications(arguments: &Map<String, Value>) -> Result<NotificationsRequ
             include_cleared: parse
                 .at("includeCleared")
                 .boolean_or(args.get("includeCleared"), false),
+        },
+        |_| None,
+    )
+}
+
+/// The attendance list request.
+pub fn attendance(arguments: &Map<String, Value>) -> Result<AttendanceRequest, String> {
+    object(
+        arguments,
+        &["page", "pageSize"],
+        |parse, args| AttendanceRequest {
+            page: parse.at("page").int_or(args.get("page"), (1, 100_000), 1),
+            page_size: parse
+                .at("pageSize")
+                .int_or(args.get("pageSize"), (1, 100), 20),
         },
         |_| None,
     )
@@ -368,6 +390,28 @@ mod tests {
                 allow_account_change: None,
                 timeout_seconds: 300,
             })
+        );
+    }
+
+    #[test]
+    fn attendance_requests_are_validated() {
+        assert_eq!(
+            attendance(&args(json!({}))),
+            Ok(AttendanceRequest {
+                page: 1,
+                page_size: 20
+            })
+        );
+        assert_eq!(
+            attendance(&args(json!({"page": 2, "pageSize": 100}))),
+            Ok(AttendanceRequest {
+                page: 2,
+                page_size: 100
+            })
+        );
+        assert_eq!(
+            attendance(&args(json!({"page": 0, "pageSize": 101, "z": 1}))).unwrap_err(),
+            "page: Too small: expected number to be >=1, pageSize: Too big: expected number to be <=100, Unrecognized key: \"z\""
         );
     }
 
