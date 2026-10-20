@@ -25,6 +25,7 @@ fn tool_result(output: Result<Value>) -> rmcp::model::CallToolResult {
 
 pub struct Abler {
     pub client: Arc<Client>,
+    pub allow_attendance_writes: bool,
 }
 
 impl Server for Abler {
@@ -35,7 +36,12 @@ impl Server for Abler {
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     fn surface(&self) -> &Surface {
-        surface()
+        if self.allow_attendance_writes {
+            static WRITABLE: OnceLock<Surface> = OnceLock::new();
+            WRITABLE.get_or_init(|| Surface::parse(include_str!("surface-attendance.json")))
+        } else {
+            surface()
+        }
     }
 
     async fn call(
@@ -47,6 +53,12 @@ impl Server for Abler {
         let client = &self.client;
 
         Ok(match name {
+            "set_practice_attendance" if self.allow_attendance_writes => {
+                let input = crate::attendance::input(arguments)?;
+                client
+                    .run(|client| client.set_practice_attendance(input))
+                    .await
+            }
             "auth_status" => {
                 input::empty(arguments)?;
                 client

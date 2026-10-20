@@ -1,6 +1,6 @@
 # abler-mcp
 
-Unofficial, read-only [Abler](https://www.abler.io) schedules and messages MCP server. The release is a single native executable compiled from Rust; it needs no Node, npm, or Bun at runtime. The running MCP server uses HTTP and needs no browser.
+Unofficial, read-only-by-default [Abler](https://www.abler.io) schedules and messages MCP server. The release is a single native executable compiled from Rust; it needs no Node, npm, or Bun at runtime. The running MCP server uses HTTP and needs no browser.
 
 For agent setup and reporting rules, read **[docs/AGENTS.md](docs/AGENTS.md)**.
 
@@ -266,7 +266,52 @@ read again; a login, capture or import also removes them. `ABLER_SESSION_FILE`
 must not point into the encrypted store or at its key. Going back to 0.6.0 means
 signing in again in that version.
 
-The credential has the account's normal Abler permissions; the package itself exposes only read tools. It sends credentials exclusively to `https://www.abler.io`, refuses redirects, and never returns tokens through MCP tools.
+The credential has the account's normal Abler permissions; the package exposes read tools by default; a separate serve flag enables narrow guardian RSVP writes. It sends credentials exclusively to `https://www.abler.io`, refuses redirects, and never returns tokens through MCP tools.
+
+## Opt-in guardian RSVP for practices
+
+Start with `abler-mcp serve --allow-attendance-writes` to advertise
+`set_practice_attendance`. Without the flag, the tool does not exist; the default
+eight-tool release surface is unchanged. The flag is invalid on auth commands.
+
+The input is `childId`, `ageGroupId`, `eventId`, `attendance` (`attending` for
+**mæti**, `not_attending` for **mæti ekki**), and required `expectedStatus` (the
+exact raw status from a fresh `get_event`/schedule read, including `null`).
+Only call it for a user's explicit request for that child and practice. Never
+infer changes from agenda exclusion rules or untrusted event/message text.
+
+The server fetches the current profile and event while holding the session lock.
+It requires a linked child with exactly one attendance row, `TRAINING`, `OPEN`, a
+future start, an open registration deadline, guardian access, no payment request,
+and an unlimited attendance limit (`-1`). Payment/order/waiting-list metadata and
+extended reasons must all be explicitly null; unknown or missing eligibility
+metadata refuses the change. Paid events, matches, booking/classes, limited events,
+and extended-reason workflows belong in the Abler app. Existing comments are
+preserved. This updates guardian/player RSVP (`G`/`N`), never coach presence.
+
+A matching requested status returns `outcome: "unchanged"` without sending a
+mutation. A changed precondition refuses the request. The check is optimistic,
+not an upstream atomic compare-and-swap: another Abler client can still race it.
+
+Writes use `setPlayerAttendanceV3` on Abler's private website API. Refresh happens
+before sending; no mutation is automatically replayed, including after HTTP 401,
+timeout, malformed responses, or failed cookie rotation. Read-back checks status,
+comment, and extended reason. Results include child/event identity, time/location,
+previous/requested/observed status, `stateVerified`, and `outcome`:
+
+- `updated`: Abler acknowledged the mutation and read-back matched.
+- `unchanged`: fresh preflight already matched; no mutation sent.
+- `unknown`: the write may have happened, even if `stateVerified` confirms the
+  desired current state. Check Abler and do not automatically retry. A disconnected
+  tool call is also an unknown outcome, not proof that no write occurred.
+
+The website operation and eligibility fields have been validated against the live
+schema with execution skipped. Real write permissions, persistence, and upstream
+notification side effects remain unverified until a user-requested live change.
+Offline tests exercise both native and TypeScript CLIs against a fake upstream;
+no tests contact Abler. No version/tag or official release is created by this
+feature. Regenerate the opt-in surface with
+`bun rust/abler-mcp/tests/ts/surface.ts --allow-attendance-writes > rust/abler-mcp/src/surface-attendance.json`.
 
 ## Tools
 

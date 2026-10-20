@@ -4,6 +4,14 @@ import { Cookie, type CookieJar } from 'tough-cookie';
 import * as z from 'zod/v4';
 
 import {
+  attendanceInput,
+  attendanceResult,
+  eligibilityEvent,
+  eligibilityFields,
+  attendanceMutation,
+  eligiblePractice,
+} from './attendance.js';
+import {
   AUTH_COOKIES,
   ExpiredSession,
   ORIGIN,
@@ -646,6 +654,141 @@ export class AblerClient {
       }
 
       return eventSchema.parse(event);
+    });
+  }
+
+  async setPracticeAttendance(input: z.input<typeof attendanceInput>) {
+    const args = attendanceInput.parse(input);
+    let unknownAfterSend: z.infer<typeof attendanceResult> | undefined;
+
+    return this.session(async (session) => {
+      const profile = await this.profileWithSession(session);
+      const child = profile.children.find((linked) => linked.id === args.childId);
+
+      if (!child) throw new SafeError('The requested child is not linked to this account.');
+
+      const read = async () => {
+        const data = await this.query(
+          session,
+          'PracticeAttendance',
+          `query PracticeAttendance($id:String!, $ageGroupId:String!) {
+          event(id:$id,ageGroupId:$ageGroupId,first:1) { edges { node { ${eligibilityFields} } } }
+        }`,
+          { id: args.eventId, ageGroupId: args.ageGroupId },
+        );
+
+        const page = z
+          .object({ edges: z.array(z.object({ node: eligibilityEvent })).length(1) })
+          .parse(data.event);
+
+        const event = page.edges[0]?.node;
+
+        if (!event) throw new SafeError('Event not found or not accessible with this session.');
+
+        if (event.eventId !== args.eventId || event.ageGroup.id !== args.ageGroupId)
+          throw new SafeError('Abler returned a different event than requested.');
+
+        return event;
+      };
+
+      const event = await read();
+      const row = eligiblePractice(event, args, Date.now());
+      const status = args.attendance === 'attending' ? 'G' : 'N';
+
+      const summary = {
+        child,
+        event: {
+          eventId: event.eventId,
+          name: event.name,
+          from: event.from,
+          locationDetails: event.locationDetails ?? null,
+        },
+        previousStatus: row.status,
+        requestedStatus: status,
+      };
+
+      if (row.status === status)
+        return attendanceResult.parse({
+          ...summary,
+          outcome: 'unchanged',
+          stateVerified: true,
+          observedStatus: status,
+        });
+
+      // Refresh before sending, never replay the mutation after any response or transport error.
+      const access = (await session.jar.getCookies(`${ORIGIN}/graphql`)).find(
+        (c) => c.key === 'id_token',
+      );
+
+      if (!access || access.TTL() < 60000) await this.refresh(session);
+      unknownAfterSend = attendanceResult.parse({
+        ...summary,
+        outcome: 'unknown',
+        stateVerified: false,
+        observedStatus: null,
+      });
+      let accepted = false;
+
+      try {
+        const response = await this.post(session, '/graphql', {
+          operationName: 'SetPracticeAttendance',
+          query: attendanceMutation,
+          variables: {
+            eventId: args.eventId,
+            playerId: args.childId,
+            status,
+            comment: row.comment,
+            statusExt: null,
+          },
+        });
+
+        const result = graphqlResponseSchema.safeParse(await this.readJson(response));
+        const data = result.success ? result.data.data : undefined;
+
+        const payload = z
+          .object({ eventId: z.string(), eventPlayer: z.object({ status: z.string() }) })
+          .safeParse(data?.setPlayerAttendanceV3);
+
+        accepted =
+          response.ok &&
+          result.success &&
+          !result.data.errors?.length &&
+          payload.success &&
+          payload.data.eventId === args.eventId &&
+          payload.data.eventPlayer.status === status;
+      } catch {
+        /* The write may have reached Abler. Reconcile without retrying. */
+      }
+
+      let observedStatus: string | null = null;
+      let stateVerified = false;
+
+      try {
+        const fresh = await read();
+        const rows = fresh.currentPlayerAttendance.filter((r) => r.player.id === args.childId);
+        const observed = rows[0];
+
+        if (rows.length === 1 && observed) {
+          observedStatus = observed.status;
+          stateVerified =
+            observedStatus === status &&
+            observed.comment === row.comment &&
+            observed.statusExt === null;
+        }
+      } catch {
+        /* A failed read is not proof that the write failed. */
+      }
+
+      return attendanceResult.parse({
+        ...summary,
+        outcome: accepted && stateVerified ? 'updated' : 'unknown',
+        stateVerified,
+        observedStatus,
+      });
+    }).catch((error) => {
+      // A session-lock/rotation finalization failure after sending is also uncertain.
+      if (unknownAfterSend) return unknownAfterSend;
+      throw error;
     });
   }
 

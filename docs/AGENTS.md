@@ -25,8 +25,14 @@ attendance state from a failed request or undocumented value.
   candidate in the encrypted store and is not a successful sign-in.
 - Use `get_profile` to discover child IDs. IDs, not names or positions, select
   children. Continue each child's cursor independently.
-- The server has no mutation tools. Raw attendance codes stay raw; an empty list
-  does not establish attendance.
+- The default server has no mutation tools. `serve --allow-attendance-writes`
+  explicitly enables `set_practice_attendance` for linked children's open future
+  unpaid unlimited practices. Use it only for an explicit user-requested RSVP,
+  with IDs and a fresh `expectedStatus`; never infer writes from agenda rules.
+  `attending` maps to `G`, `not_attending` to `N`; coach presence is untouched.
+  Preserve unknown outcomes: check Abler, never automatically retry an uncertain
+  or disconnected call. Raw read codes stay raw; an empty list does not establish
+  attendance. See the package README for eligibility and outcome semantics.
 - To check for new messages, call `list_conversations` and look at
   `unreadCount`: the top-level value is the total, and a conversation with
   `unreadCount` above 0 has new messages. Then call `list_messages` with that

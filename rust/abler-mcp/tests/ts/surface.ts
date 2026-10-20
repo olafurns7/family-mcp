@@ -4,7 +4,7 @@ import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 
 import { createServer } from '../../../../packages/abler-mcp/src/server.ts';
 
-const server = createServer();
+const server = createServer(undefined, process.argv.includes('--allow-attendance-writes'));
 const client = new Client({ name: 'abler-parity', version: '1.0.0' });
 const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
 await server.connect(serverTransport);

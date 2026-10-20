@@ -1,6 +1,7 @@
 //! abler-mcp: the command line of packages/abler-mcp/src/cli.ts.
 
 mod api;
+mod attendance;
 mod auth;
 mod capture;
 mod error;
@@ -38,6 +39,7 @@ const HELP: &str = "abler-mcp — unofficial read-only Abler MCP server
   abler-mcp auth logout             Remove the saved session and failed-import candidates
   abler-mcp --version               Print the installed version
 
+Serve option: --allow-attendance-writes enables guardian RSVP changes for unpaid practices.
 Login options: --timeout <seconds> (default 300), --browser <path>, --keep-browser
 The temporary profile is deleted after login; --keep-browser leaves live credentials in it without a debugging endpoint.
 The session is saved encrypted. ABLER_SESSION_FILE names an older version's plaintext session file.
@@ -56,6 +58,7 @@ struct Args {
     browser: Option<String>,
     timeout: Option<String>,
     keep_browser: bool,
+    allow_attendance_writes: bool,
     positionals: Vec<String>,
 }
 
@@ -77,6 +80,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args> {
                 "help" => &mut parsed.help,
                 "version" => &mut parsed.version,
                 "keep-browser" => &mut parsed.keep_browser,
+                "allow-attendance-writes" => &mut parsed.allow_attendance_writes,
                 "browser" | "timeout" => {
                     // The next argument is the value, unless it looks like another option.
                     let value = match inline {
@@ -275,12 +279,15 @@ fn administer(args: Args) -> Result<()> {
 
 /// Serve until stdin ends, the connection breaks (a failed stdout write or an input line over
 /// 10 MiB), or SIGINT or SIGTERM arrives, then cancel and wait for operations.
-async fn serve() -> Result<()> {
+async fn serve(allow_attendance_writes: bool) -> Result<()> {
     let client = Arc::new(Client::new(auth::session_path()?, Slot::Current, None)?);
 
-    mcp_runtime::serve_stdio(server::Abler { client })
-        .await
-        .map_err(|_| Fail::Unknown)
+    mcp_runtime::serve_stdio(server::Abler {
+        client,
+        allow_attendance_writes,
+    })
+    .await
+    .map_err(|_| Fail::Unknown)
 }
 
 async fn main_async() -> Result<ExitCode> {
@@ -310,10 +317,12 @@ async fn main_async() -> Result<ExitCode> {
     let command = args.positionals.first().map_or("serve", String::as_str);
 
     if command == "serve" && args.positionals.len() <= 1 {
-        return serve().await.map(|()| ExitCode::SUCCESS);
+        return serve(args.allow_attendance_writes)
+            .await
+            .map(|()| ExitCode::SUCCESS);
     }
 
-    if command != "auth" || args.positionals.len() > 3 {
+    if command != "auth" || args.positionals.len() > 3 || args.allow_attendance_writes {
         return Err(INVALID_COMMAND);
     }
     tokio::task::spawn_blocking(move || administer(args))

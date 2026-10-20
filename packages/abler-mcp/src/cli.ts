@@ -35,6 +35,7 @@ const help = `abler-mcp — unofficial read-only Abler MCP server
   abler-mcp auth logout             Remove the saved session and failed-import candidates
   abler-mcp --version               Print the installed version
 
+Serve option: --allow-attendance-writes enables guardian RSVP changes for unpaid practices.
 Login options: --timeout <seconds> (default 300), --browser <path>, --keep-browser
 The temporary profile is deleted after login; --keep-browser leaves live credentials in it without a debugging endpoint.
 The session is saved encrypted. ABLER_SESSION_FILE names an older version's plaintext session file.
@@ -74,6 +75,7 @@ async function main() {
         browser: { type: 'string' },
         timeout: { type: 'string' },
         'keep-browser': { type: 'boolean' },
+        'allow-attendance-writes': { type: 'boolean' },
       },
     });
   } catch {
@@ -105,12 +107,14 @@ async function main() {
 
   if (command === 'serve' && positionals.length <= 1) {
     const client = new AblerClient();
-    startStdio(() => createServer(client), { onClose: () => client.close() });
+    startStdio(() => createServer(client, values['allow-attendance-writes']), {
+      onClose: () => client.close(),
+    });
 
     return;
   }
 
-  if (command !== 'auth' || positionals.length > 3)
+  if (command !== 'auth' || positionals.length > 3 || values['allow-attendance-writes'])
     throw new SafeError('Invalid command. Run abler-mcp --help for usage.');
 
   if (

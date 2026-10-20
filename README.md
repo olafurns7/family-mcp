@@ -68,6 +68,9 @@ Tools: [account status, profile, groups, schedules, events, conversations, and m
 
 Other sign-in paths (capture an existing Chrome session, import cookies), headless servers, file locations, troubleshooting: see [packages/abler-mcp/README.md](packages/abler-mcp/README.md).
 
+Guardian practice RSVP is opt-in via `serve --allow-attendance-writes`; see the
+[Abler attendance reference](packages/abler-mcp/README.md#opt-in-guardian-rsvp-for-practices).
+
 ## InfoMentor
 
 ```sh

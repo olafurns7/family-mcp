@@ -1,7 +1,7 @@
 {
   "name": "abler-mcp",
   "version": "0.7.2",
-  "description": "Unofficial, read-only Abler schedules and messages MCP server with portable session authentication",
+  "description": "Unofficial Abler schedules and messages MCP server with opt-in guardian practice RSVP and portable session authentication",
   "keywords": [
     "abler",
     "family",

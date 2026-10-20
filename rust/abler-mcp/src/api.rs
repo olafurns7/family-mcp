@@ -816,6 +816,84 @@ impl Client {
         })
     }
 
+    fn practice_with_session(
+        &self,
+        session: &mut Session,
+        input: &crate::attendance::Input,
+    ) -> Result<Value> {
+        let data = self.query(session, "PracticeAttendance", &format!(
+            "query PracticeAttendance($id:String!, $ageGroupId:String!) {{ event(id:$id,ageGroupId:$ageGroupId,first:1) {{ edges {{ node {{ {} }} }} }} }}", crate::attendance::FIELDS),
+            json!({"id": input.event_id, "ageGroupId": input.age_group_id}), false)?;
+        let edges = data["event"]["edges"].as_array().ok_or(Fail::Invalid)?;
+        if edges.len() != 1 {
+            return Err(Fail::Safe(
+                "Event not found or not accessible with this session.",
+            ));
+        }
+        let event = &edges[0]["node"];
+        crate::attendance::row(event, input)?;
+        if !event["name"].is_string()
+            || !event["from"].is_string()
+            || event
+                .get("locationDetails")
+                .is_some_and(|v| !v.is_null() && !v.is_string())
+        {
+            return Err(Fail::Invalid);
+        }
+        Ok(event.clone())
+    }
+
+    pub fn set_practice_attendance(&self, input: crate::attendance::Input) -> Result<Value> {
+        let mut unknown_after_send = None;
+        self.session(|client, session| {
+            let profile = client.profile_with_session(session)?;
+            let child = profile["children"].as_array().into_iter().flatten()
+                .find(|child| child["id"] == input.child_id)
+                .ok_or(Fail::Safe("The requested child is not linked to this account."))?;
+            let event = client.practice_with_session(session, &input)?;
+            let row = crate::attendance::eligible(&event, &input, js::now_ms())?;
+            let mut summary = json!({
+                "child": child,
+                "event": {"eventId": event["eventId"], "name": event["name"], "from": event["from"], "locationDetails": event["locationDetails"]},
+                "previousStatus": row["status"], "requestedStatus": input.status,
+                "observedStatus": row["status"], "stateVerified": true, "outcome": "unchanged"
+            });
+            if row["status"] == input.status { return Ok(summary); }
+            // The last refresh is before the send. Never call the retrying query helper for writes.
+            let access = session.jar.get("/graphql").into_iter().find(|c| c.key == "id_token");
+            if access.is_none_or(|c| c.ttl(js::now_ms()) < 60_000.0) { client.refresh(session)?; }
+            let body = json!({"operationName": "SetPracticeAttendance", "query": crate::attendance::MUTATION,
+                "variables": {"eventId": input.event_id, "playerId": input.child_id, "status": input.status, "comment": row["comment"], "statusExt": null}});
+            let mut unknown = summary.clone();
+            unknown["outcome"] = json!("unknown");
+            unknown["stateVerified"] = json!(false);
+            unknown["observedStatus"] = Value::Null;
+            unknown_after_send = Some(unknown);
+            let accepted = client.post(session, "/graphql", Some(&body)).ok().is_some_and(|response| {
+                let ok = response.status().is_success();
+                graphql(&client.read_json(response)).is_some_and(|result| {
+                    ok && result.errors == 0 && result.data.is_some_and(|data| {
+                        data["setPlayerAttendanceV3"]["eventId"] == input.event_id
+                            && data["setPlayerAttendanceV3"]["eventPlayer"]["status"] == input.status
+                    })
+                })
+            });
+            // Sending may have succeeded even when reading or saving rotation failed.
+            summary["outcome"] = json!("unknown");
+            summary["stateVerified"] = json!(false);
+            summary["observedStatus"] = Value::Null;
+            if let Ok(fresh) = client.practice_with_session(session, &input)
+                && let Ok(observed) = crate::attendance::row(&fresh, &input) {
+                summary["observedStatus"] = observed["status"].clone();
+                let verified = observed["status"] == input.status && observed["comment"] == row["comment"]
+                    && observed.get("statusExt") == Some(&Value::Null);
+                summary["stateVerified"] = json!(verified);
+                if accepted && verified { summary["outcome"] = json!("updated"); }
+            }
+            Ok(summary)
+        }).or_else(|fail| unknown_after_send.ok_or(fail))
+    }
+
     pub fn conversations(&self, input: Page) -> Result<Value> {
         self.session(|client, session| {
             let data = client.query(

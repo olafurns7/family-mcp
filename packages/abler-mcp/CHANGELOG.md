@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add opt-in `serve --allow-attendance-writes` and `set_practice_attendance` for
+  guardian RSVP on open future unpaid unlimited practices. Default stays read-only.
+  Linked-child and exact-status checks, preserved comments, one send with no
+  automatic replay, and read-back distinguish verified updates from unknown
+  outcomes. Payment, waiting-list, limited, and extended-reason flows are refused.
+  Both native and reference CLIs have offline acceptance coverage.
+
 ## 0.7.2
 
 Released 2026-10-12.
