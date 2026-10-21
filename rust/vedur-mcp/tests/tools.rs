@@ -27,7 +27,7 @@ const NO_WARNINGS_CLAIM: &str = "No active or upcoming";
 fn routes(path: &str) -> Reply {
     if path.starts_with("/api.vedur.is/weather/stations?") {
         Reply::fixture("stations.json")
-    } else if path.starts_with("/gottvedur.is/api/forecasts/station/?stationId=1") {
+    } else if path.starts_with("/www.gottvedur.is/api/forecasts/station/?stationId=1") {
         Reply::fixture("forecast.json").header("Cache-Control", "public, max-age=10, s-maxage=10")
     } else if path.starts_with("/api.vedur.is/weather/observations/aws/hour/latest?station_id=1475")
     {
@@ -42,7 +42,7 @@ fn routes(path: &str) -> Reply {
         Reply::body(404, "application/json", fixture("aws-no-data.json"))
     } else if path == CAP {
         Reply::fixture("cap-active.json")
-    } else if path == "/gottvedur.is/rss.xml/vaktin/" {
+    } else if path == "/www.gottvedur.is/rss.xml/vaktin/" {
         Reply::fixture("vaktin.xml").header("Cache-Control", "public, max-age=30, must-revalidate")
     } else {
         Reply::status(404)
@@ -138,7 +138,7 @@ fn get_forecast_keeps_daily_summaries_and_step_times() {
     let output = mcp.ok("get_forecast", json!({"station_id": 1}));
     assert_eq!(
         upstream.seen(),
-        ["/gottvedur.is/api/forecasts/station/?stationId=1"]
+        ["/www.gottvedur.is/api/forecasts/station/?stationId=1"]
     );
     assert!(output["api_note"].as_str().unwrap().contains("unversioned"));
     assert!(
@@ -237,6 +237,11 @@ fn get_forecast_refuses_shape_changes_without_another_source() {
         ),
         (Reply::json(b"null".to_vec()), "unexpected shape"),
         (Reply::status(404), "no forecast for this station id"),
+        // No Content means "no active messages" only on the CAP API.
+        (
+            Reply::body(204, "text/plain", Vec::new()),
+            "unexpected response",
+        ),
     ];
 
     for (reply, expected) in cases {
@@ -457,6 +462,24 @@ fn get_weather_alerts_drops_expired_warnings_and_marks_those_in_effect() {
         .filter(|warning| warning["status"] == "in effect")
         .count();
     assert_eq!(in_effect, 5);
+    assert_eq!(mcp.finish(), "");
+}
+
+#[test]
+fn a_no_content_cap_answer_is_an_empty_warning_list() {
+    // The CAP API answers 204 with no body when no messages are active.
+    let upstream = Upstream::new(|path, _| {
+        assert_eq!(path, CAP);
+        Reply::body(204, "text/plain", Vec::new())
+    });
+    let mut mcp = Mcp::start(&upstream);
+    let output = mcp.ok("get_weather_alerts", json!({"area_id": 1}));
+    assert_eq!(output["warnings"], json!([]));
+    assert_eq!(output["unreadable"], 0);
+    assert_eq!(
+        output["summary"],
+        format!("No active or upcoming IMO weather warnings for warning area 1 at {NOW}.")
+    );
     assert_eq!(mcp.finish(), "");
 }
 
@@ -730,7 +753,7 @@ fn get_weather_watch_returns_veðurvakt_posts_as_plain_text() {
     let upstream = fixtures();
     let mut mcp = Mcp::start(&upstream);
     let output = mcp.ok("get_weather_watch", json!({}));
-    assert_eq!(upstream.seen(), ["/gottvedur.is/rss.xml/vaktin/"]);
+    assert_eq!(upstream.seen(), ["/www.gottvedur.is/rss.xml/vaktin/"]);
     assert!(
         output["note"]
             .as_str()
@@ -916,7 +939,7 @@ fn api_vedur_is_requests_pin_their_api_version_and_gottvedur_ones_send_none() {
         } else if path.starts_with("/api.vedur.is/cap/") {
             Some("2026-04-14")
         } else {
-            assert!(path.starts_with("/gottvedur.is/"), "{path}");
+            assert!(path.starts_with("/www.gottvedur.is/"), "{path}");
             None
         };
         assert_eq!(version.as_deref(), expected, "{path}");

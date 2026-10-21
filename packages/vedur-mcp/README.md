@@ -83,10 +83,10 @@ which are a different numbering. Warnings default to IMO's Icelandic text;
 | Tool                 | Source                                                                                                                                         | Kind                                                    |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
 | `search_stations`    | `https://api.vedur.is/weather/stations`                                                                                                        | Documented IMO Weather API (OpenAPI, CC BY 4.0)         |
-| `get_forecast`       | `https://gottvedur.is/api/forecasts/station/?stationId=…`                                                                                      | The gottvedur.is site's internal JSON API (unversioned) |
+| `get_forecast`       | `https://www.gottvedur.is/api/forecasts/station/?stationId=…`                                                                                  | The gottvedur.is site's internal JSON API (unversioned) |
 | `get_observations`   | `https://api.vedur.is/weather/observations/aws/hour/latest`, then `https://api.vedur.is/weather/observations/synop/latest` when it has no data | Documented IMO Weather API (OpenAPI, CC BY 4.0)         |
 | `get_weather_alerts` | `https://api.vedur.is/cap/capbroker/active/detailed/all`                                                                                       | Documented IMO CAP API (OpenAPI, CC BY 4.0)             |
-| `get_weather_watch`  | `https://gottvedur.is/rss.xml/vaktin/`                                                                                                         | gottvedur.is RSS feed, editorial                        |
+| `get_weather_watch`  | `https://www.gottvedur.is/rss.xml/vaktin/`                                                                                                     | gottvedur.is RSS feed, editorial                        |
 
 **Internal API caveat.** The forecast comes from the API behind the gottvedur.is
 website, which IMO operates but does not document or version. It may change

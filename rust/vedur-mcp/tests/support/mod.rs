@@ -1,4 +1,4 @@
-//! A loopback IMO (api.vedur.is and gottvedur.is under one origin), the binary driven over
+//! A loopback IMO (api.vedur.is and www.gottvedur.is under one origin), the binary driven over
 //! stdio as an MCP host drives it, and the subset of JSON Schema the surface uses.
 #![allow(dead_code)]
 

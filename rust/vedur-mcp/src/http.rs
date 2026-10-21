@@ -21,7 +21,9 @@ const API_VERSIONS: [(&str, &str); 2] = [(WEATHER_API, "2026-02-17"), (CAP_API, 
 
 const API_VERSION: &str = "x-vi-api-version";
 
-pub const GOTTVEDUR: &str = "https://gottvedur.is";
+/// The www host: since 2026-10 the bare gottvedur.is answers every path with a 301 to it, and
+/// redirects are not followed.
+pub const GOTTVEDUR: &str = "https://www.gottvedur.is";
 
 const USER_AGENT: &str = concat!(
     "vedur-mcp/",
@@ -128,6 +130,10 @@ const NO_DATA: &str = "No data found.";
 /// The most of a 404 body read to look for [`NO_DATA`].
 const NO_DATA_BYTES: usize = 4 * 1024;
 
+/// The body a CAP list answer stands for when the CAP API sends 204 No Content: its documented
+/// "empty response when no active messages are found".
+const NO_ACTIVE_CAP: &[u8] = b"[]";
+
 enum Answer {
     Body(Vec<u8>, Duration),
     /// A 404 whose body is exactly `{"message":"No data found."}`.
@@ -146,6 +152,12 @@ fn api_version(url: &str) -> Option<&'static str> {
             .is_some_and(|rest| rest.starts_with('/'))
             .then_some(*version)
     })
+}
+
+/// Whether `url` is on the CAP API, the one API whose empty list arrives as 204 No Content.
+fn is_cap(url: &str) -> bool {
+    url.strip_prefix(CAP_API)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn is_no_data(body: &[u8]) -> bool {
@@ -176,7 +188,7 @@ impl Http {
     fn target(&self, url: &str) -> String {
         #[cfg(feature = "test-origin")]
         {
-            for host in ["https://api.vedur.is/", "https://gottvedur.is/"] {
+            for host in ["https://api.vedur.is/", "https://www.gottvedur.is/"] {
                 if let Some(rest) = url.strip_prefix(host) {
                     let name = &host["https://".len()..host.len() - 1];
                     return format!("{}/{name}/{rest}", self.origin);
@@ -259,10 +271,20 @@ impl Http {
             return Attempt::Done(Err(FetchError::Refused(status.as_u16())));
         }
 
+        let ttl = ttl(response.headers());
+
+        if status == StatusCode::NO_CONTENT && is_cap(url) {
+            // Only a truly empty 204 means "no active messages"; anything else is unexpected.
+            return match mcp_runtime::read_capped(response, 0).await {
+                Ok(_) => Attempt::Done(Ok(Answer::Body(NO_ACTIVE_CAP.to_vec(), ttl))),
+                Err(mcp_runtime::BodyError::TooLarge) => Attempt::Done(Err(FetchError::Unexpected)),
+                Err(mcp_runtime::BodyError::Failed) => Attempt::Retry,
+            };
+        }
+
         if status != StatusCode::OK {
             return Attempt::Done(Err(FetchError::Unexpected));
         }
-        let ttl = ttl(response.headers());
 
         match mcp_runtime::read_capped(response, max_bytes).await {
             Ok(body) => Attempt::Done(Ok(Answer::Body(body, ttl))),
@@ -388,7 +410,22 @@ mod tests {
             Some("2026-04-14")
         );
         assert_eq!(api_version("https://api.vedur.is/weatherx/stations"), None);
-        assert_eq!(api_version("https://gottvedur.is/rss.xml/vaktin/"), None);
+        assert_eq!(
+            api_version("https://www.gottvedur.is/rss.xml/vaktin/"),
+            None
+        );
+    }
+
+    #[test]
+    fn only_the_cap_api_may_answer_an_empty_list_with_no_content() {
+        assert!(is_cap(
+            "https://api.vedur.is/cap/capbroker/active/detailed/all"
+        ));
+        assert!(!is_cap("https://api.vedur.is/capx/active"));
+        assert!(!is_cap("https://api.vedur.is/weather/stations"));
+        assert!(!is_cap(
+            "https://www.gottvedur.is/api/forecasts/station/?stationId=1"
+        ));
     }
 
     #[test]
