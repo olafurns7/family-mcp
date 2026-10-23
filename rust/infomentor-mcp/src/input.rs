@@ -24,6 +24,15 @@ pub struct NotificationsRequest {
     pub include_cleared: bool,
 }
 
+/// The journal list request, defaults applied.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JournalRequest {
+    /// How many entries to return, newest first as InfoMentor orders them.
+    pub limit: i64,
+    /// The `pageSize` form field; `None` leaves InfoMentor's default.
+    pub page_size: Option<i64>,
+}
+
 /// `collectRequestSchema`, defaults applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CollectRequest {
@@ -191,6 +200,22 @@ pub fn notifications(arguments: &Map<String, Value>) -> Result<NotificationsRequ
             include_cleared: parse
                 .at("includeCleared")
                 .boolean_or(args.get("includeCleared"), false),
+        },
+        |_| None,
+    )
+}
+
+/// The journal list request.
+pub fn journal(arguments: &Map<String, Value>) -> Result<JournalRequest, String> {
+    object(
+        arguments,
+        &["limit", "pageSize"],
+        |parse, args| JournalRequest {
+            limit: parse.at("limit").int_or(args.get("limit"), (1, 100), 20),
+            page_size: match args.get("pageSize") {
+                None => None,
+                value => parse.at("pageSize").int(value, Min::AtLeast(1), Some(200)),
+            },
         },
         |_| None,
     )
@@ -368,6 +393,28 @@ mod tests {
                 allow_account_change: None,
                 timeout_seconds: 300,
             })
+        );
+    }
+
+    #[test]
+    fn journal_requests_are_validated() {
+        assert_eq!(
+            journal(&args(json!({}))),
+            Ok(JournalRequest {
+                limit: 20,
+                page_size: None
+            })
+        );
+        assert_eq!(
+            journal(&args(json!({"limit": 3, "pageSize": 50}))),
+            Ok(JournalRequest {
+                limit: 3,
+                page_size: Some(50)
+            })
+        );
+        assert_eq!(
+            journal(&args(json!({"limit": 0, "pageSize": 201, "z": 1}))).unwrap_err(),
+            "limit: Too small: expected number to be >=1, pageSize: Too big: expected number to be <=200, Unrecognized key: \"z\""
         );
     }
 

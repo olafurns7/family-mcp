@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- New read-only tool `infomentor_get_journal` reads the selected child's
+  school journal (`dagbók`) entries from InfoMentor's
+  `Documentation/Journal/GetJournalList`. Entries are returned as plain text
+  with link targets kept, and only attachment links on InfoMentor HTTPS hosts
+  are returned. Nothing is marked read.
+
 ## 0.9.5
 
 Released 2026-10-14.

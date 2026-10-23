@@ -63,6 +63,7 @@
         "infomentor_get_messages",
         "infomentor_get_message",
         "infomentor_get_notifications",
+        "infomentor_get_journal",
         "infomentor_collect_updates"
       ],
       "extraFiles": [

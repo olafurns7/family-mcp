@@ -139,6 +139,16 @@ const MESSAGE_SUMMARY_FIELDS: Fields = &[
 /// `messageSummarySchema`.
 pub const MESSAGE_SUMMARY: S = S::Obj(&[MESSAGE_SUMMARY_FIELDS]);
 
+/// `GetJournalList`: `{entries: [...]}`, each item parsed with [`JOURNAL_ENTRY`].
+pub fn journal_response(value: &Value) -> Option<Feed> {
+    feed(value, "entries", &JOURNAL_ENTRY)
+}
+
+/// The tabs and journal list URL of the documentation app's data.
+pub fn documentation_app_data(value: &Value) -> Option<Value> {
+    parse(&DOCUMENTATION_APP_DATA, value)
+}
+
 /// `messageDetailSchema`.
 pub const MESSAGE_DETAIL: S = S::Obj(&[
     MESSAGE_SUMMARY_FIELDS,
@@ -168,6 +178,32 @@ pub const NOTIFICATION: S = S::Obj(&[NOTIFICATION_FIELDS, &[("currentlySelectedP
 
 /// `notificationSchema.omit({currentlySelectedPupil: true})`.
 pub const COLLECTED_NOTIFICATION: S = S::Obj(&[NOTIFICATION_FIELDS]);
+
+/// One attachment of a journal entry, as GetJournalList returns it (known fields only).
+pub const JOURNAL_ATTACHMENT: S =
+    S::Obj(&[&[("url", S::Nullish(&STR)), ("title", S::Nullish(&STR))]]);
+
+/// One entry of `Documentation/Journal/GetJournalList` (known fields only). Only the id is
+/// required; the rest pass through when present, so a missing author, time or category list
+/// does not drop an entry.
+pub const JOURNAL_ENTRY: S = S::Obj(&[&[
+    ("id", S::Int),
+    ("date", S::Nullish(&STR)),
+    ("time", S::Nullish(&STR)),
+    ("author", S::Nullish(&STR)),
+    ("categories", S::Nullish(&S::List(&STR))),
+    ("text", S::Nullish(&STR)),
+    ("attachments", S::Nullish(&S::List(&JOURNAL_ATTACHMENT))),
+]]);
+
+/// The journal part of `documentation/documentation/appData`.
+pub const DOCUMENTATION_APP_DATA: S = S::Obj(&[&[
+    ("tabs", S::Nullish(&S::List(&STR))),
+    (
+        "urls",
+        S::Nullish(&S::Obj(&[&[("getJournalList", S::Nullish(&STR))]])),
+    ),
+]]);
 
 /// A feed's valid items and how many malformed ones were dropped.
 #[derive(Debug, Clone, PartialEq)]

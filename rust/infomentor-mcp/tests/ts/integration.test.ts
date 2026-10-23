@@ -426,8 +426,8 @@ test('private login and eleven MCP tools select children and read school data wi
   try {
     for (const name of Object.keys(environment)) delete process.env[name];
 
-    // By default the server registers only the seven read and collection tools, and a missing
-    // session points the user at the CLI.
+    // By default the server registers only the seven read and collection tools (Rust: eight, with
+    // the Rust-only journal tool), and a missing session points the user at the CLI.
     const readOnlyServer = await serveStdio({ sessionFile: file, fetch: routes.fetch });
     const readOnlyClient = new Client({ name: 'default-test', version: '1.0.0' });
     await readOnlyClient.connect(readOnlyServer.transport);
@@ -437,6 +437,7 @@ test('private login and eleven MCP tools select children and read school data wi
         (await readOnlyClient.listTools()).tools.map((tool) => tool.name).toSorted(),
         [
           'infomentor_collect_updates',
+          'infomentor_get_journal', // Rust only
           'infomentor_get_message',
           'infomentor_get_messages',
           'infomentor_get_notifications',
@@ -486,7 +487,7 @@ test('private login and eleven MCP tools select children and read school data wi
     server = await serveStdio({ sessionFile: file, allowSetupTools: true, fetch: routes.fetch });
     await client.connect(server.transport);
     const tools = (await client.listTools()).tools;
-    assert.equal(tools.length, 11);
+    assert.equal(tools.length, 12); // Rust: 11 plus the Rust-only journal tool.
     assert.ok(tools.every((tool) => tool.outputSchema));
     assert.ok(!tools.some((tool) => tool.name.includes('browser')));
     const loginTool = tools.find((tool) => tool.name === 'infomentor_login');

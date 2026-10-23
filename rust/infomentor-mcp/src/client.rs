@@ -13,14 +13,17 @@ use tokio::sync::{Mutex, watch};
 
 use crate::collection::{Source, collect_updates};
 use crate::error::{Code, Fail, Result};
+use crate::html;
 use crate::http::{Http, Parent};
-use crate::input::{CollectRequest, LoginRequest, MessagesRequest, NotificationsRequest};
+use crate::input::{
+    CollectRequest, JournalRequest, LoginRequest, MessagesRequest, NotificationsRequest,
+};
 use crate::js;
 use crate::login::{
     self, create_authenticated_http, has_configured_credentials, resolve_credentials,
     session_from_http,
 };
-use crate::session::{SavedSession, session_path};
+use crate::session::{PARENT_URL, SavedSession, origin, session_path, trusted_url};
 use crate::shapes::{self, Feed, MessagesPage};
 use crate::signal::{Controller, Signal};
 use crate::store::{self, Held, with_session};
@@ -31,6 +34,12 @@ const COLLECTION_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const RENEWAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 const OVERVIEW_MAX_UNITS: usize = 40_000;
+
+/// The journal list endpoint when the documentation app data does not name one.
+const JOURNAL_LIST_PATH: &str = "Documentation/Journal/GetJournalList";
+
+/// A journal entry's text is cut to this many UTF-16 units.
+const JOURNAL_MAX_UNITS: usize = 40_000;
 
 /// `SessionOptions`.
 #[derive(Default, Clone)]
@@ -228,6 +237,135 @@ fn notifications(http: &mut Http, signal: &Signal) -> Result<Feed> {
         signal,
         shapes::notifications_response,
     )
+}
+
+/// A list URL from the app data, as a path under the parent site; `None` for anything off
+/// minn.infomentor.is or carrying a query or fragment.
+fn journal_path(link: &str) -> Option<String> {
+    let url = url::Url::parse(PARENT_URL).ok()?.join(link).ok()?;
+    let url = trusted_url(url.as_str()).ok()?;
+    let parent = url::Url::parse(PARENT_URL).ok()?;
+
+    if origin(&url) != origin(&parent)
+        || url.query().is_some_and(|query| !query.is_empty())
+        || url.fragment().is_some_and(|fragment| !fragment.is_empty())
+    {
+        return None;
+    }
+    let path = url.path().trim_start_matches('/');
+    (!path.is_empty()).then(|| path.to_owned())
+}
+
+/// Whether the documentation app lists the journal tab, and its journal list path. A failed or
+/// unexpected app-data read falls back to the known endpoint, except for authentication, rate
+/// limits and cancellation, which the caller must see.
+fn journal_source(http: &mut Http, signal: &Signal) -> Result<(Option<bool>, String)> {
+    match http.read_app_data(
+        "documentation/documentation/appData",
+        &[],
+        signal,
+        shapes::documentation_app_data,
+    ) {
+        Ok(data) => Ok((
+            data["tabs"]
+                .as_array()
+                .map(|tabs| tabs.iter().any(|tab| tab.as_str() == Some("journal"))),
+            data["urls"]["getJournalList"]
+                .as_str()
+                .and_then(journal_path)
+                .unwrap_or_else(|| JOURNAL_LIST_PATH.to_owned()),
+        )),
+        Err(fail)
+            if [
+                Code::LoginRequired,
+                Code::RateLimited,
+                Code::Cancelled,
+                Code::ChallengeRequired,
+            ]
+            .into_iter()
+            .any(|code| fail.is(code)) =>
+        {
+            Err(fail)
+        }
+        Err(_) => Ok((None, JOURNAL_LIST_PATH.to_owned())),
+    }
+}
+
+/// The journal entries of the selected child, and whether the account has journal access.
+fn journal(
+    http: &mut Http,
+    signal: &Signal,
+    page_size: Option<i64>,
+) -> Result<(Option<bool>, Feed)> {
+    let (access, path) = journal_source(http, signal)?;
+
+    if access == Some(false) {
+        return Ok((
+            access,
+            Feed {
+                items: Vec::new(),
+                skipped: 0,
+            },
+        ));
+    }
+    let fields: Vec<(&str, String)> = page_size
+        .map(|size| ("pageSize", size.to_string()))
+        .into_iter()
+        .collect();
+    let feed = http.read_app_data(&path, &fields, signal, shapes::journal_response)?;
+    Ok((access, feed))
+}
+
+/// A parsed journal entry as the tool returns it: the body as plain text, cut to
+/// `JOURNAL_MAX_UNITS` UTF-16 units, and only attachments on an InfoMentor HTTPS host, with
+/// absolute URLs.
+fn journal_output(item: &Value) -> Value {
+    let text = html::plain_text(item["text"].as_str().unwrap_or_default());
+    let mut omitted = 0;
+    let attachments: Vec<Value> = item["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|attachment| {
+            let url = attachment["url"]
+                .as_str()
+                .and_then(|link| url::Url::parse(PARENT_URL).ok()?.join(link).ok())
+                .and_then(|url| trusted_url(url.as_str()).ok());
+
+            match url {
+                Some(url) => Some(json!({
+                    "title": attachment["title"].as_str().unwrap_or_default(),
+                    "url": url.as_str(),
+                })),
+                None => {
+                    omitted += 1;
+                    None
+                }
+            }
+        })
+        .collect();
+    let categories: Vec<Value> = item["categories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|category| category.as_str().map(|s| json!(js::trim(s))))
+        .filter(|category| !category.as_str().unwrap_or_default().is_empty())
+        .collect();
+    let mut output = json!({
+        "id": item["id"],
+        "date": item["date"].as_str(),
+        "time": item["time"].as_str(),
+        "author": item["author"].as_str(),
+        "categories": categories,
+        "text": js::slice_units(&text, JOURNAL_MAX_UNITS),
+        "textTruncated": js::units(&text) > JOURNAL_MAX_UNITS,
+        "attachments": attachments,
+    });
+
+    if omitted > 0 {
+        output["attachmentsOmitted"] = json!(omitted);
+    }
+    output
 }
 
 fn text<'v>(value: &'v Value, key: &str) -> &'v str {
@@ -556,6 +694,28 @@ impl Client {
                 "skipped": feed.skipped,
                 "selectedChildOnly": input.selected_child_only,
                 "includeCleared": input.include_cleared,
+                "retrievedAt": js::iso_string(js::now_ms()),
+            }))
+        })
+        .await
+    }
+
+    /// infomentor_get_journal: the newest `limit` journal entries of the selected child.
+    pub async fn journal(self: &Arc<Self>, input: JournalRequest, signal: Signal) -> Result<Value> {
+        self.read(signal, move |http, context| {
+            let (access, feed) = journal(http, context.signal, input.page_size)?;
+            let total = feed.items.len();
+            let shown: Vec<Value> = feed
+                .items
+                .iter()
+                .take(usize::try_from(input.limit).unwrap_or(usize::MAX))
+                .map(journal_output)
+                .collect();
+            Ok(json!({
+                "entries": shown,
+                "total": total,
+                "skipped": feed.skipped,
+                "hasJournalAccess": access,
                 "retrievedAt": js::iso_string(js::now_ms()),
             }))
         })
