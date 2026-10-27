@@ -351,6 +351,12 @@ fn reject_collisions(record: &SecretRecordOptions, legacy: &Path) -> Result<()> 
             "The InfoMentor session file path overlaps the encrypted InfoMentor session store or its key. Choose another INFOMENTOR_SESSION_PATH or --session.",
         ));
     }
+    let absence = canonical(&record.path.with_file_name("absence.json"))?;
+    if used.iter().any(|other| collides(&absence, other)) {
+        return Err(Fail::config(
+            "The InfoMentor session path overlaps the private absence record. Choose another INFOMENTOR_SESSION_PATH or --session; do not remove the absence record.",
+        ));
+    }
     Ok(())
 }
 

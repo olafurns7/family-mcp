@@ -1,6 +1,6 @@
 //! The MCP surface of packages/infomentor-mcp/src/server.ts. tools/list replays the TypeScript
 //! server's advertised tools (src/surface.json, generated with the setup tools and checked by a
-//! test), so names, descriptions, schemas and annotations match exactly.
+//! test). Native-only absence tools are appended separately, and only on explicit opt-in.
 
 use std::sync::Arc;
 
@@ -23,13 +23,19 @@ const SETUP_TOOLS: [&str; 4] = [
 ];
 
 /// The TypeScript surface, without the setup tools unless they are allowed.
-fn surface(allow_setup_tools: bool) -> Surface {
+fn surface(allow_setup_tools: bool, allow_absence_writes: bool) -> Surface {
     let mut surface = Surface::parse(include_str!("surface.json"));
 
     if !allow_setup_tools {
         surface
             .tools
             .retain(|tool| !SETUP_TOOLS.contains(&tool.name.as_ref()));
+    }
+    if allow_absence_writes {
+        surface
+            .tools
+            .extend(Surface::parse(include_str!("absence-surface.json")).tools);
+        surface.instructions = surface.instructions.replace("School records are read-only.", "School records are read-only except the explicitly enabled whole-day sickness prepare/submit tools. Show the preview and obtain human approval before submitting. Unknown writes must never be retried or bypassed.");
     }
     surface
 }
@@ -40,9 +46,9 @@ pub struct InfoMentor {
 }
 
 impl InfoMentor {
-    pub fn new(allow_setup_tools: bool, client: Client) -> Self {
+    pub fn new(allow_setup_tools: bool, allow_absence_writes: bool, client: Client) -> Self {
         Self {
-            surface: surface(allow_setup_tools),
+            surface: surface(allow_setup_tools, allow_absence_writes),
             client: Arc::new(client),
         }
     }
@@ -99,6 +105,14 @@ impl Server for InfoMentor {
                 let request = input::collect(arguments)?;
                 client.collect(request, signal).await
             }
+            "infomentor_prepare_absence" => {
+                let (child, date) = input::absence_prepare(arguments)?;
+                client.prepare_absence(child, date, signal).await
+            }
+            "infomentor_submit_absence" => {
+                let operation = input::absence_submit(arguments)?;
+                client.submit_absence(operation, signal).await
+            }
             "infomentor_login" => {
                 let request = input::login(arguments)?;
                 client.start_login(request)
@@ -138,7 +152,7 @@ mod tests {
     #[test]
     fn setup_tools_are_listed_only_when_allowed() {
         let names = |allowed| -> Vec<String> {
-            surface(allowed)
+            surface(allowed, false)
                 .tools
                 .iter()
                 .map(|tool| tool.name.to_string())
@@ -158,5 +172,24 @@ mod tests {
         );
         assert_eq!(names(true).len(), 11);
         assert!(names(true).ends_with(&SETUP_TOOLS.map(String::from)));
+    }
+    #[test]
+    fn absence_writes_are_independent_of_setup_and_never_read_only() {
+        for setup in [false, true] {
+            let disabled = surface(setup, false);
+            assert!(!disabled.has_tool("infomentor_prepare_absence"));
+            assert!(!disabled.has_tool("infomentor_submit_absence"));
+            let enabled = surface(setup, true);
+            assert_eq!(enabled.tools.len(), disabled.tools.len() + 2);
+            assert_eq!(enabled.has_tool("infomentor_logout"), setup);
+            assert!(enabled.instructions.contains("obtain human approval"));
+            for name in ["infomentor_prepare_absence", "infomentor_submit_absence"] {
+                let tool = enabled.tools.iter().find(|tool| tool.name == name).unwrap();
+                assert_eq!(
+                    tool.annotations.as_ref().unwrap().read_only_hint,
+                    Some(false)
+                );
+            }
+        }
     }
 }

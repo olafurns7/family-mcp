@@ -1194,7 +1194,17 @@ async function runCli(
     child.exited,
   ]);
 
-  return { args, code, stdout, stderr };
+  // Native-only, opt-in absence writes deliberately extend help, not the frozen read surface.
+  const nativeAbsenceHelp =
+    '  --allow-absence-writes\n                     serve: enable confirmed whole-day sickness reporting for today/tomorrow\n';
+  if (side === 'rust' && stdout.startsWith('Usage: infomentor-mcp'))
+    assert.ok(stdout.includes(nativeAbsenceHelp), 'Native absence flag must be documented.');
+  return {
+    args,
+    code,
+    stdout: side === 'rust' ? stdout.replace(nativeAbsenceHelp, '') : stdout,
+    stderr,
+  };
 }
 
 async function runServe(

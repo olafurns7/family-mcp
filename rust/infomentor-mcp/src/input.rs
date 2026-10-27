@@ -263,6 +263,38 @@ pub fn login(arguments: &Map<String, Value>) -> Result<LoginRequest, String> {
     )
 }
 
+/// Native-only opt-in write inputs; never accept unknown fields or implicit confirmation.
+pub fn absence_prepare(args: &Map<String, Value>) -> Result<(String, String), String> {
+    if args.len() != 2 {
+        return Err("Expected only childId and date.".to_owned());
+    }
+    let child = args
+        .get("childId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty() && s.len() <= 4096)
+        .ok_or("Invalid childId.")?;
+    let date = args
+        .get("date")
+        .and_then(Value::as_str)
+        .filter(|s| crate::absence::valid_date(s))
+        .ok_or("Expected a valid YYYY-MM-DD date.")?;
+    Ok((child.to_owned(), date.to_owned()))
+}
+
+pub fn absence_submit(args: &Map<String, Value>) -> Result<String, String> {
+    if args.len() != 2 || args.get("confirm") != Some(&Value::Bool(true)) {
+        return Err(
+            "Submission requires operationId and explicit confirm:true after human approval."
+                .to_owned(),
+        );
+    }
+    args.get("operationId")
+        .and_then(Value::as_str)
+        .filter(|s| is_uuid(s))
+        .map(str::to_owned)
+        .ok_or("Invalid operationId.".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

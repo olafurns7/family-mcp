@@ -1,5 +1,6 @@
 //! infomentor-mcp: the command line of packages/infomentor-mcp/src/cli.ts.
 
+mod absence;
 mod client;
 mod collection;
 mod error;
@@ -54,6 +55,8 @@ Options:
                      login: replace a saved session that belongs to another account
   --allow-setup-tools
                      serve: also register the login, setup-status, cancel, and logout tools
+  --allow-absence-writes
+                     serve: enable confirmed whole-day sickness reporting for today/tomorrow
   -h, --help         Show help
   -v, --version      Show version
 
@@ -76,6 +79,7 @@ struct Args {
     timeout: Option<String>,
     allow_account_change: bool,
     allow_setup_tools: bool,
+    allow_absence_writes: bool,
     help: bool,
     version: bool,
     positionals: Vec<String>,
@@ -100,6 +104,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Option<Args> {
                 "version" => &mut parsed.version,
                 "allow-account-change" => &mut parsed.allow_account_change,
                 "allow-setup-tools" => &mut parsed.allow_setup_tools,
+                "allow-absence-writes" => &mut parsed.allow_absence_writes,
                 "session" | "credentials" | "import" | "timeout" => {
                     // The next argument is the value, unless it looks like another option.
                     let value = match inline {
@@ -173,11 +178,19 @@ fn options(args: &Args) -> Result<Options> {
 
 /// Serve until stdin ends, the connection breaks (a failed stdout write or an input line over
 /// 10 MiB), or SIGINT or SIGTERM arrives, then cancel and wait for operations.
-async fn serve(allow_setup_tools: bool, options: Options) -> Result<()> {
+async fn serve(
+    allow_setup_tools: bool,
+    allow_absence_writes: bool,
+    options: Options,
+) -> Result<()> {
     let client = Client::new(options).ok_or(Fail::Unknown)?;
-    mcp_runtime::serve_stdio(server::InfoMentor::new(allow_setup_tools, client))
-        .await
-        .map_err(|_| Fail::Unknown)
+    mcp_runtime::serve_stdio(server::InfoMentor::new(
+        allow_setup_tools,
+        allow_absence_writes,
+        client,
+    ))
+    .await
+    .map_err(|_| Fail::Unknown)
 }
 
 /// SIGINT and SIGTERM as the TypeScript CLI's `process.once` listeners see them: one listener per
@@ -393,7 +406,7 @@ async fn main_async() -> Result<ExitCode> {
         return Err(Fail::config("Login options only apply to login."));
     }
 
-    if name != "serve" && args.allow_setup_tools {
+    if name != "serve" && (args.allow_setup_tools || args.allow_absence_writes) {
         return Err(Fail::config("Server options only apply to serve."));
     }
 
@@ -402,9 +415,13 @@ async fn main_async() -> Result<ExitCode> {
     }
 
     if name == "serve" {
-        return serve(args.allow_setup_tools, options(&args)?)
-            .await
-            .map(|()| ExitCode::SUCCESS);
+        return serve(
+            args.allow_setup_tools,
+            args.allow_absence_writes,
+            options(&args)?,
+        )
+        .await
+        .map(|()| ExitCode::SUCCESS);
     }
 
     if name == "status" {

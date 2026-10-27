@@ -6,7 +6,9 @@ browser download is required.
 
 The parent overview includes the child list and the currently selected child's
 timetable. Select another child from that account to view their timetable.
-Separate tools retrieve messages, full message text, and notifications.
+Separate tools retrieve messages, full message text, and notifications. The native
+binary also supports explicitly enabled, confirmed [whole-day sickness reports](docs/ABSENCE.md)
+for today or tomorrow; school writes are disabled by default.
 One collection tool checks every registered child and returns changes since the
 last successfully handled check, for scheduled agents.
 Session checks are always available through MCP. Login, session import,
@@ -291,6 +293,12 @@ deliberately.
 
 ## MCP tools
 
+Native-only opt-in sickness tools (`serve --allow-absence-writes`):
+`infomentor_prepare_absence` (`childId`, exact UTC `date`) and
+`infomentor_submit_absence` (`operationId`, `confirm: true`). Show the preview and
+obtain human approval before submitting. An unknown outcome blocks further
+writes and must not be retried. See [scope, recovery and verification limits](docs/ABSENCE.md).
+
 | Tool                           | Purpose                                                                                                                                                                                                      |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `infomentor_session_status`    | Verify authentication using InfoMentor's session endpoint, and report where the session is stored and whether a sign-in is stored. Without a session it names the CLI command to run.                        |
@@ -428,6 +436,7 @@ infomentor-mcp [auth] [serve|login|status|migrate|logout] [options]
 --timeout SECONDS       login: 1–3600 seconds, default 300
 --allow-account-change  login: replace a saved session that belongs to another account
 --allow-setup-tools     serve: also register the login, setup-status, cancel, and logout tools
+--allow-absence-writes  serve: enable confirmed whole-day sickness reporting (native only)
 --help, -h              Show help
 --version, -v           Show version
 ```
@@ -596,8 +605,9 @@ bunx turbo run test:binary test:installer --filter=infomentor-mcp --force
 Every tool declares an output schema and returns validated `structuredContent`.
 
 The release executable is built from the Rust crate in `rust/infomentor-mcp`
-(`familyMcp.release.rust`), which serves the same tools, texts, CLI, encrypted
-store, and plaintext migration as the TypeScript sources here. From `rust/`:
+(`familyMcp.release.rust`), which preserves the reference read tools, texts, CLI, encrypted
+store, and plaintext migration. The new `--allow-absence-writes` flag and its two
+tools are native-only; the legacy TypeScript reference remains read-only. From `rust/`:
 
 ```sh
 cargo fmt --check

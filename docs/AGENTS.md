@@ -53,6 +53,13 @@ attendance state from a failed request or undocumented value.
 - Preserve cursors only after successful delivery. Failed or partial feeds are
   not empty; retain the old cursor and do not call missing references deletions.
 
+- Native absence tools are absent unless `serve --allow-absence-writes` is explicitly
+  enabled. Use `infomentor_prepare_absence` for a requested child's exact UTC date,
+  show the returned child/date/whole-day sickness preview, and obtain explicit
+  human approval before `infomentor_submit_absence` with `confirm: true`.
+  Unknown outcomes are not failures: do not retry, replace, or delete the private
+  guard to permit another write. See [absence scope and limits](../packages/infomentor-mcp/docs/ABSENCE.md).
+
 ### Inna
 
 - When a read says `signed out: call inna_sign_in`, or `inna_session_status`

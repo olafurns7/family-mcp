@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Native-only opt-in whole-day sickness reporting for today/tomorrow via
+  `serve --allow-absence-writes`, with expiring previews, explicit confirmation,
+  account/child checks, fresh absence-state verification and a durable one-attempt
+  guard. Live submission remains unverified; default read tools are unchanged.
+
 ## 0.9.5
 
 Released 2026-10-14.

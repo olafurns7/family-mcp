@@ -22,7 +22,7 @@ Turbo filters when possible. Tests must not contact live services.
 ## Layout
 
 - `packages/abler-mcp`: read-only Abler native MCP server.
-- `packages/infomentor-mcp`: read-only InfoMentor native MCP server.
+- `packages/infomentor-mcp`: InfoMentor native MCP server with read-only defaults and opt-in confirmed whole-day sickness reports.
 - `packages/inna-mcp`: Inna native MCP with electronic-ID login, school reads, and opt-in whole-day absence requests.
 - `packages/kronan-mcp`: Krónan native MCP server: grocery reads, shopping-note and basket edits, and confirmed orders.
 - `packages/dominos-mcp`: Domino’s Iceland menu, SMS login, quotes, and confirmed saved-card payments.

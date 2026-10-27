@@ -68,3 +68,8 @@ fn the_loopback_case_passes_against_this_binary() {
 fn the_signal_cases_pass_against_this_binary() {
     bun_test("signals.test.ts", 4);
 }
+
+#[test]
+fn the_opt_in_absence_cases_pass_against_this_binary() {
+    bun_test("absence.test.ts", 30);
+}

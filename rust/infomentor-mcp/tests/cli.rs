@@ -258,3 +258,18 @@ fn login_411_stderr_is_exact_and_contains_no_upstream_markers() {
     );
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn absence_writes_are_a_serve_only_opt_in() {
+    let home = Home::new();
+    for name in ["status", "logout", "login", "migrate"] {
+        let output = home.run(
+            Some("http://127.0.0.1:9"),
+            &[name, "--allow-absence-writes"],
+        );
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Server options only apply to serve.")
+        );
+    }
+}

@@ -215,6 +215,30 @@ impl Http {
         signal: &Signal,
         source: &str,
     ) -> Result<Page> {
+        self.request_body(value, fields.map(form_body), signal, source, true, false)
+    }
+
+    /// One consequential JSON POST, as IMHome.core.postJSON sends it. Never redirect/replay.
+    pub fn request_once(&mut self, value: &str, payload: &Value, signal: &Signal) -> Result<Page> {
+        self.request_body(
+            value,
+            Some(payload.to_string()),
+            signal,
+            PARENT_URL,
+            false,
+            true,
+        )
+    }
+
+    fn request_body(
+        &mut self,
+        value: &str,
+        body: Option<String>,
+        signal: &Signal,
+        source: &str,
+        redirects: bool,
+        json_body: bool,
+    ) -> Result<Page> {
         let now = js::now_ms();
 
         if now < self.cooldown_until {
@@ -229,10 +253,9 @@ impl Http {
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         let request_signal = signal.any(&Signal::timeout(REQUEST_TIMEOUT));
         let url = trusted_url(value)?;
-        let body = fields.map(form_body);
         let previous = trusted_url(source)?;
 
-        match self.hops(url, body, previous, &request_signal) {
+        match self.hops(url, body, previous, &request_signal, redirects, json_body) {
             Ok(page) => Ok(page),
             Err(_) if signal.aborted() => Err(CANCELLED),
             Err(Stop::Fail(fail @ Fail::Im { .. })) => Err(fail),
@@ -259,6 +282,8 @@ impl Http {
         mut body: Option<String>,
         mut previous: Url,
         signal: &Signal,
+        redirects: bool,
+        json_body: bool,
     ) -> std::result::Result<Page, Stop> {
         let mut redirect_status = None;
         for _ in 0..10 {
@@ -278,7 +303,14 @@ impl Http {
             }
 
             if body.is_some() {
-                set(CONTENT_TYPE, "application/x-www-form-urlencoded")?;
+                set(
+                    CONTENT_TYPE,
+                    if json_body {
+                        "application/json; charset=utf-8"
+                    } else {
+                        "application/x-www-form-urlencoded"
+                    },
+                )?;
                 set(ORIGIN, &origin(&previous))?;
             }
             let response = self
@@ -294,6 +326,13 @@ impl Http {
             let status = response.status;
 
             if [301, 302, 303, 307, 308].contains(&status) {
+                if !redirects {
+                    return Err(Fail::new(
+                        Code::UnexpectedPage,
+                        "InfoMentor redirected an absence submission; its outcome is unknown.",
+                    )
+                    .into());
+                }
                 redirect_status = Some(status);
                 let location = response.headers.get(LOCATION).map(latin1);
                 // The body is never read; dropping the response cancels it.

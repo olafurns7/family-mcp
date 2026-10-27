@@ -351,6 +351,29 @@ impl Client {
         })
     }
 
+    pub async fn prepare_absence(
+        self: &Arc<Self>,
+        child: String,
+        date: String,
+        signal: Signal,
+    ) -> Result<Value> {
+        self.read(signal, move |http, context| {
+            crate::absence::prepare(http, &child, &date, context.signal)
+        })
+        .await
+    }
+
+    pub async fn submit_absence(
+        self: &Arc<Self>,
+        operation: String,
+        signal: Signal,
+    ) -> Result<Value> {
+        self.read(signal, move |http, context| {
+            crate::absence::submit(http, &operation, context.signal)
+        })
+        .await
+    }
+
     /// Queue `read` behind earlier operations and run it on a blocking thread with the session
     /// held: verified on the parent page first, and saved again afterwards when it changed.
     async fn read<T: Send + 'static>(
